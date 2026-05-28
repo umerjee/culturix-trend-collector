@@ -20,8 +20,14 @@ def store_reddit_trends(limit=50):
     posts = fetch_reddit_trending(limit)
 
     inserted = 0
+
     for p in posts:
         d = p["data"]
+
+        # Skip if already stored
+        exists = session.query(Trend).filter_by(external_id=d["id"]).first()
+        if exists:
+            continue
 
         trend = Trend(
             platform="reddit",
@@ -41,4 +47,5 @@ def store_reddit_trends(limit=50):
 
     session.commit()
     session.close()
+
     return inserted
