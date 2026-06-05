@@ -47,7 +47,7 @@ export default function Sidebar() {
       </nav>
 
       <div className="px-4 py-3 border-t text-xs text-muted-foreground">
-        API: localhost:8000
+        API: {process.env.NEXT_PUBLIC_API_URL ?? "localhost:8000"}
       </div>
     </aside>
   );

@@ -6,10 +6,11 @@ import { PlatformBadge } from "@/components/ui/badge";
 import Link from "next/link";
 
 async function getStats() {
+  const base = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
   const [trends, clusters, personas]: [Trend[], Cluster[], Persona[]] = await Promise.all([
-    fetch(`http://localhost:8000/trends/latest?limit=100`, { cache: "no-store" }).then((r) => r.json()),
-    fetch(`http://localhost:8000/clusters`, { cache: "no-store" }).then((r) => r.json()),
-    fetch(`http://localhost:8000/personas`, { cache: "no-store" }).then((r) => r.json()),
+    fetch(`${base}/trends/latest?limit=100`, { cache: "no-store" }).then((r) => r.json()),
+    fetch(`${base}/clusters`, { cache: "no-store" }).then((r) => r.json()),
+    fetch(`${base}/personas`, { cache: "no-store" }).then((r) => r.json()),
   ]);
   return { trends, clusters, personas };
 }
@@ -50,8 +51,8 @@ export default async function OverviewPage() {
 
       {error && (
         <div className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          Could not reach the API. Make sure the FastAPI server is running at{" "}
-          <code className="font-mono">localhost:8000</code>.
+          Could not reach the API. Check that the backend is deployed and the{" "}
+          <code className="font-mono">NEXT_PUBLIC_API_URL</code> environment variable is set.
         </div>
       )}
 
