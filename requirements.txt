@@ -1,7 +1,14 @@
-﻿fastapi
+fastapi
 uvicorn[standard]
 SQLAlchemy
 psycopg2-binary
 httpx
 python-dotenv
-
+anthropic
+voyageai
+numpy
+hdbscan
+praw
+deep-translator
+langdetect
+apscheduler

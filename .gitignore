@@ -1,0 +1,39 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.env.*
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node / dashboard
+dashboard/node_modules/
+dashboard/.next/
+
+# Debug / scratch files
+debug_*.py
+print_*.py
+drop_trends.py
+test_trends.py
+*.docx
+
+# fasttext model (large binary — download separately)
+lid.176.bin

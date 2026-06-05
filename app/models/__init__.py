@@ -1,3 +1,4 @@
 from .trend import Trend
-
-__all__ = ["Trend"]
+from .persona import Persona
+from .trendpersona import TrendPersona
+from .cluster import Cluster
