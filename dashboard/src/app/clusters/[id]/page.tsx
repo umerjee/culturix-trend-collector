@@ -15,7 +15,7 @@ export default function ClusterDetailPage({ params }: { params: Promise<{ id: st
   const { data: cluster, isLoading, error } = useSWR<ClusterDetail>(api.cluster(Number(id)), fetcher);
 
   return (
-    <div className="p-8 max-w-4xl mx-auto">
+    <div className="p-4 sm:p-8 max-w-4xl mx-auto">
       <Link href="/clusters">
         <Button variant="ghost" size="sm" className="mb-4 -ml-2">
           <ArrowLeft className="h-4 w-4 mr-1" /> Clusters
@@ -28,7 +28,7 @@ export default function ClusterDetailPage({ params }: { params: Promise<{ id: st
       {cluster && (
         <>
           <div className="mb-6">
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h1 className="text-2xl font-bold">{cluster.theme ?? `Cluster ${cluster.label}`}</h1>
                 {cluster.summary && <p className="text-muted-foreground mt-1">{cluster.summary}</p>}

@@ -43,7 +43,7 @@ export default async function OverviewPage() {
   ];
 
   return (
-    <div className="p-8 max-w-6xl mx-auto">
+    <div className="p-4 sm:p-8 max-w-6xl mx-auto">
       <div className="mb-8">
         <h1 className="text-2xl font-bold">Overview</h1>
         <p className="text-muted-foreground mt-1">Cultural intelligence at a glance</p>
@@ -57,7 +57,7 @@ export default async function OverviewPage() {
       )}
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 mb-8">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4 mb-8">
         {statCards.map(({ label, value, icon: Icon, color }) => (
           <Card key={label}>
             <CardContent className="p-6">

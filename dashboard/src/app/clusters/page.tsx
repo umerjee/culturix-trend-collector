@@ -11,7 +11,7 @@ export default function ClustersPage() {
   const { data: clusters, isLoading, error } = useSWR<Cluster[]>(api.clusters(), fetcher);
 
   return (
-    <div className="p-8 max-w-5xl mx-auto">
+    <div className="p-4 sm:p-8 max-w-5xl mx-auto">
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Clusters</h1>
         <p className="text-muted-foreground mt-1">Semantically grouped trend themes</p>

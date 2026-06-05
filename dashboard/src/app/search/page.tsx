@@ -33,7 +33,7 @@ export default function SearchPage() {
   );
 
   return (
-    <div className="p-8 max-w-3xl mx-auto">
+    <div className="p-4 sm:p-8 max-w-3xl mx-auto">
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Search</h1>
         <p className="text-muted-foreground mt-1">Find trends by keyword</p>
@@ -51,7 +51,7 @@ export default function SearchPage() {
         </Button>
       </form>
 
-      <div className="flex gap-2 mb-6">
+      <div className="flex gap-2 mb-6 overflow-x-auto pb-1">
         {PLATFORMS.map((p) => (
           <Button
             key={p}

@@ -25,14 +25,14 @@ export default function TrendsPage() {
   const { data: trends, isLoading, error } = useSWR<Trend[]>(url, fetcher);
 
   return (
-    <div className="p-8 max-w-5xl mx-auto">
+    <div className="p-4 sm:p-8 max-w-5xl mx-auto">
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Trends</h1>
         <p className="text-muted-foreground mt-1">Latest signals from across platforms</p>
       </div>
 
       {/* Platform filter */}
-      <div className="flex gap-2 mb-6">
+      <div className="flex gap-2 mb-6 overflow-x-auto pb-1">
         {PLATFORMS.map((p) => (
           <Button
             key={p}

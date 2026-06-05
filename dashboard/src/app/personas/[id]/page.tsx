@@ -38,7 +38,7 @@ export default function PersonaDetailPage({ params }: { params: Promise<{ id: st
   const { data: persona, isLoading, error } = useSWR<PersonaDetail>(api.persona(Number(id)), fetcher);
 
   return (
-    <div className="p-8 max-w-4xl mx-auto">
+    <div className="p-4 sm:p-8 max-w-4xl mx-auto">
       <Link href="/personas">
         <Button variant="ghost" size="sm" className="mb-4 -ml-2">
           <ArrowLeft className="h-4 w-4 mr-1" /> Personas
