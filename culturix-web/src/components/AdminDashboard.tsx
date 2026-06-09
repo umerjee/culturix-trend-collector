@@ -112,7 +112,7 @@ export default function AdminDashboard({ trends, clusters, personas, digests, ap
     setCollecting(true);
     setCollectMsg("");
     try {
-      const res = await fetch(`${apiUrl}/admin/collect`, { method: "POST" });
+      const res = await fetch("/api/admin/collect", { method: "POST" });
       setCollectMsg(res.ok ? "Collection started — refresh in ~60s" : `Error ${res.status}`);
     } catch (e) {
       setCollectMsg(`Error: ${e}`);
