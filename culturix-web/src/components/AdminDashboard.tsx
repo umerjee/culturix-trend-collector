@@ -189,6 +189,12 @@ export default function AdminDashboard({ trends, clusters, personas, digests, ap
             >
               {collecting ? "Collecting…" : "Collect now"}
             </button>
+            <a
+              href="/dashboard"
+              className="px-4 py-1.5 border border-gray-200 text-gray-600 text-sm rounded-lg hover:bg-gray-50 transition"
+            >
+              ← User dashboard
+            </a>
           </div>
         </header>
 
