@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Zap, LayoutDashboard, TrendingUp, Layers, Users, Search, LogOut, CheckCircle, XCircle, Clock } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Zap, LayoutDashboard, TrendingUp, Layers, Users, Search, LogOut, CheckCircle, XCircle, Clock, RefreshCw } from "lucide-react";
 
 interface Trend {
   id: number;
@@ -60,16 +60,13 @@ interface UserRecord {
   content_profiles: ContentProfileRecord[];
 }
 
-interface Props {
-  trends: Trend[];
-  clusters: Cluster[];
-  personas: Persona[];
-  digests: Digest[];
-  users: UserRecord[];
-  apiUrl: string;
-}
-
 type Page = "overview" | "trends" | "clusters" | "personas" | "users" | "search";
+
+async function fetchData(type: string) {
+  const res = await fetch(`/api/admin/data?type=${type}`, { cache: "no-store" });
+  if (!res.ok) return [];
+  return res.json();
+}
 
 const PLATFORM_BADGE: Record<string, string> = {
   youtube: "bg-red-100 text-red-600",
@@ -107,14 +104,46 @@ function StatCard({ icon, value, label }: { icon: React.ReactNode; value: number
   );
 }
 
-export default function AdminDashboard({ trends, clusters, personas, digests, users, apiUrl }: Props) {
+export default function AdminDashboard() {
   const [page, setPage] = useState<Page>("overview");
   const [search, setSearch] = useState("");
   const [platformFilter, setPlatformFilter] = useState("all");
   const [collecting, setCollecting] = useState(false);
   const [collectMsg, setCollectMsg] = useState("");
-  const [userList, setUserList] = useState<UserRecord[]>(users);
   const [approving, setApproving] = useState<string | null>(null);
+
+  const [trends, setTrends] = useState<Trend[]>([]);
+  const [clusters, setClusters] = useState<Cluster[]>([]);
+  const [personas, setPersonas] = useState<Persona[]>([]);
+  const [digests, setDigests] = useState<Digest[]>([]);
+  const [userList, setUserList] = useState<UserRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  async function loadAll() {
+    setLoading(true);
+    setError(null);
+    try {
+      const [t, c, p, d, u] = await Promise.all([
+        fetchData("trends"),
+        fetchData("clusters"),
+        fetchData("personas"),
+        fetchData("digests"),
+        fetchData("users"),
+      ]);
+      setTrends(Array.isArray(t) ? t : []);
+      setClusters(Array.isArray(c) ? c : []);
+      setPersonas(Array.isArray(p) ? p : []);
+      setDigests(Array.isArray(d) ? d : []);
+      setUserList(Array.isArray(u) ? u : []);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { loadAll(); }, []);
 
   const byPlatform = trends.reduce<Record<string, number>>((acc, t) => {
     acc[t.platform] = (acc[t.platform] ?? 0) + 1;
@@ -174,6 +203,29 @@ export default function AdminDashboard({ trends, clusters, personas, digests, us
     { key: "search", icon: <Search className="h-4 w-4" />, label: "Search" },
   ];
 
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-gray-50">
+        <div className="text-center space-y-3">
+          <RefreshCw className="h-8 w-8 text-blue-500 animate-spin mx-auto" />
+          <p className="text-sm text-gray-500">Loading admin data…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-gray-50 p-8">
+        <div className="bg-white border border-red-200 rounded-2xl p-8 max-w-md text-center">
+          <p className="font-semibold text-red-600 mb-2">Failed to load data</p>
+          <p className="text-sm text-gray-500 mb-4">{error}</p>
+          <button onClick={loadAll} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg">Retry</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">
       {/* Sidebar */}
@@ -228,6 +280,12 @@ export default function AdminDashboard({ trends, clusters, personas, digests, us
           </div>
           <div className="flex items-center gap-3">
             {collectMsg && <span className="text-xs text-gray-400">{collectMsg}</span>}
+            <button
+              onClick={loadAll}
+              className="px-3 py-1.5 border border-gray-200 text-gray-600 text-sm rounded-lg hover:bg-gray-50 transition inline-flex items-center gap-1.5"
+            >
+              <RefreshCw className="h-3.5 w-3.5" /> Refresh
+            </button>
             <button
               onClick={triggerCollect}
               disabled={collecting}
