@@ -22,13 +22,21 @@ def _search_qdrant(query_vec: list[float], limit: int = 20) -> list[dict]:
     if not qdrant_url:
         return []
     try:
-        from qdrant_client import QdrantClient
+        from qdrant_client import QdrantClient, models
         qdrant = QdrantClient(url=qdrant_url, api_key=qdrant_key)
-        results = qdrant.search(
-            collection_name="culturix_signals",
-            query_vector=query_vec,
-            limit=limit,
-        )
+        # qdrant-client >=1.8 uses query_points; fall back to search for older versions
+        try:
+            results = qdrant.query_points(
+                collection_name="culturix_signals",
+                query=query_vec,
+                limit=limit,
+            ).points
+        except AttributeError:
+            results = qdrant.search(
+                collection_name="culturix_signals",
+                query_vector=query_vec,
+                limit=limit,
+            )
         return [r.payload for r in results]
     except Exception as e:
         logger.error("Qdrant search failed: %s", e)

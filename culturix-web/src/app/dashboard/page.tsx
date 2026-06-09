@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { RefreshCw, Settings, Zap, TrendingUp, Inbox } from "lucide-react";
+import { RefreshCw, Settings, Zap, TrendingUp, Inbox, ShieldCheck } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import DigestCard from "@/components/DigestCard";
 import type { Digest } from "@/lib/types";
@@ -26,6 +26,7 @@ export default async function DashboardPage() {
 
   const digest = await fetchDigest(user.id);
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  const isSuperAdmin = user.email === "umer.ali79@gmail.com";
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -51,6 +52,14 @@ export default async function DashboardPage() {
             >
               <Settings className="h-3.5 w-3.5" /> Settings
             </Link>
+            {isSuperAdmin && (
+              <Link
+                href="/admin"
+                className="inline-flex items-center gap-2 text-sm font-medium text-indigo-600 border border-indigo-200 rounded-lg px-3 py-2 hover:bg-indigo-50 transition-colors"
+              >
+                <ShieldCheck className="h-3.5 w-3.5" /> Admin
+              </Link>
+            )}
           </div>
         </div>
       </header>

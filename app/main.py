@@ -628,3 +628,154 @@ def collect_xhs(keywords: list[str] | None = None):
 def collect_all():
     from app.collectors.orchestrator import run_all_collectors
     return run_all_collectors()
+
+
+# ── Admin endpoints (superadmin only — caller must verify identity) ────────────
+
+@app.get("/trends/recent")
+def trends_recent(limit: int = 200, platform: str | None = None, search: str | None = None):
+    from app.db import SessionLocal
+    from app.models.trend import Trend
+    session = SessionLocal()
+    try:
+        q = session.query(Trend).order_by(Trend.collected_at.desc())
+        if platform:
+            q = q.filter(Trend.platform == platform)
+        if search:
+            q = q.filter(Trend.content.ilike(f"%{search}%"))
+        trends = q.limit(limit).all()
+        return [
+            {
+                "id": t.id, "platform": t.platform, "content": (t.content or "")[:200],
+                "author": t.author, "url": t.url, "likes": t.likes,
+                "comments": t.comments, "language": t.language,
+                "collected_at": t.collected_at.isoformat() if t.collected_at else None,
+            }
+            for t in trends
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/clusters/recent")
+def clusters_recent(limit: int = 50):
+    from app.db import SessionLocal
+    from app.models.cluster import Cluster
+    session = SessionLocal()
+    try:
+        clusters = session.query(Cluster).order_by(Cluster.created_at.desc()).limit(limit).all()
+        return [
+            {
+                "id": c.id, "label": c.label, "description": c.theme,
+                "trend_count": c.size, "created_at": c.created_at.isoformat() if c.created_at else None,
+            }
+            for c in clusters
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/personas/recent")
+def personas_recent(limit: int = 50):
+    from app.db import SessionLocal
+    from app.models.persona import Persona
+    session = SessionLocal()
+    try:
+        personas = session.query(Persona).order_by(Persona.created_at.desc()).limit(limit).all()
+        import json as _json
+        def _split(v):
+            if not v:
+                return []
+            try:
+                parsed = _json.loads(v)
+                return parsed if isinstance(parsed, list) else [str(parsed)]
+            except Exception:
+                return [s.strip() for s in v.split(",") if s.strip()]
+        return [
+            {
+                "id": p.id, "name": p.name, "description": p.description,
+                "motivations": _split(p.motivations),
+                "interests": _split(p.interests),
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
+            for p in personas
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/admin/digests")
+def admin_digests(limit: int = 20):
+    from app.db import SessionLocal
+    from app.models.generated_content import GeneratedContent
+    session = SessionLocal()
+    try:
+        digests = (
+            session.query(GeneratedContent)
+            .order_by(GeneratedContent.generated_at.desc())
+            .limit(limit).all()
+        )
+        return [
+            {
+                "id": str(d.id), "user_id": str(d.user_id),
+                "generated_at": d.generated_at.isoformat() if d.generated_at else None,
+                "trend_date": str(d.trend_date),
+                "cluster_count": len(d.clusters) if d.clusters else 0,
+                "idea_count": len(d.content_ideas) if d.content_ideas else 0,
+                "delivered": d.delivered,
+            }
+            for d in digests
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/admin/stats")
+def admin_stats():
+    from app.db import SessionLocal
+    from app.models.trend import Trend
+    from app.models.cluster import Cluster
+    from app.models.persona import Persona
+    from app.models.user_profile import UserProfile
+    from app.models.generated_content import GeneratedContent
+    import sqlalchemy as sa
+    session = SessionLocal()
+    try:
+        platforms = session.execute(
+            sa.text("SELECT platform, COUNT(*) as n FROM trends GROUP BY platform ORDER BY n DESC")
+        ).fetchall()
+        return {
+            "total_trends": session.query(Trend).count(),
+            "total_clusters": session.query(Cluster).count(),
+            "total_personas": session.query(Persona).count(),
+            "total_users": session.query(UserProfile).count(),
+            "total_digests": session.query(GeneratedContent).count(),
+            "by_platform": {row[0]: row[1] for row in platforms},
+        }
+    finally:
+        session.close()
+
+
+@app.post("/admin/collect")
+def admin_collect():
+    import threading
+    def _run():
+        try:
+            from app.collectors.youtube import store_youtube_trends
+            from app.collectors.twitter_fallback import store_twitter_trends_via_proxy
+            results = {}
+            for region in ["US", "GB", "FR", "NG"]:
+                try:
+                    results[f"youtube_{region}"] = store_youtube_trends(region, limit=30)
+                except Exception as e:
+                    results[f"youtube_{region}"] = str(e)
+            for region in ["global", "united-states", "united-kingdom"]:
+                try:
+                    results[f"twitter_{region}"] = store_twitter_trends_via_proxy(region)
+                except Exception as e:
+                    results[f"twitter_{region}"] = str(e)
+            logging.info("Admin collect results: %s", results)
+        except Exception as e:
+            logging.error("Admin collect failed: %s", e)
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "collecting"}
