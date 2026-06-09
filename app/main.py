@@ -75,6 +75,7 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "https://culturix-web.vercel.app",
         "https://culturix-trend-collector.vercel.app",
+        "https://culturix-trend-collector-production.up.railway.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
