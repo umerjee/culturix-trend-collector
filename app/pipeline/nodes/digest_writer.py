@@ -4,6 +4,7 @@ Digest Writer — persists generated content to DB and dispatches email digests 
 import json
 import logging
 import os
+import uuid
 from datetime import date
 from app.pipeline.state import PipelineState
 
@@ -18,11 +19,12 @@ def _save_to_db(user_id: str, clusters: list[dict], ideas: list[dict]) -> str:
     try:
         result = session.execute(
             sa.text("""
-                INSERT INTO generated_content (user_id, trend_date, clusters, content_ideas, delivered)
-                VALUES (:user_id, :trend_date, :clusters, :ideas, FALSE)
+                INSERT INTO generated_content (id, user_id, trend_date, clusters, content_ideas, delivered)
+                VALUES (:id, :user_id, :trend_date, :clusters, :ideas, FALSE)
                 RETURNING id
             """),
             {
+                "id": str(uuid.uuid4()),
                 "user_id": user_id,
                 "trend_date": date.today().isoformat(),
                 "clusters": json.dumps(clusters),
