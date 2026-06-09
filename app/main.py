@@ -466,3 +466,155 @@ def refresh_suggestions(persona_id: int):
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
     return result
+
+
+# ── Workstream 1 — User Profiles & Digest ─────────────────────────────────────
+
+@app.post("/api/users/profile")
+def save_user_profile(profile: dict):
+    from app.db import SessionLocal
+    from app.models.user_profile import UserProfile
+
+    session = SessionLocal()
+    try:
+        user_id = profile.get("user_id")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="user_id required")
+
+        existing = session.query(UserProfile).filter_by(user_id=user_id).first()
+        if existing:
+            for field in [
+                "target_age_min", "target_age_max", "target_platforms", "target_regions",
+                "content_goals", "content_tones", "industry_niche", "persona_tags",
+                "delivery_freq", "delivery_time",
+            ]:
+                if field in profile:
+                    setattr(existing, field, profile[field])
+            session.commit()
+            return {"status": "updated", "id": str(existing.id)}
+        else:
+            p = UserProfile(
+                user_id=user_id,
+                target_age_min=profile.get("target_age_min", 18),
+                target_age_max=profile.get("target_age_max", 35),
+                target_platforms=profile.get("target_platforms", []),
+                target_regions=profile.get("target_regions", []),
+                content_goals=profile.get("content_goals", []),
+                content_tones=profile.get("content_tones", []),
+                industry_niche=profile.get("industry_niche"),
+                persona_tags=profile.get("persona_tags", []),
+                delivery_freq=profile.get("delivery_freq", "daily"),
+                delivery_time=profile.get("delivery_time", "07:00"),
+            )
+            session.add(p)
+            session.commit()
+            return {"status": "created", "id": str(p.id)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.get("/api/users/profile")
+def get_user_profile(user_id: str):
+    from app.db import SessionLocal
+    from app.models.user_profile import UserProfile
+
+    session = SessionLocal()
+    try:
+        p = session.query(UserProfile).filter_by(user_id=user_id).first()
+        if not p:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        return {
+            "user_id": str(p.user_id),
+            "target_age_min": p.target_age_min,
+            "target_age_max": p.target_age_max,
+            "target_platforms": p.target_platforms or [],
+            "target_regions": p.target_regions or [],
+            "content_goals": p.content_goals or [],
+            "content_tones": p.content_tones or [],
+            "industry_niche": p.industry_niche,
+            "persona_tags": p.persona_tags or [],
+            "delivery_freq": p.delivery_freq,
+            "delivery_time": p.delivery_time,
+        }
+    finally:
+        session.close()
+
+
+@app.get("/api/digest/{user_id}")
+def get_digest(user_id: str):
+    from app.db import SessionLocal
+    from app.models.generated_content import GeneratedContent
+
+    session = SessionLocal()
+    try:
+        latest = (
+            session.query(GeneratedContent)
+            .filter_by(user_id=user_id)
+            .order_by(GeneratedContent.generated_at.desc())
+            .first()
+        )
+        if not latest:
+            raise HTTPException(status_code=404, detail="No digest yet")
+        return {
+            "id": str(latest.id),
+            "user_id": str(latest.user_id),
+            "generated_at": latest.generated_at,
+            "trend_date": str(latest.trend_date),
+            "clusters": latest.clusters or [],
+            "content_ideas": latest.content_ideas or [],
+            "delivered": latest.delivered,
+        }
+    finally:
+        session.close()
+
+
+@app.post("/api/generate")
+def trigger_generation(body: dict):
+    user_id = body.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+
+    import threading
+    def _run():
+        try:
+            from app.pipeline.graph import run_pipeline
+            run_pipeline()
+        except Exception as e:
+            logging.error("On-demand pipeline failed: %s", e)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return {"status": "pipeline_started", "user_id": user_id}
+
+
+@app.post("/api/webhooks/delivery")
+def webhook_delivery():
+    import threading
+    def _run():
+        try:
+            from app.pipeline.graph import run_pipeline
+            run_pipeline()
+        except Exception as e:
+            logging.error("Webhook pipeline failed: %s", e)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "started"}
+
+
+# ── Workstream 2 — New Collectors ─────────────────────────────────────────────
+
+@app.post("/collect/xhs")
+def collect_xhs(keywords: list[str] | None = None):
+    from app.collectors.xiaohongshu import store_xhs_signals
+    return {"inserted": store_xhs_signals(keywords)}
+
+
+@app.post("/collect/all")
+def collect_all():
+    from app.collectors.orchestrator import run_all_collectors
+    return run_all_collectors()

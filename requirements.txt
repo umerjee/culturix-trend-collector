@@ -12,3 +12,14 @@ praw
 deep-translator
 langdetect
 apscheduler
+# Workstream 2 — new collectors
+apify-client
+google-api-python-client
+# Workstream 3 — Qdrant
+qdrant-client
+# Workstream 4 — LangGraph pipeline
+langgraph
+langchain
+langchain-community
+openai
+resend

@@ -1,0 +1,72 @@
+"""
+Master orchestrator — runs all collectors in sequence and returns totals.
+Called by the Railway cron tier 1 every 2 hours.
+"""
+import logging
+import os
+
+logger = logging.getLogger("culturix.orchestrator")
+
+
+def run_all_collectors() -> dict:
+    results = {}
+
+    # Reddit
+    try:
+        from app.collectors.reddit import store_reddit_trends
+        results["reddit"] = store_reddit_trends()
+        logger.info("Reddit: %d inserted", results["reddit"])
+    except Exception as e:
+        logger.error("Reddit failed: %s", e)
+        results["reddit"] = 0
+
+    # TikTok
+    try:
+        from app.collectors.tiktok import store_tiktok_trends
+        results["tiktok"] = store_tiktok_trends(region="US")
+        logger.info("TikTok: %d inserted", results["tiktok"])
+    except Exception as e:
+        logger.error("TikTok failed: %s", e)
+        results["tiktok"] = 0
+
+    # YouTube
+    try:
+        from app.collectors.youtube import store_youtube_trends, fetch_youtube_trending
+        probe = fetch_youtube_trending("US", limit=1)
+        results["youtube"] = store_youtube_trends("US") if probe else 0
+        logger.info("YouTube: %d inserted", results["youtube"])
+    except Exception as e:
+        logger.error("YouTube failed: %s", e)
+        results["youtube"] = 0
+
+    # Xiaohongshu (Apify)
+    try:
+        from app.collectors.xiaohongshu import store_xhs_signals
+        results["xhs"] = store_xhs_signals()
+        logger.info("Xiaohongshu: %d inserted", results["xhs"])
+    except Exception as e:
+        logger.error("Xiaohongshu failed: %s", e)
+        results["xhs"] = 0
+
+    # Twitter — prefer Apify, fall back to proxy
+    try:
+        if os.getenv("APIFY_API_TOKEN"):
+            from app.collectors.twitter_apify import store_twitter_apify
+            results["twitter"] = store_twitter_apify()
+        else:
+            from app.collectors.twitter_fallback import store_twitter_trends_via_proxy
+            results["twitter"] = store_twitter_trends_via_proxy("us")
+        logger.info("Twitter: %d inserted", results["twitter"])
+    except Exception as e:
+        logger.error("Twitter failed: %s", e)
+        results["twitter"] = 0
+
+    total = sum(results.values())
+    logger.info("Collection complete. Total inserted: %d | breakdown: %s", total, results)
+    return {"total": total, **results}
+
+
+if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    print(run_all_collectors())
