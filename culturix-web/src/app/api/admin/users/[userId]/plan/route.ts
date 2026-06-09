@@ -14,7 +14,7 @@ export async function POST(
   }
 
   const body = await req.json();
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? process.env.RAILWAY_API_URL ?? "http://localhost:8000";
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || process.env.RAILWAY_API_URL || "https://culturix-trend-collector-production.up.railway.app";
   const res = await fetch(`${apiUrl}/admin/users/${params.userId}/plan`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

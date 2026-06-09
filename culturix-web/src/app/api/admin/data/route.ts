@@ -12,11 +12,10 @@ export async function GET(req: Request) {
 
   const { searchParams } = new URL(req.url);
   const type = searchParams.get("type");
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "";
-
-  if (!apiUrl) {
-    return NextResponse.json({ error: "NEXT_PUBLIC_API_URL not set" }, { status: 503 });
-  }
+  const apiUrl =
+    process.env.NEXT_PUBLIC_API_URL ||
+    process.env.RAILWAY_API_URL ||
+    "https://culturix-trend-collector-production.up.railway.app";
 
   const pathMap: Record<string, string> = {
     trends:   "/admin/trends?limit=200",
