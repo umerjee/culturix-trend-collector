@@ -1,6 +1,7 @@
 import json
 import logging
 from contextlib import asynccontextmanager
+from typing import Optional
 from fastapi import FastAPI, HTTPException
 
 logging.basicConfig(level=logging.INFO)
@@ -671,7 +672,7 @@ def collect_all():
 # ── Admin endpoints (superadmin only — caller must verify identity) ────────────
 
 @app.get("/trends/recent")
-def trends_recent(limit: int = 200, platform: str | None = None, search: str | None = None):
+def trends_recent(limit: int = 200, platform: Optional[str] = None, search: Optional[str] = None):
     from app.db import SessionLocal
     from app.models.trend import Trend
     session = SessionLocal()
