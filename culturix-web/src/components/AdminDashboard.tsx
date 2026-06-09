@@ -64,8 +64,9 @@ type Page = "overview" | "trends" | "clusters" | "personas" | "users" | "search"
 
 async function fetchData(type: string) {
   const res = await fetch(`/api/admin/data?type=${type}`, { cache: "no-store" });
-  if (!res.ok) return [];
-  return res.json();
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`${type} → HTTP ${res.status}: ${JSON.stringify(body)}`);
+  return body;
 }
 
 const PLATFORM_BADGE: Record<string, string> = {
@@ -123,24 +124,22 @@ export default function AdminDashboard() {
   async function loadAll() {
     setLoading(true);
     setError(null);
-    try {
-      const [t, c, p, d, u] = await Promise.all([
-        fetchData("trends"),
-        fetchData("clusters"),
-        fetchData("personas"),
-        fetchData("digests"),
-        fetchData("users"),
-      ]);
-      setTrends(Array.isArray(t) ? t : []);
-      setClusters(Array.isArray(c) ? c : []);
-      setPersonas(Array.isArray(p) ? p : []);
-      setDigests(Array.isArray(d) ? d : []);
-      setUserList(Array.isArray(u) ? u : []);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
+    const results = await Promise.allSettled([
+      fetchData("trends"),
+      fetchData("clusters"),
+      fetchData("personas"),
+      fetchData("digests"),
+      fetchData("users"),
+    ]);
+    const [t, c, p, d, u] = results;
+    const firstErr = results.find(r => r.status === "rejected") as PromiseRejectedResult | undefined;
+    if (firstErr) setError(firstErr.reason?.message ?? String(firstErr.reason));
+    setTrends(t.status === "fulfilled" && Array.isArray(t.value) ? t.value : []);
+    setClusters(c.status === "fulfilled" && Array.isArray(c.value) ? c.value : []);
+    setPersonas(p.status === "fulfilled" && Array.isArray(p.value) ? p.value : []);
+    setDigests(d.status === "fulfilled" && Array.isArray(d.value) ? d.value : []);
+    setUserList(u.status === "fulfilled" && Array.isArray(u.value) ? u.value : []);
+    setLoading(false);
   }
 
   useEffect(() => { loadAll(); }, []);
@@ -214,17 +213,7 @@ export default function AdminDashboard() {
     );
   }
 
-  if (error) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-gray-50 p-8">
-        <div className="bg-white border border-red-200 rounded-2xl p-8 max-w-md text-center">
-          <p className="font-semibold text-red-600 mb-2">Failed to load data</p>
-          <p className="text-sm text-gray-500 mb-4">{error}</p>
-          <button onClick={loadAll} className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg">Retry</button>
-        </div>
-      </div>
-    );
-  }
+  // error shown inline as banner, not blocking
 
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">
@@ -304,6 +293,11 @@ export default function AdminDashboard() {
 
         {/* Scrollable body */}
         <main className="flex-1 overflow-y-auto px-8 py-8">
+          {error && (
+            <div className="mb-6 bg-red-50 border border-red-200 rounded-xl px-5 py-3 text-sm text-red-700 font-mono break-all">
+              ⚠ {error}
+            </div>
+          )}
 
           {/* ── Overview ── */}
           {page === "overview" && (
