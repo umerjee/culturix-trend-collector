@@ -671,7 +671,7 @@ def collect_all():
 
 # ── Admin endpoints (superadmin only — caller must verify identity) ────────────
 
-@app.get("/trends/recent")
+@app.get("/admin/trends")
 def trends_recent(limit: int = 200, platform: Optional[str] = None, search: Optional[str] = None):
     from app.db import SessionLocal
     from app.models.trend import Trend
@@ -696,7 +696,7 @@ def trends_recent(limit: int = 200, platform: Optional[str] = None, search: Opti
         session.close()
 
 
-@app.get("/clusters/recent")
+@app.get("/admin/clusters")
 def clusters_recent(limit: int = 50):
     from app.db import SessionLocal
     from app.models.cluster import Cluster
@@ -714,7 +714,7 @@ def clusters_recent(limit: int = 50):
         session.close()
 
 
-@app.get("/personas/recent")
+@app.get("/admin/personas")
 def personas_recent(limit: int = 50):
     from app.db import SessionLocal
     from app.models.persona import Persona

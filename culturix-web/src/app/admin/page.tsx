@@ -15,9 +15,9 @@ export default async function AdminPage() {
   const base = apiUrl || "http://localhost:8000";
 
   const [trendsRes, clustersRes, personasRes, digestsRes, usersRes] = await Promise.allSettled([
-    fetch(`${base}/trends/recent?limit=200`, { cache: "no-store" }),
-    fetch(`${base}/clusters/recent?limit=50`, { cache: "no-store" }),
-    fetch(`${base}/personas/recent?limit=50`, { cache: "no-store" }),
+    fetch(`${base}/admin/trends?limit=200`, { cache: "no-store" }),
+    fetch(`${base}/admin/clusters?limit=50`, { cache: "no-store" }),
+    fetch(`${base}/admin/personas?limit=50`, { cache: "no-store" }),
     fetch(`${base}/admin/digests?limit=20`, { cache: "no-store" }),
     fetch(`${base}/admin/users`, { cache: "no-store" }),
   ]);

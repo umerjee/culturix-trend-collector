@@ -7,7 +7,7 @@ export async function GET() {
     return NextResponse.json({ error: "NEXT_PUBLIC_API_URL is not set", apiUrl: null });
   }
 
-  const endpoints = ["/health", "/trends/recent?limit=1", "/clusters/recent?limit=1"];
+  const endpoints = ["/health", "/admin/trends?limit=1", "/admin/clusters?limit=1"];
   const results: Record<string, unknown> = { apiUrl };
 
   for (const ep of endpoints) {
