@@ -10,28 +10,50 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(_):
     # Ensure all tables exist (safe to run on every startup — create_all is idempotent)
     from app.db import Base, engine
-    from app.models.trend import Trend                        # noqa: F401
-    from app.models.persona import Persona                    # noqa: F401
-    from app.models.trendpersona import TrendPersona          # noqa: F401
-    from app.models.cluster import Cluster                    # noqa: F401
-    from app.models.user_profile import UserProfile           # noqa: F401
-    from app.models.generated_content import GeneratedContent # noqa: F401
+    from app.models.trend import Trend                          # noqa: F401
+    from app.models.persona import Persona                      # noqa: F401
+    from app.models.trendpersona import TrendPersona            # noqa: F401
+    from app.models.cluster import Cluster                      # noqa: F401
+    from app.models.user_profile import UserProfile             # noqa: F401
+    from app.models.generated_content import GeneratedContent   # noqa: F401
+    from app.models.content_profile import ContentProfile       # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent)
     from sqlalchemy import text as _text
     with engine.connect() as _conn:
-        _conn.execute(_text(
-            "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT FALSE"
-        ))
-        _conn.execute(_text(
-            "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMP"
-        ))
+        for _stmt in [
+            "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
+            "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS plan VARCHAR(20) NOT NULL DEFAULT 'free'",
+        ]:
+            _conn.execute(_text(_stmt))
         # Grandfather all users who existed before the approval gate was added
         _conn.execute(_text(
             "UPDATE user_profiles SET approved = TRUE WHERE approved = FALSE AND created_at IS NULL"
         ))
         _conn.commit()
+
+    # Migrate existing UserProfile rows into content_profiles (one-time, idempotent)
+    from sqlalchemy import text as _text2
+    with engine.connect() as _conn2:
+        _conn2.execute(_text2("""
+            INSERT INTO content_profiles
+                (id, user_id, name, industry_niche, target_platforms, target_regions,
+                 content_goals, content_tones, persona_tags,
+                 target_age_min, target_age_max, delivery_freq, delivery_time,
+                 is_active, created_at, updated_at)
+            SELECT
+                gen_random_uuid(), user_id, 'My Profile', industry_niche,
+                target_platforms, target_regions, content_goals, content_tones,
+                persona_tags, target_age_min, target_age_max,
+                delivery_freq, delivery_time, TRUE, NOW(), NOW()
+            FROM user_profiles up
+            WHERE NOT EXISTS (
+                SELECT 1 FROM content_profiles cp WHERE cp.user_id = up.user_id
+            )
+        """))
+        _conn2.commit()
 
     from app.scheduler import start, stop
     start()
@@ -802,21 +824,37 @@ def admin_collect():
 def admin_users():
     from app.db import SessionLocal
     from app.models.user_profile import UserProfile
+    from app.models.content_profile import ContentProfile
     session = SessionLocal()
     try:
         users = session.query(UserProfile).order_by(UserProfile.created_at.asc()).all()
-        return [
-            {
+        result = []
+        for u in users:
+            profiles = (
+                session.query(ContentProfile)
+                .filter_by(user_id=u.user_id)
+                .order_by(ContentProfile.created_at.asc())
+                .all()
+            )
+            result.append({
                 "id": str(u.id),
                 "user_id": str(u.user_id),
-                "industry_niche": u.industry_niche,
-                "target_platforms": u.target_platforms or [],
-                "target_regions": u.target_regions or [],
                 "approved": u.approved,
+                "plan": u.plan or "free",
                 "created_at": u.created_at.isoformat() if u.created_at else None,
-            }
-            for u in users
-        ]
+                "content_profiles": [
+                    {
+                        "id": str(p.id),
+                        "name": p.name,
+                        "industry_niche": p.industry_niche,
+                        "target_platforms": p.target_platforms or [],
+                        "is_active": p.is_active,
+                        "created_at": p.created_at.isoformat() if p.created_at else None,
+                    }
+                    for p in profiles
+                ],
+            })
+        return result
     finally:
         session.close()
 
@@ -867,6 +905,152 @@ def check_user_approved(user_id: str):
         # No profile yet (hasn't completed onboarding) → let them through to onboarding
         if not profile:
             return {"approved": True, "has_profile": False}
-        return {"approved": profile.approved, "has_profile": True}
+        return {"approved": profile.approved, "has_profile": True, "plan": profile.plan or "free"}
     finally:
         session.close()
+
+
+@app.post("/admin/users/{user_id}/plan")
+def set_user_plan(user_id: str, body: dict):
+    from app.db import SessionLocal
+    from app.models.user_profile import UserProfile
+    import uuid as _uuid
+    plan = body.get("plan", "free")
+    if plan not in ("free", "pro"):
+        raise HTTPException(status_code=400, detail="plan must be 'free' or 'pro'")
+    session = SessionLocal()
+    try:
+        profile = session.query(UserProfile).filter_by(user_id=_uuid.UUID(user_id)).first()
+        if not profile:
+            raise HTTPException(status_code=404, detail="User not found")
+        profile.plan = plan
+        session.commit()
+        return {"status": "updated", "user_id": user_id, "plan": plan}
+    finally:
+        session.close()
+
+
+# ── Content profiles (per-user, multi-niche) ──────────────────────────────────
+
+PLAN_PROFILE_LIMITS = {"free": 1, "pro": 10}
+
+
+@app.get("/users/{user_id}/content-profiles")
+def list_content_profiles(user_id: str):
+    from app.db import SessionLocal
+    from app.models.content_profile import ContentProfile
+    import uuid as _uuid
+    session = SessionLocal()
+    try:
+        profiles = (
+            session.query(ContentProfile)
+            .filter_by(user_id=_uuid.UUID(user_id))
+            .order_by(ContentProfile.created_at.asc())
+            .all()
+        )
+        return [_serialize_cp(p) for p in profiles]
+    finally:
+        session.close()
+
+
+@app.post("/users/{user_id}/content-profiles")
+def create_content_profile(user_id: str, body: dict):
+    from app.db import SessionLocal
+    from app.models.content_profile import ContentProfile
+    from app.models.user_profile import UserProfile
+    import uuid as _uuid
+    session = SessionLocal()
+    try:
+        uid = _uuid.UUID(user_id)
+        user = session.query(UserProfile).filter_by(user_id=uid).first()
+        plan = (user.plan or "free") if user else "free"
+        limit = PLAN_PROFILE_LIMITS.get(plan, 1)
+        existing = session.query(ContentProfile).filter_by(user_id=uid).count()
+        if existing >= limit:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Your {plan} plan allows {limit} content profile(s). Upgrade to add more."
+            )
+        cp = ContentProfile(
+            user_id=uid,
+            name=body.get("name", "New Profile"),
+            industry_niche=body.get("industry_niche"),
+            target_platforms=body.get("target_platforms", []),
+            target_regions=body.get("target_regions", []),
+            content_goals=body.get("content_goals", []),
+            content_tones=body.get("content_tones", []),
+            persona_tags=body.get("persona_tags", []),
+            target_age_min=body.get("target_age_min", 18),
+            target_age_max=body.get("target_age_max", 35),
+            delivery_freq=body.get("delivery_freq", "daily"),
+            delivery_time=body.get("delivery_time", "07:00"),
+        )
+        session.add(cp)
+        session.commit()
+        session.refresh(cp)
+        return _serialize_cp(cp)
+    finally:
+        session.close()
+
+
+@app.put("/users/{user_id}/content-profiles/{profile_id}")
+def update_content_profile(user_id: str, profile_id: str, body: dict):
+    from app.db import SessionLocal
+    from app.models.content_profile import ContentProfile
+    import uuid as _uuid
+    session = SessionLocal()
+    try:
+        cp = session.query(ContentProfile).filter_by(
+            id=_uuid.UUID(profile_id), user_id=_uuid.UUID(user_id)
+        ).first()
+        if not cp:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        for field in ("name", "industry_niche", "target_platforms", "target_regions",
+                      "content_goals", "content_tones", "persona_tags",
+                      "target_age_min", "target_age_max", "delivery_freq", "delivery_time", "is_active"):
+            if field in body:
+                setattr(cp, field, body[field])
+        session.commit()
+        session.refresh(cp)
+        return _serialize_cp(cp)
+    finally:
+        session.close()
+
+
+@app.delete("/users/{user_id}/content-profiles/{profile_id}")
+def delete_content_profile(user_id: str, profile_id: str):
+    from app.db import SessionLocal
+    from app.models.content_profile import ContentProfile
+    import uuid as _uuid
+    session = SessionLocal()
+    try:
+        cp = session.query(ContentProfile).filter_by(
+            id=_uuid.UUID(profile_id), user_id=_uuid.UUID(user_id)
+        ).first()
+        if not cp:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        session.delete(cp)
+        session.commit()
+        return {"status": "deleted"}
+    finally:
+        session.close()
+
+
+def _serialize_cp(p) -> dict:
+    return {
+        "id": str(p.id),
+        "user_id": str(p.user_id),
+        "name": p.name,
+        "industry_niche": p.industry_niche,
+        "target_platforms": p.target_platforms or [],
+        "target_regions": p.target_regions or [],
+        "content_goals": p.content_goals or [],
+        "content_tones": p.content_tones or [],
+        "persona_tags": p.persona_tags or [],
+        "target_age_min": p.target_age_min,
+        "target_age_max": p.target_age_max,
+        "delivery_freq": p.delivery_freq,
+        "delivery_time": p.delivery_time,
+        "is_active": p.is_active,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+    }

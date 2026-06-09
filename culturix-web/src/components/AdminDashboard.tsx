@@ -42,14 +42,22 @@ interface Digest {
   delivered: boolean;
 }
 
+interface ContentProfileRecord {
+  id: string;
+  name: string;
+  industry_niche: string | null;
+  target_platforms: string[];
+  is_active: boolean;
+  created_at: string | null;
+}
+
 interface UserRecord {
   id: string;
   user_id: string;
-  industry_niche: string | null;
-  target_platforms: string[];
-  target_regions: string[];
   approved: boolean;
+  plan: "free" | "pro";
   created_at: string | null;
+  content_profiles: ContentProfileRecord[];
 }
 
 interface Props {
@@ -131,6 +139,17 @@ export default function AdminDashboard({ trends, clusters, personas, digests, us
       }
     } finally {
       setApproving(null);
+    }
+  }
+
+  async function setPlan(userId: string, plan: "free" | "pro") {
+    const res = await fetch(`/api/admin/users/${userId}/plan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plan }),
+    });
+    if (res.ok) {
+      setUserList((prev) => prev.map((u) => u.user_id === userId ? { ...u, plan } : u));
     }
   }
 
@@ -437,74 +456,95 @@ export default function AdminDashboard({ trends, clusters, personas, digests, us
                 </div>
               )}
 
-              <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-50 bg-gray-50">
-                      <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">User ID</th>
-                      <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Niche</th>
-                      <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Platforms</th>
-                      <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Registered</th>
-                      <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
-                      <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {userList.length === 0 && (
-                      <tr><td colSpan={6} className="px-6 py-8 text-center text-gray-400">No users yet.</td></tr>
+              {userList.length === 0 && (
+                <p className="text-gray-400 text-sm">No users yet.</p>
+              )}
+
+              {userList.map((u) => (
+                <div key={u.user_id} className={`bg-white rounded-xl border overflow-hidden ${!u.approved ? "border-amber-200" : "border-gray-100"}`}>
+                  {/* User header row */}
+                  <div className="flex items-center gap-4 px-6 py-4 border-b border-gray-50 flex-wrap">
+                    <span className="font-mono text-xs text-gray-400 shrink-0">{u.user_id.slice(0, 16)}…</span>
+
+                    {/* Status badge */}
+                    {u.approved ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 rounded text-xs font-medium">
+                        <CheckCircle className="h-3 w-3" /> Approved
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-xs font-medium">
+                        <Clock className="h-3 w-3" /> Pending
+                      </span>
                     )}
-                    {userList.map((u) => (
-                      <tr key={u.user_id} className={`hover:bg-gray-50 ${!u.approved ? "bg-amber-50/30" : ""}`}>
-                        <td className="px-6 py-4 font-mono text-xs text-gray-400">{u.user_id.slice(0, 12)}…</td>
-                        <td className="px-6 py-4 text-gray-700">{u.industry_niche || <span className="text-gray-300">—</span>}</td>
-                        <td className="px-6 py-4">
-                          <div className="flex flex-wrap gap-1">
-                            {(u.target_platforms || []).map((p) => (
+
+                    {/* Plan badge + toggle */}
+                    <span className={`px-2 py-0.5 rounded text-xs font-semibold ${u.plan === "pro" ? "bg-indigo-100 text-indigo-700" : "bg-gray-100 text-gray-500"}`}>
+                      {u.plan === "pro" ? "Pro" : "Free"}
+                    </span>
+                    <span className="text-xs text-gray-400">{u.content_profiles.length} profile{u.content_profiles.length !== 1 ? "s" : ""}</span>
+                    <span className="text-xs text-gray-400 ml-auto">{fmt(u.created_at)}</span>
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-2">
+                      {!u.approved ? (
+                        <button
+                          onClick={() => setApproval(u.user_id, true)}
+                          disabled={approving === u.user_id}
+                          className="inline-flex items-center gap-1 px-3 py-1 bg-green-600 text-white text-xs rounded-lg hover:bg-green-700 disabled:opacity-50 transition"
+                        >
+                          <CheckCircle className="h-3 w-3" />
+                          {approving === u.user_id ? "…" : "Approve"}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => setApproval(u.user_id, false)}
+                          disabled={approving === u.user_id}
+                          className="inline-flex items-center gap-1 px-3 py-1 border border-red-200 text-red-500 text-xs rounded-lg hover:bg-red-50 disabled:opacity-50 transition"
+                        >
+                          <XCircle className="h-3 w-3" />
+                          {approving === u.user_id ? "…" : "Revoke"}
+                        </button>
+                      )}
+                      {u.plan === "free" ? (
+                        <button
+                          onClick={() => setPlan(u.user_id, "pro")}
+                          className="px-3 py-1 bg-indigo-600 text-white text-xs rounded-lg hover:bg-indigo-700 transition"
+                        >
+                          → Pro
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => setPlan(u.user_id, "free")}
+                          className="px-3 py-1 border border-gray-200 text-gray-500 text-xs rounded-lg hover:bg-gray-50 transition"
+                        >
+                          → Free
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Content profiles */}
+                  {u.content_profiles.length === 0 ? (
+                    <p className="px-6 py-3 text-xs text-gray-400 italic">No content profiles yet</p>
+                  ) : (
+                    <div className="divide-y divide-gray-50">
+                      {u.content_profiles.map((cp) => (
+                        <div key={cp.id} className="flex items-center gap-3 px-6 py-3">
+                          <div className={`h-2 w-2 rounded-full shrink-0 ${cp.is_active ? "bg-green-400" : "bg-gray-300"}`} />
+                          <span className="text-sm font-medium text-gray-800 w-36 truncate">{cp.name}</span>
+                          <span className="text-xs text-gray-500">{cp.industry_niche || <span className="italic text-gray-300">no niche</span>}</span>
+                          <div className="flex gap-1 ml-2">
+                            {cp.target_platforms.slice(0, 4).map((p) => (
                               <span key={p} className="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded text-xs">{p}</span>
                             ))}
                           </div>
-                        </td>
-                        <td className="px-6 py-4 text-xs text-gray-400 whitespace-nowrap">{fmt(u.created_at)}</td>
-                        <td className="px-6 py-4">
-                          {u.approved ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 rounded text-xs font-medium">
-                              <CheckCircle className="h-3 w-3" /> Approved
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-xs font-medium">
-                              <Clock className="h-3 w-3" /> Pending
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-2">
-                            {!u.approved && (
-                              <button
-                                onClick={() => setApproval(u.user_id, true)}
-                                disabled={approving === u.user_id}
-                                className="inline-flex items-center gap-1 px-3 py-1 bg-green-600 text-white text-xs rounded-lg hover:bg-green-700 disabled:opacity-50 transition"
-                              >
-                                <CheckCircle className="h-3 w-3" />
-                                {approving === u.user_id ? "…" : "Approve"}
-                              </button>
-                            )}
-                            {u.approved && (
-                              <button
-                                onClick={() => setApproval(u.user_id, false)}
-                                disabled={approving === u.user_id}
-                                className="inline-flex items-center gap-1 px-3 py-1 border border-red-200 text-red-600 text-xs rounded-lg hover:bg-red-50 disabled:opacity-50 transition"
-                              >
-                                <XCircle className="h-3 w-3" />
-                                {approving === u.user_id ? "…" : "Revoke"}
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                          <span className="ml-auto text-xs text-gray-300">{fmt(cp.created_at)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           )}
 
