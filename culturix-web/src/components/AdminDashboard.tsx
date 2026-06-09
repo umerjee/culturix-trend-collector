@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Zap, LayoutDashboard, TrendingUp, Layers, Users, Search, LogOut } from "lucide-react";
+import { Zap, LayoutDashboard, TrendingUp, Layers, Users, Search, LogOut, CheckCircle, XCircle, Clock } from "lucide-react";
 
 interface Trend {
   id: number;
@@ -42,15 +42,26 @@ interface Digest {
   delivered: boolean;
 }
 
+interface UserRecord {
+  id: string;
+  user_id: string;
+  industry_niche: string | null;
+  target_platforms: string[];
+  target_regions: string[];
+  approved: boolean;
+  created_at: string | null;
+}
+
 interface Props {
   trends: Trend[];
   clusters: Cluster[];
   personas: Persona[];
   digests: Digest[];
+  users: UserRecord[];
   apiUrl: string;
 }
 
-type Page = "overview" | "trends" | "clusters" | "personas" | "search";
+type Page = "overview" | "trends" | "clusters" | "personas" | "users" | "search";
 
 const PLATFORM_BADGE: Record<string, string> = {
   youtube: "bg-red-100 text-red-600",
@@ -88,12 +99,14 @@ function StatCard({ icon, value, label }: { icon: React.ReactNode; value: number
   );
 }
 
-export default function AdminDashboard({ trends, clusters, personas, digests, apiUrl }: Props) {
+export default function AdminDashboard({ trends, clusters, personas, digests, users, apiUrl }: Props) {
   const [page, setPage] = useState<Page>("overview");
   const [search, setSearch] = useState("");
   const [platformFilter, setPlatformFilter] = useState("all");
   const [collecting, setCollecting] = useState(false);
   const [collectMsg, setCollectMsg] = useState("");
+  const [userList, setUserList] = useState<UserRecord[]>(users);
+  const [approving, setApproving] = useState<string | null>(null);
 
   const byPlatform = trends.reduce<Record<string, number>>((acc, t) => {
     acc[t.platform] = (acc[t.platform] ?? 0) + 1;
@@ -107,6 +120,19 @@ export default function AdminDashboard({ trends, clusters, personas, digests, ap
         !(t.author ?? "").toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
+
+  async function setApproval(userId: string, approved: boolean) {
+    setApproving(userId);
+    try {
+      const action = approved ? "approve" : "reject";
+      const res = await fetch(`/api/admin/users/${userId}/${action}`, { method: "POST" });
+      if (res.ok) {
+        setUserList((prev) => prev.map((u) => u.user_id === userId ? { ...u, approved } : u));
+      }
+    } finally {
+      setApproving(null);
+    }
+  }
 
   async function triggerCollect() {
     setCollecting(true);
@@ -125,6 +151,7 @@ export default function AdminDashboard({ trends, clusters, personas, digests, ap
     { key: "trends", icon: <TrendingUp className="h-4 w-4" />, label: "Trends" },
     { key: "clusters", icon: <Layers className="h-4 w-4" />, label: "Clusters" },
     { key: "personas", icon: <Users className="h-4 w-4" />, label: "Personas" },
+    { key: "users" as const, icon: <Users className="h-4 w-4" />, label: `Users${userList.filter(u => !u.approved).length ? ` (${userList.filter(u => !u.approved).length})` : ""}` },
     { key: "search", icon: <Search className="h-4 w-4" />, label: "Search" },
   ];
 
@@ -396,6 +423,88 @@ export default function AdminDashboard({ trends, clusters, personas, digests, ap
                   )}
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* ── Users ── */}
+          {page === "users" && (
+            <div className="space-y-4">
+              {/* Pending banner */}
+              {userList.filter(u => !u.approved).length > 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 flex items-center gap-2 text-sm text-amber-700">
+                  <Clock className="h-4 w-4 shrink-0" />
+                  {userList.filter(u => !u.approved).length} user{userList.filter(u => !u.approved).length !== 1 ? "s" : ""} waiting for approval
+                </div>
+              )}
+
+              <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-50 bg-gray-50">
+                      <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">User ID</th>
+                      <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Niche</th>
+                      <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Platforms</th>
+                      <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Registered</th>
+                      <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+                      <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {userList.length === 0 && (
+                      <tr><td colSpan={6} className="px-6 py-8 text-center text-gray-400">No users yet.</td></tr>
+                    )}
+                    {userList.map((u) => (
+                      <tr key={u.user_id} className={`hover:bg-gray-50 ${!u.approved ? "bg-amber-50/30" : ""}`}>
+                        <td className="px-6 py-4 font-mono text-xs text-gray-400">{u.user_id.slice(0, 12)}…</td>
+                        <td className="px-6 py-4 text-gray-700">{u.industry_niche || <span className="text-gray-300">—</span>}</td>
+                        <td className="px-6 py-4">
+                          <div className="flex flex-wrap gap-1">
+                            {(u.target_platforms || []).map((p) => (
+                              <span key={p} className="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded text-xs">{p}</span>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-xs text-gray-400 whitespace-nowrap">{fmt(u.created_at)}</td>
+                        <td className="px-6 py-4">
+                          {u.approved ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 rounded text-xs font-medium">
+                              <CheckCircle className="h-3 w-3" /> Approved
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-xs font-medium">
+                              <Clock className="h-3 w-3" /> Pending
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2">
+                            {!u.approved && (
+                              <button
+                                onClick={() => setApproval(u.user_id, true)}
+                                disabled={approving === u.user_id}
+                                className="inline-flex items-center gap-1 px-3 py-1 bg-green-600 text-white text-xs rounded-lg hover:bg-green-700 disabled:opacity-50 transition"
+                              >
+                                <CheckCircle className="h-3 w-3" />
+                                {approving === u.user_id ? "…" : "Approve"}
+                              </button>
+                            )}
+                            {u.approved && (
+                              <button
+                                onClick={() => setApproval(u.user_id, false)}
+                                disabled={approving === u.user_id}
+                                className="inline-flex items-center gap-1 px-3 py-1 border border-red-200 text-red-600 text-xs rounded-lg hover:bg-red-50 disabled:opacity-50 transition"
+                              >
+                                <XCircle className="h-3 w-3" />
+                                {approving === u.user_id ? "…" : "Revoke"}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 

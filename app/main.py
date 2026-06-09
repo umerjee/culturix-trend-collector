@@ -18,6 +18,21 @@ async def lifespan(_):
     from app.models.generated_content import GeneratedContent # noqa: F401
     Base.metadata.create_all(bind=engine)
 
+    # Add columns introduced after initial deploy (idempotent)
+    from sqlalchemy import text as _text
+    with engine.connect() as _conn:
+        _conn.execute(_text(
+            "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        _conn.execute(_text(
+            "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMP"
+        ))
+        # Grandfather all users who existed before the approval gate was added
+        _conn.execute(_text(
+            "UPDATE user_profiles SET approved = TRUE WHERE approved = FALSE AND created_at IS NULL"
+        ))
+        _conn.commit()
+
     from app.scheduler import start, stop
     start()
     yield
@@ -779,3 +794,79 @@ def admin_collect():
             logging.error("Admin collect failed: %s", e)
     threading.Thread(target=_run, daemon=True).start()
     return {"status": "collecting"}
+
+
+# ── User approval endpoints ────────────────────────────────────────────────────
+
+@app.get("/admin/users")
+def admin_users():
+    from app.db import SessionLocal
+    from app.models.user_profile import UserProfile
+    session = SessionLocal()
+    try:
+        users = session.query(UserProfile).order_by(UserProfile.created_at.asc()).all()
+        return [
+            {
+                "id": str(u.id),
+                "user_id": str(u.user_id),
+                "industry_niche": u.industry_niche,
+                "target_platforms": u.target_platforms or [],
+                "target_regions": u.target_regions or [],
+                "approved": u.approved,
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+            }
+            for u in users
+        ]
+    finally:
+        session.close()
+
+
+@app.post("/admin/users/{user_id}/approve")
+def approve_user(user_id: str):
+    from app.db import SessionLocal
+    from app.models.user_profile import UserProfile
+    import uuid as _uuid
+    session = SessionLocal()
+    try:
+        profile = session.query(UserProfile).filter_by(user_id=_uuid.UUID(user_id)).first()
+        if not profile:
+            raise HTTPException(status_code=404, detail="User not found")
+        profile.approved = True
+        session.commit()
+        return {"status": "approved", "user_id": user_id}
+    finally:
+        session.close()
+
+
+@app.post("/admin/users/{user_id}/reject")
+def reject_user(user_id: str):
+    from app.db import SessionLocal
+    from app.models.user_profile import UserProfile
+    import uuid as _uuid
+    session = SessionLocal()
+    try:
+        profile = session.query(UserProfile).filter_by(user_id=_uuid.UUID(user_id)).first()
+        if not profile:
+            raise HTTPException(status_code=404, detail="User not found")
+        profile.approved = False
+        session.commit()
+        return {"status": "rejected", "user_id": user_id}
+    finally:
+        session.close()
+
+
+@app.get("/api/users/{user_id}/approved")
+def check_user_approved(user_id: str):
+    """Called by the frontend to gate dashboard access."""
+    from app.db import SessionLocal
+    from app.models.user_profile import UserProfile
+    import uuid as _uuid
+    session = SessionLocal()
+    try:
+        profile = session.query(UserProfile).filter_by(user_id=_uuid.UUID(user_id)).first()
+        # No profile yet (hasn't completed onboarding) → let them through to onboarding
+        if not profile:
+            return {"approved": True, "has_profile": False}
+        return {"approved": profile.approved, "has_profile": True}
+    finally:
+        session.close()

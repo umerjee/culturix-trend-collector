@@ -24,9 +24,24 @@ export default async function DashboardPage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/signup");
 
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+  // Check approval status (skip for superadmin)
+  const isSuperAdmin = user.email === "umer.ali79@gmail.com";
+  if (!isSuperAdmin) {
+    try {
+      const approvalRes = await fetch(`${apiUrl}/api/users/${user.id}/approved`, { cache: "no-store" });
+      if (approvalRes.ok) {
+        const { approved } = await approvalRes.json();
+        if (!approved) redirect("/pending");
+      }
+    } catch {
+      // If Railway is unreachable, let them through rather than blocking everyone
+    }
+  }
+
   const digest = await fetchDigest(user.id);
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
-  const isSuperAdmin = user.email === "umer.ali79@gmail.com";
 
   return (
     <div className="min-h-screen bg-gray-50">

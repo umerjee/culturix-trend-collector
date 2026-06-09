@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ARRAY, Text, Time
+from sqlalchemy import Column, Integer, String, DateTime, ARRAY, Text, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -20,4 +20,6 @@ class UserProfile(Base):
     persona_tags = Column(ARRAY(Text), default=list)
     delivery_freq = Column(String(10), default="daily")
     delivery_time = Column(Text, default="07:00")
+    approved = Column(Boolean, default=False, nullable=False, server_default="false")
+    created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
