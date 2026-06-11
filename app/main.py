@@ -60,6 +60,25 @@ async def lifespan(_):
         """))
         _conn2.commit()
 
+    # Ensure superadmin always has a plan='pro' user_profiles row
+    import os as _os
+    _superadmin_id = _os.getenv("SUPERADMIN_USER_ID", "")
+    if _superadmin_id:
+        from sqlalchemy import text as _text3
+        with engine.connect() as _conn3:
+            _conn3.execute(_text3("""
+                INSERT INTO user_profiles
+                    (id, user_id, approved, plan, created_at,
+                     target_age_min, target_age_max, target_platforms, target_regions,
+                     content_goals, content_tones, industry_niche, persona_tags,
+                     delivery_freq, delivery_time)
+                VALUES
+                    (gen_random_uuid(), :uid, TRUE, 'pro', NOW(),
+                     18, 35, '{}', '{}', '{}', '{}', 'general', '{}', 'daily', '07:00')
+                ON CONFLICT (user_id) DO UPDATE SET plan = 'pro', approved = TRUE
+            """), {"uid": _superadmin_id})
+            _conn3.commit()
+
     from app.scheduler import start, stop
     start()
     yield
