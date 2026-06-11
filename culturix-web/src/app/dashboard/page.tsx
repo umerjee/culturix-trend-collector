@@ -30,7 +30,7 @@ export default async function DashboardPage() {
 
   // One call for both approval gate and plan tier
   const isSuperAdmin = user.email === "umer.ali79@gmail.com";
-  let plan: "free" | "pro" = "free";
+  let plan: "free" | "pro" = isSuperAdmin ? "pro" : "free";
   if (!isSuperAdmin) {
     try {
       const approvalRes = await fetch(`${apiUrl}/api/users/${user.id}/approved`, { cache: "no-store" });
