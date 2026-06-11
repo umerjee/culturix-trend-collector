@@ -27,6 +27,7 @@ async def lifespan(_):
             "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
             "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS plan VARCHAR(20) NOT NULL DEFAULT 'free'",
+            "ALTER TABLE generated_content ADD COLUMN IF NOT EXISTS content_profile_id UUID",
         ]:
             _conn.execute(_text(_stmt))
         # Grandfather all users who existed before the approval gate was added
@@ -595,23 +596,25 @@ def get_user_profile(user_id: str):
 
 
 @app.get("/api/digest/{user_id}")
-def get_digest(user_id: str):
+def get_digest(user_id: str, profile_id: Optional[str] = None):
     from app.db import SessionLocal
     from app.models.generated_content import GeneratedContent
+    import uuid as _uuid
 
     session = SessionLocal()
     try:
-        latest = (
-            session.query(GeneratedContent)
-            .filter_by(user_id=user_id)
-            .order_by(GeneratedContent.generated_at.desc())
-            .first()
+        q = session.query(GeneratedContent).filter(
+            GeneratedContent.user_id == _uuid.UUID(user_id)
         )
+        if profile_id:
+            q = q.filter(GeneratedContent.content_profile_id == _uuid.UUID(profile_id))
+        latest = q.order_by(GeneratedContent.generated_at.desc()).first()
         if not latest:
             raise HTTPException(status_code=404, detail="No digest yet")
         return {
             "id": str(latest.id),
             "user_id": str(latest.user_id),
+            "content_profile_id": str(latest.content_profile_id) if latest.content_profile_id else None,
             "generated_at": latest.generated_at,
             "trend_date": str(latest.trend_date),
             "clusters": latest.clusters or [],

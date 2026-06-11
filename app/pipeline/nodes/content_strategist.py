@@ -122,7 +122,12 @@ def generate_content(state: PipelineState) -> PipelineState:
             state["errors"] = state.get("errors", []) + [f"content_gen:{user_id}:{e}"]
             continue
 
-        results.append({"user_id": user_id, "ideas": ideas, "clusters": clusters})
+        results.append({
+            "user_id": user_id,
+            "content_profile_id": profile.get("content_profile_id"),
+            "ideas": ideas,
+            "clusters": clusters,
+        })
 
     state["generated_content"] = results
     return state

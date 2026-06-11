@@ -14,6 +14,24 @@ export interface UserProfile {
   updated_at?: string;
 }
 
+export interface ContentProfile {
+  id: string;
+  user_id: string;
+  name: string;
+  industry_niche: string;
+  target_platforms: string[];
+  target_regions: string[];
+  content_goals: string[];
+  content_tones: string[];
+  persona_tags: string[];
+  target_age_min: number;
+  target_age_max: number;
+  delivery_freq: "daily" | "weekly";
+  delivery_time: string;
+  is_active: boolean;
+  created_at?: string;
+}
+
 export interface ContentIdea {
   hook: string;
   caption: string;

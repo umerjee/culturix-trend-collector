@@ -19,6 +19,7 @@ def load_signals(state: PipelineState) -> PipelineState:
     from app.db import SessionLocal
     from app.models.trend import Trend
     import sqlalchemy as sa
+    import uuid as _uuid
 
     session = SessionLocal()
     try:
@@ -42,18 +43,42 @@ def load_signals(state: PipelineState) -> PipelineState:
             for t in trends
         ]
         logger.info("Loaded %d signals", len(state["raw_signals"]))
+
+        # Load active content profiles for approved users
+        try:
+            result = session.execute(sa.text("""
+                SELECT
+                    cp.id            AS content_profile_id,
+                    cp.user_id,
+                    cp.name,
+                    cp.industry_niche,
+                    cp.target_platforms,
+                    cp.target_regions,
+                    cp.content_goals,
+                    cp.content_tones,
+                    cp.persona_tags,
+                    cp.target_age_min,
+                    cp.target_age_max,
+                    cp.delivery_freq,
+                    cp.delivery_time
+                FROM content_profiles cp
+                JOIN user_profiles up ON up.user_id = cp.user_id
+                WHERE cp.is_active = TRUE AND up.approved = TRUE
+                LIMIT 500
+            """))
+            rows = result.mappings().all()
+            # Stringify UUIDs so downstream dicts stay JSON-safe
+            state["user_profiles"] = [
+                {k: (str(v) if isinstance(v, _uuid.UUID) else v) for k, v in dict(r).items()}
+                for r in rows
+            ]
+            logger.info("Loaded %d content profiles", len(state["user_profiles"]))
+        except Exception as e:
+            logger.warning("Could not load content profiles: %s", e)
+            state["user_profiles"] = []
+
     finally:
         session.close()
-
-    # Load active user profiles
-    try:
-        result = session.execute(sa.text("SELECT * FROM user_profiles LIMIT 500"))
-        rows = result.mappings().all()
-        state["user_profiles"] = [dict(r) for r in rows]
-        logger.info("Loaded %d user profiles", len(state["user_profiles"]))
-    except Exception as e:
-        logger.warning("Could not load user profiles (table may not exist yet): %s", e)
-        state["user_profiles"] = []
 
     return state
 

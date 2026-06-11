@@ -5,8 +5,10 @@ import { createClient } from "@/lib/supabase/server";
 import DigestCard from "@/components/DigestCard";
 import type { Digest } from "@/lib/types";
 
+const RAILWAY = "https://culturix-trend-collector-production.up.railway.app";
+
 async function fetchDigest(userId: string): Promise<Digest | null> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
   try {
     const res = await fetch(`${apiUrl}/api/digest/${userId}`, {
       cache: "no-store",
@@ -24,7 +26,7 @@ export default async function DashboardPage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/signup");
 
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
 
   // Check approval status (skip for superadmin)
   const isSuperAdmin = user.email === "umer.ali79@gmail.com";
@@ -131,10 +133,13 @@ export default async function DashboardPage() {
             {/* Content ideas */}
             {digest.content_ideas && digest.content_ideas.length > 0 && (
               <section>
-                <h2 className="text-base font-semibold text-gray-900 mb-4">
-                  Your 10 content ideas for today
-                </h2>
-                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-base font-semibold text-gray-900">
+                    {digest.content_ideas.length} posting proposals for today
+                  </h2>
+                  <span className="text-xs text-gray-400">Click any field or &ldquo;Copy full post&rdquo; to copy</span>
+                </div>
+                <div className="grid sm:grid-cols-2 gap-4">
                   {digest.content_ideas.map((idea, i) => (
                     <DigestCard key={i} idea={idea} index={i} />
                   ))}

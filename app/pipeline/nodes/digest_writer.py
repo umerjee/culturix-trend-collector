@@ -6,12 +6,14 @@ import logging
 import os
 import uuid
 from datetime import date
+from typing import Optional
 from app.pipeline.state import PipelineState
 
 logger = logging.getLogger("culturix.pipeline.digest_writer")
 
 
-def _save_to_db(user_id: str, clusters: list[dict], ideas: list[dict]) -> str:
+def _save_to_db(user_id: str, clusters: list, ideas: list,
+                content_profile_id: Optional[str] = None) -> str:
     from app.db import SessionLocal
     import sqlalchemy as sa
 
@@ -19,13 +21,15 @@ def _save_to_db(user_id: str, clusters: list[dict], ideas: list[dict]) -> str:
     try:
         result = session.execute(
             sa.text("""
-                INSERT INTO generated_content (id, user_id, trend_date, clusters, content_ideas, delivered)
-                VALUES (:id, :user_id, :trend_date, :clusters, :ideas, FALSE)
+                INSERT INTO generated_content
+                    (id, user_id, content_profile_id, trend_date, clusters, content_ideas, delivered)
+                VALUES (:id, :user_id, :profile_id, :trend_date, :clusters, :ideas, FALSE)
                 RETURNING id
             """),
             {
                 "id": str(uuid.uuid4()),
                 "user_id": user_id,
+                "profile_id": content_profile_id,
                 "trend_date": date.today().isoformat(),
                 "clusters": json.dumps(clusters),
                 "ideas": json.dumps(ideas),
@@ -42,7 +46,7 @@ def _save_to_db(user_id: str, clusters: list[dict], ideas: list[dict]) -> str:
         session.close()
 
 
-def _get_user_email(user_id: str) -> str | None:
+def _get_user_email(user_id: str) -> Optional[str]:
     from app.db import SessionLocal
     import sqlalchemy as sa
 
@@ -132,7 +136,8 @@ def write_digests(state: PipelineState) -> PipelineState:
         clusters = item.get("clusters", [])
 
         # Save to DB
-        digest_id = _save_to_db(user_id, clusters, ideas)
+        content_profile_id = item.get("content_profile_id")
+        digest_id = _save_to_db(user_id, clusters, ideas, content_profile_id)
         if digest_id:
             logger.info("Saved digest %s for user %s", digest_id, user_id)
 
