@@ -28,17 +28,19 @@ export default async function DashboardPage() {
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
 
-  // Check approval status (skip for superadmin)
+  // One call for both approval gate and plan tier
   const isSuperAdmin = user.email === "umer.ali79@gmail.com";
+  let plan: "free" | "pro" = "free";
   if (!isSuperAdmin) {
     try {
       const approvalRes = await fetch(`${apiUrl}/api/users/${user.id}/approved`, { cache: "no-store" });
       if (approvalRes.ok) {
-        const { approved } = await approvalRes.json();
-        if (!approved) redirect("/pending");
+        const info = await approvalRes.json();
+        if (!info.approved) redirect("/pending");
+        if (info.plan === "pro") plan = "pro";
       }
     } catch {
-      // If Railway is unreachable, let them through rather than blocking everyone
+      // Railway unreachable — let user through rather than hard-blocking
     }
   }
 
@@ -141,7 +143,7 @@ export default async function DashboardPage() {
                 </div>
                 <div className="grid sm:grid-cols-2 gap-4">
                   {digest.content_ideas.map((idea, i) => (
-                    <DigestCard key={i} idea={idea} index={i} />
+                    <DigestCard key={i} idea={idea} index={i} contentId={digest.id} plan={plan} />
                   ))}
                 </div>
               </section>

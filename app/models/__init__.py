@@ -4,3 +4,4 @@ from .trendpersona import TrendPersona
 from .cluster import Cluster
 from .user_profile import UserProfile
 from .generated_content import GeneratedContent
+from .generated_media import GeneratedMedia

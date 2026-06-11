@@ -40,7 +40,7 @@ def _generate_ideas_claude(profile: dict, clusters: list[dict]) -> list[dict]:
     prompt = _build_prompt(profile, clusters)
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=2000,
+        max_tokens=2500,
         messages=[{"role": "user", "content": prompt}],
     )
     return _parse_ideas(message.content[0].text)
@@ -84,6 +84,7 @@ Return ONLY a valid JSON array with exactly 10 objects. Each object must have th
 - platform: best platform for this specific idea
 - trend_connection: which trend this taps into and why it works (max 20 words)
 - format: content format (e.g. "short video", "carousel", "talking head", "GRWM", "duet")
+- video_prompt: cinematic scene description for AI video generation — subject, setting, camera movement, lighting, visual style (max 40 words)
 
 Return ONLY the JSON array, no other text."""
 

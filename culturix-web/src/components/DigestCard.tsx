@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Music, Target, Megaphone, Copy, Check, Film } from "lucide-react";
+import { Music, Target, Megaphone, Copy, Check, Film, Mic, Video } from "lucide-react";
 import type { ContentIdea } from "@/lib/types";
+import MediaPreview from "@/components/MediaPreview";
 
 const PLATFORM_COLORS: Record<string, string> = {
   TikTok: "bg-pink-100 text-pink-700",
@@ -16,7 +17,11 @@ const PLATFORM_COLORS: Record<string, string> = {
 interface Props {
   idea: ContentIdea;
   index: number;
+  contentId: string;
+  plan: "free" | "pro";
 }
+
+type MediaType = "voiceover" | "music" | "video";
 
 function CopyBtn({ text, label }: { text: string; label: string }) {
   const [done, setDone] = useState(false);
@@ -36,14 +41,16 @@ function CopyBtn({ text, label }: { text: string; label: string }) {
   );
 }
 
-export default function DigestCard({ idea, index }: Props) {
+export default function DigestCard({ idea, index, contentId, plan }: Props) {
   const [postCopied, setPostCopied] = useState(false);
+  const [activeMedia, setActiveMedia] = useState<Set<MediaType>>(new Set());
+  const [generating, setGenerating] = useState<Set<MediaType>>(new Set());
+
   const platformColor = PLATFORM_COLORS[idea.platform] ?? "bg-gray-100 text-gray-700";
+  const isPro = plan === "pro";
 
   const fullPost = [idea.hook, "", idea.caption, "", idea.cta ? `👉 ${idea.cta}` : ""]
-    .filter(l => l !== undefined)
-    .join("\n")
-    .trim();
+    .join("\n").trim();
 
   const copyPost = () => {
     navigator.clipboard.writeText(fullPost).catch(() => {});
@@ -51,9 +58,41 @@ export default function DigestCard({ idea, index }: Props) {
     setTimeout(() => setPostCopied(false), 2000);
   };
 
+  async function generateMedia(mt: MediaType) {
+    if (!isPro || generating.has(mt)) return;
+    setGenerating(prev => new Set(prev).add(mt));
+    setActiveMedia(prev => new Set(prev).add(mt));
+
+    const prompts: Record<string, string> = {
+      voiceover: idea.hook,
+      music: idea.music_mood || "Upbeat trending pop",
+      video: idea.video_prompt || idea.hook,
+    };
+
+    try {
+      await fetch("/api/generate-media", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content_id: contentId,
+          idea_index: index,
+          media_types: [mt],
+          prompts,
+        }),
+      });
+    } catch {}
+    setGenerating(prev => { const s = new Set(prev); s.delete(mt); return s; });
+  }
+
+  const MEDIA_BTNS: { type: MediaType; label: string; icon: React.ReactNode }[] = [
+    { type: "voiceover", label: "Voiceover", icon: <Mic className="h-3.5 w-3.5" /> },
+    { type: "music",     label: "Music",     icon: <Music className="h-3.5 w-3.5" /> },
+    { type: "video",     label: "Video",     icon: <Video className="h-3.5 w-3.5" /> },
+  ];
+
   return (
     <div className="rounded-2xl border border-gray-100 bg-white p-5 flex flex-col gap-4 hover:shadow-md transition-shadow">
-      {/* Header row */}
+      {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-bold text-gray-300">#{String(index + 1).padStart(2, "0")}</span>
         <div className="flex items-center gap-1.5 flex-wrap justify-end">
@@ -81,7 +120,7 @@ export default function DigestCard({ idea, index }: Props) {
         <CopyBtn text={idea.caption} label="caption" />
       </div>
 
-      {/* Meta row */}
+      {/* Meta */}
       <div className="space-y-2 border-t border-gray-50 pt-3">
         <div className="flex items-start gap-2">
           <Megaphone className="h-3.5 w-3.5 text-blue-500 mt-0.5 shrink-0" />
@@ -100,6 +139,45 @@ export default function DigestCard({ idea, index }: Props) {
             <p className="text-xs text-gray-500">{idea.trend_connection}</p>
           </div>
         )}
+      </div>
+
+      {/* Media generation buttons */}
+      <div className="border-t border-gray-50 pt-3 space-y-2">
+        <div className="flex gap-2">
+          {MEDIA_BTNS.map(({ type, label, icon }) => {
+            const isActive = activeMedia.has(type);
+            const isBusy = generating.has(type);
+            return (
+              <button
+                key={type}
+                onClick={() => generateMedia(type)}
+                disabled={!isPro || isBusy}
+                title={!isPro ? "Upgrade to Pro to generate media" : `Generate ${label}`}
+                className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg border py-1.5 text-xs font-medium transition-all
+                  ${isActive ? "border-blue-200 bg-blue-50 text-blue-600" : "border-gray-200 text-gray-500"}
+                  ${!isPro ? "opacity-40 cursor-not-allowed" : "hover:border-blue-300 hover:text-blue-600 cursor-pointer"}
+                `}
+              >
+                {icon}
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        {!isPro && (
+          <p className="text-xs text-center text-gray-400">
+            <span className="font-medium text-indigo-500">Pro</span> — unlock voiceover, music & video generation
+          </p>
+        )}
+        {/* Media preview players (one per active type) */}
+        {Array.from(activeMedia).map(mt => (
+          <MediaPreview
+            key={mt}
+            contentId={contentId}
+            ideaIndex={index}
+            mediaType={mt}
+          />
+        ))}
       </div>
 
       {/* Copy full post */}

@@ -1,8 +1,8 @@
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional
-from fastapi import FastAPI, HTTPException
+from typing import Optional, List
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 
 logging.basicConfig(level=logging.INFO)
 
@@ -18,6 +18,7 @@ async def lifespan(_):
     from app.models.user_profile import UserProfile             # noqa: F401
     from app.models.generated_content import GeneratedContent   # noqa: F401
     from app.models.content_profile import ContentProfile       # noqa: F401
+    from app.models.generated_media import GeneratedMedia       # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent)
@@ -28,6 +29,8 @@ async def lifespan(_):
             "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
             "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS plan VARCHAR(20) NOT NULL DEFAULT 'free'",
             "ALTER TABLE generated_content ADD COLUMN IF NOT EXISTS content_profile_id UUID",
+            # generated_media table is created by create_all above; index added here in case of race
+            "CREATE INDEX IF NOT EXISTS idx_generated_media_content ON generated_media(generated_content_id, idea_index)",
         ]:
             _conn.execute(_text(_stmt))
         # Grandfather all users who existed before the approval gate was added
@@ -642,6 +645,137 @@ def trigger_generation(body: dict):
     t = threading.Thread(target=_run, daemon=True)
     t.start()
     return {"status": "pipeline_started", "user_id": user_id}
+
+
+@app.post("/api/generate-media")
+def request_generate_media(body: dict, background_tasks: BackgroundTasks):
+    """
+    Body: {
+      content_id: str,
+      idea_index: int,
+      user_id: str,
+      media_types: ["voiceover", "music", "video"],   # subset allowed
+      prompts: { voiceover: str, music: str, video: str }
+    }
+    Inserts generated_media rows (status=pending) and queues background generation.
+    Returns immediately with the created row IDs.
+    """
+    from app.db import SessionLocal
+    from app.models.generated_media import GeneratedMedia
+    from app.models.user_profile import UserProfile
+    from app.media.service import run_generation
+    import uuid as _uuid
+
+    content_id = body.get("content_id")
+    idea_index = body.get("idea_index")
+    user_id = body.get("user_id")
+    media_types: List[str] = body.get("media_types", [])
+    prompts: dict = body.get("prompts", {})
+
+    if not content_id or idea_index is None or not user_id or not media_types:
+        raise HTTPException(status_code=400, detail="content_id, idea_index, user_id, media_types required")
+
+    VALID = {"voiceover", "music", "video"}
+    media_types = [m for m in media_types if m in VALID]
+    if not media_types:
+        raise HTTPException(status_code=400, detail="No valid media_types (voiceover|music|video)")
+
+    # Plan-tier gating: free users cannot generate media
+    session = SessionLocal()
+    try:
+        profile = session.query(UserProfile).filter_by(user_id=_uuid.UUID(user_id)).first()
+        plan = (profile.plan or "free") if profile else "free"
+        if plan == "free":
+            raise HTTPException(status_code=403, detail="Media generation is a Pro feature. Upgrade to generate voiceovers, music, and video.")
+
+        # Check monthly quota (pro: 50 generations/month)
+        from sqlalchemy import text as _text
+        month_count = session.execute(_text("""
+            SELECT COUNT(*) FROM generated_media gm
+            JOIN generated_content gc ON gc.id = gm.generated_content_id
+            WHERE gc.user_id = :uid
+              AND gm.created_at >= date_trunc('month', now())
+        """), {"uid": _uuid.UUID(user_id)}).scalar() or 0
+        quota = 50
+        if month_count + len(media_types) > quota:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Monthly media quota reached ({quota} generations). Resets on the 1st."
+            )
+    finally:
+        session.close()
+
+    _PROVIDER_MAP = {"voiceover": "elevenlabs", "music": "suno", "video": "kling"}
+    created_ids = []
+    session2 = SessionLocal()
+    try:
+        for mt in media_types:
+            prompt_text = prompts.get(mt, "")
+            row = GeneratedMedia(
+                generated_content_id=_uuid.UUID(content_id),
+                idea_index=idea_index,
+                media_type=mt,
+                provider=_PROVIDER_MAP[mt],
+                status="pending",
+                prompt=prompt_text,
+            )
+            session2.add(row)
+            session2.flush()
+            created_ids.append(str(row.id))
+            background_tasks.add_task(
+                run_generation,
+                row_id=str(row.id),
+                media_type=mt,
+                prompt=prompt_text,
+                user_id=user_id,
+                content_id=content_id,
+                idea_index=idea_index,
+            )
+        session2.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        session2.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session2.close()
+
+    return {"status": "queued", "media_ids": created_ids}
+
+
+@app.get("/api/generate-media/{generated_content_id}")
+def list_generated_media(generated_content_id: str, idea_index: Optional[int] = None):
+    """Poll endpoint — returns all generated_media rows for a content digest."""
+    from app.db import SessionLocal
+    from app.models.generated_media import GeneratedMedia
+    import uuid as _uuid
+
+    session = SessionLocal()
+    try:
+        q = session.query(GeneratedMedia).filter_by(
+            generated_content_id=_uuid.UUID(generated_content_id)
+        )
+        if idea_index is not None:
+            q = q.filter_by(idea_index=idea_index)
+        rows = q.order_by(GeneratedMedia.created_at.desc()).all()
+        return [
+            {
+                "id": str(r.id),
+                "idea_index": r.idea_index,
+                "media_type": r.media_type,
+                "provider": r.provider,
+                "status": r.status,
+                "asset_url": r.asset_url,
+                "duration_seconds": float(r.duration_seconds) if r.duration_seconds else None,
+                "cost_usd": float(r.cost_usd) if r.cost_usd else None,
+                "error": r.error,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+            }
+            for r in rows
+        ]
+    finally:
+        session.close()
 
 
 @app.post("/api/webhooks/delivery")

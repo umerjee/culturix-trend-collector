@@ -40,6 +40,21 @@ export interface ContentIdea {
   platform: string;
   trend_connection: string;
   format?: string;
+  video_prompt?: string;
+}
+
+export interface GeneratedMedia {
+  id: string;
+  idea_index: number;
+  media_type: "voiceover" | "music" | "video";
+  provider: string;
+  status: "pending" | "processing" | "done" | "failed";
+  asset_url: string | null;
+  duration_seconds: number | null;
+  cost_usd: number | null;
+  error: string | null;
+  created_at: string | null;
+  completed_at: string | null;
 }
 
 export interface TrendSignal {
