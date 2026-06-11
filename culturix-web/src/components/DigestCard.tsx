@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Music, Target, Megaphone, Copy, Check, Film, Mic, Video } from "lucide-react";
 import type { ContentIdea } from "@/lib/types";
 import MediaPreview from "@/components/MediaPreview";
@@ -84,7 +84,7 @@ export default function DigestCard({ idea, index, contentId, plan }: Props) {
     setGenerating(prev => { const s = new Set(prev); s.delete(mt); return s; });
   }
 
-  const MEDIA_BTNS: { type: MediaType; label: string; icon: React.ReactNode }[] = [
+  const MEDIA_BTNS: { type: MediaType; label: string; icon: ReactNode }[] = [
     { type: "voiceover", label: "Voiceover", icon: <Mic className="h-3.5 w-3.5" /> },
     { type: "music",     label: "Music",     icon: <Music className="h-3.5 w-3.5" /> },
     { type: "video",     label: "Video",     icon: <Video className="h-3.5 w-3.5" /> },
