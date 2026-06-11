@@ -76,6 +76,7 @@ export interface ClusterSummary {
 export interface Digest {
   id: string;
   user_id: string;
+  content_profile_id?: string | null;
   generated_at: string;
   trend_date: string;
   clusters: ClusterSummary[];

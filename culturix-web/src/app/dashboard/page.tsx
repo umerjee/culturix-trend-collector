@@ -1,16 +1,19 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { RefreshCw, Settings, Zap, TrendingUp, Inbox, ShieldCheck } from "lucide-react";
+import { RefreshCw, Settings, Zap, TrendingUp, Inbox, ShieldCheck, LayoutList } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import DigestCard from "@/components/DigestCard";
-import type { Digest } from "@/lib/types";
+import type { Digest, ContentProfile } from "@/lib/types";
 
 const RAILWAY = "https://culturix-trend-collector-production.up.railway.app";
 
-async function fetchDigest(userId: string): Promise<Digest | null> {
+async function fetchDigest(userId: string, profileId?: string): Promise<Digest | null> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
   try {
-    const res = await fetch(`${apiUrl}/api/digest/${userId}`, {
+    const url = profileId
+      ? `${apiUrl}/api/digest/${userId}?profile_id=${profileId}`
+      : `${apiUrl}/api/digest/${userId}`;
+    const res = await fetch(url, {
       cache: "no-store",
       headers: { "x-internal-token": process.env.INTERNAL_API_TOKEN ?? "" },
     });
@@ -21,14 +24,29 @@ async function fetchDigest(userId: string): Promise<Digest | null> {
   }
 }
 
-export default async function DashboardPage() {
+async function fetchProfiles(userId: string): Promise<ContentProfile[]> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
+  try {
+    const res = await fetch(`${apiUrl}/users/${userId}/content-profiles`, { cache: "no-store" });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: { profile?: string };
+}) {
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/signup");
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
 
-  // One call for both approval gate and plan tier
   const isSuperAdmin = user.email === "umer.ali79@gmail.com";
   let plan: "free" | "pro" = isSuperAdmin ? "pro" : "free";
   if (!isSuperAdmin) {
@@ -44,7 +62,12 @@ export default async function DashboardPage() {
     }
   }
 
-  const digest = await fetchDigest(user.id);
+  const [profiles, digest] = await Promise.all([
+    fetchProfiles(user.id),
+    fetchDigest(user.id, searchParams.profile),
+  ]);
+
+  const activeProfile = profiles.find((p) => p.id === searchParams.profile) ?? profiles[0] ?? null;
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 
   return (
@@ -58,6 +81,9 @@ export default async function DashboardPage() {
           </div>
           <div className="flex items-center gap-3">
             <form action="/api/generate" method="POST">
+              {searchParams.profile && (
+                <input type="hidden" name="profile_id" value={searchParams.profile} />
+              )}
               <button
                 type="submit"
                 className="inline-flex items-center gap-2 text-sm font-medium text-gray-600 border border-gray-200 rounded-lg px-3 py-2 hover:bg-gray-50 transition-colors"
@@ -85,7 +111,7 @@ export default async function DashboardPage() {
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         {/* Header */}
-        <div className="mb-8">
+        <div className="mb-6">
           <p className="text-sm text-gray-500 mb-1">{today}</p>
           <h1 className="text-2xl font-bold text-gray-900">Your daily content brief</h1>
           {digest?.generated_at && (
@@ -94,6 +120,36 @@ export default async function DashboardPage() {
             </p>
           )}
         </div>
+
+        {/* Profile tabs */}
+        {profiles.length > 0 && (
+          <div className="mb-6 flex items-center gap-2 overflow-x-auto pb-1">
+            <LayoutList className="h-4 w-4 text-gray-400 shrink-0" />
+            {profiles.map((p) => {
+              const isActive = searchParams.profile
+                ? p.id === searchParams.profile
+                : p.id === profiles[0]?.id;
+              return (
+                <Link
+                  key={p.id}
+                  href={`/dashboard?profile=${p.id}`}
+                  className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                    isActive
+                      ? "bg-blue-600 text-white"
+                      : "bg-white border border-gray-200 text-gray-600 hover:border-blue-300 hover:text-blue-600"
+                  }`}
+                >
+                  {p.name}
+                </Link>
+              );
+            })}
+            {activeProfile && (
+              <span className="text-xs text-gray-400 ml-1 shrink-0">
+                · {activeProfile.industry_niche}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* No data state */}
         {!digest && (
