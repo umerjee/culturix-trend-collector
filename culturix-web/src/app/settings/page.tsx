@@ -80,12 +80,16 @@ export default function SettingsPage() {
           }
         }
 
-        // Load plan info
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "https://culturix-trend-collector-production.up.railway.app";
-        const approvalRes = await fetch(`${apiUrl}/api/users/${user.id}/approved`, { cache: "no-store" });
-        if (approvalRes.ok) {
-          const info = await approvalRes.json();
-          if (info.plan) setPlan(info.plan);
+        // Load plan info — superadmin is always pro
+        if (user.email === "umer.ali79@gmail.com") {
+          setPlan("pro");
+        } else {
+          const apiUrl = process.env.NEXT_PUBLIC_API_URL || "https://culturix-trend-collector-production.up.railway.app";
+          const approvalRes = await fetch(`${apiUrl}/api/users/${user.id}/approved`, { cache: "no-store" });
+          if (approvalRes.ok) {
+            const info = await approvalRes.json();
+            if (info.plan) setPlan(info.plan);
+          }
         }
       } catch {}
       setLoading(false);

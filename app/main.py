@@ -1142,15 +1142,17 @@ def create_content_profile(user_id: str, body: dict):
     session = SessionLocal()
     try:
         uid = _uuid.UUID(user_id)
-        user = session.query(UserProfile).filter_by(user_id=uid).first()
-        plan = (user.plan or "free") if user else "free"
-        limit = PLAN_PROFILE_LIMITS.get(plan, 1)
-        existing = session.query(ContentProfile).filter_by(user_id=uid).count()
-        if existing >= limit:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Your {plan} plan allows {limit} content profile(s). Upgrade to add more."
-            )
+        _superadmin_id = os.getenv("SUPERADMIN_USER_ID", "")
+        if user_id != _superadmin_id:
+            user = session.query(UserProfile).filter_by(user_id=uid).first()
+            plan = (user.plan or "free") if user else "free"
+            limit = PLAN_PROFILE_LIMITS.get(plan, 1)
+            existing = session.query(ContentProfile).filter_by(user_id=uid).count()
+            if existing >= limit:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Your {plan} plan allows {limit} content profile(s). Upgrade to add more."
+                )
         cp = ContentProfile(
             user_id=uid,
             name=body.get("name", "New Profile"),
