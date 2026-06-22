@@ -50,45 +50,59 @@ def fetch_twitter_trending_via_proxy(region="US"):
         return []
 
 
-def store_twitter_trends_via_proxy(region="US"):
-    """
-    Store Twitter trends fetched via Jina proxy fallback.
-    """
+TWITTER_REGIONS = ["us", "uk", "india", "japan", "global"]
+
+
+def store_twitter_trends_via_proxy(region="us"):
+    """Fetch Twitter trends for multiple regions to surface non-US viral signals."""
+    regions = TWITTER_REGIONS if region in ("us", "global") else [region]
     session = SessionLocal()
-    try:
-        items = fetch_twitter_trending_via_proxy(region)
-    except Exception:
-        session.close()
-        return 0
-
     inserted = 0
-    for name in items:
-        # Skip if already stored
-        exists = session.query(Trend).filter_by(platform="twitter", external_id=name).first()
-        if exists:
-            continue
 
-        lang = detect_language(name)
-        translated = translate_to_english_if_needed(name, lang)
+    try:
+        seen_in_run: set[str] = set()
+        for r in regions:
+            try:
+                items = fetch_twitter_trending_via_proxy(r)
+            except Exception:
+                continue
 
-        trend = Trend(
-            platform="twitter",
-            external_id=name,
-            url=f"https://twitter.com/search?q={name.replace('#','')}",
-            title=name,
-            content=name,
-            translated_content=translated,
-            language=lang,
-            author=None,
-            likes=None,
-            comments=None,
-            posted_at=datetime.utcnow(),
-            raw_json={"source": "trends24.in via jina.ai proxy"},
-        )
+            for name in items:
+                # Deduplicate within this run (same trend may trend in multiple regions)
+                key = name.lower().strip()
+                if key in seen_in_run:
+                    continue
+                seen_in_run.add(key)
 
-        session.add(trend)
-        inserted += 1
+                exists = session.query(Trend).filter_by(platform="twitter", external_id=name).first()
+                if exists:
+                    continue
 
-    session.commit()
-    session.close()
+                lang = detect_language(name)
+                translated = translate_to_english_if_needed(name, lang)
+
+                trend = Trend(
+                    platform="twitter",
+                    external_id=name,
+                    url=f"https://twitter.com/search?q={name.replace('#', '')}",
+                    title=name,
+                    content=name,
+                    translated_content=translated,
+                    language=lang,
+                    author=None,
+                    likes=None,
+                    comments=None,
+                    posted_at=datetime.utcnow(),
+                    raw_json={"source": "trends24.in via jina.ai proxy", "region": r},
+                )
+                session.add(trend)
+                inserted += 1
+
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
     return inserted

@@ -78,40 +78,51 @@ def fetch_youtube_trending(region="US", limit=30):
             return []
 
 
-def store_youtube_trends(region="US", limit=30):
+YOUTUBE_REGIONS = ["US", "GB", "IN", "CA", "AU", "FR", "DE", "BR", "JP", "KR"]
+
+
+def store_youtube_trends(region="US", limit=50):
+    """Fetch trending videos across multiple regions to maximise unique signal coverage."""
+    regions = YOUTUBE_REGIONS if region == "US" else [region]
     session = SessionLocal()
+    inserted = 0
     try:
-        items = fetch_youtube_trending(region, limit)
-        inserted = 0
-        for item in items:
-            exists = session.query(Trend).filter_by(
-                platform="youtube", external_id=item["id"]
-            ).first()
-            if exists:
-                continue
+        seen_in_run: set[str] = set()
+        for r in regions:
+            items = fetch_youtube_trending(r, limit)
+            for item in items:
+                if item["id"] in seen_in_run:
+                    continue
+                seen_in_run.add(item["id"])
 
-            snippet = item["snippet"]
-            stats = item.get("statistics", {})
-            content = snippet.get("description") or ""
-            lang = detect_language(content)
-            translated = translate_to_english_if_needed(content, lang)
+                exists = session.query(Trend).filter_by(
+                    platform="youtube", external_id=item["id"]
+                ).first()
+                if exists:
+                    continue
 
-            trend = Trend(
-                platform="youtube",
-                external_id=item["id"],
-                url=f"https://www.youtube.com/watch?v={item['id']}",
-                title=snippet.get("title"),
-                content=content,
-                translated_content=translated,
-                language=lang,
-                author=snippet.get("channelTitle"),
-                likes=stats.get("likeCount"),
-                comments=stats.get("commentCount"),
-                posted_at=datetime.strptime(snippet["publishedAt"], "%Y-%m-%dT%H:%M:%SZ"),
-                raw_json=item,
-            )
-            session.add(trend)
-            inserted += 1
+                snippet = item["snippet"]
+                stats = item.get("statistics", {})
+                content = snippet.get("description") or ""
+                lang = detect_language(content)
+                translated = translate_to_english_if_needed(content, lang)
+
+                trend = Trend(
+                    platform="youtube",
+                    external_id=item["id"],
+                    url=f"https://www.youtube.com/watch?v={item['id']}",
+                    title=snippet.get("title"),
+                    content=content,
+                    translated_content=translated,
+                    language=lang,
+                    author=snippet.get("channelTitle"),
+                    likes=stats.get("likeCount"),
+                    comments=stats.get("commentCount"),
+                    posted_at=datetime.strptime(snippet["publishedAt"], "%Y-%m-%dT%H:%M:%SZ"),
+                    raw_json=item,
+                )
+                session.add(trend)
+                inserted += 1
 
         session.commit()
         return inserted
