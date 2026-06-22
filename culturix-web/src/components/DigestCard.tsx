@@ -45,6 +45,7 @@ export default function DigestCard({ idea, index, contentId, plan }: Props) {
   const [postCopied, setPostCopied] = useState(false);
   const [activeMedia, setActiveMedia] = useState<Set<MediaType>>(new Set());
   const [generating, setGenerating] = useState<Set<MediaType>>(new Set());
+  const [mediaError, setMediaError] = useState<string | null>(null);
 
   const platformColor = PLATFORM_COLORS[idea.platform] ?? "bg-gray-100 text-gray-700";
   const isPro = plan === "pro";
@@ -60,8 +61,8 @@ export default function DigestCard({ idea, index, contentId, plan }: Props) {
 
   async function generateMedia(mt: MediaType) {
     if (!isPro || generating.has(mt)) return;
+    setMediaError(null);
     setGenerating(prev => new Set(prev).add(mt));
-    setActiveMedia(prev => new Set(prev).add(mt));
 
     const prompts: Record<string, string> = {
       voiceover: idea.hook,
@@ -70,7 +71,7 @@ export default function DigestCard({ idea, index, contentId, plan }: Props) {
     };
 
     try {
-      await fetch("/api/generate-media", {
+      const res = await fetch("/api/generate-media", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -80,7 +81,16 @@ export default function DigestCard({ idea, index, contentId, plan }: Props) {
           prompts,
         }),
       });
-    } catch {}
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setMediaError(err.detail ?? `Error ${res.status}`);
+        setGenerating(prev => { const s = new Set(prev); s.delete(mt); return s; });
+        return;
+      }
+      setActiveMedia(prev => new Set(prev).add(mt));
+    } catch (e) {
+      setMediaError("Network error — check your connection");
+    }
     setGenerating(prev => { const s = new Set(prev); s.delete(mt); return s; });
   }
 
@@ -168,6 +178,9 @@ export default function DigestCard({ idea, index, contentId, plan }: Props) {
           <p className="text-xs text-center text-gray-400">
             <span className="font-medium text-indigo-500">Pro</span> — unlock voiceover, music & video generation
           </p>
+        )}
+        {mediaError && (
+          <p className="text-xs text-red-500 text-center">{mediaError}</p>
         )}
         {/* Media preview players (one per active type) */}
         {Array.from(activeMedia).map(mt => (

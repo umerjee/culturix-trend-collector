@@ -28,6 +28,14 @@ Thumbs.db
 dashboard/node_modules/
 dashboard/.next/
 
+# Node / culturix-web
+culturix-web/node_modules/
+culturix-web/.next/
+culturix-web/tsconfig.tsbuildinfo
+
+# Claude Code memory
+.claude/
+
 # Debug / scratch files
 debug_*.py
 print_*.py
