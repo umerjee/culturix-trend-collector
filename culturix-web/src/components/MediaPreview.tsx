@@ -46,7 +46,12 @@ export default function MediaPreview({ contentId, ideaIndex, mediaType, onDone }
     };
   }, [contentId, ideaIndex, mediaType]);
 
-  if (!media) return null;
+  if (!media) return (
+    <div className="flex items-center gap-2 text-xs text-gray-400 mt-1">
+      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      Queued…
+    </div>
+  );
 
   if (media.status === "pending" || media.status === "processing") {
     return (

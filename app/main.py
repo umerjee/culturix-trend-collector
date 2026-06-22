@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -700,29 +701,50 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=400, detail="No valid media_types (voiceover|music|video)")
 
     # Plan-tier gating: free users cannot generate media
-    session = SessionLocal()
-    try:
-        profile = session.query(UserProfile).filter_by(user_id=_uuid.UUID(user_id)).first()
-        plan = (profile.plan or "free") if profile else "free"
-        if plan == "free":
-            raise HTTPException(status_code=403, detail="Media generation is a Pro feature. Upgrade to generate voiceovers, music, and video.")
+    # Superadmin (SUPERADMIN_USER_ID env var) always bypasses this check
+    _superadmin_id = os.getenv("SUPERADMIN_USER_ID", "")
+    if user_id != _superadmin_id:
+        session = SessionLocal()
+        try:
+            profile = session.query(UserProfile).filter_by(user_id=_uuid.UUID(user_id)).first()
+            plan = (profile.plan or "free") if profile else "free"
+            if plan == "free":
+                raise HTTPException(status_code=403, detail="Media generation is a Pro feature. Upgrade to generate voiceovers, music, and video.")
 
-        # Check monthly quota (pro: 50 generations/month)
-        from sqlalchemy import text as _text
-        month_count = session.execute(_text("""
-            SELECT COUNT(*) FROM generated_media gm
-            JOIN generated_content gc ON gc.id = gm.generated_content_id
-            WHERE gc.user_id = :uid
-              AND gm.created_at >= date_trunc('month', now())
-        """), {"uid": _uuid.UUID(user_id)}).scalar() or 0
-        quota = 50
-        if month_count + len(media_types) > quota:
-            raise HTTPException(
-                status_code=429,
-                detail=f"Monthly media quota reached ({quota} generations). Resets on the 1st."
-            )
-    finally:
-        session.close()
+            # Check monthly quota (pro: 50 generations/month)
+            from sqlalchemy import text as _text
+            month_count = session.execute(_text("""
+                SELECT COUNT(*) FROM generated_media gm
+                JOIN generated_content gc ON gc.id = gm.generated_content_id
+                WHERE gc.user_id = :uid
+                  AND gm.created_at >= date_trunc('month', now())
+            """), {"uid": _uuid.UUID(user_id)}).scalar() or 0
+            quota = 50
+            if month_count + len(media_types) > quota:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Monthly media quota reached ({quota} generations). Resets on the 1st."
+                )
+        finally:
+            session.close()
+
+    # Pre-flight: ensure API keys are configured before wasting a DB row on a doomed job
+    _KEY_CHECK = {
+        "voiceover": ("ELEVENLABS_API_KEY", "ElevenLabs"),
+        "music":     ("SUNO_API_KEY",       "Suno"),
+        "video":     ("KLING_ACCESS_KEY",   "Kling"),
+    }
+    missing_keys = [
+        f"{mt} ({name}): add {env_var} to Railway env vars"
+        for mt in media_types
+        for env_var, name in [_KEY_CHECK[mt]]
+        if not os.getenv(env_var)
+    ]
+    if missing_keys:
+        raise HTTPException(
+            status_code=503,
+            detail="Media provider not configured — " + "; ".join(missing_keys)
+        )
 
     _PROVIDER_MAP = {"voiceover": "elevenlabs", "music": "suno", "video": "kling"}
     created_ids = []

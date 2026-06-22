@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { Music, Target, Megaphone, Copy, Check, Film, Mic, Video } from "lucide-react";
+import { Music, Target, Megaphone, Copy, Check, Film, Mic, Video, Loader2 } from "lucide-react";
 import type { ContentIdea } from "@/lib/types";
 import MediaPreview from "@/components/MediaPreview";
 
@@ -168,8 +168,8 @@ export default function DigestCard({ idea, index, contentId, plan }: Props) {
                   ${!isPro ? "opacity-40 cursor-not-allowed" : "hover:border-blue-300 hover:text-blue-600 cursor-pointer"}
                 `}
               >
-                {icon}
-                {label}
+                {isBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : icon}
+                {isBusy ? "Generating…" : label}
               </button>
             );
           })}
