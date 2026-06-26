@@ -1,3 +1,5 @@
 {
-  "rootDirectory": "culturix-web"
+  "buildCommand": "cd culturix-web && npm install && npm run build",
+  "outputDirectory": "culturix-web/.next",
+  "installCommand": "echo 'dependencies installed in buildCommand'"
 }
