@@ -121,6 +121,23 @@ export default async function DashboardPage({
           )}
         </div>
 
+        {/* Quick stats */}
+        {digest && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+            {[
+              { val: String(digest.content_ideas?.length ?? 0), label: "ideas ready" },
+              { val: String(digest.clusters?.length ?? 0), label: "trend clusters" },
+              { val: activeProfile?.target_platforms?.length ? String(activeProfile.target_platforms.length) : "5", label: "platforms" },
+              { val: activeProfile?.industry_niche ? activeProfile.industry_niche.split(" ").slice(0, 2).join(" ") : "All niches", label: "niche" },
+            ].map((s) => (
+              <div key={s.label} className="rounded-xl bg-white border border-gray-100 px-4 py-3">
+                <p className="text-xl font-bold text-indigo-600 leading-none">{s.val}</p>
+                <p className="text-xs text-gray-400 mt-1">{s.label}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Profile tabs */}
         {profiles.length > 0 && (
           <div className="mb-6 flex items-center gap-2 overflow-x-auto pb-1">

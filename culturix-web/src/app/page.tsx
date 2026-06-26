@@ -1,57 +1,109 @@
 import Link from "next/link";
-import { TrendingUp, Zap, Users, Mail, ArrowRight, CheckCircle } from "lucide-react";
+import {
+  Zap, ArrowRight, CheckCircle, TrendingUp, Sparkles, Video,
+  Clock, Target, Megaphone, Music, Film,
+} from "lucide-react";
 
-const features = [
+const MOCK_IDEAS = [
   {
-    icon: TrendingUp,
-    title: "5-Platform Signal Capture",
-    description:
-      "We monitor TikTok, YouTube Shorts, X/Twitter, Xiaohongshu, and Reddit simultaneously — so you never miss an emerging cultural moment.",
+    platform: "TikTok",
+    platformColor: "bg-pink-100 text-pink-700",
+    format: "talking head",
+    viral_angle: "hot take",
+    viralColor: "bg-orange-50 text-orange-600 border-orange-200",
+    hook: "Nobody's talking about why quiet luxury is actually dying",
+    caption: "The aesthetic economy shifted overnight and most creators missed it. Here's what's actually dominating feeds right now — and how to get ahead of it before everyone else catches on. This is your 30-second cultural brief.",
+    cta: "Save this and post by Thursday",
+    posting_time: "Thursday 6–8 PM EST",
+    hashtags: ["#quietluxury", "#aestheticlife", "#fashiontrends", "#ootd", "#styleinspo"],
+    trend_connection: "Viral 'de-influencing' thread on Reddit gained 40k upvotes overnight",
+    music_mood: "Dark minimalist piano",
   },
   {
-    icon: Zap,
-    title: "AI Trend Clustering",
-    description:
-      "DeepSeek groups thousands of daily signals into coherent cultural narratives with emotional themes, viral signals, and why-it-matters context.",
-  },
-  {
-    icon: Users,
-    title: "Persona-Matched Ideas",
-    description:
-      "Tell us your audience, niche, and tone. Our AI strategist generates 10 content ideas calibrated exactly to your brand — with hooks, captions, CTAs, and music moods.",
-  },
-  {
-    icon: Mail,
-    title: "Inbox by 7 AM",
-    description:
-      "No dashboards to check. Your personalized digest lands in your inbox before the workday starts, ready to brief your team or post directly.",
+    platform: "Instagram",
+    platformColor: "bg-purple-100 text-purple-700",
+    format: "carousel",
+    viral_angle: "myth-bust",
+    viralColor: "bg-yellow-50 text-yellow-700 border-yellow-200",
+    hook: "3 posting strategies killing your reach (everyone's doing #2)",
+    caption: "The algorithm changed in March and most of the 'expert' advice is now actively hurting your growth. Swipe through to see what's actually working in 2025, backed by real creator data from the past 30 days.",
+    cta: "Share with a creator friend",
+    posting_time: "Tuesday 12–2 PM EST",
+    hashtags: ["#contentcreator", "#instagramgrowth", "#socialmediatips", "#creatoreconomy", "#growthhacks"],
+    trend_connection: "Creator economy thread went viral on X — 200k impressions in 6 hours",
+    music_mood: "Upbeat lo-fi hip hop",
   },
 ];
 
-const steps = [
+const PLATFORMS = [
+  { name: "TikTok", color: "bg-pink-500" },
+  { name: "YouTube", color: "bg-red-500" },
+  { name: "Reddit", color: "bg-orange-500" },
+  { name: "X / Twitter", color: "bg-sky-500" },
+  { name: "Xiaohongshu", color: "bg-rose-500" },
+];
+
+const FEATURES = [
+  {
+    icon: TrendingUp,
+    title: "Live signal radar",
+    desc: "We collect thousands of posts per day across TikTok, YouTube, Reddit, X, and Xiaohongshu — tracking engagement velocity, not just volume.",
+    accent: "text-indigo-500",
+    bg: "bg-indigo-50",
+  },
+  {
+    icon: Sparkles,
+    title: "Cultural cluster AI",
+    desc: "Our AI groups signals into named cultural moments — complete with emotional theme, why it matters, and which audience segments are driving it.",
+    accent: "text-purple-500",
+    bg: "bg-purple-50",
+  },
+  {
+    icon: Target,
+    title: "Persona-matched ideas",
+    desc: "Each idea is calibrated to your brand: your tone, your audience age range, your platforms. Ten ideas that read like a strategist wrote them for you.",
+    accent: "text-pink-500",
+    bg: "bg-pink-50",
+  },
+  {
+    icon: Video,
+    title: "AI media generation",
+    desc: "Pro users can generate a voiceover, background music track, and AI video clip for every single idea — directly from the dashboard.",
+    accent: "text-emerald-500",
+    bg: "bg-emerald-50",
+  },
+];
+
+const STEPS = [
   {
     num: "01",
-    title: "Set your profile",
-    desc: "Tell us your audience, platforms, goals, and content tone in a 2-minute onboarding.",
+    title: "Set your content profile",
+    desc: "Tell us your niche, audience age range, target platforms, tone, and goals. Takes two minutes.",
   },
   {
     num: "02",
     title: "We monitor & cluster",
-    desc: "Every 2 hours we collect thousands of signals and AI-cluster them into cultural trends.",
+    desc: "Four times a day our pipeline collects fresh signals and AI-clusters them into named cultural narratives.",
   },
   {
     num: "03",
-    title: "Get your digest",
-    desc: "Every morning at 7 AM, 10 personalized content ideas mapped to today's trends land in your inbox.",
+    title: "Get your daily brief",
+    desc: "By 7 AM you have 10 content ideas — each with hook, caption, CTA, viral angle, best posting time, and hashtag strategy.",
   },
 ];
 
-const plans = [
+const PLANS = [
   {
     name: "Free",
     price: "$0",
     period: "forever",
-    features: ["5 content ideas/day", "2 platforms monitored", "Weekly digest", "Email delivery"],
+    features: [
+      "5 content ideas/day",
+      "All 5 platforms",
+      "Daily digest",
+      "Hook + caption + CTA",
+      "1 content profile",
+    ],
     cta: "Get started free",
     href: "/signup",
     highlighted: false,
@@ -63,34 +115,86 @@ const plans = [
     features: [
       "10 content ideas/day",
       "All 5 platforms",
-      "Daily digest at 7 AM",
-      "Persona matching",
+      "Daily digest by 7 AM",
+      "Viral angle + posting time + hashtags",
+      "AI voiceover, music & video",
+      "Up to 10 content profiles",
       "On-demand refresh",
-      "Priority support",
     ],
-    cta: "Start 7-day trial",
+    cta: "Start 7-day free trial",
     href: "/signup?plan=pro",
     highlighted: true,
   },
 ];
 
+function MockCard({ idea }: { idea: typeof MOCK_IDEAS[0] }) {
+  return (
+    <div className="rounded-2xl border border-gray-100 bg-white p-5 flex flex-col gap-3 shadow-sm text-left">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <span className="text-xs font-bold text-gray-300">#01</span>
+        <div className="flex items-center gap-1.5 flex-wrap justify-end">
+          <span className={`inline-flex items-center gap-1 text-xs font-medium rounded-full border px-2.5 py-1 ${idea.viralColor}`}>
+            <Zap className="h-3 w-3" />
+            {idea.viral_angle}
+          </span>
+          <span className={`inline-flex items-center gap-1 text-xs font-medium rounded-full bg-gray-100 text-gray-500 px-2.5 py-1`}>
+            <Film className="h-3 w-3" />
+            {idea.format}
+          </span>
+          <span className={`text-xs font-semibold rounded-full px-2.5 py-1 ${idea.platformColor}`}>
+            {idea.platform}
+          </span>
+        </div>
+      </div>
+
+      <p className="text-sm font-bold text-gray-900 leading-snug">{idea.hook}</p>
+      <p className="text-xs text-gray-500 leading-relaxed line-clamp-3">{idea.caption}</p>
+
+      <div className="flex flex-wrap gap-1">
+        {idea.hashtags.map(h => (
+          <span key={h} className="text-xs rounded-full bg-indigo-50 text-indigo-600 px-2 py-0.5">{h}</span>
+        ))}
+      </div>
+
+      <div className="space-y-1.5 border-t border-gray-50 pt-2">
+        <div className="flex items-center gap-2">
+          <Megaphone className="h-3 w-3 text-blue-400 shrink-0" />
+          <p className="text-xs text-gray-500">{idea.cta}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Clock className="h-3 w-3 text-amber-400 shrink-0" />
+          <p className="text-xs text-gray-500">{idea.posting_time}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Music className="h-3 w-3 text-purple-400 shrink-0" />
+          <p className="text-xs text-gray-500">{idea.music_mood}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Target className="h-3 w-3 text-green-400 shrink-0" />
+          <p className="text-xs text-gray-500 line-clamp-1">{idea.trend_connection}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function LandingPage() {
   return (
     <div className="min-h-screen bg-white">
       {/* Nav */}
-      <nav className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-sm border-b border-gray-100">
+      <nav className="fixed top-0 left-0 right-0 z-50 bg-slate-950/90 backdrop-blur-sm border-b border-white/10">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Zap className="h-5 w-5 text-blue-600" />
-            <span className="font-bold text-lg tracking-tight">Culturix</span>
+            <Zap className="h-5 w-5 text-indigo-400" />
+            <span className="font-bold text-lg tracking-tight text-white">Culturix</span>
           </div>
           <div className="flex items-center gap-3">
-            <Link href="/signup" className="text-sm text-gray-600 hover:text-gray-900 px-3 py-1.5">
+            <Link href="/signup" className="text-sm text-gray-400 hover:text-white px-3 py-1.5 transition-colors">
               Sign in
             </Link>
             <Link
               href="/signup"
-              className="text-sm bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+              className="text-sm bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-500 transition-colors font-medium"
             >
               Get started free
             </Link>
@@ -99,51 +203,83 @@ export default function LandingPage() {
       </nav>
 
       {/* Hero */}
-      <section className="pt-32 pb-20 px-4 sm:px-6 bg-gradient-to-b from-blue-50 to-white">
-        <div className="max-w-4xl mx-auto text-center">
-          <div className="inline-flex items-center gap-2 rounded-full bg-blue-100 text-blue-700 text-xs font-semibold px-3 py-1.5 mb-6">
-            <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
-            Live trend monitoring across 5 platforms
+      <section className="pt-32 pb-20 px-4 sm:px-6 bg-slate-950 relative overflow-hidden">
+        {/* Background glow */}
+        <div className="absolute inset-0 pointer-events-none">
+          <div className="absolute top-1/4 left-1/3 w-96 h-96 bg-indigo-600/20 rounded-full blur-3xl" />
+          <div className="absolute bottom-0 right-1/4 w-80 h-80 bg-purple-600/15 rounded-full blur-3xl" />
+        </div>
+
+        <div className="max-w-6xl mx-auto relative">
+          <div className="grid lg:grid-cols-2 gap-12 items-center">
+            {/* Left copy */}
+            <div>
+              <div className="inline-flex items-center gap-2 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-semibold px-3 py-1.5 mb-6">
+                <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse" />
+                Monitoring 5 platforms · {new Date().toLocaleDateString("en-US", { weekday: "long" })} brief ready
+              </div>
+              <h1 className="text-4xl sm:text-5xl font-extrabold text-white leading-tight mb-6">
+                Your AI content team{" "}
+                <span className="bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+                  never sleeps
+                </span>
+              </h1>
+              <p className="text-lg text-gray-400 mb-8 leading-relaxed">
+                Culturix monitors thousands of daily signals across TikTok, YouTube, Reddit, X, and Xiaohongshu — clusters emerging cultural moments with AI — and delivers{" "}
+                <span className="text-gray-200 font-medium">10 personalized content ideas</span>{" "}
+                to your dashboard every morning.
+              </p>
+
+              {/* Platform badges */}
+              <div className="flex flex-wrap gap-2 mb-8">
+                {PLATFORMS.map(p => (
+                  <span key={p.name} className="inline-flex items-center gap-1.5 text-xs font-medium rounded-full bg-white/5 border border-white/10 text-gray-300 px-3 py-1.5">
+                    <span className={`h-1.5 w-1.5 rounded-full ${p.color}`} />
+                    {p.name}
+                  </span>
+                ))}
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-3">
+                <Link
+                  href="/signup"
+                  className="inline-flex items-center justify-center gap-2 bg-indigo-600 text-white font-semibold px-8 py-4 rounded-xl hover:bg-indigo-500 transition-colors text-base"
+                >
+                  Start free — no credit card <ArrowRight className="h-4 w-4" />
+                </Link>
+                <Link
+                  href="#sample"
+                  className="inline-flex items-center justify-center gap-2 bg-white/5 border border-white/10 text-gray-300 font-semibold px-8 py-4 rounded-xl hover:bg-white/10 transition-colors text-base"
+                >
+                  See sample brief
+                </Link>
+              </div>
+            </div>
+
+            {/* Right — mock card */}
+            <div className="hidden lg:block">
+              <div className="relative">
+                <div className="absolute -inset-4 bg-gradient-to-r from-indigo-600/20 to-purple-600/20 rounded-3xl blur-xl" />
+                <div className="relative">
+                  <MockCard idea={MOCK_IDEAS[0]} />
+                </div>
+              </div>
+            </div>
           </div>
-          <h1 className="text-4xl sm:text-6xl font-extrabold text-gray-900 leading-tight mb-6">
-            Turn today&apos;s trends into{" "}
-            <span className="text-blue-600">tomorrow&apos;s content</span>
-          </h1>
-          <p className="text-lg sm:text-xl text-gray-600 max-w-2xl mx-auto mb-10">
-            Culturix monitors thousands of cultural signals daily, clusters emerging trends with AI,
-            and delivers 10 personalized content ideas to your inbox every morning — mapped to your
-            audience, niche, and tone.
-          </p>
-          <div className="flex flex-col sm:flex-row gap-3 justify-center">
-            <Link
-              href="/signup"
-              className="inline-flex items-center justify-center gap-2 bg-blue-600 text-white font-semibold px-8 py-4 rounded-xl hover:bg-blue-700 transition-colors text-base"
-            >
-              Start free — no credit card <ArrowRight className="h-4 w-4" />
-            </Link>
-            <Link
-              href="#how-it-works"
-              className="inline-flex items-center justify-center gap-2 bg-white text-gray-700 font-semibold px-8 py-4 rounded-xl border border-gray-200 hover:bg-gray-50 transition-colors text-base"
-            >
-              See how it works
-            </Link>
-          </div>
-          <p className="mt-4 text-sm text-gray-500">
-            Join 200+ content creators and brand teams already using Culturix
-          </p>
         </div>
       </section>
 
       {/* Stats bar */}
-      <section className="py-8 border-y border-gray-100 bg-white">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 grid grid-cols-3 gap-8 text-center">
+      <section className="py-10 border-b border-gray-100 bg-white">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 grid grid-cols-2 sm:grid-cols-4 gap-6 text-center">
           {[
-            { val: "5", label: "platforms monitored" },
-            { val: "10k+", label: "signals captured daily" },
-            { val: "10", label: "personalized ideas per morning" },
+            { val: "5",     label: "platforms monitored" },
+            { val: "10k+",  label: "signals per day" },
+            { val: "10",    label: "ideas per brief" },
+            { val: "4×",    label: "daily signal refresh" },
           ].map((s) => (
             <div key={s.label}>
-              <p className="text-3xl font-extrabold text-blue-600">{s.val}</p>
+              <p className="text-3xl font-extrabold text-indigo-600">{s.val}</p>
               <p className="text-sm text-gray-500 mt-1">{s.label}</p>
             </div>
           ))}
@@ -153,39 +289,67 @@ export default function LandingPage() {
       {/* Features */}
       <section className="py-20 px-4 sm:px-6">
         <div className="max-w-5xl mx-auto">
-          <h2 className="text-3xl font-bold text-center text-gray-900 mb-4">
-            Intelligence that acts like a full-time trend analyst
-          </h2>
-          <p className="text-center text-gray-500 mb-12 max-w-xl mx-auto">
-            Without Culturix, you spend hours scrolling platforms trying to spot trends. With
-            Culturix, you wake up to a briefing.
-          </p>
+          <div className="text-center mb-14">
+            <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-4">
+              Intelligence that works while you sleep
+            </h2>
+            <p className="text-gray-500 max-w-xl mx-auto">
+              Stop scrolling platforms trying to spot trends. Wake up to a briefing that reads like a senior content strategist wrote it for your brand.
+            </p>
+          </div>
           <div className="grid sm:grid-cols-2 gap-6">
-            {features.map((f) => (
+            {FEATURES.map((f) => (
               <div key={f.title} className="rounded-2xl border border-gray-100 p-6 hover:shadow-md transition-shadow">
-                <div className="h-10 w-10 rounded-xl bg-blue-50 flex items-center justify-center mb-4">
-                  <f.icon className="h-5 w-5 text-blue-600" />
+                <div className={`h-10 w-10 rounded-xl ${f.bg} flex items-center justify-center mb-4`}>
+                  <f.icon className={`h-5 w-5 ${f.accent}`} />
                 </div>
                 <h3 className="font-semibold text-gray-900 mb-2">{f.title}</h3>
-                <p className="text-sm text-gray-500 leading-relaxed">{f.description}</p>
+                <p className="text-sm text-gray-500 leading-relaxed">{f.desc}</p>
               </div>
             ))}
           </div>
         </div>
       </section>
 
+      {/* Sample brief preview */}
+      <section id="sample" className="py-20 px-4 sm:px-6 bg-gray-50">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-12">
+            <h2 className="text-3xl font-bold text-gray-900 mb-4">
+              What your daily brief looks like
+            </h2>
+            <p className="text-gray-500 max-w-xl mx-auto">
+              Every idea includes a hook, caption, CTA, viral angle, optimal posting time, hashtag strategy, music mood, and AI video brief.
+            </p>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-5">
+            {MOCK_IDEAS.map((idea, i) => (
+              <MockCard key={i} idea={idea} />
+            ))}
+          </div>
+          <p className="text-center text-xs text-gray-400 mt-6">
+            Sample ideas generated for a fashion brand targeting Gen Z on TikTok + Instagram
+          </p>
+        </div>
+      </section>
+
       {/* How it works */}
-      <section id="how-it-works" className="py-20 px-4 sm:px-6 bg-gray-50">
+      <section id="how-it-works" className="py-20 px-4 sm:px-6">
         <div className="max-w-4xl mx-auto">
-          <h2 className="text-3xl font-bold text-center text-gray-900 mb-12">
+          <h2 className="text-3xl font-bold text-center text-gray-900 mb-14">
             Up and running in 2 minutes
           </h2>
-          <div className="grid sm:grid-cols-3 gap-8">
-            {steps.map((s) => (
-              <div key={s.num} className="text-center">
-                <div className="text-5xl font-extrabold text-blue-100 mb-3">{s.num}</div>
+          <div className="grid sm:grid-cols-3 gap-10">
+            {STEPS.map((s, i) => (
+              <div key={s.num} className="relative text-center">
+                {i < STEPS.length - 1 && (
+                  <div className="hidden sm:block absolute top-6 left-1/2 w-full h-px bg-gray-100" />
+                )}
+                <div className="relative inline-flex items-center justify-center h-12 w-12 rounded-full bg-indigo-50 text-indigo-600 font-bold text-sm mb-4 mx-auto">
+                  {s.num}
+                </div>
                 <h3 className="font-semibold text-gray-900 mb-2">{s.title}</h3>
-                <p className="text-sm text-gray-500">{s.desc}</p>
+                <p className="text-sm text-gray-500 leading-relaxed">{s.desc}</p>
               </div>
             ))}
           </div>
@@ -193,35 +357,35 @@ export default function LandingPage() {
       </section>
 
       {/* Pricing */}
-      <section id="pricing" className="py-20 px-4 sm:px-6">
+      <section id="pricing" className="py-20 px-4 sm:px-6 bg-gray-50">
         <div className="max-w-3xl mx-auto">
           <h2 className="text-3xl font-bold text-center text-gray-900 mb-4">
             Simple, transparent pricing
           </h2>
-          <p className="text-center text-gray-500 mb-12">Start free. Upgrade when you need more.</p>
+          <p className="text-center text-gray-500 mb-12">Start free. Upgrade when you need the full brief.</p>
           <div className="grid sm:grid-cols-2 gap-6">
-            {plans.map((p) => (
+            {PLANS.map((p) => (
               <div
                 key={p.name}
                 className={`rounded-2xl p-8 ${
                   p.highlighted
-                    ? "bg-blue-600 text-white shadow-xl shadow-blue-200"
+                    ? "bg-slate-950 text-white shadow-2xl ring-1 ring-indigo-500/30"
                     : "border border-gray-200 bg-white"
                 }`}
               >
-                <p className={`text-sm font-semibold mb-2 ${p.highlighted ? "text-blue-200" : "text-gray-500"}`}>
+                <p className={`text-sm font-semibold mb-2 ${p.highlighted ? "text-indigo-400" : "text-gray-500"}`}>
                   {p.name}
                 </p>
                 <div className="flex items-baseline gap-1 mb-6">
                   <span className="text-4xl font-extrabold">{p.price}</span>
-                  <span className={`text-sm ${p.highlighted ? "text-blue-200" : "text-gray-400"}`}>
+                  <span className={`text-sm ${p.highlighted ? "text-gray-400" : "text-gray-400"}`}>
                     {p.period}
                   </span>
                 </div>
                 <ul className="space-y-3 mb-8">
                   {p.features.map((f) => (
                     <li key={f} className="flex items-center gap-2 text-sm">
-                      <CheckCircle className={`h-4 w-4 shrink-0 ${p.highlighted ? "text-blue-200" : "text-blue-500"}`} />
+                      <CheckCircle className={`h-4 w-4 shrink-0 ${p.highlighted ? "text-indigo-400" : "text-indigo-500"}`} />
                       {f}
                     </li>
                   ))}
@@ -230,8 +394,8 @@ export default function LandingPage() {
                   href={p.href}
                   className={`block text-center font-semibold py-3 rounded-xl transition-colors ${
                     p.highlighted
-                      ? "bg-white text-blue-600 hover:bg-blue-50"
-                      : "bg-blue-600 text-white hover:bg-blue-700"
+                      ? "bg-indigo-600 text-white hover:bg-indigo-500"
+                      : "bg-gray-900 text-white hover:bg-gray-800"
                   }`}
                 >
                   {p.cta}
@@ -243,15 +407,16 @@ export default function LandingPage() {
       </section>
 
       {/* Footer CTA */}
-      <section className="py-20 px-4 sm:px-6 bg-blue-600">
-        <div className="max-w-2xl mx-auto text-center text-white">
-          <h2 className="text-3xl font-bold mb-4">Stop guessing what to post</h2>
-          <p className="text-blue-200 mb-8">
-            Start with signals. Get your first digest free — no credit card required.
+      <section className="py-20 px-4 sm:px-6 bg-slate-950">
+        <div className="max-w-2xl mx-auto text-center">
+          <Zap className="h-10 w-10 text-indigo-400 mx-auto mb-4" />
+          <h2 className="text-3xl font-bold text-white mb-4">Stop guessing what to post</h2>
+          <p className="text-gray-400 mb-8">
+            Start with signals. Your first brief is free — no credit card required.
           </p>
           <Link
             href="/signup"
-            className="inline-flex items-center gap-2 bg-white text-blue-600 font-semibold px-8 py-4 rounded-xl hover:bg-blue-50 transition-colors"
+            className="inline-flex items-center gap-2 bg-indigo-600 text-white font-semibold px-8 py-4 rounded-xl hover:bg-indigo-500 transition-colors"
           >
             Get started free <ArrowRight className="h-4 w-4" />
           </Link>
@@ -259,13 +424,13 @@ export default function LandingPage() {
       </section>
 
       {/* Footer */}
-      <footer className="py-8 px-4 sm:px-6 border-t border-gray-100">
-        <div className="max-w-6xl mx-auto flex items-center justify-between text-sm text-gray-400">
+      <footer className="py-8 px-4 sm:px-6 border-t border-white/5 bg-slate-950">
+        <div className="max-w-6xl mx-auto flex items-center justify-between text-sm">
           <div className="flex items-center gap-2">
-            <Zap className="h-4 w-4 text-blue-600" />
-            <span className="font-semibold text-gray-600">Culturix</span>
+            <Zap className="h-4 w-4 text-indigo-400" />
+            <span className="font-semibold text-gray-300">Culturix</span>
           </div>
-          <p>© 2026 Culturix. All rights reserved.</p>
+          <p className="text-gray-600">© 2026 Culturix. All rights reserved.</p>
         </div>
       </footer>
     </div>

@@ -41,6 +41,9 @@ export interface ContentIdea {
   trend_connection: string;
   format?: string;
   video_prompt?: string;
+  viral_angle?: string;
+  posting_time?: string;
+  hashtag_strategy?: string;
 }
 
 export interface GeneratedMedia {

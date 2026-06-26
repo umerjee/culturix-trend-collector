@@ -85,6 +85,9 @@ Return ONLY a valid JSON array with exactly 10 objects. Each object must have th
 - trend_connection: which trend this taps into and why it works (max 20 words)
 - format: content format (e.g. "short video", "carousel", "talking head", "GRWM", "duet")
 - video_prompt: cinematic scene description for AI video generation — subject, setting, camera movement, lighting, visual style (max 40 words)
+- viral_angle: the specific viral mechanism that makes this shareable — e.g. "hot take", "myth-bust", "POV", "transformation", "duet bait", "challenge", "reaction" (max 12 words)
+- posting_time: optimal day + time with one-line reasoning (e.g. "Thursday 6–8 PM EST — peak Gen Z scroll window")
+- hashtag_strategy: exactly 5 hashtags mixing broad reach + niche community, space-separated (e.g. "#quietluxury #ootd #slowfashion #aestheticlife #outfitinspo")
 
 Return ONLY the JSON array, no other text."""
 
