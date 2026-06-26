@@ -3,7 +3,7 @@ from datetime import datetime
 
 from app.db import SessionLocal
 from app.models.trend import Trend
-from app.language import detect_language, translate_to_english_if_needed
+from app.language import detect_language
 
 REDDIT_BASE = "https://www.reddit.com"
 HEADERS = {"User-Agent": "culturix-trend-collector/0.1"}
@@ -59,7 +59,6 @@ def store_reddit_trends(limit=100):
 
                 content = f"{d.get('title') or ''}\n{d.get('selftext') or ''}".strip()
                 lang = detect_language(content)
-                translated = translate_to_english_if_needed(content, lang)
 
                 trend = Trend(
                     platform="reddit",
@@ -67,7 +66,7 @@ def store_reddit_trends(limit=100):
                     url=f"{REDDIT_BASE}{d['permalink']}",
                     title=d.get("title"),
                     content=content,
-                    translated_content=translated,
+                    translated_content=None,
                     language=lang,
                     author=d.get("author"),
                     likes=d.get("ups"),

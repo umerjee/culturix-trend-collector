@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from app.db import SessionLocal
 from app.models.trend import Trend
-from app.language import detect_language, translate_to_english_if_needed
+from app.language import detect_language
 
 TIKTOK_TRENDING_URL = "https://www.tikwm.com/api/feed/list/"
 TIKTOK_REGIONS = ["US", "GB", "IN", "JP", "KR", "FR", "DE", "BR"]
@@ -44,7 +44,6 @@ def store_tiktok_trends(limit=50, region="US"):
 
                 content = item.get("desc") or ""
                 lang = detect_language(content)
-                translated = translate_to_english_if_needed(content, lang)
 
                 trend = Trend(
                     platform="tiktok",
@@ -52,7 +51,7 @@ def store_tiktok_trends(limit=50, region="US"):
                     url=item.get("share_url"),
                     title=item.get("title") or "",
                     content=content,
-                    translated_content=translated,
+                    translated_content=None,
                     language=lang,
                     author=item.get("author", {}).get("unique_id"),
                     likes=item.get("digg_count"),

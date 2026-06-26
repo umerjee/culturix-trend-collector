@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from app.db import SessionLocal
 from app.models.trend import Trend
-from app.language import detect_language, translate_to_english_if_needed
+from app.language import detect_language
 
 YOUTUBE_TRENDING_URL = "https://www.googleapis.com/youtube/v3/videos"
 
@@ -105,7 +105,6 @@ def store_youtube_trends(region="US", limit=50):
                 stats = item.get("statistics", {})
                 content = snippet.get("description") or ""
                 lang = detect_language(content)
-                translated = translate_to_english_if_needed(content, lang)
 
                 trend = Trend(
                     platform="youtube",
@@ -113,7 +112,7 @@ def store_youtube_trends(region="US", limit=50):
                     url=f"https://www.youtube.com/watch?v={item['id']}",
                     title=snippet.get("title"),
                     content=content,
-                    translated_content=translated,
+                    translated_content=None,
                     language=lang,
                     author=snippet.get("channelTitle"),
                     likes=stats.get("likeCount"),

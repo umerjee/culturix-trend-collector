@@ -2,7 +2,7 @@ import httpx
 import re
 from app.db import SessionLocal
 from app.models.trend import Trend
-from app.language import detect_language, translate_to_english_if_needed
+from app.language import detect_language
 from datetime import datetime
 from urllib.parse import unquote_plus
 
@@ -79,7 +79,6 @@ def store_twitter_trends_via_proxy(region="us"):
                     continue
 
                 lang = detect_language(name)
-                translated = translate_to_english_if_needed(name, lang)
 
                 trend = Trend(
                     platform="twitter",
@@ -87,7 +86,7 @@ def store_twitter_trends_via_proxy(region="us"):
                     url=f"https://twitter.com/search?q={name.replace('#', '')}",
                     title=name,
                     content=name,
-                    translated_content=translated,
+                    translated_content=None,
                     language=lang,
                     author=None,
                     likes=None,
