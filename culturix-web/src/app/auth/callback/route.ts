@@ -4,7 +4,8 @@ import { NextResponse } from "next/server";
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
-  const next = searchParams.get("next") ?? "/dashboard";
+  const type = searchParams.get("type");
+  const next = searchParams.get("next") ?? (type === "recovery" ? "/reset-password" : "/dashboard");
 
   if (code) {
     const supabase = createClient();

@@ -117,6 +117,14 @@ export default function SignupPage() {
               </div>
             </div>
 
+            {mode === "signin" && (
+              <div className="flex justify-end -mt-1">
+                <Link href="/forgot-password" className="text-xs text-blue-600 hover:underline">
+                  Forgot password?
+                </Link>
+              </div>
+            )}
+
             <button
               type="submit"
               disabled={loading}
