@@ -1,0 +1,23 @@
+name: Supabase Keepalive
+
+on:
+  schedule:
+    - cron: "0 9 */3 * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase project
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://rhndbjnvpdhckzodevse.supabase.co/auth/v1/health" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY")
+          echo "Supabase auth health check returned HTTP $STATUS"
+          if [ "$STATUS" -ge 400 ]; then
+            echo "::warning::Supabase keepalive ping failed with HTTP $STATUS"
+          fi
+        env:
+          SUPABASE_ANON_KEY: sb_publishable_ZAXbJ4fV_793ru04oGZ20g_VkQ39OBU
