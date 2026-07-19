@@ -12,12 +12,14 @@ jobs:
       - name: Query Supabase database (keeps free-tier project awake)
         run: |
           # /auth/v1/health does NOT count as database activity for Supabase's
-          # free-tier auto-pause — it never touches Postgres. Query a real table
-          # via PostgREST instead so this actually resets the inactivity timer.
+          # free-tier auto-pause — it never touches Postgres. "trends" lives in
+          # Railway's Postgres, not Supabase's (Supabase here only holds auth
+          # data), so querying it via PostgREST always 404s. Use the Auth Admin
+          # API instead — it genuinely reads auth.users in Supabase's Postgres.
           STATUS=$(curl -sS -o /tmp/keepalive_response.json -w "%{http_code}" --max-time 15 \
-            "https://rhndbjnvpdhckzodevse.supabase.co/rest/v1/trends?select=id&limit=1" \
-            -H "apikey: $SUPABASE_ANON_KEY" \
-            -H "Authorization: Bearer $SUPABASE_ANON_KEY")
+            "https://rhndbjnvpdhckzodevse.supabase.co/auth/v1/admin/users?per_page=1" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
           echo "Supabase DB query returned HTTP $STATUS"
           cat /tmp/keepalive_response.json
           if [ "$STATUS" -ge 400 ]; then
@@ -25,4 +27,4 @@ jobs:
             exit 1
           fi
         env:
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
