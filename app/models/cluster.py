@@ -21,5 +21,9 @@ class Cluster(Base):
     # Hash of this cluster's trend id membership — lets run_clustering reuse
     # (and skip re-labeling) clusters whose membership hasn't changed.
     fingerprint = Column(String(64), nullable=True, index=True)
+    # Trend direction vs the last time a significantly-overlapping cluster
+    # was seen: 'up' | 'down' | 'neutral' | NULL (no prior history yet).
+    momentum = Column(String(10), nullable=True)
+    previous_size = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

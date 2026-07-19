@@ -42,6 +42,9 @@ async def lifespan(_):
             "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255)",
             "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS stripe_subscription_id VARCHAR(255)",
             "CREATE INDEX IF NOT EXISTS idx_user_profiles_stripe_customer ON user_profiles(stripe_customer_id)",
+            # Cluster momentum (up/down/neutral trend direction)
+            "ALTER TABLE clusters ADD COLUMN IF NOT EXISTS momentum VARCHAR(10)",
+            "ALTER TABLE clusters ADD COLUMN IF NOT EXISTS previous_size INTEGER",
         ]:
             _conn.execute(_text(_stmt))
         # Grandfather all users who existed before the approval gate was added
@@ -897,6 +900,8 @@ def clusters_recent(limit: int = 50):
             {
                 "id": c.id, "label": c.label, "description": c.theme,
                 "trend_count": c.size, "created_at": c.created_at.isoformat() if c.created_at else None,
+                "momentum": c.momentum,  # "up" | "down" | "neutral" | null (no prior baseline yet)
+                "previous_size": c.previous_size,
             }
             for c in clusters
         ]
