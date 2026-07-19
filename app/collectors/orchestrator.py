@@ -70,6 +70,18 @@ def run_all_collectors() -> dict:
         logger.error("Pinterest failed: %s", e)
         results["pinterest"] = 0
 
+    # Wikipedia trending pageviews — free, no auth, no approval process.
+    # Added as a "world trends" source since Reddit's API now requires a
+    # multi-week approval process (its collector stays in place, dormant,
+    # in case that approval ever comes through).
+    try:
+        from app.collectors.wikipedia import store_wikipedia_trends
+        results["wikipedia"] = store_wikipedia_trends()
+        logger.info("Wikipedia: %d inserted", results["wikipedia"])
+    except Exception as e:
+        logger.error("Wikipedia failed: %s", e)
+        results["wikipedia"] = 0
+
     total = sum(results.values())
     logger.info("Collection complete. Total inserted: %d | breakdown: %s", total, results)
     return {"total": total, **results}
