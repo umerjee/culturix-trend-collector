@@ -889,6 +889,38 @@ def trends_recent(limit: int = 200, platform: Optional[str] = None, search: Opti
         session.close()
 
 
+@app.get("/api/trends")
+def trends_recent(limit: int = 20):
+    """Public, user-facing view of active trend clusters with momentum —
+    the real, persisted, incrementally-tracked clusters (not the ephemeral
+    per-digest snapshot in generated_content.clusters, which has no
+    momentum and can be empty for any given digest)."""
+    from app.db import SessionLocal
+    from app.models.cluster import Cluster
+    session = SessionLocal()
+    try:
+        clusters = (
+            session.query(Cluster)
+            .order_by(Cluster.updated_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "id": c.id,
+                "theme": c.theme,
+                "summary": c.summary,
+                "size": c.size,
+                "momentum": c.momentum,
+                "previous_size": c.previous_size,
+                "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+            }
+            for c in clusters
+        ]
+    finally:
+        session.close()
+
+
 @app.get("/admin/clusters")
 def clusters_recent(limit: int = 50):
     from app.db import SessionLocal

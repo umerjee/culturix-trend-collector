@@ -78,6 +78,16 @@ export interface ClusterSummary {
   example_posts: string[];
 }
 
+export interface TrendCluster {
+  id: number;
+  theme: string;
+  summary: string;
+  size: number;
+  momentum: "up" | "down" | "neutral" | null;
+  previous_size: number | null;
+  updated_at: string | null;
+}
+
 export interface Digest {
   id: string;
   user_id: string;

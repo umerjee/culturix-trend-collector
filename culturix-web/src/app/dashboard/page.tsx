@@ -1,11 +1,29 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { RefreshCw, Settings, Zap, TrendingUp, Inbox, ShieldCheck, LayoutList } from "lucide-react";
+import { RefreshCw, Settings, Zap, TrendingUp, TrendingDown, Minus, Inbox, ShieldCheck, LayoutList } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import DigestCard from "@/components/DigestCard";
-import type { Digest, ContentProfile } from "@/lib/types";
+import type { Digest, ContentProfile, TrendCluster } from "@/lib/types";
 
 const RAILWAY = "https://culturix-trend-collector-production.up.railway.app";
+
+const MOMENTUM_STYLE: Record<string, { icon: typeof TrendingUp; label: string; className: string }> = {
+  up: { icon: TrendingUp, label: "Trending up", className: "bg-green-50 text-green-700" },
+  down: { icon: TrendingDown, label: "Cooling off", className: "bg-red-50 text-red-600" },
+  neutral: { icon: Minus, label: "Steady", className: "bg-gray-100 text-gray-500" },
+};
+
+async function fetchTrends(): Promise<TrendCluster[]> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
+  try {
+    const res = await fetch(`${apiUrl}/api/trends?limit=12`, { cache: "no-store" });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
 
 async function fetchDigest(userId: string, profileId?: string): Promise<Digest | null> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
@@ -62,9 +80,10 @@ export default async function DashboardPage({
     }
   }
 
-  const [profiles, digest] = await Promise.all([
+  const [profiles, digest, trends] = await Promise.all([
     fetchProfiles(user.id),
     fetchDigest(user.id, searchParams.profile),
+    fetchTrends(),
   ]);
 
   const activeProfile = profiles.find((p) => p.id === searchParams.profile) ?? profiles[0] ?? null;
@@ -126,7 +145,7 @@ export default async function DashboardPage({
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
             {[
               { val: String(digest.content_ideas?.length ?? 0), label: "ideas ready" },
-              { val: String(digest.clusters?.length ?? 0), label: "trend clusters" },
+              { val: String(trends.length), label: "trend clusters" },
               { val: activeProfile?.target_platforms?.length ? String(activeProfile.target_platforms.length) : "5", label: "platforms" },
               { val: activeProfile?.industry_niche ? activeProfile.industry_niche.split(" ").slice(0, 2).join(" ") : "All niches", label: "niche" },
             ].map((s) => (
@@ -168,6 +187,43 @@ export default async function DashboardPage({
           </div>
         )}
 
+        {/* Trend clusters — real, persisted, momentum-tracked clusters (not
+            the ephemeral per-digest snapshot, which can be empty and never
+            has momentum). Shown regardless of digest state since trends are
+            global, not tied to any one profile's generated ideas. */}
+        {trends.length > 0 && (
+          <section className="mb-8">
+            <div className="flex items-center gap-2 mb-4">
+              <TrendingUp className="h-4 w-4 text-blue-600" />
+              <h2 className="text-base font-semibold text-gray-900">Trending right now</h2>
+            </div>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {trends.map((c) => {
+                const m = c.momentum ? MOMENTUM_STYLE[c.momentum] : null;
+                const MIcon = m?.icon;
+                return (
+                  <div key={c.id} className="rounded-xl bg-white border border-gray-100 p-4">
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <p className="font-semibold text-sm text-gray-900">{c.theme}</p>
+                      {m && MIcon && (
+                        <span className={`shrink-0 inline-flex items-center gap-1 text-xs font-medium rounded-full px-2 py-0.5 ${m.className}`}>
+                          <MIcon className="h-3 w-3" />
+                          {m.label}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500 line-clamp-2">{c.summary}</p>
+                    <p className="text-xs text-gray-400 mt-2">
+                      {c.size} signal{c.size === 1 ? "" : "s"}
+                      {c.previous_size != null && c.momentum !== "neutral" ? ` (was ${c.previous_size})` : ""}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         {/* No data state */}
         {!digest && (
           <div className="rounded-2xl border-2 border-dashed border-gray-200 py-20 text-center">
@@ -182,29 +238,6 @@ export default async function DashboardPage({
 
         {digest && (
           <div className="space-y-8">
-            {/* Trend clusters */}
-            {digest.clusters && digest.clusters.length > 0 && (
-              <section>
-                <div className="flex items-center gap-2 mb-4">
-                  <TrendingUp className="h-4 w-4 text-blue-600" />
-                  <h2 className="text-base font-semibold text-gray-900">Today&apos;s top trends</h2>
-                </div>
-                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {digest.clusters.slice(0, 6).map((c, i) => (
-                    <div key={i} className="rounded-xl bg-white border border-gray-100 p-4">
-                      <p className="font-semibold text-sm text-gray-900 mb-1">{c.name}</p>
-                      <p className="text-xs text-gray-500 line-clamp-2">{c.description}</p>
-                      {c.emotional_theme && (
-                        <span className="mt-2 inline-block rounded-full bg-blue-50 text-blue-600 text-xs px-2 py-0.5">
-                          {c.emotional_theme}
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-
             {/* Content ideas */}
             {digest.content_ideas && digest.content_ideas.length > 0 && (
               <section>
