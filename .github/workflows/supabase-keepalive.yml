@@ -9,15 +9,19 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Supabase project
+      - name: Query Supabase database (keeps free-tier project awake)
         run: |
-          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 15 \
-            "https://rhndbjnvpdhckzodevse.supabase.co/auth/v1/health" \
+          # /auth/v1/health does NOT count as database activity for Supabase's
+          # free-tier auto-pause — it never touches Postgres. Query a real table
+          # via PostgREST instead so this actually resets the inactivity timer.
+          STATUS=$(curl -sS -o /tmp/keepalive_response.json -w "%{http_code}" --max-time 15 \
+            "https://rhndbjnvpdhckzodevse.supabase.co/rest/v1/trends?select=id&limit=1" \
             -H "apikey: $SUPABASE_ANON_KEY" \
             -H "Authorization: Bearer $SUPABASE_ANON_KEY")
-          echo "Supabase auth health check returned HTTP $STATUS"
+          echo "Supabase DB query returned HTTP $STATUS"
+          cat /tmp/keepalive_response.json
           if [ "$STATUS" -ge 400 ]; then
-            echo "::error::Supabase keepalive ping failed with HTTP $STATUS"
+            echo "::error::Supabase keepalive query failed with HTTP $STATUS"
             exit 1
           fi
         env:

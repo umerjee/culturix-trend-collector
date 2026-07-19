@@ -2,6 +2,14 @@ import { createServerClient } from "@supabase/ssr";
 import type { CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+// Supabase's free tier can pause the project after inactivity, and even when
+// awake, auth calls can occasionally be slow. Without a timeout, a hung
+// supabase.auth.getUser() call blocks this middleware indefinitely, which
+// Vercel eventually kills with a 504 MIDDLEWARE_INVOCATION_TIMEOUT — taking
+// down every protected route at once. Cap the auth check so a slow/paused
+// Supabase degrades to "treat as logged out" instead of a full outage.
+const AUTH_CHECK_TIMEOUT_MS = 4000;
+
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 
@@ -29,9 +37,20 @@ export async function middleware(request: NextRequest) {
     }
   );
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await Promise.race([
+    supabase.auth.getUser().then(({ data }) => data.user),
+    new Promise<null>((resolve) => {
+      setTimeout(() => {
+        console.error(
+          `[middleware] Supabase auth check timed out after ${AUTH_CHECK_TIMEOUT_MS}ms — treating as logged out`
+        );
+        resolve(null);
+      }, AUTH_CHECK_TIMEOUT_MS);
+    }),
+  ]).catch((err) => {
+    console.error("[middleware] Supabase auth check failed:", err);
+    return null;
+  });
 
   const path = request.nextUrl.pathname;
   const isProtected =
