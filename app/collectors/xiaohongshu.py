@@ -42,7 +42,10 @@ def collect_xhs(keywords: Optional[list] = None, max_items: int = 100) -> list:
                 "maxItems": max(max_items, _MIN_ITEMS),
             }
         )
-        for row in client.dataset(run["defaultDatasetId"]).iterate_items():
+        if not run:
+            logger.error("Xiaohongshu actor run returned no result")
+            return []
+        for row in client.dataset(run.default_dataset_id).iterate_items():
             item = row.get("item") or row
             note = item.get("note_card") or {}
             title = note.get("display_title") or note.get("title") or ""

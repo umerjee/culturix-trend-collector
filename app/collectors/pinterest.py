@@ -39,7 +39,10 @@ def collect_pinterest(keywords: list[str] | None = None, region: str = "US", max
                 "max_pins_per_query": max_items,
             }
         )
-        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+        if not run:
+            logger.error("Pinterest actor run returned no result")
+            return []
+        for item in client.dataset(run.default_dataset_id).iterate_items():
             # This actor emits trend/pin/creator_signal/topic_rollup records in
             # one dataset — we only want the trend records here.
             keyword = item.get("keyword")

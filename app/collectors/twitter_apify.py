@@ -41,7 +41,10 @@ def collect_twitter_apify(queries: list[str] | None = None, max_items: int = 200
                 "lang": "",  # all languages
             }
         )
-        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+        if not run:
+            logger.error("Twitter/Apify actor run returned no result")
+            return []
+        for item in client.dataset(run.default_dataset_id).iterate_items():
             signals.append({
                 "source": "twitter",
                 "external_id": str(item.get("id") or item.get("tweetId") or ""),
