@@ -21,6 +21,7 @@ async def lifespan(_):
     from app.models.content_profile import ContentProfile       # noqa: F401
     from app.models.generated_media import GeneratedMedia       # noqa: F401
     from app.models.content_check_log import ContentCheckLog    # noqa: F401
+    from app.models.trend_validation_log import TrendValidationLog  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent)
@@ -962,6 +963,31 @@ def content_check_log_recent(limit: int = 100):
                 "previous_status": r.previous_status,
                 "new_status": r.new_status,
                 "action_taken": r.action_taken,
+            }
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/admin/trend-validation-log")
+def trend_validation_log_recent(limit: int = 100):
+    from app.db import SessionLocal
+    from app.models.trend_validation_log import TrendValidationLog
+    session = SessionLocal()
+    try:
+        rows = session.query(TrendValidationLog).order_by(TrendValidationLog.checked_at.desc()).limit(limit).all()
+        return [
+            {
+                "id": str(r.id),
+                "source": r.source,
+                "subject": r.subject,
+                "legitimate": r.legitimate,
+                "safe": r.safe,
+                "durability": r.durability,
+                "status": r.status,
+                "reason": r.reason,
+                "checked_at": r.checked_at.isoformat() if r.checked_at else None,
             }
             for r in rows
         ]
