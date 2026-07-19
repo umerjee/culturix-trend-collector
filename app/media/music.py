@@ -1,16 +1,24 @@
-"""Suno music generation via aimlapi.com aggregator."""
+"""Instrumental music generation via aimlapi.com — MiniMax Music 2.6.
+
+Suno was deprecated/removed from aimlapi's lineup (their Suno v1/v2 docs now
+404) — MiniMax is the current text-to-music model on the same aggregator.
+"""
 import os
 import time
 import httpx
 from app.media.base import MusicProvider, MediaResult
 
-_BASE = "https://api.aimlapi.com/v2/generate/audio/suno-ai"
-_POLL_INTERVAL = 8   # seconds between status checks
-_MAX_POLLS = 30      # give up after ~4 minutes
+_URL = "https://api.aimlapi.com/v2/generate/audio"
+_MODEL = "minimax/music-2.6"
+_POLL_INTERVAL = 15  # seconds — matches aimlapi's documented polling cadence
+_MAX_POLLS = 20      # ~5 minutes
 
 
-class SunoProvider(MusicProvider):
+class MiniMaxMusicProvider(MusicProvider):
     def __init__(self) -> None:
+        # SUNO_API_KEY is really the shared aimlapi.com account key (works
+        # across all their models) — kept under this name to avoid another
+        # Railway env var change when the underlying provider switched.
         key = os.getenv("SUNO_API_KEY", "")
         if not key:
             raise RuntimeError("SUNO_API_KEY not set")
@@ -20,58 +28,51 @@ class SunoProvider(MusicProvider):
         }
 
     def generate(self, mood_prompt: str, duration_seconds: int = 30) -> MediaResult:
-        # Step 1 — submit generation request
         resp = httpx.post(
-            f"{_BASE}/clip",
+            _URL,
             headers=self._headers,
             json={
+                "model": _MODEL,
                 "prompt": mood_prompt,
-                "model": "chirp-v3-5",
-                "make_instrumental": True,
+                "is_instrumental": True,
             },
             timeout=30,
         )
         resp.raise_for_status()
         data = resp.json()
 
-        # Expect { "clips": [{ "id": "...", "status": "..." }, ...] }
-        clips = data.get("clips") or []
-        if not clips:
-            raise RuntimeError(f"Suno returned no clips: {data}")
-        clip_id = clips[0].get("id") or clips[0].get("clip_id")
-        if not clip_id:
-            raise RuntimeError(f"Suno clip has no id: {clips[0]}")
+        generation_id = data.get("id")
+        if not generation_id:
+            raise RuntimeError(f"MiniMax music generation returned no id: {data}")
+        if data.get("status") == "error":
+            raise RuntimeError(f"MiniMax music generation failed: {data}")
 
-        # Step 2 — poll until complete
         for _ in range(_MAX_POLLS):
             time.sleep(_POLL_INTERVAL)
             poll = httpx.get(
-                f"{_BASE}/clip",
+                _URL,
                 headers=self._headers,
-                params={"clip_ids": clip_id, "expand[]": "audio_url"},
+                params={"generation_id": generation_id},
                 timeout=20,
             )
             poll.raise_for_status()
             result = poll.json()
-            clip_data = (result.get("clips") or {})
-            if isinstance(clip_data, list):
-                clip_data = {c.get("id"): c for c in clip_data}.get(clip_id, {})
-            elif isinstance(clip_data, dict):
-                clip_data = clip_data.get(clip_id, {})
+            status = result.get("status", "")
 
-            status = clip_data.get("status", "")
-            if status in ("complete", "streaming"):
-                audio_url = clip_data.get("audio_url", "")
-                if audio_url:
-                    audio = httpx.get(audio_url, timeout=60)
-                    audio.raise_for_status()
-                    return MediaResult(
-                        asset_bytes=audio.content,
-                        content_type="audio/mpeg",
-                        duration_seconds=float(clip_data.get("duration") or duration_seconds),
-                        cost_usd=0.20,
-                    )
+            if status == "completed":
+                audio_url = (result.get("audio_file") or {}).get("url", "")
+                if not audio_url:
+                    raise RuntimeError(f"MiniMax completed with no audio_file.url: {result}")
+                audio = httpx.get(audio_url, timeout=60)
+                audio.raise_for_status()
+                cost = ((result.get("meta") or {}).get("usage") or {}).get("usd_spent")
+                return MediaResult(
+                    asset_bytes=audio.content,
+                    content_type="audio/mpeg",
+                    duration_seconds=float(duration_seconds),
+                    cost_usd=float(cost) if cost is not None else None,
+                )
             if status == "error":
-                raise RuntimeError(f"Suno generation failed: {clip_data.get('error')}")
+                raise RuntimeError(f"MiniMax music generation failed: {result}")
 
-        raise TimeoutError(f"Suno clip {clip_id} did not complete in time")
+        raise TimeoutError(f"MiniMax generation {generation_id} did not complete in time")

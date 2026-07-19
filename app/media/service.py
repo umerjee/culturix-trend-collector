@@ -7,7 +7,7 @@ logger = logging.getLogger("culturix.media")
 
 _PROVIDERS = {
     "voiceover": ("elevenlabs", "app.media.voice", "ElevenLabsProvider"),
-    "music":     ("suno",       "app.media.music", "SunoProvider"),
+    "music":     ("minimax",    "app.media.music", "MiniMaxMusicProvider"),
     "video":     ("kling",      "app.media.video",  "KlingProvider"),
 }
 
