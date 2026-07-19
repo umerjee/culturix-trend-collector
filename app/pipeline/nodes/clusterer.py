@@ -18,27 +18,46 @@ def _get_deepseek():
     )
 
 
-def _embed_signals(texts: list[str]) -> list[list[float]]:
-    import voyageai
-    client = voyageai.Client(api_key=os.environ["VOYAGE_API_KEY"])
-    all_embeddings = []
-    batch_size = 20
-    import time
-    for i in range(0, len(texts), batch_size):
-        chunk = texts[i: i + batch_size]
-        for attempt in range(3):
-            try:
-                result = client.embed(chunk, model="voyage-3", input_type="document")
-                all_embeddings.extend(result.embeddings)
-                if i + batch_size < len(texts):
-                    time.sleep(1)
-                break
-            except Exception as e:
-                if "rate" in str(e).lower() and attempt < 2:
-                    time.sleep(22)
-                else:
-                    raise
-    return all_embeddings
+def _load_embeddings_by_id(ids: list) -> dict:
+    """Reuse embeddings already computed by the embed_signals node (Trend.embedding)
+    instead of re-embedding via Voyage — avoids a second, rate-limited API call
+    on every pipeline run."""
+    if not ids:
+        return {}
+    from app.db import SessionLocal
+    from app.models.trend import Trend
+
+    session = SessionLocal()
+    try:
+        rows = session.query(Trend.id, Trend.embedding).filter(Trend.id.in_(ids)).all()
+        return {r.id: r.embedding for r in rows if r.embedding}
+    finally:
+        session.close()
+
+
+def _call_cluster_llm(prompt: str) -> str:
+    """DeepSeek first; falls back to Claude Haiku if DEEPSEEK_API_KEY is missing
+    or the call fails, so a DeepSeek outage doesn't take down the whole daily run."""
+    if os.getenv("DEEPSEEK_API_KEY"):
+        try:
+            deepseek = _get_deepseek()
+            response = deepseek.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.warning("DeepSeek clustering failed, falling back to Claude: %s", e)
+
+    import anthropic
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    message = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=3000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return message.content[0].text.strip()
 
 
 def _store_in_qdrant(signals: list[dict], embeddings: list[list[float]]):
@@ -88,20 +107,27 @@ def cluster_trends(state: PipelineState) -> PipelineState:
         state["clusters"] = []
         return state
 
-    texts = [s.get("translated_content") or s.get("content_text") or s.get("title") or "" for s in signals]
-    texts = [t for t in texts if t.strip()]
-
-    logger.info("Embedding %d signals...", len(texts))
+    logger.info("Loading precomputed embeddings for %d signals...", len(signals))
+    embeddings_by_id = {}
     try:
-        embeddings = _embed_signals(texts)
-        state["embeddings"] = embeddings
-        _store_in_qdrant(signals, embeddings)
+        embeddings_by_id = _load_embeddings_by_id(
+            [s["id"] for s in signals if s.get("id") is not None]
+        )
     except Exception as e:
-        logger.error("Embedding failed: %s", e)
-        state["embeddings"] = []
+        logger.error("Loading embeddings failed: %s", e)
         state["errors"] = state.get("errors", []) + [f"embedding: {e}"]
 
-    # Ask DeepSeek to identify clusters
+    embedded_signals = [s for s in signals if embeddings_by_id.get(s.get("id"))]
+    embeddings = [embeddings_by_id[s["id"]] for s in embedded_signals]
+    state["embeddings"] = embeddings
+    if embedded_signals:
+        _store_in_qdrant(embedded_signals, embeddings)
+    else:
+        logger.warning("No precomputed embeddings available — skipping Qdrant storage")
+
+    # Ask DeepSeek (falls back to Claude) to identify clusters
+    texts = [s.get("translated_content") or s.get("content_text") or s.get("title") or "" for s in signals]
+    texts = [t for t in texts if t.strip()]
     sample = texts[:200]
     prompt = f"""Analyze these {len(sample)} social media posts from across TikTok, YouTube, Twitter, Xiaohongshu, and Reddit.
 
@@ -121,13 +147,7 @@ Posts:
 {json.dumps(sample)}"""
 
     try:
-        deepseek = _get_deepseek()
-        response = deepseek.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-        )
-        raw = response.choices[0].message.content.strip()
+        raw = _call_cluster_llm(prompt)
         # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -136,7 +156,7 @@ Posts:
         state["clusters"] = json.loads(raw)
         logger.info("Identified %d clusters", len(state["clusters"]))
     except Exception as e:
-        logger.error("DeepSeek clustering failed: %s", e)
+        logger.error("Clustering LLM failed: %s", e)
         state["clusters"] = []
         state["errors"] = state.get("errors", []) + [f"clustering: {e}"]
 

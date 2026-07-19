@@ -44,6 +44,8 @@ export interface ContentIdea {
   viral_angle?: string;
   posting_time?: string;
   hashtag_strategy?: string;
+  status?: "live" | "aging" | "stale" | "retired";
+  relevance_score?: number;
 }
 
 export interface GeneratedMedia {

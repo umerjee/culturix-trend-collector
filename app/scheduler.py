@@ -25,66 +25,37 @@ def run_collection():
 
 
 def run_daily_pipeline():
-    """Full pipeline: collect → translate → embed → cluster → personas → digests.
+    """Full pipeline, orchestrated by LangGraph (app.pipeline.graph):
+    collect → translate → embed → cluster+persist → personas → content → digests.
     Runs once per day at 07:00 UTC so digests are ready for morning use."""
     logger.info("Daily pipeline starting...")
 
-    # 1. Collect (also triggered independently 3 other times per day)
+    # Collect (also triggered independently 3 other times per day)
     run_collection()
 
-    # 2. Translate untranslated rows
     try:
-        from app.db import SessionLocal
-        from app.models.trend import Trend
-        from app.language import detect_language, translate_to_english_if_needed
-
-        session = SessionLocal()
-        try:
-            untranslated = (
-                session.query(Trend)
-                .filter(Trend.translated_content.is_(None))
-                .order_by(Trend.id.desc())
-                .limit(2000)
-                .all()
-            )
-            for t in untranslated:
-                text = t.content or t.title or ""
-                if not text.strip():
-                    continue
-                t.language = detect_language(text)
-                t.translated_content = translate_to_english_if_needed(text, t.language)
-            session.commit()
-            logger.info("Translation done (%d rows)", len(untranslated))
-        finally:
-            session.close()
+        from app.pipeline.graph import run_pipeline
+        result = run_pipeline()
+        logger.info(
+            "Daily pipeline complete. Clusters: %d, users processed: %d, errors: %s",
+            len(result.get("clusters", [])),
+            len(result.get("generated_content", [])),
+            result.get("errors", []),
+        )
     except Exception as e:
-        logger.error("Translation failed: %s", e)
+        logger.error("Daily pipeline failed: %s", e)
 
-    # 3. Embed
+
+def run_content_check():
+    """Daily audit of previously generated content ideas — flags stale ones.
+    Runs once per day at 09:00 UTC, after the content engine has run."""
+    logger.info("Content Check starting...")
     try:
-        from app.embedding_processor import process_embeddings
-        n = process_embeddings(limit=1000)
-        logger.info("Embedded %d new trends", n)
+        from app.pipeline.nodes.content_check import run_content_check as _run_check
+        result = _run_check()
+        logger.info("Content Check done: %s", result)
     except Exception as e:
-        logger.error("Embedding failed: %s", e)
-
-    # 4. Cluster
-    try:
-        from app.clustering_service import run_clustering
-        result = run_clustering(limit=1000, min_cluster_size=2)
-        logger.info("Clustering done: %s", result)
-    except Exception as e:
-        logger.error("Clustering failed: %s", e)
-
-    # 5. Personas
-    try:
-        from app.personas import generate_clustered_personas
-        result = generate_clustered_personas()
-        logger.info("Personas done: %s", result)
-    except Exception as e:
-        logger.error("Persona generation failed: %s", e)
-
-    logger.info("Daily pipeline complete.")
+        logger.error("Content Check failed: %s", e)
 
 
 def start():
@@ -97,8 +68,13 @@ def start():
         )
     # Full digest pipeline once per day at 07:00 UTC (morning run includes collection)
     scheduler.add_job(run_daily_pipeline, CronTrigger(hour=7, minute=0), id="daily_pipeline")
+    # Content Check — audit prior content for staleness once per day at 09:00 UTC
+    scheduler.add_job(run_content_check, CronTrigger(hour=9, minute=0), id="content_check")
     scheduler.start()
-    logger.info("Scheduler started — collection at 01:00/07:00/13:00/19:00 UTC, full pipeline at 07:00 UTC")
+    logger.info(
+        "Scheduler started — collection at 01:00/07:00/13:00/19:00 UTC, "
+        "full pipeline at 07:00 UTC, content check at 09:00 UTC"
+    )
 
 
 def stop():

@@ -31,6 +31,13 @@ function viralAngleClass(angle: string): string {
   return match ? match[1] : "bg-gray-50 text-gray-600 border-gray-200";
 }
 
+const STATUS_BADGE: Record<string, { emoji: string; label: string; className: string }> = {
+  live: { emoji: "\u{1F7E2}", label: "Live", className: "bg-green-50 text-green-700" },
+  aging: { emoji: "\u{1F7E1}", label: "Aging", className: "bg-yellow-50 text-yellow-700" },
+  stale: { emoji: "\u{1F534}", label: "Stale", className: "bg-red-50 text-red-600" },
+  retired: { emoji: "\u{1F534}", label: "Retired", className: "bg-red-50 text-red-600" },
+};
+
 interface Props {
   idea: ContentIdea;
   index: number;
@@ -128,6 +135,14 @@ export default function DigestCard({ idea, index, contentId, plan }: Props) {
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <span className="text-xs font-bold text-gray-300">#{String(index + 1).padStart(2, "0")}</span>
         <div className="flex items-center gap-1.5 flex-wrap justify-end">
+          {idea.status && (
+            <span
+              title={idea.relevance_score != null ? `Relevance: ${idea.relevance_score}` : undefined}
+              className={`inline-flex items-center gap-1 text-xs font-medium rounded-full px-2.5 py-1 ${STATUS_BADGE[idea.status].className}`}
+            >
+              {STATUS_BADGE[idea.status].emoji} {STATUS_BADGE[idea.status].label}
+            </span>
+          )}
           {idea.viral_angle && (
             <span className={`inline-flex items-center gap-1 text-xs font-medium rounded-full border px-2.5 py-1 ${viralAngleClass(idea.viral_angle)}`}>
               <Zap className="h-3 w-3" />

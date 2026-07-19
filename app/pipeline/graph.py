@@ -1,12 +1,21 @@
 """
-LangGraph pipeline — full Tier 4 digest generation.
-Runs: load_signals → cluster_trends → map_personas → generate_content → write_digests
+LangGraph pipeline — daily orchestrator. Runs collection→digest end to end:
+translate_signals → load_signals → embed_signals → cluster_and_persist →
+generate_personas → cluster_trends → map_personas → generate_content → write_digests
+
+cluster_and_persist / generate_personas keep the admin-facing Cluster/Persona
+tables populated (HDBSCAN + Claude labeling); cluster_trends/map_personas use
+Voyage+Qdrant+DeepSeek for the actual content-generation matching.
 
 Usage:
     python -m app.pipeline.graph
 """
 import logging
 from app.pipeline.state import PipelineState
+from app.pipeline.nodes.translator import translate_signals
+from app.pipeline.nodes.embedder import embed_signals
+from app.pipeline.nodes.legacy_cluster import cluster_and_persist
+from app.pipeline.nodes.persona_generator import generate_personas
 from app.pipeline.nodes.clusterer import cluster_trends
 from app.pipeline.nodes.persona_mapper import map_personas
 from app.pipeline.nodes.content_strategist import generate_content
@@ -92,13 +101,21 @@ def build_pipeline():
 
     graph = StateGraph(PipelineState)
     graph.add_node("load_signals", load_signals)
+    graph.add_node("translate_signals", translate_signals)
+    graph.add_node("embed_signals", embed_signals)
+    graph.add_node("cluster_and_persist", cluster_and_persist)
+    graph.add_node("generate_personas", generate_personas)
     graph.add_node("cluster_trends", cluster_trends)
     graph.add_node("map_personas", map_personas)
     graph.add_node("generate_content", generate_content)
     graph.add_node("write_digests", write_digests)
 
-    graph.set_entry_point("load_signals")
-    graph.add_edge("load_signals", "cluster_trends")
+    graph.set_entry_point("translate_signals")
+    graph.add_edge("translate_signals", "load_signals")
+    graph.add_edge("load_signals", "embed_signals")
+    graph.add_edge("embed_signals", "cluster_and_persist")
+    graph.add_edge("cluster_and_persist", "generate_personas")
+    graph.add_edge("generate_personas", "cluster_trends")
     graph.add_edge("cluster_trends", "map_personas")
     graph.add_edge("map_personas", "generate_content")
     graph.add_edge("generate_content", "write_digests")

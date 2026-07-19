@@ -20,6 +20,7 @@ async def lifespan(_):
     from app.models.generated_content import GeneratedContent   # noqa: F401
     from app.models.content_profile import ContentProfile       # noqa: F401
     from app.models.generated_media import GeneratedMedia       # noqa: F401
+    from app.models.content_check_log import ContentCheckLog    # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent)
@@ -887,6 +888,34 @@ def clusters_recent(limit: int = 50):
                 "trend_count": c.size, "created_at": c.created_at.isoformat() if c.created_at else None,
             }
             for c in clusters
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/admin/content-check-log")
+def content_check_log_recent(limit: int = 100):
+    from app.db import SessionLocal
+    from app.models.content_check_log import ContentCheckLog
+    session = SessionLocal()
+    try:
+        rows = session.query(ContentCheckLog).order_by(ContentCheckLog.checked_at.desc()).limit(limit).all()
+        return [
+            {
+                "id": str(r.id),
+                "generated_content_id": str(r.generated_content_id),
+                "idea_index": r.idea_index,
+                "checked_at": r.checked_at.isoformat() if r.checked_at else None,
+                "previous_score": r.previous_score,
+                "new_score": r.new_score,
+                "trend_score": r.trend_score,
+                "freshness_score": r.freshness_score,
+                "persona_score": r.persona_score,
+                "previous_status": r.previous_status,
+                "new_status": r.new_status,
+                "action_taken": r.action_taken,
+            }
+            for r in rows
         ]
     finally:
         session.close()
