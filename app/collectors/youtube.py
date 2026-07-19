@@ -1,9 +1,7 @@
 import httpx
 import re
 from datetime import datetime
-from urllib.parse import unquote_plus
 import os
-from dotenv import load_dotenv
 
 from app.db import SessionLocal
 from app.models.trend import Trend
@@ -12,20 +10,46 @@ from app.language import detect_language
 YOUTUBE_TRENDING_URL = "https://www.googleapis.com/youtube/v3/videos"
 
 
+def _fetch_via_scrape(limit: int) -> list:
+    try:
+        page = httpx.get("https://www.youtube.com/feed/trending", timeout=15.0).text
+        ids = []
+        for m in re.finditer(r"/watch\?v=([A-Za-z0-9_-]{11})", page):
+            vid = m.group(1)
+            if vid not in ids:
+                ids.append(vid)
+            if len(ids) >= limit:
+                break
+        items = []
+        for vid in ids:
+            try:
+                o = httpx.get(
+                    "https://www.youtube.com/oembed",
+                    params={"url": f"https://www.youtube.com/watch?v={vid}", "format": "json"},
+                    timeout=10.0,
+                ).json()
+                items.append({
+                    "id": vid,
+                    "snippet": {
+                        "title": o.get("title", ""),
+                        "publishedAt": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "description": "",
+                        "channelTitle": o.get("author_name", ""),
+                    },
+                    "statistics": {},
+                })
+            except Exception:
+                continue
+        return items
+    except Exception:
+        return []
+
+
 def fetch_youtube_trending(region="US", limit=30):
-    load_dotenv()
     key = os.getenv("YOUTUBE_API_KEY")
     if not key:
-        try:
-            with open(".env", "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.strip().startswith("YOUTUBE_API_KEY="):
-                        key = line.strip().split("=", 1)[1]
-                        break
-        except Exception:
-            key = None
-    if key:
-        key = unquote_plus(key)
+        print("[YouTube API] YOUTUBE_API_KEY not set — going straight to scrape fallback")
+        return _fetch_via_scrape(limit)
 
     params = {
         "part": "snippet,statistics",
@@ -44,38 +68,7 @@ def fetch_youtube_trending(region="US", limit=30):
         return resp.json().get("items", [])
     except Exception as _api_exc:
         print(f"[YouTube API] Primary call failed: {_api_exc}. Trying scrape fallback...")
-        try:
-            page = httpx.get("https://www.youtube.com/feed/trending", timeout=15.0).text
-            ids = []
-            for m in re.finditer(r"/watch\?v=([A-Za-z0-9_-]{11})", page):
-                vid = m.group(1)
-                if vid not in ids:
-                    ids.append(vid)
-                if len(ids) >= limit:
-                    break
-            items = []
-            for vid in ids:
-                try:
-                    o = httpx.get(
-                        "https://www.youtube.com/oembed",
-                        params={"url": f"https://www.youtube.com/watch?v={vid}", "format": "json"},
-                        timeout=10.0,
-                    ).json()
-                    items.append({
-                        "id": vid,
-                        "snippet": {
-                            "title": o.get("title", ""),
-                            "publishedAt": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "description": "",
-                            "channelTitle": o.get("author_name", ""),
-                        },
-                        "statistics": {},
-                    })
-                except Exception:
-                    continue
-            return items
-        except Exception:
-            return []
+        return _fetch_via_scrape(limit)
 
 
 YOUTUBE_REGIONS = ["US", "GB", "IN", "CA", "AU", "FR", "DE", "BR", "JP", "KR"]
@@ -121,9 +114,16 @@ def store_youtube_trends(region="US", limit=50):
                     raw_json=item,
                 )
                 session.add(trend)
-                inserted += 1
+                try:
+                    # Commit per row — same SQLAlchemy batched-insert/JSON
+                    # adaptation issue found and fixed in the TikTok/Reddit
+                    # collectors (many session.add() calls before one big
+                    # commit can fail on the dict raw_json column).
+                    session.commit()
+                    inserted += 1
+                except Exception:
+                    session.rollback()
 
-        session.commit()
         return inserted
     except Exception:
         session.rollback()
