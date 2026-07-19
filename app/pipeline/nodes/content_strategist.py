@@ -40,7 +40,7 @@ def _generate_ideas_claude(profile: dict, clusters: list[dict]) -> list[dict]:
     prompt = _build_prompt(profile, clusters)
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=2500,
+        max_tokens=6000,
         messages=[{"role": "user", "content": prompt}],
     )
     return _parse_ideas(message.content[0].text)
