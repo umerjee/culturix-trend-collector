@@ -31,7 +31,10 @@ def store_tiktok_trends(limit=50, region="US"):
         for r in regions:
             items = fetch_tiktok_trending(limit, r)
             for item in items:
-                external_id = item.get("id")
+                # tikwm.com's response uses "video_id"/"title" today, not the
+                # "id"/"desc"/"share_url" fields this used to read — those were
+                # always None, so every row got silently skipped below.
+                external_id = item.get("video_id") or item.get("id")
                 if not external_id or external_id in seen_in_run:
                     continue
                 seen_in_run.add(external_id)
@@ -42,27 +45,46 @@ def store_tiktok_trends(limit=50, region="US"):
                 if exists:
                     continue
 
-                content = item.get("desc") or ""
+                content = item.get("desc") or item.get("title") or ""
+                music = item.get("music_info") or {}
+                music_title = music.get("title")
+                if music_title:
+                    content = f"{content} [Audio: {music_title}" + (
+                        f" by {music['author']}]" if music.get("author") else "]"
+                    )
                 lang = detect_language(content)
+
+                author_handle = item.get("author", {}).get("unique_id")
+                url = item.get("share_url")
+                if not url and author_handle:
+                    url = f"https://www.tiktok.com/@{author_handle}/video/{external_id}"
 
                 trend = Trend(
                     platform="tiktok",
                     external_id=external_id,
-                    url=item.get("share_url"),
-                    title=item.get("title") or "",
+                    url=url,
+                    title=(item.get("title") or "")[:200],
                     content=content,
                     translated_content=None,
                     language=lang,
-                    author=item.get("author", {}).get("unique_id"),
+                    author=author_handle,
                     likes=item.get("digg_count"),
                     comments=item.get("comment_count"),
                     posted_at=datetime.fromtimestamp(item.get("create_time", 0), tz=timezone.utc).replace(tzinfo=None),
                     raw_json=item,
                 )
                 session.add(trend)
-                inserted += 1
+                try:
+                    # Commit per row: SQLAlchemy 2.0's batched multi-row insert
+                    # (insertmany_values) can fail to adapt dict raw_json when
+                    # many rows are flushed in one statement — committing one
+                    # at a time avoids that batching path and isolates a bad
+                    # row from the rest of the run.
+                    session.commit()
+                    inserted += 1
+                except Exception:
+                    session.rollback()
 
-        session.commit()
         return inserted
     except Exception:
         session.rollback()

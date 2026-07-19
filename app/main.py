@@ -708,13 +708,14 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
 
     # Plan-tier gating: free users cannot generate media
     # Superadmin (SUPERADMIN_USER_ID env var) always bypasses this check
+    from app.media.quota import plan_blocks_media, quota_exceeded, MONTHLY_QUOTA
     _superadmin_id = os.getenv("SUPERADMIN_USER_ID", "")
     if user_id != _superadmin_id:
         session = SessionLocal()
         try:
             profile = session.query(UserProfile).filter_by(user_id=_uuid.UUID(user_id)).first()
             plan = (profile.plan or "free") if profile else "free"
-            if plan == "free":
+            if plan_blocks_media(plan):
                 raise HTTPException(status_code=403, detail="Media generation is a Pro feature. Upgrade to generate voiceovers, music, and video.")
 
             # Check monthly quota (pro: 50 generations/month)
@@ -725,11 +726,10 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
                 WHERE gc.user_id = :uid
                   AND gm.created_at >= date_trunc('month', now())
             """), {"uid": _uuid.UUID(user_id)}).scalar() or 0
-            quota = 50
-            if month_count + len(media_types) > quota:
+            if quota_exceeded(month_count, len(media_types)):
                 raise HTTPException(
                     status_code=429,
-                    detail=f"Monthly media quota reached ({quota} generations). Resets on the 1st."
+                    detail=f"Monthly media quota reached ({MONTHLY_QUOTA} generations). Resets on the 1st."
                 )
         finally:
             session.close()

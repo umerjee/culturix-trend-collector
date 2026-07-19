@@ -61,6 +61,15 @@ def run_all_collectors() -> dict:
         logger.error("Twitter failed: %s", e)
         results["twitter"] = 0
 
+    # Pinterest (Apify) — only runs if APIFY_API_TOKEN is set
+    try:
+        from app.collectors.pinterest import store_pinterest_signals
+        results["pinterest"] = store_pinterest_signals()
+        logger.info("Pinterest: %d inserted", results["pinterest"])
+    except Exception as e:
+        logger.error("Pinterest failed: %s", e)
+        results["pinterest"] = 0
+
     total = sum(results.values())
     logger.info("Collection complete. Total inserted: %d | breakdown: %s", total, results)
     return {"total": total, **results}
