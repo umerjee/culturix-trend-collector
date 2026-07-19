@@ -3,7 +3,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Optional, List
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 
 logging.basicConfig(level=logging.INFO)
 
@@ -38,6 +38,10 @@ async def lifespan(_):
             "CREATE INDEX IF NOT EXISTS idx_clusters_fingerprint ON clusters(fingerprint)",
             "ALTER TABLE personas ADD COLUMN IF NOT EXISTS cluster_id INTEGER",
             "CREATE INDEX IF NOT EXISTS idx_personas_cluster_id ON personas(cluster_id)",
+            # Stripe self-serve billing
+            "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255)",
+            "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS stripe_subscription_id VARCHAR(255)",
+            "CREATE INDEX IF NOT EXISTS idx_user_profiles_stripe_customer ON user_profiles(stripe_customer_id)",
         ]:
             _conn.execute(_text(_stmt))
         # Grandfather all users who existed before the approval gate was added
@@ -1124,6 +1128,67 @@ def check_user_approved(user_id: str):
         return {"approved": profile.approved, "has_profile": True, "plan": profile.plan or "free"}
     finally:
         session.close()
+
+
+# ── Billing (Stripe) ───────────────────────────────────────────────────────────
+
+@app.post("/api/billing/create-checkout-session")
+def billing_create_checkout_session(body: dict):
+    user_id = body.get("user_id")
+    email = body.get("email")
+    base_url = body.get("base_url") or os.getenv("NEXT_PUBLIC_SITE_URL", "https://culturix-web.vercel.app")
+    if not user_id or not email:
+        raise HTTPException(status_code=400, detail="user_id and email required")
+
+    if not os.getenv("STRIPE_SECRET_KEY") or not os.getenv("STRIPE_PRICE_ID_PRO"):
+        raise HTTPException(status_code=503, detail="Billing not configured — add STRIPE_SECRET_KEY and STRIPE_PRICE_ID_PRO to Railway env vars")
+
+    from app.billing import create_checkout_session
+    try:
+        url = create_checkout_session(user_id, email, base_url)
+        return {"url": url}
+    except Exception as e:
+        logging.error("Checkout session creation failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/billing/create-portal-session")
+def billing_create_portal_session(body: dict):
+    user_id = body.get("user_id")
+    base_url = body.get("base_url") or os.getenv("NEXT_PUBLIC_SITE_URL", "https://culturix-web.vercel.app")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+
+    if not os.getenv("STRIPE_SECRET_KEY"):
+        raise HTTPException(status_code=503, detail="Billing not configured — add STRIPE_SECRET_KEY to Railway env vars")
+
+    from app.billing import create_portal_session
+    try:
+        url = create_portal_session(user_id, base_url)
+        return {"url": url}
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logging.error("Portal session creation failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/webhooks/stripe")
+async def billing_webhook(request: Request):
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    if not os.getenv("STRIPE_WEBHOOK_SECRET"):
+        raise HTTPException(status_code=503, detail="STRIPE_WEBHOOK_SECRET not configured")
+
+    from app.billing import handle_webhook_event
+    try:
+        result = handle_webhook_event(payload, sig_header)
+        logging.info("Stripe webhook handled: %s", result)
+        return {"status": "ok", **result}
+    except Exception as e:
+        logging.error("Stripe webhook verification/handling failed: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/admin/users/{user_id}/plan")

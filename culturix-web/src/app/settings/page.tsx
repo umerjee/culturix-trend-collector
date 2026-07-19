@@ -2,9 +2,9 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { Zap, Loader2, Check, Plus, Trash2, ChevronRight } from "lucide-react";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Zap, Loader2, Check, Plus, Trash2, ChevronRight, CreditCard } from "lucide-react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import PersonaChips from "@/components/PersonaChips";
@@ -44,7 +44,20 @@ function Chip({ label, selected, onClick }: { label: string; selected: boolean; 
 }
 
 export default function SettingsPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
+      </div>
+    }>
+      <SettingsPageInner />
+    </Suspense>
+  );
+}
+
+function SettingsPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const supabase = createClient();
 
   const [loading, setLoading] = useState(true);
@@ -53,6 +66,42 @@ export default function SettingsPage() {
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
   const [plan, setPlan] = useState<"free" | "pro">("free");
+  const [billingLoading, setBillingLoading] = useState(false);
+  const checkoutBanner = searchParams.get("checkout"); // "success" | "cancelled" | null
+
+  async function handleUpgrade() {
+    setBillingLoading(true);
+    try {
+      const res = await fetch("/api/billing/checkout", { method: "POST" });
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        setError(data.detail ?? data.error ?? "Could not start checkout.");
+        setBillingLoading(false);
+      }
+    } catch {
+      setError("Network error — could not start checkout.");
+      setBillingLoading(false);
+    }
+  }
+
+  async function handleManageBilling() {
+    setBillingLoading(true);
+    try {
+      const res = await fetch("/api/billing/portal", { method: "POST" });
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        setError(data.detail ?? data.error ?? "Could not open billing portal.");
+        setBillingLoading(false);
+      }
+    } catch {
+      setError("Network error — could not open billing portal.");
+      setBillingLoading(false);
+    }
+  }
 
   const [profiles, setProfiles] = useState<ContentProfile[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -195,6 +244,25 @@ export default function SettingsPage() {
             <span className={`text-xs font-semibold px-2 py-1 rounded-full ${plan === "pro" ? "bg-indigo-100 text-indigo-700" : "bg-gray-100 text-gray-500"}`}>
               {plan === "pro" ? "Pro" : "Free"}
             </span>
+            {plan === "free" ? (
+              <button
+                onClick={handleUpgrade}
+                disabled={billingLoading}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white text-xs font-semibold rounded-lg hover:bg-indigo-700 disabled:opacity-60 transition"
+              >
+                {billingLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CreditCard className="h-3.5 w-3.5" />}
+                Upgrade to Pro
+              </button>
+            ) : (
+              <button
+                onClick={handleManageBilling}
+                disabled={billingLoading}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 text-gray-600 text-xs font-medium rounded-lg hover:border-gray-300 disabled:opacity-60 transition"
+              >
+                {billingLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CreditCard className="h-3.5 w-3.5" />}
+                Manage billing
+              </button>
+            )}
             <button onClick={handleSignOut} className="text-sm text-gray-500 hover:text-gray-700">
               Sign out
             </button>
@@ -207,6 +275,17 @@ export default function SettingsPage() {
           <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
           <p className="text-sm text-gray-500 mt-1">Manage your content profiles and delivery preferences.</p>
         </div>
+
+        {checkoutBanner === "success" && (
+          <p className="text-sm text-green-700 bg-green-50 border border-green-100 rounded-xl px-4 py-3">
+            Payment successful — welcome to Pro! It may take a few seconds for your plan to update above.
+          </p>
+        )}
+        {checkoutBanner === "cancelled" && (
+          <p className="text-sm text-gray-500 bg-gray-50 border border-gray-100 rounded-xl px-4 py-3">
+            Checkout cancelled — no charge was made.
+          </p>
+        )}
 
         {/* Profile selector */}
         <section className="bg-white rounded-2xl border border-gray-100 p-6">

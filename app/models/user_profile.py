@@ -23,5 +23,7 @@ class UserProfile(Base):
     approved = Column(Boolean, default=False, nullable=False, server_default="false")
     # freemium plan: 'free' (1 content profile) | 'pro' (unlimited)
     plan = Column(String(20), default="free", nullable=False, server_default="free")
+    stripe_customer_id = Column(String(255), nullable=True, index=True)
+    stripe_subscription_id = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
