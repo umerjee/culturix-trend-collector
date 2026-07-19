@@ -6,7 +6,7 @@ from typing import Optional
 logger = logging.getLogger("culturix.media")
 
 _PROVIDERS = {
-    "voiceover": ("elevenlabs", "app.media.voice", "ElevenLabsProvider"),
+    "voiceover": ("edge-tts",   "app.media.voice", "EdgeTTSProvider"),
     "music":     ("minimax",    "app.media.music", "MiniMaxMusicProvider"),
     "video":     ("kling",      "app.media.video",  "KlingProvider"),
 }

@@ -24,3 +24,5 @@ langchain-community
 openai
 resend
 PyJWT
+# Workstream 5 — Media generation (voiceover: free, no API key)
+edge-tts

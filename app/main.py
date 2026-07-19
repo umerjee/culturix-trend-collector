@@ -734,16 +734,18 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
         finally:
             session.close()
 
-    # Pre-flight: ensure API keys are configured before wasting a DB row on a doomed job
+    # Pre-flight: ensure API keys are configured before wasting a DB row on a doomed job.
+    # voiceover uses edge-tts (free, no API key) so it's intentionally not in this map.
     _KEY_CHECK = {
-        "voiceover": ("ELEVENLABS_API_KEY", "ElevenLabs"),
         "music":     ("SUNO_API_KEY",       "MiniMax (via aimlapi)"),
         "video":     ("KLING_ACCESS_KEY",   "Kling"),
     }
     missing_keys = [
         f"{mt} ({name}): add {env_var} to Railway env vars"
         for mt in media_types
-        for env_var, name in [_KEY_CHECK[mt]]
+        for check in [_KEY_CHECK.get(mt)]
+        if check
+        for env_var, name in [check]
         if not os.getenv(env_var)
     ]
     if missing_keys:
@@ -752,7 +754,7 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
             detail="Media provider not configured — " + "; ".join(missing_keys)
         )
 
-    _PROVIDER_MAP = {"voiceover": "elevenlabs", "music": "minimax", "video": "kling"}
+    _PROVIDER_MAP = {"voiceover": "edge-tts", "music": "minimax", "video": "kling"}
     created_ids = []
     session2 = SessionLocal()
     try:
