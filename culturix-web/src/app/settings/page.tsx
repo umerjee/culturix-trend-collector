@@ -9,8 +9,8 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import PersonaChips from "@/components/PersonaChips";
 import {
-  PLATFORMS, REGIONS, CONTENT_GOALS, CONTENT_TONES,
-  type ContentProfile,
+  PLATFORMS, REGIONS, CONTENT_GOALS, CONTENT_TONES, AVATAR_TYPES,
+  type ContentProfile, type AvatarTypePreset,
 } from "@/lib/types";
 
 const EMPTY_PROFILE: Omit<ContentProfile, "id" | "user_id" | "created_at"> = {
@@ -107,6 +107,7 @@ function SettingsPageInner() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Omit<ContentProfile, "id" | "user_id" | "created_at">>(EMPTY_PROFILE);
   const [isNew, setIsNew] = useState(false);
+  const [showAvatarGallery, setShowAvatarGallery] = useState(false);
 
   const selected = profiles.find(p => p.id === selectedId) ?? null;
   const profileLimit = plan === "pro" ? 10 : 1;
@@ -150,16 +151,51 @@ function SettingsPageInner() {
     setSelectedId(p.id);
     setDraft({ ...EMPTY_PROFILE, ...p });
     setIsNew(false);
+    setShowAvatarGallery(false);
     setSaved(false);
     setError("");
   }
 
   function startNew() {
     setSelectedId(null);
-    setDraft({ ...EMPTY_PROFILE });
-    setIsNew(true);
+    setIsNew(false);
+    setShowAvatarGallery(true);
     setSaved(false);
     setError("");
+  }
+
+  function startFromPreset(preset: AvatarTypePreset | null) {
+    setSelectedId(null);
+    setDraft({
+      ...EMPTY_PROFILE,
+      ...(preset && {
+        name: preset.label,
+        industry_niche: preset.industry_niche,
+        target_platforms: preset.target_platforms,
+        target_regions: preset.target_regions,
+        content_goals: preset.content_goals,
+        content_tones: preset.content_tones,
+        persona_tags: preset.persona_tags,
+      }),
+    });
+    setIsNew(true);
+    setShowAvatarGallery(false);
+    setSaved(false);
+    setError("");
+  }
+
+  async function toggleActive(p: ContentProfile, e: React.MouseEvent) {
+    e.stopPropagation();
+    const res = await fetch(`/api/content-profiles/${p.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_active: !p.is_active }),
+    });
+    if (res.ok) {
+      const updated: ContentProfile = await res.json();
+      setProfiles(prev => prev.map(x => x.id === p.id ? updated : x));
+      if (selectedId === p.id) setDraft(d => ({ ...d, is_active: updated.is_active }));
+    }
   }
 
   function toggle(field: keyof typeof draft, val: string) {
@@ -315,21 +351,41 @@ function SettingsPageInner() {
 
           <div className="space-y-1">
             {profiles.map(p => (
-              <button
+              <div
                 key={p.id}
-                onClick={() => selectProfile(p)}
-                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm transition-colors text-left ${
-                  selectedId === p.id && !isNew ? "bg-blue-50 text-blue-700 font-medium" : "hover:bg-gray-50 text-gray-700"
+                className={`w-full flex items-center justify-between rounded-xl text-sm transition-colors ${
+                  selectedId === p.id && !isNew && !showAvatarGallery ? "bg-blue-50 text-blue-700 font-medium" : "hover:bg-gray-50 text-gray-700"
                 }`}
               >
-                <div className="flex items-center gap-3">
-                  <div className={`h-2 w-2 rounded-full ${p.is_active ? "bg-green-400" : "bg-gray-300"}`} />
+                <button
+                  type="button"
+                  onClick={() => selectProfile(p)}
+                  className="flex-1 flex items-center gap-3 px-4 py-3 text-left min-w-0"
+                >
                   <span>{p.name || "Untitled"}</span>
-                  {p.industry_niche && <span className="text-xs text-gray-400">· {p.industry_niche}</span>}
+                  {p.industry_niche && <span className="text-xs text-gray-400 truncate">· {p.industry_niche}</span>}
+                </button>
+                <div className="flex items-center gap-1.5 pr-3 shrink-0">
+                  <button
+                    type="button"
+                    onClick={(e) => toggleActive(p, e)}
+                    title={p.is_active ? "Pause posting for this avatar" : "Activate posting for this avatar"}
+                    className={`text-xs font-medium px-2.5 py-1 rounded-full transition-colors ${
+                      p.is_active ? "bg-green-50 text-green-600 hover:bg-green-100" : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                    }`}
+                  >
+                    {p.is_active ? "Active" : "Paused"}
+                  </button>
+                  <ChevronRight className="h-4 w-4 text-gray-300" />
                 </div>
-                <ChevronRight className="h-4 w-4 text-gray-300" />
-              </button>
+              </div>
             ))}
+            {showAvatarGallery && (
+              <div className="px-4 py-3 rounded-xl bg-blue-50 text-blue-700 text-sm font-medium flex items-center gap-3">
+                <div className="h-2 w-2 rounded-full bg-blue-400" />
+                Choosing avatar type…
+              </div>
+            )}
             {isNew && (
               <div className="px-4 py-3 rounded-xl bg-blue-50 text-blue-700 text-sm font-medium flex items-center gap-3">
                 <div className="h-2 w-2 rounded-full bg-blue-400" />
@@ -338,6 +394,45 @@ function SettingsPageInner() {
             )}
           </div>
         </section>
+
+        {/* Avatar type gallery */}
+        {showAvatarGallery && (
+          <section className="bg-white rounded-2xl border border-gray-100 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="font-semibold text-gray-900">Choose an avatar type</h2>
+                <p className="text-xs text-gray-400 mt-0.5">Pre-fills a starting point based on durable, evergreen audiences — fully editable after.</p>
+              </div>
+              <button type="button" onClick={() => setShowAvatarGallery(false)} className="text-xs text-gray-400 hover:text-gray-600 shrink-0">
+                Cancel
+              </button>
+            </div>
+            <div className="grid sm:grid-cols-2 gap-3">
+              {AVATAR_TYPES.map(preset => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  onClick={() => startFromPreset(preset)}
+                  className="text-left rounded-xl border border-gray-200 p-4 hover:border-blue-300 hover:bg-blue-50/50 transition-colors"
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-lg">{preset.emoji}</span>
+                    <span className="font-semibold text-sm text-gray-900">{preset.label}</span>
+                  </div>
+                  <p className="text-xs text-gray-500">{preset.description}</p>
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => startFromPreset(null)}
+                className="text-left rounded-xl border border-dashed border-gray-300 p-4 hover:border-blue-300 hover:bg-blue-50/50 transition-colors flex flex-col items-center justify-center gap-1 text-gray-400 hover:text-blue-600"
+              >
+                <Plus className="h-5 w-5" />
+                <span className="text-xs font-medium">Start from scratch</span>
+              </button>
+            </div>
+          </section>
+        )}
 
         {/* Edit form */}
         {(selected || isNew) && (

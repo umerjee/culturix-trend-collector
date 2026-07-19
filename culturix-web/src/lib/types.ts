@@ -99,7 +99,7 @@ export interface Digest {
   delivered: boolean;
 }
 
-export const PLATFORMS = ["TikTok", "YouTube", "Instagram", "Xiaohongshu", "X/Twitter", "Reddit"] as const;
+export const PLATFORMS = ["TikTok", "YouTube", "Instagram", "Xiaohongshu", "X/Twitter", "Reddit", "Pinterest"] as const;
 export const REGIONS = ["US", "CN", "Global", "EU", "UK", "FR", "CA", "AU"] as const;
 export const CONTENT_GOALS = [
   "Brand awareness",
@@ -137,3 +137,82 @@ export const PERSONA_TAGS = [
   "Main Character",
   "That Girl",
 ] as const;
+
+export interface AvatarTypePreset {
+  key: string;
+  label: string;
+  emoji: string;
+  description: string;
+  industry_niche: string;
+  target_platforms: string[];
+  target_regions: string[];
+  content_goals: string[];
+  content_tones: string[];
+  persona_tags: string[];
+}
+
+// Curated, data-backed starting points for a new trend/avatar profile — each
+// pre-fills the profile form, which stays fully editable before saving.
+// Chosen for durable, evergreen audience interest (not single-event spikes).
+export const AVATAR_TYPES: AvatarTypePreset[] = [
+  {
+    key: "kpop",
+    label: "K-pop & Global Fandom",
+    emoji: "🎤",
+    description: "Comebacks, chart activity, and fandom culture — one of the highest repost/share communities online.",
+    industry_niche: "K-pop and global fandom culture",
+    target_platforms: ["TikTok", "Instagram", "YouTube", "X/Twitter"],
+    target_regions: ["Global"],
+    content_goals: ["Community building", "Entertainment"],
+    content_tones: ["Trendy & playful"],
+    persona_tags: ["Gen Z", "Main Character"],
+  },
+  {
+    key: "anime",
+    label: "Anime & Japanese Pop Culture",
+    emoji: "⛩️",
+    description: "Evergreen global anime/manga fandom — not tied to any single release window.",
+    industry_niche: "Anime and Japanese pop culture",
+    target_platforms: ["TikTok", "YouTube", "Instagram"],
+    target_regions: ["Global"],
+    content_goals: ["Community building", "Entertainment"],
+    content_tones: ["Trendy & playful", "Aesthetic"],
+    persona_tags: ["Gen Z"],
+  },
+  {
+    key: "gaming",
+    label: "Gaming & Esports",
+    emoji: "🎮",
+    description: "Constant content firehose — game culture, esports, and gaming creators.",
+    industry_niche: "Gaming and esports culture",
+    target_platforms: ["TikTok", "YouTube", "X/Twitter"],
+    target_regions: ["Global"],
+    content_goals: ["Community building", "Entertainment"],
+    content_tones: ["Comedic", "Trendy & playful"],
+    persona_tags: ["Gen Z"],
+  },
+  {
+    key: "streetwear",
+    label: "Streetwear & Fashion",
+    emoji: "👟",
+    description: "Fit checks, drops, and street style — a proven niche already live in Culturix.",
+    industry_niche: "Streetwear and fashion",
+    target_platforms: ["Instagram", "TikTok", "Xiaohongshu"],
+    target_regions: ["Global"],
+    content_goals: ["Brand awareness", "Culture fit"],
+    content_tones: ["Aesthetic", "Trendy & playful"],
+    persona_tags: ["Quiet Luxury", "Main Character"],
+  },
+  {
+    key: "beauty",
+    label: "Beauty & Self-Care",
+    emoji: "💄",
+    description: "One of the most consistently strong niches on TikTok, Instagram, and Pinterest for years.",
+    industry_niche: "Beauty and self-care",
+    target_platforms: ["Instagram", "TikTok", "Pinterest"],
+    target_regions: ["Global"],
+    content_goals: ["Community building", "Brand awareness"],
+    content_tones: ["Aesthetic", "Authentic & raw"],
+    persona_tags: ["Clean Girl", "Soft Life", "That Girl"],
+  },
+];
