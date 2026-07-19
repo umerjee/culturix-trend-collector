@@ -82,6 +82,15 @@ def run_all_collectors() -> dict:
         logger.error("Wikipedia failed: %s", e)
         results["wikipedia"] = 0
 
+    # Bluesky trending topics — free, no auth, official public API
+    try:
+        from app.collectors.bluesky import store_bluesky_trends
+        results["bluesky"] = store_bluesky_trends()
+        logger.info("Bluesky: %d inserted", results["bluesky"])
+    except Exception as e:
+        logger.error("Bluesky failed: %s", e)
+        results["bluesky"] = 0
+
     total = sum(results.values())
     logger.info("Collection complete. Total inserted: %d | breakdown: %s", total, results)
     return {"total": total, **results}
