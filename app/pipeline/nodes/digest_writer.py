@@ -47,21 +47,27 @@ def _save_to_db(user_id: str, clusters: list, ideas: list,
 
 
 def _get_user_email(user_id: str) -> Optional[str]:
-    from app.db import SessionLocal
-    import sqlalchemy as sa
+    """User accounts live in Supabase Auth, not the Railway app DB — look up
+    email via the Supabase Auth admin API."""
+    import httpx
 
-    session = SessionLocal()
-    try:
-        result = session.execute(
-            sa.text("SELECT email FROM users WHERE id = :uid LIMIT 1"),
-            {"uid": user_id},
-        )
-        row = result.fetchone()
-        return row[0] if row else None
-    except Exception:
+    url_base = os.getenv("SUPABASE_URL", "").rstrip("/")
+    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    if not url_base or not key:
+        logger.warning("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set — cannot look up user email")
         return None
-    finally:
-        session.close()
+
+    try:
+        resp = httpx.get(
+            f"{url_base}/auth/v1/admin/users/{user_id}",
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json().get("email")
+    except Exception as e:
+        logger.warning("Could not fetch email for user %s: %s", user_id, e)
+        return None
 
 
 def _render_email(ideas: list[dict], clusters: list[dict]) -> str:

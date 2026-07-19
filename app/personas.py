@@ -150,19 +150,25 @@ def generate_clustered_personas(limit: int = 200, min_cluster_size: int = 5) -> 
     generates one persona + content suggestions per cluster.
 
     Requires POST /process/cluster (or run_clustering()) to have run first.
+    Skips clusters smaller than min_cluster_size (not worth a full persona), and
+    caps the number of clusters processed to `limit`. Each cluster is committed
+    independently so one bad AI response doesn't roll back the whole batch.
     """
     session = SessionLocal()
     try:
-        clusters = session.query(Cluster).order_by(Cluster.id).all()
+        all_clusters = session.query(Cluster).order_by(Cluster.id).all()
 
-        if not clusters:
+        if not all_clusters:
             return {
                 "clusters": 0,
                 "personas_created": 0,
                 "warning": "No clusters found in DB. Run POST /process/cluster first.",
             }
 
+        clusters = [c for c in all_clusters if (c.size or 0) >= min_cluster_size][:limit]
+
         personas_created = 0
+        failures = 0
         for cluster in clusters:
             posts = (
                 session.query(Trend)
@@ -174,23 +180,32 @@ def generate_clustered_personas(limit: int = 200, min_cluster_size: int = 5) -> 
             if not posts:
                 continue
 
-            persona_data = ai_infer_persona_from_posts(posts)
-            persona = Persona(
-                name=persona_data["name"],
-                description=persona_data["description"],
-                motivations=persona_data.get("motivations"),
-                interests=persona_data.get("interests"),
-                created_at=datetime.utcnow(),
-            )
-            session.add(persona)
-            session.flush()
+            try:
+                persona_data = ai_infer_persona_from_posts(posts)
+                persona = Persona(
+                    name=persona_data["name"],
+                    description=persona_data["description"],
+                    motivations=persona_data.get("motivations"),
+                    interests=persona_data.get("interests"),
+                    created_at=datetime.utcnow(),
+                )
+                session.add(persona)
+                session.flush()
 
-            persona.content_suggestions = ai_generate_content_suggestions(persona, posts)
-            _link_trends_to_persona(session, posts, persona)
-            personas_created += 1
+                persona.content_suggestions = ai_generate_content_suggestions(persona, posts)
+                _link_trends_to_persona(session, posts, persona)
+                session.commit()
+                personas_created += 1
+            except Exception:
+                session.rollback()
+                failures += 1
 
-        session.commit()
-        return {"clusters": len(clusters), "personas_created": personas_created}
+        return {
+            "clusters": len(all_clusters),
+            "eligible_clusters": len(clusters),
+            "personas_created": personas_created,
+            "failures": failures,
+        }
     except Exception as e:
         session.rollback()
         return {"error": str(e)}
