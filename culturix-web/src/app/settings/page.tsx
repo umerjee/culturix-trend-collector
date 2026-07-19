@@ -291,8 +291,9 @@ function SettingsPageInner() {
         <section className="bg-white rounded-2xl border border-gray-100 p-6">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h2 className="font-semibold text-gray-900">Content profiles</h2>
+              <h2 className="font-semibold text-gray-900">Trend profiles</h2>
               <p className="text-xs text-gray-400 mt-0.5">
+                Each profile tracks trends and generates content for one specific audience, niche, or region — add another to follow a different audience.{" "}
                 {plan === "free"
                   ? `Free plan: 1 profile. Upgrade to Pro for up to 10.`
                   : `Pro plan: ${profiles.length} / 10 profiles.`}
@@ -302,9 +303,9 @@ function SettingsPageInner() {
               onClick={startNew}
               disabled={!canAddMore}
               title={!canAddMore ? `Upgrade to Pro to add more profiles` : ""}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition whitespace-nowrap"
             >
-              <Plus className="h-3.5 w-3.5" /> New profile
+              <Plus className="h-3.5 w-3.5" /> Track new trend
             </button>
           </div>
 
