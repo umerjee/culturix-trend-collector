@@ -33,6 +33,11 @@ async def lifespan(_):
             "ALTER TABLE generated_content ADD COLUMN IF NOT EXISTS content_profile_id UUID",
             # generated_media table is created by create_all above; index added here in case of race
             "CREATE INDEX IF NOT EXISTS idx_generated_media_content ON generated_media(generated_content_id, idea_index)",
+            # Incremental clustering/personas: reuse unchanged clusters instead of full rebuild
+            "ALTER TABLE clusters ADD COLUMN IF NOT EXISTS fingerprint VARCHAR(64)",
+            "CREATE INDEX IF NOT EXISTS idx_clusters_fingerprint ON clusters(fingerprint)",
+            "ALTER TABLE personas ADD COLUMN IF NOT EXISTS cluster_id INTEGER",
+            "CREATE INDEX IF NOT EXISTS idx_personas_cluster_id ON personas(cluster_id)",
         ]:
             _conn.execute(_text(_stmt))
         # Grandfather all users who existed before the approval gate was added

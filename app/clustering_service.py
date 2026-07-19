@@ -3,7 +3,13 @@ Standalone clustering service.
 
 Runs HDBSCAN on stored trend embeddings, writes Cluster rows with
 AI-generated theme + summary, and stamps cluster_id back onto each Trend.
+
+Incremental: a cluster whose trend membership exactly matches a previous
+run (same fingerprint) is reused as-is — no AI relabeling call. Only new
+or changed clusters get a fresh AI label, and clusters whose membership
+no longer appears in the current run are removed.
 """
+import hashlib
 import os
 import json
 from datetime import datetime
@@ -18,6 +24,11 @@ from app.clustering_hdbscan import cluster_embeddings_hdbscan
 
 load_dotenv()
 _anthropic = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+
+def _fingerprint(trends: list) -> str:
+    ids = sorted(str(t.id) for t in trends)
+    return hashlib.sha256(",".join(ids).encode()).hexdigest()
 
 
 def _ai_label_cluster(trends: list) -> dict:
@@ -75,21 +86,36 @@ def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
 
         noise_count = len(label_map.pop(-1, []))
 
-        # Start fresh: delete old clusters and clear cluster_id
-        session.query(Cluster).delete()
-        session.query(Trend).filter(Trend.embedding.isnot(None)).update(
+        all_existing_clusters = session.query(Cluster).all()
+        existing_by_fp = {c.fingerprint: c for c in all_existing_clusters if c.fingerprint}
+
+        # Clear cluster_id for this working set (cheap SQL); reassigned below
+        # for whatever groups survive clustering this run, reused or new.
+        session.query(Trend).filter(Trend.id.in_([t.id for t in trends])).update(
             {"cluster_id": None}, synchronize_session=False
         )
 
-        cluster_rows_created = 0
+        surviving_ids = set()
+        reused = 0
+        created = 0
         for label, cluster_trends in sorted(label_map.items()):
-            ai_label = _ai_label_cluster(cluster_trends)
+            fp = _fingerprint(cluster_trends)
+            existing = existing_by_fp.get(fp)
 
+            if existing:
+                for trend in cluster_trends:
+                    trend.cluster_id = existing.id
+                surviving_ids.add(existing.id)
+                reused += 1
+                continue
+
+            ai_label = _ai_label_cluster(cluster_trends)
             cluster = Cluster(
                 label=label,
                 theme=ai_label.get("theme"),
                 summary=ai_label.get("summary"),
                 size=len(cluster_trends),
+                fingerprint=fp,
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
             )
@@ -98,12 +124,23 @@ def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
 
             for trend in cluster_trends:
                 trend.cluster_id = cluster.id
+            surviving_ids.add(cluster.id)
+            created += 1
 
-            cluster_rows_created += 1
+        # Anything not reused or freshly created this run is stale — including
+        # clusters from before this fingerprint feature existed (no fingerprint
+        # at all), which can never be matched and would otherwise never be
+        # cleaned up.
+        stale = [c for c in all_existing_clusters if c.id not in surviving_ids]
+        for c in stale:
+            session.delete(c)
 
         session.commit()
         return {
-            "clusters": cluster_rows_created,
+            "clusters": created + reused,
+            "clusters_created": created,
+            "clusters_reused": reused,
+            "clusters_removed": len(stale),
             "noise": noise_count,
             "total_trends": len(trends),
         }

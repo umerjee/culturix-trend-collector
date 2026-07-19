@@ -18,5 +18,8 @@ class Cluster(Base):
     size = Column(Integer, nullable=True)
     # Average cohesion score (optional quality metric)
     cohesion = Column(Float, nullable=True)
+    # Hash of this cluster's trend id membership — lets run_clustering reuse
+    # (and skip re-labeling) clusters whose membership hasn't changed.
+    fingerprint = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

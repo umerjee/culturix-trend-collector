@@ -167,9 +167,20 @@ def generate_clustered_personas(limit: int = 200, min_cluster_size: int = 5) -> 
 
         clusters = [c for c in all_clusters if (c.size or 0) >= min_cluster_size][:limit]
 
+        already_covered = {
+            cid for (cid,) in session.query(Persona.cluster_id)
+            .filter(Persona.cluster_id.isnot(None))
+            .all()
+        }
+
         personas_created = 0
+        skipped = 0
         failures = 0
         for cluster in clusters:
+            if cluster.id in already_covered:
+                skipped += 1
+                continue
+
             posts = (
                 session.query(Trend)
                 .filter(Trend.cluster_id == cluster.id)
@@ -187,6 +198,7 @@ def generate_clustered_personas(limit: int = 200, min_cluster_size: int = 5) -> 
                     description=persona_data["description"],
                     motivations=persona_data.get("motivations"),
                     interests=persona_data.get("interests"),
+                    cluster_id=cluster.id,
                     created_at=datetime.utcnow(),
                 )
                 session.add(persona)
@@ -204,6 +216,7 @@ def generate_clustered_personas(limit: int = 200, min_cluster_size: int = 5) -> 
             "clusters": len(all_clusters),
             "eligible_clusters": len(clusters),
             "personas_created": personas_created,
+            "skipped_existing": skipped,
             "failures": failures,
         }
     except Exception as e:
