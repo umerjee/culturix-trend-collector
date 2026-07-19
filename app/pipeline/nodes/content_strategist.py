@@ -6,6 +6,7 @@ Falls back to Claude if Qwen is unavailable.
 import json
 import logging
 import os
+from typing import Optional
 from app.pipeline.state import PipelineState
 
 logger = logging.getLogger("culturix.pipeline.content_strategist")
@@ -24,9 +25,9 @@ def _get_claude_client():
     return anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 
-def _generate_ideas_qwen(profile: dict, clusters: list[dict]) -> list[dict]:
+def _generate_ideas_qwen(profile: dict, clusters: list[dict], top_signals: list[dict]) -> list[dict]:
     qwen = _get_qwen_client()
-    prompt = _build_prompt(profile, clusters)
+    prompt = _build_prompt(profile, clusters, top_signals)
     response = qwen.chat.completions.create(
         model="qwen-max",
         messages=[{"role": "user", "content": prompt}],
@@ -35,9 +36,9 @@ def _generate_ideas_qwen(profile: dict, clusters: list[dict]) -> list[dict]:
     return _parse_ideas(response.choices[0].message.content)
 
 
-def _generate_ideas_claude(profile: dict, clusters: list[dict]) -> list[dict]:
+def _generate_ideas_claude(profile: dict, clusters: list[dict], top_signals: list[dict]) -> list[dict]:
     client = _get_claude_client()
-    prompt = _build_prompt(profile, clusters)
+    prompt = _build_prompt(profile, clusters, top_signals)
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=6000,
@@ -46,7 +47,7 @@ def _generate_ideas_claude(profile: dict, clusters: list[dict]) -> list[dict]:
     return _parse_ideas(message.content[0].text)
 
 
-def _build_prompt(profile: dict, clusters: list[dict]) -> str:
+def _build_prompt(profile: dict, clusters: list[dict], top_signals: Optional[list[dict]] = None) -> str:
     niche = profile.get("industry_niche") or "general brand"
     platforms = ", ".join(profile.get("target_platforms") or ["TikTok", "Instagram"])
     tones = ", ".join(profile.get("content_tones") or ["authentic"])
@@ -61,6 +62,22 @@ def _build_prompt(profile: dict, clusters: list[dict]) -> str:
         ensure_ascii=False,
     )
 
+    # top_signals is the actual RAG result — real posts retrieved via semantic
+    # search against this specific profile's niche/tags/platforms, not the
+    # same generic cluster list every profile gets. Ground the prompt in these
+    # when available so content is genuinely personalized, not just themed.
+    signal_texts = [
+        s.get("text", "").strip()
+        for s in (top_signals or [])
+        if s.get("text", "").strip()
+    ][:8]
+    signals_section = (
+        f"\nSpecific posts trending right now that match this exact audience "
+        f"(retrieved via semantic search on their niche/tone/platforms):\n"
+        f"{json.dumps(signal_texts, ensure_ascii=False)}\n"
+        if signal_texts else ""
+    )
+
     return f"""You are an expert content strategist for {niche}.
 
 Target audience:
@@ -72,9 +89,10 @@ Target audience:
 
 Today's trending cultural signals (summarized):
 {cluster_summary}
-
+{signals_section}
 Generate exactly 10 content ideas that tap into these trends.
 Each idea must be tailored specifically to the brand's niche, tone, and audience.
+{"Prefer ideas that connect to the specific posts above where relevant — they're what this exact audience is engaging with right now, not just the general theme." if signal_texts else ""}
 
 Return ONLY a valid JSON array with exactly 10 objects. Each object must have these exact keys:
 - hook: attention-grabbing opening line or video hook (max 15 words)
@@ -113,13 +131,14 @@ def generate_content(state: PipelineState) -> PipelineState:
         user_id = match["user_id"]
         profile = match["profile"]
         clusters = match.get("clusters", [])
+        top_signals = match.get("top_signals", [])
 
         ideas = []
         try:
             if os.getenv("QWEN_API_KEY"):
-                ideas = _generate_ideas_qwen(profile, clusters)
+                ideas = _generate_ideas_qwen(profile, clusters, top_signals)
             else:
-                ideas = _generate_ideas_claude(profile, clusters)
+                ideas = _generate_ideas_claude(profile, clusters, top_signals)
             logger.info("Generated %d ideas for user %s", len(ideas), user_id)
         except Exception as e:
             logger.error("Content generation failed for user %s: %s", user_id, e)
