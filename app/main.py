@@ -22,6 +22,8 @@ async def lifespan(_):
     from app.models.generated_media import GeneratedMedia       # noqa: F401
     from app.models.content_check_log import ContentCheckLog    # noqa: F401
     from app.models.trend_validation_log import TrendValidationLog  # noqa: F401
+    from app.models.trend_theme import TrendTheme                  # noqa: F401
+    from app.models.trend_occurrence import TrendOccurrence         # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent)
@@ -990,6 +992,66 @@ def trend_validation_log_recent(limit: int = 100):
                 "checked_at": r.checked_at.isoformat() if r.checked_at else None,
             }
             for r in rows
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/admin/trend-history")
+def trend_history_recent(limit: int = 100):
+    from app.db import SessionLocal
+    from app.models.trend_theme import TrendTheme
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(TrendTheme)
+            .order_by(TrendTheme.last_seen_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "id": t.id,
+                "canonical_name": t.canonical_name,
+                "description": t.description,
+                "emotional_theme": t.emotional_theme,
+                "first_seen_at": t.first_seen_at.isoformat() if t.first_seen_at else None,
+                "last_seen_at": t.last_seen_at.isoformat() if t.last_seen_at else None,
+                "occurrence_count": t.occurrence_count,
+                "recurrence_pattern": t.recurrence_pattern,
+                "dominant_day_of_week": t.dominant_day_of_week,
+                "pattern_confidence": t.pattern_confidence,
+            }
+            for t in rows
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/admin/trend-history/{theme_id}/occurrences")
+def trend_history_occurrences(theme_id: int, limit: int = 200):
+    from app.db import SessionLocal
+    from app.models.trend_occurrence import TrendOccurrence
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(TrendOccurrence)
+            .filter(TrendOccurrence.theme_id == theme_id)
+            .order_by(TrendOccurrence.occurrence_date.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "id": o.id,
+                "occurrence_date": o.occurrence_date.isoformat() if o.occurrence_date else None,
+                "day_of_week": o.day_of_week,
+                "name_snapshot": o.name_snapshot,
+                "description_snapshot": o.description_snapshot,
+                "size": o.size,
+                "durability": o.durability,
+            }
+            for o in rows
         ]
     finally:
         session.close()

@@ -47,6 +47,32 @@ def _generate_ideas_claude(profile: dict, clusters: list[dict], top_signals: lis
     return _parse_ideas(message.content[0].text)
 
 
+_WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def _history_note(cluster: dict) -> str:
+    """Renders the recurrence context trend_historian.py attaches to cluster['history']
+    into a short phrase the prompt can use to ground ideas in real pattern data
+    (e.g. an actual weekly Friday spike) instead of treating every trend as brand new."""
+    history = cluster.get("history")
+    if not history:
+        return "first time we've seen this trend, no history yet"
+
+    count = history.get("occurrence_count") or 1
+    pattern = history.get("recurrence_pattern") or "unclear"
+    dominant_day = history.get("dominant_day_of_week")
+
+    if pattern == "weekly" and dominant_day is not None:
+        return f"seen {count} times before, recurs weekly (usually {_WEEKDAY_NAMES[dominant_day]})"
+    if pattern == "yearly":
+        return f"seen {count} times before, recurs yearly around this time of year"
+    if pattern == "sustained":
+        return f"seen {count} times before, an ongoing/sustained interest"
+    if pattern == "spike":
+        return f"seen {count} time(s) before, tied to a one-off event — likely a short-lived spike"
+    return f"seen {count} time(s) before, pattern still unclear"
+
+
 def _build_prompt(profile: dict, clusters: list[dict], top_signals: Optional[list[dict]] = None) -> str:
     niche = profile.get("industry_niche") or "general brand"
     platforms = ", ".join(profile.get("target_platforms") or ["TikTok", "Instagram"])
@@ -57,7 +83,8 @@ def _build_prompt(profile: dict, clusters: list[dict], top_signals: Optional[lis
     age_max = profile.get("target_age_max") or 35
 
     cluster_summary = json.dumps(
-        [{"name": c.get("name"), "description": c.get("description"), "emotional_theme": c.get("emotional_theme")}
+        [{"name": c.get("name"), "description": c.get("description"), "emotional_theme": c.get("emotional_theme"),
+          "history": _history_note(c)}
          for c in (clusters or [])[:6]],
         ensure_ascii=False,
     )
@@ -87,10 +114,15 @@ Target audience:
 - Goals: {goals}
 - Persona types: {tags or "general audience"}
 
-Today's trending cultural signals (summarized):
+Today's trending cultural signals (summarized, each with its "history" — how often
+and in what pattern we've observed it before):
 {cluster_summary}
 {signals_section}
 Generate exactly 10 content ideas that tap into these trends.
+Where a trend's history shows a real recurring pattern (e.g. "recurs weekly, usually
+Friday" or "recurs yearly"), lean into that in posting_time/trend_connection instead
+of treating it as a one-off — e.g. timing the post ahead of a known recurring spike.
+Treat "likely a short-lived spike" trends as timely/newsjacking, not evergreen.
 Each idea must be tailored specifically to the brand's niche, tone, and audience.
 {"Prefer ideas that connect to the specific posts above where relevant — they're what this exact audience is engaging with right now, not just the general theme." if signal_texts else ""}
 
