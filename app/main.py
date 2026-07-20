@@ -998,15 +998,33 @@ def trends_recent(limit: int = 20):
 
 @app.get("/admin/clusters")
 def clusters_recent(limit: int = 50):
+    """
+    trend_count is computed live (COUNT of trends actually pointing at this
+    cluster) rather than trusting Cluster.size — that stored column can go
+    stale relative to the live trends.cluster_id state (clustering_service.py's
+    reuse path doesn't always keep it in sync, under investigation separately),
+    which showed up as the admin UI listing "N trends" on a cluster whose
+    detail view then showed none. Computing it live here means the number
+    shown always matches what the detail endpoint will actually return,
+    regardless of the underlying staleness cause.
+    """
     from app.db import SessionLocal
     from app.models.cluster import Cluster
+    from app.models.trend import Trend
+    import sqlalchemy as sa
     session = SessionLocal()
     try:
         clusters = session.query(Cluster).order_by(Cluster.created_at.desc()).limit(limit).all()
+        counts = dict(
+            session.query(Trend.cluster_id, sa.func.count(Trend.id))
+            .filter(Trend.cluster_id.in_([c.id for c in clusters]))
+            .group_by(Trend.cluster_id)
+            .all()
+        )
         return [
             {
                 "id": c.id, "label": c.label, "description": c.theme,
-                "trend_count": c.size, "created_at": c.created_at.isoformat() if c.created_at else None,
+                "trend_count": counts.get(c.id, 0), "created_at": c.created_at.isoformat() if c.created_at else None,
                 "momentum": c.momentum,  # "up" | "down" | "neutral" | null (no prior baseline yet)
                 "previous_size": c.previous_size,
             }
