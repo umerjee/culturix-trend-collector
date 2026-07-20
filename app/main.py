@@ -668,7 +668,11 @@ def get_digest(user_id: str, profile_id: Optional[str] = None):
         )
         if profile_id:
             q = q.filter(GeneratedContent.content_profile_id == _uuid.UUID(profile_id))
-        latest = q.order_by(GeneratedContent.generated_at.desc()).first()
+        # nullslast(): Postgres defaults to NULLS FIRST on DESC, and every
+        # digest created before the generated_at insert fix was NULL — without
+        # this, a legacy NULL row could outrank a genuinely newer one, which
+        # is exactly what "shows old suggestions, not new" turned out to be.
+        latest = q.order_by(GeneratedContent.generated_at.desc().nullslast()).first()
         if not latest:
             raise HTTPException(status_code=404, detail="No digest yet")
         return {
@@ -1214,7 +1218,7 @@ def admin_digests(limit: int = 20):
     try:
         digests = (
             session.query(GeneratedContent)
-            .order_by(GeneratedContent.generated_at.desc())
+            .order_by(GeneratedContent.generated_at.desc().nullslast())
             .limit(limit).all()
         )
         return [
