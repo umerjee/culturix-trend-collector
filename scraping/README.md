@@ -113,6 +113,41 @@ popular TikTok/Instagram actors on Apify's store. If your actor's output uses
 different field names, extend the key lists there rather than writing a new
 mapper from scratch.
 
+### ScrapeCreators (in parallel, evaluating — `collectors/trend_scrapecreators_ingestor.py`)
+
+Direct async HTTP calls via `httpx` (no actor-run/dataset lifecycle like
+Apify) to ScrapeCreators' hashtag-search endpoints, authenticated with a
+single `x-api-key` header. Same downstream pipeline as the Apify ingestor —
+only the fetch-and-map layer differs.
+
+```bash
+SCRAPE_CREATORS_API_KEY=... SCRAPE_CREATORS_SEARCH_TERMS="ai,startups" \
+  PYTHONPATH=<repo-root> python -m culturix_scraping.collectors.trend_scrapecreators_ingestor
+```
+
+| Var | Required | Purpose |
+|---|---|---|
+| `SCRAPE_CREATORS_API_KEY` | yes | Your ScrapeCreators API key |
+| `SCRAPE_CREATORS_SEARCH_TERMS` | yes | Comma-separated hashtags/keywords to search |
+| `SCRAPE_CREATORS_PLATFORM` | no | `tiktok` (default) or `instagram` |
+| `SCRAPE_CREATORS_MAX_PAGES` | no | Pages to paginate per search term (default `1` — each page is 1 API credit) |
+
+Field names are grounded against ScrapeCreators' published docs, not
+guessed — but the Apify integration needed a live-data fix for exactly this
+reason (an actor's real output didn't match its docs), so treat this the
+same way: run it once against a real key before trusting it, especially
+Instagram. Specifically unconfirmed: TikTok's response wraps items in a
+known `aweme_list` key; Instagram's wrapper key isn't shown in the docs this
+was built against, so `_extract_items()` tries several common candidates
+(`data`/`posts`/`items`/`results`) and logs a warning listing the actual
+top-level keys if none match — check that log line first if Instagram comes
+back with 0 items.
+
+Known schema differences from Apify's TikTok actor: engagement stats are
+**nested** under `statistics.*` (`statistics.digg_count`, not `diggCount`),
+and `create_time` is Unix epoch seconds. Instagram has **no share_count
+field at all** — it's always 0 for Instagram rows, not a bug.
+
 ### Anything else
 
 A spider just needs to yield dicts (or `items.TrendItem`) shaped like:
@@ -150,8 +185,7 @@ root:
 PYTHONPATH=.:scraping pytest scraping/tests/
 ```
 
-`test_velocity.py` has no extra dependencies beyond pytest. `test_items.py`
-and `test_trend_apify_ingestor.py` need `scrapy` installed (both import
-`culturix_scraping.pipelines`, which imports `scrapy`). Not wired into the
-main repo's `pytest.ini`/CI since this package isn't part of the deployed
-backend yet. All 27 tests pass as of this writing.
+`test_velocity.py` has no extra dependencies beyond pytest. The rest need
+`scrapy` installed (all import `culturix_scraping.pipelines`, which imports
+`scrapy`). Not wired into the main repo's `pytest.ini`/CI since this package
+isn't part of the deployed backend yet. All 49 tests pass as of this writing.
