@@ -6,18 +6,27 @@ dataset lifecycle here, just a direct async HTTP GET per search term via
 httpx, authenticated with a single x-api-key header.
 
 Field names below are grounded against ScrapeCreators' published docs
-(docs.scrapecreators.com/v1/tiktok/search/hashtag and .../instagram/search/
-hashtag), not guessed — but the Apify integration needed a live-data fix for
-exactly this reason (an actor's actual output didn't match its docs), so
-treat this the same way: verify against one real response before trusting it
-in production. Specifically uncertain: Instagram's top-level response
-wrapper key isn't shown in the docs excerpt available when this was written
-— _extract_items() tries several common candidates and logs a warning if
-none match, rather than silently returning nothing.
+(docs.scrapecreators.com/v1/{tiktok,instagram}/search/hashtag and
+.../v1/threads/search), not guessed — but the Apify integration needed a
+live-data fix for exactly this reason (an actor's actual output didn't
+match its docs), so treat this the same way: verify against one real
+response before trusting it in production. Specifically uncertain:
+Instagram's top-level response wrapper key isn't shown in the docs excerpt
+available when this was written — _extract_items() tries several common
+candidates and logs a warning if none match, rather than silently returning
+nothing. Threads' `posts` wrapper key IS confirmed in its docs.
 
-TikTok hashtag search nests engagement stats under `statistics` and posts
-`create_time` as Unix epoch seconds. Instagram uses flat fields, `taken_at`
-as ISO 8601, and has no share_count field at all (defaults to 0).
+Per-platform schema quirks this mapper accounts for:
+  - TikTok: engagement stats nested under `statistics.*`; `create_time` is
+    Unix epoch seconds; search param is `hashtag`.
+  - Instagram: flat fields; `taken_at` is an ISO 8601 *string*; no
+    share_count field at all (defaults to 0); search param is `hashtag`.
+  - Threads: search param is `query`, not `hashtag` — a keyword search, not
+    a hashtag search. `taken_at` is a Unix epoch *integer* here (same field
+    name as Instagram's, different type — _parse_created_at handles both).
+    Text is nested at `caption.text`; reply/repost counts are nested under
+    `text_post_app_info.*`. No view_count field. Hard-capped at 10 results
+    per query by Threads itself, not a ScrapeCreators limitation.
 
 Usage:
     SCRAPE_CREATORS_API_KEY=... SCRAPE_CREATORS_SEARCH_TERMS="ai,startups" \
@@ -42,12 +51,20 @@ _BASE_URL = "https://api.scrapecreators.com"
 _ENDPOINTS = {
     "tiktok": "/v1/tiktok/search/hashtag",
     "instagram": "/v1/instagram/search/hashtag",
+    "threads": "/v1/threads/search",
 }
-# Confirmed against docs for tiktok (aweme_list). Not confirmed for
-# instagram — see module docstring — so it's left unset and _extract_items
-# falls through to trying common candidates instead.
+# threads is a keyword search, not a hashtag search — different query param.
+_SEARCH_PARAM_NAME = {
+    "tiktok": "hashtag",
+    "instagram": "hashtag",
+    "threads": "query",
+}
+# Confirmed against docs for tiktok (aweme_list) and threads (posts). Not
+# confirmed for instagram — see module docstring — so it's left unset and
+# _extract_items falls through to trying common candidates instead.
 _KNOWN_LIST_KEY = {
     "tiktok": "aweme_list",
+    "threads": "posts",
 }
 
 # Same "this drives the pipeline outside Scrapy's crawl engine" reasoning as
@@ -76,18 +93,34 @@ def _extract_items(platform: str, payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _walk(item: dict[str, Any], path: str) -> Any:
+    node: Any = item
+    for part in path.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part)
+    return node
+
+
 def _first_int(item: dict[str, Any], *paths: str) -> int:
     """paths may use 'a.b' for one level of nesting (e.g. TikTok's statistics.digg_count)."""
     for path in paths:
-        node: Any = item
-        for part in path.split("."):
-            if not isinstance(node, dict):
-                node = None
-                break
-            node = node.get(part)
+        node = _walk(item, path)
         if isinstance(node, (int, float)):
             return int(node)
     return 0
+
+
+def _first_str(item: dict[str, Any], *paths: str) -> str:
+    """Same dotted-path lookup as _first_int, for text fields (e.g. Threads'
+    caption.text). A path whose value isn't a string (e.g. Instagram's flat
+    `caption` string vs Threads' nested `caption` object under the same key)
+    is skipped rather than stringified, so the next candidate gets a chance."""
+    for path in paths:
+        node = _walk(item, path)
+        if isinstance(node, str) and node:
+            return node
+    return ""
 
 
 def _parse_created_at(item: dict[str, Any]) -> datetime | None:
@@ -99,7 +132,9 @@ def _parse_created_at(item: dict[str, Any]) -> datetime | None:
             except ValueError:
                 continue
 
-    for key in ("create_time", "createTime", "taken_at_timestamp"):
+    # Same field name (taken_at) is a string on Instagram but an integer
+    # epoch on Threads — checked here as a fallback for the numeric case.
+    for key in ("create_time", "createTime", "taken_at_timestamp", "taken_at"):
         value = item.get(key)
         if isinstance(value, (int, float)) and value:
             return datetime.fromtimestamp(value, tz=timezone.utc)
@@ -111,7 +146,7 @@ def map_scrapecreators_item(platform: str, item: dict[str, Any]) -> dict[str, An
     """Maps one raw ScrapeCreators result item onto the shape TrendRecord.
     from_item expects. Returns None for a row missing what we need to
     identify it, rather than raising — the caller counts and logs skips."""
-    video_id = str(item.get("aweme_id") or item.get("id") or item.get("shortcode") or "").strip()
+    video_id = str(item.get("aweme_id") or item.get("id") or item.get("pk") or item.get("shortcode") or "").strip()
     if not video_id:
         return None
 
@@ -119,7 +154,7 @@ def map_scrapecreators_item(platform: str, item: dict[str, Any]) -> dict[str, An
     if created_at is None:
         return None
 
-    description = str(item.get("desc") or item.get("caption") or item.get("text") or "")
+    description = _first_str(item, "desc", "caption", "text", "caption.text")
 
     return {
         "video_id": video_id,
@@ -127,8 +162,10 @@ def map_scrapecreators_item(platform: str, item: dict[str, Any]) -> dict[str, An
         "description": description,
         "view_count": _first_int(item, "statistics.play_count", "video_view_count", "video_play_count", "play_count"),
         "like_count": _first_int(item, "statistics.digg_count", "like_count", "digg_count"),
-        "share_count": _first_int(item, "statistics.share_count", "share_count"),
-        "comment_count": _first_int(item, "statistics.comment_count", "comment_count"),
+        "share_count": _first_int(item, "statistics.share_count", "share_count", "text_post_app_info.repost_count"),
+        "comment_count": _first_int(
+            item, "statistics.comment_count", "comment_count", "text_post_app_info.direct_reply_count"
+        ),
         "created_at": created_at,
     }
 
@@ -137,12 +174,15 @@ async def _fetch_search_results(client: "Any", platform: str, term: str, max_pag
     api_key = os.environ["SCRAPE_CREATORS_API_KEY"]
     endpoint = _ENDPOINTS.get(platform)
     if not endpoint:
-        raise ValueError(f"Unsupported SCRAPE_CREATORS_PLATFORM: {platform!r} (expected 'tiktok' or 'instagram')")
+        raise ValueError(
+            f"Unsupported SCRAPE_CREATORS_PLATFORM: {platform!r} (expected one of {sorted(_ENDPOINTS)})"
+        )
+    param_name = _SEARCH_PARAM_NAME[platform]
 
     all_items: list[dict[str, Any]] = []
     cursor: str | None = None
     for _ in range(max_pages):
-        params: dict[str, str] = {"hashtag": term}
+        params: dict[str, str] = {param_name: term}
         if cursor:
             params["cursor"] = cursor
 
@@ -187,7 +227,7 @@ async def ingest() -> dict[str, int]:
     try:
         async with httpx.AsyncClient() as client:
             for term in terms:
-                logger.info("Fetching %s hashtag search for %r...", platform, term)
+                logger.info("Fetching %s search for %r...", platform, term)
                 try:
                     raw_items = await _fetch_search_results(client, platform, term, max_pages)
                 except Exception:

@@ -129,24 +129,36 @@ SCRAPE_CREATORS_API_KEY=... SCRAPE_CREATORS_SEARCH_TERMS="ai,startups" \
 |---|---|---|
 | `SCRAPE_CREATORS_API_KEY` | yes | Your ScrapeCreators API key |
 | `SCRAPE_CREATORS_SEARCH_TERMS` | yes | Comma-separated hashtags/keywords to search |
-| `SCRAPE_CREATORS_PLATFORM` | no | `tiktok` (default) or `instagram` |
+| `SCRAPE_CREATORS_PLATFORM` | no | `tiktok` (default), `instagram`, or `threads` |
 | `SCRAPE_CREATORS_MAX_PAGES` | no | Pages to paginate per search term (default `1` — each page is 1 API credit) |
 
 Field names are grounded against ScrapeCreators' published docs, not
 guessed — but the Apify integration needed a live-data fix for exactly this
 reason (an actor's real output didn't match its docs), so treat this the
 same way: run it once against a real key before trusting it, especially
-Instagram. Specifically unconfirmed: TikTok's response wraps items in a
-known `aweme_list` key; Instagram's wrapper key isn't shown in the docs this
-was built against, so `_extract_items()` tries several common candidates
+Instagram. Specifically unconfirmed: TikTok's and Threads' responses wrap
+items in known keys (`aweme_list`, `posts` respectively, both confirmed
+against docs). Instagram's wrapper key isn't shown in the docs this was
+built against, so `_extract_items()` tries several common candidates
 (`data`/`posts`/`items`/`results`) and logs a warning listing the actual
 top-level keys if none match — check that log line first if Instagram comes
 back with 0 items.
 
-Known schema differences from Apify's TikTok actor: engagement stats are
-**nested** under `statistics.*` (`statistics.digg_count`, not `diggCount`),
-and `create_time` is Unix epoch seconds. Instagram has **no share_count
-field at all** — it's always 0 for Instagram rows, not a bug.
+Known per-platform schema quirks (all handled in the mapper, worth knowing
+if debugging a 0-mapped run):
+- **TikTok**: engagement stats **nested** under `statistics.*`
+  (`statistics.digg_count`, not `diggCount`); `create_time` is Unix epoch
+  seconds; search param is `hashtag`.
+- **Instagram**: flat fields; `taken_at` is an ISO 8601 **string**; **no
+  share_count field at all** (always 0, not a bug); search param is
+  `hashtag`.
+- **Threads**: search param is `query` (a keyword search, not hashtag);
+  `taken_at` is the *same field name* as Instagram's but a Unix epoch
+  **integer** here, not a string; text is nested at `caption.text`;
+  reply/repost counts nested under `text_post_app_info.*`; no view_count
+  field; **hard-capped at 10 results per query by Threads itself** (not a
+  ScrapeCreators or code limitation) — don't expect more no matter how
+  `SCRAPE_CREATORS_MAX_PAGES` is set.
 
 ### Anything else
 
