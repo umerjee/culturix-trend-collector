@@ -1,7 +1,7 @@
 import Link from "next/link";
 import {
   Zap, ArrowRight, CheckCircle, TrendingUp, Sparkles, Video,
-  Clock, Target, Megaphone, Music, Film,
+  Clock, Target, Megaphone, Music, Film, History, RefreshCw,
 } from "lucide-react";
 
 const MOCK_IDEAS = [
@@ -54,9 +54,16 @@ const FEATURES = [
   {
     icon: Sparkles,
     title: "Cultural cluster AI",
-    desc: "Our AI groups signals into named cultural moments — complete with emotional theme, why it matters, and which audience segments are driving it.",
+    desc: "Our AI groups signals into named cultural moments — complete with emotional theme, why it matters, and which audience segments are driving it. Every cluster passes an AI safety and legitimacy check before it ever reaches your brief.",
     accent: "text-purple-500",
     bg: "bg-purple-50",
+  },
+  {
+    icon: History,
+    title: "Recurring-trend awareness",
+    desc: "Culturix remembers every trend it's ever seen — so it knows whether something is a real weekly pattern, a seasonal moment that comes back every year, or a one-off spike. Your posting timing gets grounded in actual history, not a guess.",
+    accent: "text-amber-500",
+    bg: "bg-amber-50",
   },
   {
     icon: Target,
@@ -64,6 +71,13 @@ const FEATURES = [
     desc: "Each idea is calibrated to your brand: your tone, your audience age range, your platforms. Ten ideas that read like a strategist wrote them for you.",
     accent: "text-pink-500",
     bg: "bg-pink-50",
+  },
+  {
+    icon: RefreshCw,
+    title: "Ideas that stay honest",
+    desc: "We don't deliver ideas and disappear. Every idea gets a daily freshness audit — see at a glance which are still live, which are aging, and which have gone stale, so you never post something the internet already moved past.",
+    accent: "text-sky-500",
+    bg: "bg-sky-50",
   },
   {
     icon: Video,

@@ -120,7 +120,7 @@ def _send_email(to: str, html: str):
         import resend
         resend.api_key = resend_key
         resend.Emails.send({
-            "from": "digest@culturix.ai",
+            "from": "digest@culturixcloud.com",
             "to": to,
             "subject": f"Your Culturix Digest — {date.today().strftime('%B %d')}",
             "html": html,
