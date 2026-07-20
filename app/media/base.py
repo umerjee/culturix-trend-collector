@@ -6,7 +6,7 @@ from typing import Optional
 @dataclass
 class MediaResult:
     asset_bytes: bytes
-    content_type: str        # "audio/mpeg" | "video/mp4"
+    content_type: str        # "audio/mpeg" | "video/mp4" | "image/png"
     duration_seconds: Optional[float] = None
     cost_usd: Optional[float] = None
 
@@ -25,3 +25,8 @@ class VideoProvider(ABC):
     @abstractmethod
     def generate(self, prompt: str, duration_seconds: int = 5,
                  aspect_ratio: str = "9:16") -> MediaResult: ...
+
+
+class ImageProvider(ABC):
+    @abstractmethod
+    def generate(self, prompt: str) -> MediaResult: ...
