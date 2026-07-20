@@ -1242,22 +1242,19 @@ def admin_stats():
 
 @app.post("/admin/collect")
 def admin_collect():
+    """
+    Was hardcoded to just YouTube (4 regions) + Twitter-via-proxy (3 regions)
+    — silently skipping Reddit, TikTok, Xiaohongshu, Pinterest, Wikipedia,
+    and Bluesky, and never using the Apify-preferred Twitter path even when
+    APIFY_API_TOKEN is set. Delegates to the same run_all_collectors() the
+    scheduler and POST /collect/all already use, so "Collect now" actually
+    means all sources, not a stale partial subset.
+    """
     import threading
     def _run():
         try:
-            from app.collectors.youtube import store_youtube_trends
-            from app.collectors.twitter_fallback import store_twitter_trends_via_proxy
-            results = {}
-            for region in ["US", "GB", "FR", "NG"]:
-                try:
-                    results[f"youtube_{region}"] = store_youtube_trends(region, limit=30)
-                except Exception as e:
-                    results[f"youtube_{region}"] = str(e)
-            for region in ["global", "united-states", "united-kingdom"]:
-                try:
-                    results[f"twitter_{region}"] = store_twitter_trends_via_proxy(region)
-                except Exception as e:
-                    results[f"twitter_{region}"] = str(e)
+            from app.collectors.orchestrator import run_all_collectors
+            results = run_all_collectors()
             logging.info("Admin collect results: %s", results)
         except Exception as e:
             logging.error("Admin collect failed: %s", e)
