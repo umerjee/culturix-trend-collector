@@ -14,6 +14,7 @@ import os
 import json
 from datetime import datetime
 
+import sqlalchemy as sa
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
@@ -24,6 +25,10 @@ from app.clustering_hdbscan import cluster_embeddings_hdbscan
 
 load_dotenv()
 _anthropic = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+# Arbitrary fixed key for a Postgres session-level advisory lock — see the
+# lock acquisition in run_clustering() for why this exists.
+_CLUSTERING_ADVISORY_LOCK_KEY = 918_273_645
 
 
 def _fingerprint(trends: list) -> str:
@@ -101,8 +106,34 @@ Return ONLY valid JSON with:
 
 
 def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
+    """
+    Postgres session-level advisory lock guards the whole read-modify-write
+    cycle below. Found while investigating clusters that showed a nonzero
+    trend count but zero trends actually pointing at them: this function
+    reads all existing clusters, clears cluster_id for its working set,
+    reassigns/creates/deletes clusters, then commits — all as multiple
+    separate statements, not one atomic transaction-level guarantee against
+    a second concurrent run doing the same over the same trend rows. Several
+    manual pipeline triggers fired close together (this session's testing)
+    plausibly overlapped with each other or the scheduler, each one's
+    clear-and-reassign racing the other's, leaving orphaned Cluster rows
+    whose members got reassigned elsewhere mid-flight. The lock makes a
+    second concurrent call skip immediately instead of racing.
+    """
     session = SessionLocal()
+    got_lock = False
     try:
+        got_lock = bool(session.execute(
+            sa.text("SELECT pg_try_advisory_lock(:key)"), {"key": _CLUSTERING_ADVISORY_LOCK_KEY}
+        ).scalar())
+        if not got_lock:
+            return {
+                "clusters": 0,
+                "noise": 0,
+                "total_trends": 0,
+                "skipped": "another run_clustering() call is already in progress",
+            }
+
         trends = (
             session.query(Trend)
             .filter(Trend.embedding.isnot(None))
@@ -140,11 +171,21 @@ def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
             if t.cluster_id is not None:
                 old_cluster_members.setdefault(t.cluster_id, set()).add(t.id)
 
-        # Clear cluster_id for this working set (cheap SQL); reassigned below
-        # for whatever groups survive clustering this run, reused or new.
-        session.query(Trend).filter(Trend.id.in_([t.id for t in trends])).update(
-            {"cluster_id": None}, synchronize_session=False
-        )
+        # Clear cluster_id for this working set — assigned per-object rather
+        # than a bulk .update(synchronize_session=False), deliberately. A
+        # bulk update executes raw SQL without updating these already-loaded
+        # objects' ORM-tracked "original" value, so when a trend is later
+        # reassigned back to the SAME cluster it already had before this run
+        # (the common steady-state case), `trend.cluster_id = existing.id`
+        # looks like a no-op to SQLAlchemy's dirty-checking — comparing
+        # against the pre-clear in-memory value, not the just-nulled DB row —
+        # and gets silently skipped at flush, leaving the row NULL from this
+        # clear forever. This was the actual cause of clusters showing a
+        # nonzero trend count with zero trends actually pointing at them:
+        # confirmed by re-running twice in a row — the second run reused
+        # every cluster unchanged and mismatches roughly quintupled.
+        for t in trends:
+            t.cluster_id = None
 
         surviving_ids = set()
         reused = 0
@@ -158,6 +199,12 @@ def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
             if existing:
                 for trend in cluster_trends:
                     trend.cluster_id = existing.id
+                # size was previously only set at creation, never on reuse —
+                # left it stale indefinitely, which also silently corrupted
+                # _compute_momentum's baseline (reads existing.size) for any
+                # cluster reused more than once.
+                existing.size = len(cluster_trends)
+                existing.updated_at = datetime.utcnow()
                 # An exact fingerprint match compares identical membership
                 # against itself, so this naturally comes out "neutral".
                 existing.momentum = momentum
@@ -208,4 +255,10 @@ def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
         session.rollback()
         raise
     finally:
+        if got_lock:
+            try:
+                session.execute(sa.text("SELECT pg_advisory_unlock(:key)"), {"key": _CLUSTERING_ADVISORY_LOCK_KEY})
+                session.commit()
+            except Exception:
+                pass  # connection may already be broken; Postgres releases session-level advisory locks on disconnect regardless
         session.close()
