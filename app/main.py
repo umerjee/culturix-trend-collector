@@ -26,7 +26,12 @@ async def lifespan(_):
     from app.models.trend_occurrence import TrendOccurrence         # noqa: F401
     Base.metadata.create_all(bind=engine)
 
-    # Add columns introduced after initial deploy (idempotent)
+    # Add columns introduced after initial deploy (idempotent).
+    # Each statement commits (and, on failure, rolls back) independently —
+    # startup must never go down because one DDL statement in this list
+    # failed against unexpected existing data (e.g. CREATE UNIQUE INDEX
+    # failing because duplicate rows already exist would otherwise abort the
+    # whole transaction and prevent every later statement from applying too).
     from sqlalchemy import text as _text
     with engine.connect() as _conn:
         for _stmt in [
@@ -48,8 +53,23 @@ async def lifespan(_):
             # Cluster momentum (up/down/neutral trend direction)
             "ALTER TABLE clusters ADD COLUMN IF NOT EXISTS momentum VARCHAR(10)",
             "ALTER TABLE clusters ADD COLUMN IF NOT EXISTS previous_size INTEGER",
+            # Velocity scoring pipeline (scraping/culturix_scraping/) — likes/hour proxy
+            "ALTER TABLE trends ADD COLUMN IF NOT EXISTS velocity_score FLOAT",
+            # ON CONFLICT (platform, external_id) in the async upsert pipeline needs
+            # a real unique index to target — collectors dedup at the app level
+            # before insert, but that check isn't atomic, so this can plausibly
+            # fail against real production data if any duplicates ever slipped
+            # through a race; caught below rather than allowed to crash startup.
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_trends_platform_external_id ON trends(platform, external_id)",
         ]:
-            _conn.execute(_text(_stmt))
+            try:
+                _conn.execute(_text(_stmt))
+                _conn.commit()
+            except Exception as _migration_err:
+                logging.getLogger("culturix.startup").warning(
+                    "Startup migration statement failed, skipping: %s | %s", _stmt, _migration_err
+                )
+                _conn.rollback()
         # Grandfather all users who existed before the approval gate was added
         _conn.execute(_text(
             "UPDATE user_profiles SET approved = TRUE WHERE approved = FALSE AND created_at IS NULL"

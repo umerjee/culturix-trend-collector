@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, BigInteger, Text, JSON, TIMESTAMP, func
+from sqlalchemy import Column, Integer, String, BigInteger, Text, JSON, TIMESTAMP, Float, func
 from sqlalchemy.orm import relationship
 
 from app.db import Base
@@ -25,5 +25,8 @@ class Trend(Base):
     translated_content = Column(Text, nullable=True)
     embedding = Column(JSON, nullable=True)
     cluster_id = Column(Integer, nullable=True)
+    # likes / (hours_since_posted + 1) — recency-weighted growth proxy, written
+    # by the Scrapy velocity pipeline (scraping/culturix_scraping/pipelines.py)
+    velocity_score = Column(Float, nullable=True)
 
     personas = relationship("TrendPersona", back_populates="trend")

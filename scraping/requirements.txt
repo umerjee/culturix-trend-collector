@@ -1,0 +1,10 @@
+# Scoped to scraping/ — not part of the main FastAPI backend's requirements.txt,
+# since this pipeline isn't wired into a spider/deployment yet (see README.md).
+scrapy>=2.11
+sqlalchemy[asyncio]>=2.0
+asyncpg
+httpx
+python-dotenv
+apify-client
+# Optional — only imported if REDIS_URL is set (scraping/culturix_scraping/dedup.py)
+redis>=5.0
