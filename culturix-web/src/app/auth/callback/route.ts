@@ -15,5 +15,9 @@ export async function GET(request: Request) {
     }
   }
 
-  return NextResponse.redirect(`${origin}/signup?error=auth_callback_failed`);
+  // Recovery links that fail here (expired, already used, or the domain isn't
+  // in Supabase's Auth > URL Configuration redirect allowlist) are most
+  // usefully resolved by requesting a fresh one, not by landing on signup.
+  const failureTarget = type === "recovery" ? "/forgot-password" : "/signup";
+  return NextResponse.redirect(`${origin}${failureTarget}?error=auth_callback_failed`);
 }
