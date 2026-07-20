@@ -90,21 +90,28 @@ its default — extra concurrent items simply queue for a pooled connection
 ### Apify (recommended today — `collectors/trend_apify_ingestor.py`)
 
 Same `apify-client` pattern already used in `app/collectors/xiaohongshu.py`
-and `app/collectors/twitter_apify.py`: reads an **already-finished** Apify
-dataset (no fresh actor run triggered, so no extra run cost) and maps its
-rows onto `TrendItem` before driving `TrendVelocityPipeline` directly —
-there's no spider or `scrapy crawl` involved, just a standalone async script.
+and `app/collectors/twitter_apify.py`. Two ways to get a dataset — there's no
+spider or `scrapy crawl` involved either way, just a standalone async script:
 
 ```bash
+# Cheapest: read an already-finished dataset, no new run triggered
 APIFY_API_TOKEN=... APIFY_DATASET_ID=... \
+  PYTHONPATH=<repo-root> python -m culturix_scraping.collectors.trend_apify_ingestor
+
+# Recurring/scheduled use: trigger a fresh run each time (a dataset is a
+# static snapshot, so re-reading the same APIFY_DATASET_ID on a schedule
+# would just re-ingest identical data forever)
+APIFY_API_TOKEN=... APIFY_ACTOR_ID=apidojo/tweet-scraper APIFY_SEARCH_TERMS="ai,startups" \
   PYTHONPATH=<repo-root> python -m culturix_scraping.collectors.trend_apify_ingestor
 ```
 
 | Var | Required | Purpose |
 |---|---|---|
 | `APIFY_API_TOKEN` | yes | Your Apify API token |
-| `APIFY_DATASET_ID` | yes | The dataset to read (from an actor run triggered elsewhere) |
-| `APIFY_PLATFORM` | no | Forces `platform` for every row; otherwise inferred from an item field or a `tiktok.com`/`instagram.com` URL host, and rows that can't be identified either way are skipped and counted, not guessed at |
+| `APIFY_DATASET_ID` | one of this or the two below | The dataset to read (from an actor run triggered elsewhere) |
+| `APIFY_ACTOR_ID` + `APIFY_SEARCH_TERMS` | — | Trigger a fresh actor run instead; `APIFY_DATASET_ID` wins if both are set |
+| `APIFY_MAX_ITEMS` | no | Cap per triggered run (default `60`) — only relevant with `APIFY_ACTOR_ID` |
+| `APIFY_PLATFORM` | no | Forces `platform` for every row; otherwise inferred from an item field or a `tiktok.com`/`instagram.com`/`twitter.com`/`x.com` URL host, and rows that can't be identified either way are skipped and counted, not guessed at |
 
 It's actor-agnostic within reason — `map_apify_item()` (in that file) checks
 a handful of common field-name variants (`playCount`/`viewCount`,
@@ -156,9 +163,13 @@ if debugging a 0-mapped run):
   `taken_at` is the *same field name* as Instagram's but a Unix epoch
   **integer** here, not a string; text is nested at `caption.text`;
   reply/repost counts nested under `text_post_app_info.*`; no view_count
-  field; **hard-capped at 10 results per query by Threads itself** (not a
-  ScrapeCreators or code limitation) — don't expect more no matter how
-  `SCRAPE_CREATORS_MAX_PAGES` is set.
+  field. Docs claim a 10-result cap per query — a live test run returned 19,
+  so that limit either doesn't hold anymore or was never accurate; the code
+  doesn't assume any particular count.
+
+**Live-tested** (2026-07-20): all three platforms mapped 100% of returned
+items with zero errors on the first real run — TikTok 20/20, Instagram 9/9,
+Threads 19/19.
 
 ### Anything else
 
@@ -181,6 +192,36 @@ yield {
 drops malformed/duplicate items with `DropItem`, and returns the item with
 `velocity_score` attached.
 
+## Scheduling (`run_scheduled_ingest.py`)
+
+Both ingestors above are manual-trigger scripts by default. `run_scheduled_ingest.py`
+runs either or both on a recurring cron schedule — but as its **own process**,
+not inside the main backend. See the module docstring for the full reasoning;
+short version: wiring this into `app/scheduler.py` (the main backend's
+in-process APScheduler) would mean bundling `scraping/`'s dependencies into
+the deployed backend, which was kept separate on purpose.
+
+```bash
+cd scraping
+SCHEDULE_APIFY=true APIFY_API_TOKEN=... APIFY_ACTOR_ID=apidojo/tweet-scraper APIFY_SEARCH_TERMS="ai,startups" \
+SCHEDULE_SCRAPECREATORS=true SCRAPE_CREATORS_API_KEY=... SCRAPE_CREATORS_SEARCH_TERMS="ai,startups" \
+  python run_scheduled_ingest.py
+```
+
+Each ingestor is independently opt-in (`SCHEDULE_APIFY=true` / `SCHEDULE_SCRAPECREATORS=true`);
+run one, both, or write your own script importing `register_jobs()` if you
+want different scheduling logic. Default cadence is every 6 hours
+(`APIFY_CRON_HOUR` / `SCRAPE_CREATORS_CRON_HOUR`, APScheduler cron syntax).
+Note the Apify ingestor needs `APIFY_ACTOR_ID` + `APIFY_SEARCH_TERMS` (not
+`APIFY_DATASET_ID`) to mean anything on a recurring schedule — a dataset is a
+static snapshot of one past run, so re-reading the same ID forever is a
+no-op after the first run.
+
+This has **not** been run continuously / left on for an extended period —
+only validated that job registration and each ingestor individually work.
+Watch API credit consumption closely the first few cycles before trusting it
+unattended.
+
 ## Tests
 
 ```bash
@@ -200,4 +241,4 @@ PYTHONPATH=.:scraping pytest scraping/tests/
 `test_velocity.py` has no extra dependencies beyond pytest. The rest need
 `scrapy` installed (all import `culturix_scraping.pipelines`, which imports
 `scrapy`). Not wired into the main repo's `pytest.ini`/CI since this package
-isn't part of the deployed backend yet. All 49 tests pass as of this writing.
+isn't part of the deployed backend yet. All 67 tests pass as of this writing.

@@ -6,5 +6,6 @@ asyncpg
 httpx
 python-dotenv
 apify-client
+apscheduler
 # Optional — only imported if REDIS_URL is set (scraping/culturix_scraping/dedup.py)
 redis>=5.0

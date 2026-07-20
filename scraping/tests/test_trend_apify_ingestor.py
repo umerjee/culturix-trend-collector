@@ -1,10 +1,14 @@
 import os
 from datetime import datetime, timezone
 
+import pytest
+
 from culturix_scraping.collectors.trend_apify_ingestor import (
     _first_int,
     _infer_platform,
     _parse_created_at,
+    _resolve_dataset_id,
+    _trigger_actor_run,
     map_apify_item,
 )
 
@@ -100,3 +104,51 @@ class TestMapApifyItem:
     def test_missing_timestamp_returns_none(self, monkeypatch):
         monkeypatch.setenv("APIFY_PLATFORM", "tiktok")
         assert map_apify_item({"id": "1"}) is None
+
+
+class TestResolveDatasetId:
+    def test_dataset_id_env_var_is_used_directly_without_triggering_a_run(self, monkeypatch, mocker):
+        monkeypatch.setenv("APIFY_DATASET_ID", "abc123")
+        monkeypatch.delenv("APIFY_ACTOR_ID", raising=False)
+        mock_client = mocker.Mock()
+        assert _resolve_dataset_id(mock_client) == "abc123"
+        mock_client.actor.assert_not_called()
+
+    def test_actor_and_search_terms_trigger_a_fresh_run(self, monkeypatch, mocker):
+        monkeypatch.delenv("APIFY_DATASET_ID", raising=False)
+        monkeypatch.setenv("APIFY_ACTOR_ID", "apidojo/tweet-scraper")
+        monkeypatch.setenv("APIFY_SEARCH_TERMS", "ai,startups")
+        mock_client = mocker.Mock()
+        mock_client.actor.return_value.call.return_value.default_dataset_id = "fresh-dataset-id"
+
+        result = _resolve_dataset_id(mock_client)
+
+        assert result == "fresh-dataset-id"
+        mock_client.actor.assert_called_once_with("apidojo/tweet-scraper")
+        call_kwargs = mock_client.actor.return_value.call.call_args.kwargs
+        assert call_kwargs["run_input"]["searchTerms"] == ["ai", "startups"]
+
+    def test_neither_configured_raises_clear_error(self, monkeypatch, mocker):
+        monkeypatch.delenv("APIFY_DATASET_ID", raising=False)
+        monkeypatch.delenv("APIFY_ACTOR_ID", raising=False)
+        monkeypatch.delenv("APIFY_SEARCH_TERMS", raising=False)
+        with pytest.raises(RuntimeError, match="APIFY_DATASET_ID"):
+            _resolve_dataset_id(mocker.Mock())
+
+    def test_dataset_id_takes_priority_over_actor_run(self, monkeypatch, mocker):
+        # Cheapest path wins when both are configured — no reason to trigger
+        # a paid run when a specific dataset was explicitly requested.
+        monkeypatch.setenv("APIFY_DATASET_ID", "abc123")
+        monkeypatch.setenv("APIFY_ACTOR_ID", "apidojo/tweet-scraper")
+        monkeypatch.setenv("APIFY_SEARCH_TERMS", "ai")
+        mock_client = mocker.Mock()
+        assert _resolve_dataset_id(mock_client) == "abc123"
+        mock_client.actor.assert_not_called()
+
+
+class TestTriggerActorRun:
+    def test_empty_run_result_raises(self, mocker):
+        mock_client = mocker.Mock()
+        mock_client.actor.return_value.call.return_value = None
+        with pytest.raises(RuntimeError, match="no result"):
+            _trigger_actor_run(mock_client, "some/actor", ["term"], 60)

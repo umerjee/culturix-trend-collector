@@ -1,19 +1,32 @@
 """
-Bridges an already-finished Apify dataset into TrendVelocityPipeline. This is
-a standalone batch script, not a Scrapy spider — reading a dataset that
-already exists (APIFY_DATASET_ID) rather than triggering a fresh actor run
-is the cheap path (no new actor-run cost), and there's no crawling involved,
-so it drives the pipeline directly via asyncio instead of `scrapy crawl`.
+Bridges Apify into TrendVelocityPipeline. This is a standalone batch script,
+not a Scrapy spider — there's no crawling involved, so it drives the
+pipeline directly via asyncio instead of `scrapy crawl`.
+
+Two ways to get a dataset (see _resolve_dataset_id):
+  - APIFY_DATASET_ID: read an already-finished dataset, no new run cost.
+    Cheapest option, but static — re-running this against the same dataset
+    ID just re-ingests the same data, since a dataset is a snapshot of one
+    past run, not a live feed.
+  - APIFY_ACTOR_ID + APIFY_SEARCH_TERMS (+ optional APIFY_MAX_ITEMS): trigger
+    a fresh actor run each time this is invoked. Required for recurring/
+    scheduled use (see ../../run_scheduled_ingest.py) — this is what makes
+    "run this every 6 hours" mean anything instead of a no-op after the
+    first run.
 
 Actor-agnostic: maps the handful of field-name variants used across the
-popular TikTok/Instagram scraper actors on Apify's store (playCount vs
-viewCount, diggCount vs likeCount, createTimeISO vs takenAtTimestamp, etc.)
-onto the TrendItem shape TrendRecord.from_item expects. Matches the same
-apify-client usage already established in app/collectors/xiaohongshu.py and
-app/collectors/twitter_apify.py.
+popular TikTok/Instagram/Twitter scraper actors on Apify's store (playCount
+vs viewCount, diggCount vs likeCount, createTimeISO vs takenAtTimestamp,
+etc.) onto the TrendItem shape TrendRecord.from_item expects. Matches the
+same apify-client usage already established in app/collectors/xiaohongshu.py
+and app/collectors/twitter_apify.py.
 
 Usage:
-    APIFY_API_TOKEN=... APIFY_DATASET_ID=... python -m culturix_scraping.collectors.trend_apify_ingestor
+    APIFY_API_TOKEN=... APIFY_DATASET_ID=... \
+      python -m culturix_scraping.collectors.trend_apify_ingestor
+
+    APIFY_API_TOKEN=... APIFY_ACTOR_ID=apidojo/tweet-scraper APIFY_SEARCH_TERMS="ai,startups" \
+      python -m culturix_scraping.collectors.trend_apify_ingestor
 """
 from __future__ import annotations
 
@@ -137,21 +150,66 @@ def map_apify_item(item: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _iter_dataset_items() -> Iterable[dict[str, Any]]:
+def _get_client() -> "Any":
     token = os.environ["APIFY_API_TOKEN"]
-    dataset_id = os.environ["APIFY_DATASET_ID"]
-
     try:
         from apify_client import ApifyClient
     except ImportError as e:
         raise RuntimeError("apify-client not installed — run: pip install apify-client") from e
+    return ApifyClient(token)
 
-    client = ApifyClient(token)
+
+def _trigger_actor_run(client: "Any", actor_id: str, search_terms: list[str], max_items: int) -> str:
+    """Triggers a fresh actor run and returns its dataset_id. This is what
+    makes recurring scheduling meaningful for Apify — reading a fixed
+    APIFY_DATASET_ID (the cheap, default path) would just re-ingest the same
+    dataset forever on a schedule, since Apify datasets are static snapshots
+    of a past run, not a live feed."""
+    logger.info("Triggering Apify actor %s (maxItems=%d, terms=%s)...", actor_id, max_items, search_terms)
+    run = client.actor(actor_id).call(run_input={
+        "searchTerms": search_terms,
+        "maxItems": max_items,
+        "sort": "Latest",
+        "lang": "",
+    })
+    if not run:
+        raise RuntimeError(f"Apify actor run for {actor_id!r} returned no result")
+    # Attribute access, not dict-subscript — apify-client's Run object isn't
+    # subscriptable (see app/collectors/twitter_apify.py's own note on this).
+    dataset_id = run.default_dataset_id
+    logger.info("Actor run complete. dataset_id=%s", dataset_id)
+    return dataset_id
+
+
+def _resolve_dataset_id(client: "Any") -> str:
+    dataset_id = os.getenv("APIFY_DATASET_ID")
+    if dataset_id:
+        return dataset_id
+
+    actor_id = os.getenv("APIFY_ACTOR_ID")
+    search_terms_raw = os.getenv("APIFY_SEARCH_TERMS")
+    if actor_id and search_terms_raw:
+        search_terms = [t.strip() for t in search_terms_raw.split(",") if t.strip()]
+        max_items = int(os.getenv("APIFY_MAX_ITEMS", "60"))
+        return _trigger_actor_run(client, actor_id, search_terms, max_items)
+
+    raise RuntimeError(
+        "Set either APIFY_DATASET_ID (read an existing dataset, no run cost) "
+        "or both APIFY_ACTOR_ID and APIFY_SEARCH_TERMS (trigger a fresh run — "
+        "required for recurring/scheduled use, since a dataset is a static "
+        "snapshot of one past run, not a live feed)"
+    )
+
+
+def _iter_dataset_items() -> Iterable[dict[str, Any]]:
+    client = _get_client()
+    dataset_id = _resolve_dataset_id(client)
     yield from client.dataset(dataset_id).iterate_items()
 
 
 async def ingest() -> dict[str, int]:
-    """Reads APIFY_DATASET_ID end to end through TrendVelocityPipeline: dedup,
+    """Reads from APIFY_DATASET_ID (or triggers a fresh run via APIFY_ACTOR_ID
+    + APIFY_SEARCH_TERMS) end to end through TrendVelocityPipeline: dedup,
     velocity scoring, async upsert into the same `trends` table the main
     backend reads from. Returns counters for whoever's watching the run."""
     pipeline = TrendVelocityPipeline()
@@ -188,9 +246,14 @@ async def ingest() -> dict[str, int]:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    for required in ("APIFY_API_TOKEN", "APIFY_DATASET_ID"):
-        if not os.getenv(required):
-            raise SystemExit(f"{required} is required")
+    if not os.getenv("APIFY_API_TOKEN"):
+        raise SystemExit("APIFY_API_TOKEN is required")
+    has_dataset = bool(os.getenv("APIFY_DATASET_ID"))
+    has_actor_run = bool(os.getenv("APIFY_ACTOR_ID")) and bool(os.getenv("APIFY_SEARCH_TERMS"))
+    if not has_dataset and not has_actor_run:
+        raise SystemExit(
+            "Set either APIFY_DATASET_ID, or both APIFY_ACTOR_ID and APIFY_SEARCH_TERMS"
+        )
     asyncio.run(ingest())
 
 
