@@ -15,6 +15,7 @@ and CONTENT_ENGINE_WEBHOOK_URL) and the one-time schema setup.
 from __future__ import annotations
 
 import logging
+from datetime import timezone
 from typing import Any
 
 from scrapy import Spider
@@ -27,6 +28,50 @@ from .items import TrendRecord
 from .velocity import DEFAULT_VELOCITY_THRESHOLD, is_high_velocity, velocity_score
 
 logger = logging.getLogger("culturix.scraping.pipeline")
+
+
+def build_upsert_values(record: TrendRecord, score: float) -> dict[str, Any]:
+    """Pure, directly testable — separated from process_item specifically so
+    a JSON-serialization regression in raw_json (as happened with a stray
+    datetime once) is caught by a plain unit test, not only by a real DB
+    round-trip."""
+    return {
+        "platform": record.platform,
+        "external_id": record.video_id,
+        "content": record.description,
+        "title": record.description[:200],
+        "likes": record.like_count,
+        "comments": record.comment_count,
+        "shares": record.share_count,
+        "views": record.view_count,
+        # trends.posted_at is TIMESTAMP WITHOUT TIME ZONE — asyncpg rejects a
+        # tz-aware datetime against it outright ("can't subtract offset-naive
+        # and offset-aware datetimes"). Normalize to UTC then strip tzinfo,
+        # same fix already applied in app/collectors/tiktok.py. A naive
+        # created_at is assumed already-UTC (this codebase's convention
+        # elsewhere, e.g. datetime.utcnow()), not local time, so it's left as-is
+        # rather than run through astimezone() which would treat it as local.
+        "posted_at": (
+            record.created_at.astimezone(timezone.utc).replace(tzinfo=None)
+            if record.created_at.tzinfo is not None
+            else record.created_at
+        ),
+        "velocity_score": score,
+        # Built from the validated `record`, not the raw `item` — `item` can
+        # carry a datetime in created_at (TrendRecord.from_item accepts one),
+        # which isn't JSON-serializable and would fail the upsert;
+        # record.created_at is normalized here to a safe ISO string.
+        "raw_json": {
+            "video_id": record.video_id,
+            "platform": record.platform,
+            "description": record.description,
+            "view_count": record.view_count,
+            "like_count": record.like_count,
+            "share_count": record.share_count,
+            "comment_count": record.comment_count,
+            "created_at": record.created_at.isoformat(),
+        },
+    }
 
 
 class TrendVelocityPipeline:
@@ -69,19 +114,7 @@ class TrendVelocityPipeline:
 
         async with AsyncSessionLocal() as session:
             async with session.begin():
-                await upsert_trend(session, {
-                    "platform": record.platform,
-                    "external_id": record.video_id,
-                    "content": record.description,
-                    "title": record.description[:200],
-                    "likes": record.like_count,
-                    "comments": record.comment_count,
-                    "shares": record.share_count,
-                    "views": record.view_count,
-                    "posted_at": record.created_at,
-                    "velocity_score": score,
-                    "raw_json": dict(item),
-                })
+                await upsert_trend(session, build_upsert_values(record, score))
 
         self._processed += 1
         if is_high_velocity(score, self.velocity_threshold):

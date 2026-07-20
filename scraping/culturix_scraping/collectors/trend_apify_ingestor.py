@@ -42,6 +42,8 @@ _NO_SPIDER = cast(Spider, None)
 _PLATFORM_HOSTS = {
     "tiktok.com": "tiktok",
     "instagram.com": "instagram",
+    "twitter.com": "twitter",
+    "x.com": "twitter",
 }
 
 
@@ -63,12 +65,22 @@ def _infer_platform(item: dict[str, Any]) -> str | None:
     return None
 
 
+_TWITTER_LEGACY_DATE_FORMAT = "%a %b %d %H:%M:%S %z %Y"  # e.g. "Mon Jul 20 11:56:36 +0000 2026"
+
+
 def _parse_created_at(item: dict[str, Any]) -> datetime | None:
-    for key in ("createTimeISO", "timestamp", "created_at", "publishedAt"):
+    for key in ("createTimeISO", "timestamp", "created_at", "publishedAt", "createdAt"):
         value = item.get(key)
         if isinstance(value, str) and value:
             try:
                 return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+            try:
+                # apidojo/tweet-scraper (and Twitter's classic API) use this
+                # format for createdAt, not ISO 8601 — e.g. "Mon Jul 20
+                # 11:56:36 +0000 2026". Confirmed against a live dataset row.
+                return datetime.strptime(value, _TWITTER_LEGACY_DATE_FORMAT)
             except ValueError:
                 continue
 
@@ -94,7 +106,7 @@ def map_apify_item(item: dict[str, Any]) -> dict[str, Any] | None:
     need to identify it — the caller counts and logs skips over failing
     the whole batch on one bad row."""
     video_id = str(
-        item.get("id") or item.get("videoId") or item.get("video_id")
+        item.get("id") or item.get("tweetId") or item.get("videoId") or item.get("video_id")
         or item.get("postId") or item.get("shortCode") or item.get("code") or ""
     ).strip()
     if not video_id:
@@ -109,7 +121,7 @@ def map_apify_item(item: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     description = (
-        item.get("text") or item.get("desc") or item.get("description")
+        item.get("text") or item.get("fullText") or item.get("desc") or item.get("description")
         or item.get("caption") or item.get("title") or ""
     )
 
@@ -118,9 +130,9 @@ def map_apify_item(item: dict[str, Any]) -> dict[str, Any] | None:
         "platform": platform,
         "description": str(description),
         "view_count": _first_int(item, "playCount", "viewCount", "view_count", "videoViewCount"),
-        "like_count": _first_int(item, "diggCount", "likeCount", "likesCount", "like_count"),
-        "share_count": _first_int(item, "shareCount", "share_count"),
-        "comment_count": _first_int(item, "commentCount", "comment_count"),
+        "like_count": _first_int(item, "diggCount", "likeCount", "likesCount", "like_count", "favoriteCount"),
+        "share_count": _first_int(item, "shareCount", "share_count", "retweetCount"),
+        "comment_count": _first_int(item, "commentCount", "comment_count", "replyCount"),
         "created_at": created_at,
     }
 

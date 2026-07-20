@@ -23,6 +23,11 @@ class TestInferPlatform:
         item = {"webVideoUrl": "https://www.tiktok.com/@user/video/123"}
         assert _infer_platform(item) == "tiktok"
 
+    def test_falls_back_to_x_url_host(self, monkeypatch):
+        monkeypatch.delenv("APIFY_PLATFORM", raising=False)
+        item = {"url": "https://x.com/someuser/status/123"}
+        assert _infer_platform(item) == "twitter"
+
     def test_unrecognized_returns_none(self, monkeypatch):
         monkeypatch.delenv("APIFY_PLATFORM", raising=False)
         assert _infer_platform({"url": "https://example.com/x"}) is None
@@ -32,6 +37,12 @@ class TestParseCreatedAt:
     def test_iso_string_field(self):
         result = _parse_created_at({"createTimeISO": "2026-01-01T00:00:00Z"})
         assert result == datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def test_twitter_legacy_created_at_format(self):
+        # apidojo/tweet-scraper's actual createdAt format — confirmed against
+        # a live dataset row; NOT ISO 8601, datetime.fromisoformat rejects it.
+        result = _parse_created_at({"createdAt": "Mon Jul 20 11:56:36 +0000 2026"})
+        assert result == datetime(2026, 7, 20, 11, 56, 36, tzinfo=timezone.utc)
 
     def test_epoch_field(self):
         result = _parse_created_at({"createTime": 1767225600})
