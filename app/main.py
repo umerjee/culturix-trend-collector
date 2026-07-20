@@ -24,6 +24,7 @@ async def lifespan(_):
     from app.models.trend_validation_log import TrendValidationLog  # noqa: F401
     from app.models.trend_theme import TrendTheme                  # noqa: F401
     from app.models.trend_occurrence import TrendOccurrence         # noqa: F401
+    from app.models.high_velocity_alert import HighVelocityAlert    # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -871,6 +872,57 @@ def webhook_delivery():
     return {"status": "started"}
 
 
+@app.post("/api/webhooks/high-velocity-trend")
+def high_velocity_trend_webhook(body: dict):
+    """
+    Receiver for scraping/culturix_scraping/hooks.py's trigger_content_engine —
+    fires when the velocity pipeline sees an item cross VELOCITY_THRESHOLD.
+
+    Deliberately just records the alert rather than triggering run_pipeline():
+    this fires automatically and potentially repeatedly (a burst of trending
+    items = a burst of webhook calls), and run_pipeline() makes real DeepSeek/
+    Claude calls and would email real users if RESEND_API_KEY is ever set in
+    production — not something that should happen unattended on every hit.
+    Surfacing these via /admin/high-velocity-alerts is the safer default;
+    wiring one of these into an actual pipeline run is a deliberate decision
+    to make later, not a side effect of this endpoint existing.
+    """
+    from app.db import SessionLocal
+    from app.models.high_velocity_alert import HighVelocityAlert
+    from datetime import datetime as _dt
+
+    posted_at = None
+    raw_created_at = body.get("created_at")
+    if raw_created_at:
+        try:
+            posted_at = _dt.fromisoformat(str(raw_created_at).replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError:
+            posted_at = None
+
+    session = SessionLocal()
+    try:
+        alert = HighVelocityAlert(
+            platform=body.get("platform", "unknown"),
+            external_id=str(body.get("video_id", "")),
+            description=body.get("description"),
+            velocity_score=float(body.get("velocity_score") or 0),
+            like_count=body.get("like_count"),
+            view_count=body.get("view_count"),
+            trend_posted_at=posted_at,
+        )
+        session.add(alert)
+        session.commit()
+        logging.info("High-velocity trend alert recorded: platform=%s id=%s score=%s",
+                     alert.platform, alert.external_id, alert.velocity_score)
+        return {"status": "recorded", "id": alert.id}
+    except Exception as e:
+        session.rollback()
+        logging.error("Failed to record high-velocity alert: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to record alert")
+    finally:
+        session.close()
+
+
 # ── Workstream 2 — New Collectors ─────────────────────────────────────────────
 
 @app.post("/collect/xhs")
@@ -1072,6 +1124,36 @@ def trend_history_occurrences(theme_id: int, limit: int = 200):
                 "durability": o.durability,
             }
             for o in rows
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/admin/high-velocity-alerts")
+def high_velocity_alerts_recent(limit: int = 100):
+    from app.db import SessionLocal
+    from app.models.high_velocity_alert import HighVelocityAlert
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(HighVelocityAlert)
+            .order_by(HighVelocityAlert.received_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "id": a.id,
+                "platform": a.platform,
+                "external_id": a.external_id,
+                "description": a.description,
+                "velocity_score": a.velocity_score,
+                "like_count": a.like_count,
+                "view_count": a.view_count,
+                "trend_posted_at": a.trend_posted_at.isoformat() if a.trend_posted_at else None,
+                "received_at": a.received_at.isoformat() if a.received_at else None,
+            }
+            for a in rows
         ]
     finally:
         session.close()
