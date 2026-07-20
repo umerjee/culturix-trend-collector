@@ -658,8 +658,8 @@ export default function AdminDashboard() {
 
           {/* ── Clusters ── */}
           {page === "clusters" && (
-            <div className="grid lg:grid-cols-[1fr,1.1fr] gap-6 items-start">
-              <div className="space-y-3">
+            <div className="grid lg:grid-cols-[1fr,1.1fr] gap-6 items-start lg:h-[calc(100vh-11rem)]">
+              <div className="space-y-3 lg:h-full lg:overflow-y-auto lg:pr-1">
                 {clusters.length === 0 && (
                   <p className="text-gray-400 text-sm">No clusters yet — run the pipeline first.</p>
                 )}
@@ -685,7 +685,7 @@ export default function AdminDashboard() {
                 ))}
               </div>
 
-              <div className="bg-white rounded-xl border border-gray-100 p-6 lg:sticky lg:top-8">
+              <div className="bg-white rounded-xl border border-gray-100 p-6 lg:h-full lg:overflow-y-auto">
                 {!selectedClusterId && (
                   <p className="text-sm text-gray-400 text-center py-16">Select a cluster to see its member trends.</p>
                 )}
@@ -723,8 +723,8 @@ export default function AdminDashboard() {
 
           {/* ── Personas ── */}
           {page === "personas" && (
-            <div className="grid lg:grid-cols-[1fr,1.1fr] gap-6 items-start">
-              <div className="grid sm:grid-cols-2 gap-4">
+            <div className="grid lg:grid-cols-[1fr,1.1fr] gap-6 items-start lg:h-[calc(100vh-11rem)]">
+              <div className="grid sm:grid-cols-2 gap-4 lg:h-full lg:content-start lg:overflow-y-auto lg:pr-1">
                 {personas.length === 0 && (
                   <p className="text-gray-400 text-sm sm:col-span-2">No personas yet — run the pipeline first.</p>
                 )}
@@ -756,7 +756,7 @@ export default function AdminDashboard() {
                 ))}
               </div>
 
-              <div className="bg-white rounded-xl border border-gray-100 p-6 lg:sticky lg:top-8">
+              <div className="bg-white rounded-xl border border-gray-100 p-6 lg:h-full lg:overflow-y-auto">
                 {!selectedPersonaId && (
                   <p className="text-sm text-gray-400 text-center py-16">Select a persona to see content ideas &amp; linked trends.</p>
                 )}
@@ -830,13 +830,13 @@ export default function AdminDashboard() {
                 ))}
               </div>
 
-              <div className="grid lg:grid-cols-[1fr,1.2fr] gap-6 items-start">
-                <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-                  <div className="px-6 py-4 border-b border-gray-50 flex items-center justify-between">
+              <div className="grid lg:grid-cols-[1fr,1.2fr] gap-6 items-start lg:h-[calc(100vh-11rem)]">
+                <div className="bg-white rounded-xl border border-gray-100 overflow-hidden lg:h-full lg:flex lg:flex-col">
+                  <div className="px-6 py-4 border-b border-gray-50 flex items-center justify-between shrink-0">
                     <h2 className="font-semibold text-gray-900 text-sm">Trend themes</h2>
                     <span className="text-xs text-gray-400">{trendHistory.length} tracked</span>
                   </div>
-                  <ul className="divide-y divide-gray-50 max-h-[560px] overflow-y-auto">
+                  <ul className="divide-y divide-gray-50 overflow-y-auto lg:flex-1">
                     {trendHistory.length === 0 && (
                       <li className="px-6 py-10 text-center text-sm text-gray-400">
                         No trend history yet — it accumulates as the daily pipeline runs.
@@ -874,7 +874,7 @@ export default function AdminDashboard() {
                   </ul>
                 </div>
 
-                <div className="bg-white rounded-xl border border-gray-100 p-6 lg:sticky lg:top-8">
+                <div className="bg-white rounded-xl border border-gray-100 p-6 lg:h-full lg:overflow-y-auto">
                   {!selectedThemeId && (
                     <p className="text-sm text-gray-400 text-center py-16">Select a trend to see its history.</p>
                   )}
