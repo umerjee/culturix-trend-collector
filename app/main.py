@@ -715,8 +715,8 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
       content_id: str,
       idea_index: int,
       user_id: str,
-      media_types: ["voiceover", "music", "video"],   # subset allowed
-      prompts: { voiceover: str, music: str, video: str }
+      media_types: ["voiceover", "music", "video", "image"],   # subset allowed
+      prompts: { voiceover: str, music: str, video: str, image: str }
     }
     Inserts generated_media rows (status=pending) and queues background generation.
     Returns immediately with the created row IDs.
@@ -736,10 +736,10 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
     if not content_id or idea_index is None or not user_id or not media_types:
         raise HTTPException(status_code=400, detail="content_id, idea_index, user_id, media_types required")
 
-    VALID = {"voiceover", "music", "video"}
+    VALID = {"voiceover", "music", "video", "image"}
     media_types = [m for m in media_types if m in VALID]
     if not media_types:
-        raise HTTPException(status_code=400, detail="No valid media_types (voiceover|music|video)")
+        raise HTTPException(status_code=400, detail="No valid media_types (voiceover|music|video|image)")
 
     # Plan-tier gating: free users cannot generate media
     # Superadmin (SUPERADMIN_USER_ID env var) always bypasses this check
@@ -774,6 +774,7 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
     _KEY_CHECK = {
         "music":     ("SUNO_API_KEY",       "MiniMax (via aimlapi)"),
         "video":     ("KLING_ACCESS_KEY",   "Kling"),
+        "image":     ("OPENAI_API_KEY",     "gpt-image-1"),
     }
     missing_keys = [
         f"{mt} ({name}): add {env_var} to Railway env vars"
@@ -789,7 +790,7 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
             detail="Media provider not configured — " + "; ".join(missing_keys)
         )
 
-    _PROVIDER_MAP = {"voiceover": "edge-tts", "music": "minimax", "video": "kling"}
+    _PROVIDER_MAP = {"voiceover": "edge-tts", "music": "minimax", "video": "kling", "image": "gpt-image-1"}
     created_ids = []
     session2 = SessionLocal()
     try:

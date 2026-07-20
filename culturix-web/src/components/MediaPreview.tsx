@@ -7,7 +7,7 @@ import type { GeneratedMedia } from "@/lib/types";
 interface Props {
   contentId: string;
   ideaIndex: number;
-  mediaType: "voiceover" | "music" | "video";
+  mediaType: "voiceover" | "music" | "video" | "image";
   onDone?: () => void;
 }
 
@@ -73,12 +73,20 @@ export default function MediaPreview({ contentId, ideaIndex, mediaType, onDone }
 
   if (media.status === "done" && media.asset_url) {
     const isVideo = media.media_type === "video";
+    const isImage = media.media_type === "image";
     const duration = media.duration_seconds
       ? `${Math.round(media.duration_seconds)}s`
       : "";
     return (
       <div className="mt-2 space-y-1">
-        {isVideo ? (
+        {isImage ? (
+          // eslint-disable-next-line @next/next/no-img-element -- dynamic Supabase Storage URL, no next/image usage elsewhere in this app
+          <img
+            src={media.asset_url}
+            alt="Generated post image"
+            className="w-full rounded-lg max-h-48 object-cover"
+          />
+        ) : isVideo ? (
           <video
             src={media.asset_url}
             controls

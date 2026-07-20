@@ -9,11 +9,13 @@ _PROVIDERS = {
     "voiceover": ("edge-tts",   "app.media.voice", "EdgeTTSProvider"),
     "music":     ("minimax",    "app.media.music", "MiniMaxMusicProvider"),
     "video":     ("kling",      "app.media.video",  "KlingProvider"),
+    "image":     ("gpt-image-1", "app.media.image",  "GptImageProvider"),
 }
 
 _EXT = {
     "audio/mpeg": "mp3",
     "video/mp4":  "mp4",
+    "image/png":  "png",
 }
 
 
@@ -54,9 +56,7 @@ def run_generation(
 
         if media_type == "voiceover":
             result = provider.synthesize(prompt)
-        elif media_type == "music":
-            result = provider.generate(prompt)
-        elif media_type == "video":
+        elif media_type in ("music", "video", "image"):
             result = provider.generate(prompt)
         else:
             raise ValueError(f"Unknown media_type: {media_type}")

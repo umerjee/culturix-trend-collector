@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { Music, Target, Megaphone, Copy, Check, Film, Mic, Video, Loader2, Clock, Zap, ChevronDown, ChevronUp } from "lucide-react";
+import { Music, Target, Megaphone, Copy, Check, Film, Mic, Video, Image as ImageIcon, Loader2, Clock, Zap, ChevronDown, ChevronUp } from "lucide-react";
 import type { ContentIdea } from "@/lib/types";
 import MediaPreview from "@/components/MediaPreview";
 
@@ -45,7 +45,7 @@ interface Props {
   plan: "free" | "pro";
 }
 
-type MediaType = "voiceover" | "music" | "video";
+type MediaType = "voiceover" | "music" | "video" | "image";
 
 function CopyBtn({ text, label }: { text: string; label: string }) {
   const [done, setDone] = useState(false);
@@ -107,6 +107,7 @@ export default function DigestCard({ idea, index, contentId, plan }: Props) {
             voiceover: idea.hook,
             music: idea.music_mood || "Upbeat trending pop",
             video: idea.video_prompt || idea.hook,
+            image: idea.video_prompt || idea.hook,
           },
         }),
       });
@@ -124,6 +125,7 @@ export default function DigestCard({ idea, index, contentId, plan }: Props) {
   }
 
   const MEDIA_BTNS: { type: MediaType; label: string; icon: ReactNode }[] = [
+    { type: "image",     label: "Image",     icon: <ImageIcon className="h-3.5 w-3.5" /> },
     { type: "voiceover", label: "Voiceover", icon: <Mic className="h-3.5 w-3.5" /> },
     { type: "music",     label: "Music",     icon: <Music className="h-3.5 w-3.5" /> },
     { type: "video",     label: "Video",     icon: <Video className="h-3.5 w-3.5" /> },
