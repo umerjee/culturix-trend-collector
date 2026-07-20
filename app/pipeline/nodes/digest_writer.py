@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 from app.pipeline.state import PipelineState
 
@@ -22,8 +22,8 @@ def _save_to_db(user_id: str, clusters: list, ideas: list,
         result = session.execute(
             sa.text("""
                 INSERT INTO generated_content
-                    (id, user_id, content_profile_id, trend_date, clusters, content_ideas, delivered)
-                VALUES (:id, :user_id, :profile_id, :trend_date, :clusters, :ideas, FALSE)
+                    (id, user_id, content_profile_id, trend_date, clusters, content_ideas, delivered, generated_at)
+                VALUES (:id, :user_id, :profile_id, :trend_date, :clusters, :ideas, FALSE, :generated_at)
                 RETURNING id
             """),
             {
@@ -33,6 +33,10 @@ def _save_to_db(user_id: str, clusters: list, ideas: list,
                 "trend_date": date.today().isoformat(),
                 "clusters": json.dumps(clusters),
                 "ideas": json.dumps(ideas),
+                # GeneratedContent.generated_at has a Python-side ORM default
+                # (default=datetime.utcnow), which this raw-SQL insert bypasses
+                # entirely — left every digest's generated_at NULL until now.
+                "generated_at": datetime.utcnow().isoformat(),
             },
         )
         row = result.fetchone()

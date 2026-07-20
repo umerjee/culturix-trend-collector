@@ -1,8 +1,9 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { RefreshCw, Settings, Zap, TrendingUp, TrendingDown, Minus, Inbox, ShieldCheck, LayoutList } from "lucide-react";
+import { Settings, Zap, TrendingUp, TrendingDown, Minus, Inbox, ShieldCheck, LayoutList } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import DigestCard from "@/components/DigestCard";
+import RefreshButton from "@/components/RefreshButton";
 import type { Digest, ContentProfile, TrendCluster } from "@/lib/types";
 
 const RAILWAY = "https://culturix-trend-collector-production.up.railway.app";
@@ -99,17 +100,7 @@ export default async function DashboardPage({
             <span className="font-bold text-lg tracking-tight">Culturix</span>
           </div>
           <div className="flex items-center gap-3">
-            <form action="/api/generate" method="POST">
-              {searchParams.profile && (
-                <input type="hidden" name="profile_id" value={searchParams.profile} />
-              )}
-              <button
-                type="submit"
-                className="inline-flex items-center gap-2 text-sm font-medium text-gray-600 border border-gray-200 rounded-lg px-3 py-2 hover:bg-gray-50 transition-colors"
-              >
-                <RefreshCw className="h-3.5 w-3.5" /> Refresh
-              </button>
-            </form>
+            <RefreshButton profileId={searchParams.profile} />
             <Link
               href="/settings"
               className="inline-flex items-center gap-2 text-sm font-medium text-gray-600 border border-gray-200 rounded-lg px-3 py-2 hover:bg-gray-50 transition-colors"

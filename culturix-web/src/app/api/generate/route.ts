@@ -36,5 +36,9 @@ export async function POST(req: Request) {
     // Pipeline started async on Railway — timeout is expected, not an error
   }
 
-  return NextResponse.redirect(redirectUrl);
+  // 303 explicitly forces a GET on follow (unlike the 307 default, which
+  // preserves POST and would hit the dashboard page route with the wrong
+  // method) — matters both for a native form submit and for RefreshButton's
+  // fetch() call, which also follows redirects automatically.
+  return NextResponse.redirect(redirectUrl, 303);
 }
