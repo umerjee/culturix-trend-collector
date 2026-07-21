@@ -13,10 +13,15 @@ logger = logging.getLogger("culturix.pipeline.content_strategist")
 
 
 def _get_qwen_client():
+    # Dashscope has two separate regional deployments (China: dashscope.aliyuncs.com,
+    # International: dashscope-intl.aliyuncs.com) with non-interchangeable API keys.
+    # This account's key is provisioned on the international side — confirmed live
+    # against dashscope.aliyuncs.com (401 InvalidApiKey) vs dashscope-intl.aliyuncs.com
+    # (succeeds) before making this the default.
     from openai import OpenAI
     return OpenAI(
         api_key=os.environ["QWEN_API_KEY"],
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
     )
 
 

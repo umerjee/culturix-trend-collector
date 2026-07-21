@@ -9,7 +9,7 @@ _PROVIDERS = {
     "voiceover": ("edge-tts",   "app.media.voice", "EdgeTTSProvider"),
     "music":     ("minimax",    "app.media.music", "MiniMaxMusicProvider"),
     "video":     ("kling",      "app.media.video",  "KlingProvider"),
-    "image":     ("gpt-image-1", "app.media.image",  "GptImageProvider"),
+    "image":     ("qwen-image-2.0", "app.media.image", "QwenImageProvider"),
 }
 
 _EXT = {

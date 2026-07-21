@@ -774,7 +774,7 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
     _KEY_CHECK = {
         "music":     ("SUNO_API_KEY",       "MiniMax (via aimlapi)"),
         "video":     ("KLING_ACCESS_KEY",   "Kling"),
-        "image":     ("OPENAI_API_KEY",     "gpt-image-1"),
+        "image":     ("QWEN_API_KEY",       "Qwen-Image"),
     }
     missing_keys = [
         f"{mt} ({name}): add {env_var} to Railway env vars"
@@ -790,7 +790,7 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
             detail="Media provider not configured — " + "; ".join(missing_keys)
         )
 
-    _PROVIDER_MAP = {"voiceover": "edge-tts", "music": "minimax", "video": "kling", "image": "gpt-image-1"}
+    _PROVIDER_MAP = {"voiceover": "edge-tts", "music": "minimax", "video": "kling", "image": "qwen-image-2.0"}
     created_ids = []
     session2 = SessionLocal()
     try:
