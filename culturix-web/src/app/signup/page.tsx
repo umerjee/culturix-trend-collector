@@ -66,7 +66,10 @@ function SignupForm() {
       if (signinError) {
         setError(signinError.message);
       } else {
-        router.push("/onboarding");
+        // /dashboard itself redirects to /onboarding if this user has no
+        // content profile yet — that's the single source of truth for
+        // whether onboarding is needed, not this sign-in handler.
+        router.push("/dashboard");
         router.refresh();
       }
     }

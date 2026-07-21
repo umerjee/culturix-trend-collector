@@ -67,6 +67,10 @@ export default async function DashboardPage({
     fetchProfiles(user.id),
     fetchDigest(user.id, searchParams.profile),
   ]);
+  // Single source of truth for "needs onboarding" — a user with zero content
+  // profiles has never completed the wizard (or their session outlived it),
+  // so send them there instead of showing a permanently-empty dashboard.
+  if (profiles.length === 0) redirect("/onboarding");
 
   const activeProfile = profiles.find((p) => p.id === searchParams.profile) ?? profiles[0] ?? null;
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });

@@ -3,11 +3,32 @@ import { Zap } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import OnboardingWizard from "@/components/OnboardingWizard";
 
+const RAILWAY = "https://culturix-trend-collector-production.up.railway.app";
+
 export default async function OnboardingPage() {
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) redirect("/signup");
+
+  // Onboarding is first-time setup only — adding further niches happens in
+  // Settings, so a user who already has a profile has nothing left to do
+  // here (this is what let a returning sign-in bounce them back into the
+  // wizard every time before the redirect-target fix in signup/page.tsx).
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
+  let hasProfile = false;
+  try {
+    const res = await fetch(`${apiUrl}/users/${user.id}/content-profiles`, { cache: "no-store" });
+    if (res.ok) {
+      const profiles = await res.json();
+      hasProfile = Array.isArray(profiles) && profiles.length > 0;
+    }
+  } catch {
+    // Railway unreachable — let the wizard render rather than hard-blocking
+  }
+  // redirect() throws internally to signal Next.js — must not be inside the
+  // try/catch above, or the catch would swallow that throw as a fetch error.
+  if (hasProfile) redirect("/dashboard");
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white">
