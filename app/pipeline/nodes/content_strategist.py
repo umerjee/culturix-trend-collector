@@ -87,8 +87,15 @@ def _build_prompt(profile: dict, clusters: list[dict], top_signals: Optional[lis
     age_min = profile.get("target_age_min") or 18
     age_max = profile.get("target_age_max") or 35
 
+    # example_posts (verbatim real posts clusterer.py extracted) is the one
+    # field in a cluster that actually contains concrete named entities — the
+    # real celebrity names, movie titles, event names, etc. Dropping it (as
+    # this used to) leaves the model with only a paraphrased theme label to
+    # work from, which is exactly how ideas end up as generic template fill
+    # ("this celebrity feud") with nothing real to name.
     cluster_summary = json.dumps(
         [{"name": c.get("name"), "description": c.get("description"), "emotional_theme": c.get("emotional_theme"),
+          "example_posts": (c.get("example_posts") or [])[:3],
           "history": _history_note(c)}
          for c in (clusters or [])[:6]],
         ensure_ascii=False,
@@ -130,6 +137,14 @@ of treating it as a one-off — e.g. timing the post ahead of a known recurring 
 Treat "likely a short-lived spike" trends as timely/newsjacking, not evergreen.
 Each idea must be tailored specifically to the brand's niche, tone, and audience.
 {"Prefer ideas that connect to the specific posts above where relevant — they're what this exact audience is engaging with right now, not just the general theme." if signal_texts else ""}
+
+CRITICAL — every idea must name the actual real, specific thing the trend is about:
+the real person's name, the real movie/show title, the real event, the real product —
+whatever the example_posts and signals above actually reference. Read them and extract
+the specific names. Do NOT write generic placeholder phrasing like "this celebrity feud",
+"a movie reboot", "the drama" — that is a rejected idea, not a usable one. If a cluster's
+example_posts don't give you enough to identify the specific real entity, skip that
+cluster and use a different one rather than inventing a vague generic post about it.
 
 Return ONLY a valid JSON array with exactly 10 objects. Each object must have these exact keys:
 - hook: attention-grabbing opening line or video hook (max 15 words)

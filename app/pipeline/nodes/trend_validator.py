@@ -122,20 +122,27 @@ Return ONLY a JSON array, one object per cluster IN THE SAME ORDER, each with ex
 
 def _validate_ideas_via_llm(ideas: list) -> list:
     payload = [
-        {"hook": i.get("hook", ""), "caption": i.get("caption", ""), "cta": i.get("cta", "")}
+        {"hook": i.get("hook", ""), "caption": i.get("caption", ""), "cta": i.get("cta", ""),
+         "trend_connection": i.get("trend_connection", "")}
         for i in ideas
     ]
-    prompt = f"""You are a content moderation reviewer for a social media content-idea generator.
+    prompt = f"""You are a content moderation and quality reviewer for a social media content-idea generator.
 
 Review these {len(payload)} generated content ideas for a brand/creator profile. For EACH idea, assess:
 1. safe (bool): is this appropriate/brand-safe to post publicly? (false = hate speech, harassment, illegal activity encouragement, impersonation, misleading claims)
 2. coherent (bool): does the idea make basic sense as a real, postable piece of content (not garbled/nonsensical)?
+3. specific (bool): does the hook/caption/trend_connection name an actual real, concrete
+   entity — a real person's name, a real movie/show title, a real event, a real product —
+   that the trend is about? false = generic template filler with no real referent, e.g.
+   "this celebrity feud", "a movie reboot", "the drama", "this trend" without ever saying
+   who or what it actually is. A reader who has never heard of the trend should be able to
+   tell from the text alone what specific real thing it's about.
 
 Ideas:
 {json.dumps(payload, ensure_ascii=False)}
 
 Return ONLY a JSON array, one object per idea IN THE SAME ORDER, each with exactly these keys:
-{{"safe": bool, "coherent": bool, "reason": "<one sentence>"}}"""
+{{"safe": bool, "coherent": bool, "specific": bool, "reason": "<one sentence>"}}"""
 
     return _parse_json_array(_call_validation_llm(prompt))
 
@@ -219,8 +226,9 @@ def validate_ideas(state: PipelineState) -> PipelineState:
         for idea, v in zip(ideas, validations):
             safe = bool(v.get("safe", True))
             coherent = bool(v.get("coherent", True))
+            specific = bool(v.get("specific", True))
             reason = v.get("reason", "")
-            status = "approved" if (safe and coherent) else "rejected"
+            status = "approved" if (safe and coherent and specific) else "rejected"
 
             _log_validation("idea", idea.get("hook", ""), None, safe, None, status, reason)
 
@@ -228,8 +236,8 @@ def validate_ideas(state: PipelineState) -> PipelineState:
                 kept_ideas.append(idea)
             else:
                 logger.info(
-                    "Idea rejected: %r (safe=%s coherent=%s reason=%s)",
-                    idea.get("hook"), safe, coherent, reason,
+                    "Idea rejected: %r (safe=%s coherent=%s specific=%s reason=%s)",
+                    idea.get("hook"), safe, coherent, specific, reason,
                 )
 
         entry["ideas"] = kept_ideas

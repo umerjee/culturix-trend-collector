@@ -187,6 +187,40 @@ class TestValidateIdeas:
 
         assert result["generated_content"][0]["ideas"] == ideas
 
+    def test_generic_idea_with_no_named_entity_is_dropped_even_if_safe_and_coherent(self, mocker):
+        mocker.patch("app.pipeline.nodes.trend_validator._log_validation")
+        _mock_llm_json(mocker, "_call_validation_llm", [
+            {"safe": True, "coherent": True, "specific": False, "reason": "never names who's actually feuding"},
+        ])
+        state = {"generated_content": [
+            {"user_id": "u1", "ideas": [{
+                "hook": "This celebrity feud just got MESSY",
+                "caption": "The internet is DIVIDED...",
+                "cta": "Drop your take",
+                "trend_connection": "Celebrity drama trend",
+            }]},
+        ]}
+
+        result = validate_ideas(state)
+
+        assert result["generated_content"][0]["ideas"] == []
+
+    def test_specific_idea_naming_a_real_entity_is_kept(self, mocker):
+        mocker.patch("app.pipeline.nodes.trend_validator._log_validation")
+        _mock_llm_json(mocker, "_call_validation_llm", [
+            {"safe": True, "coherent": True, "specific": True, "reason": "names the actual film and actors"},
+        ])
+        state = {"generated_content": [
+            {"user_id": "u1", "ideas": [{
+                "hook": "The Mummy reboot just cast Paul Mescal and fans are LOSING it",
+                "caption": "...", "cta": "...", "trend_connection": "The Mummy (2027) casting news",
+            }]},
+        ]}
+
+        result = validate_ideas(state)
+
+        assert len(result["generated_content"][0]["ideas"]) == 1
+
     def test_result_count_mismatch_fails_open_and_keeps_all_ideas(self, mocker):
         mocker.patch("app.pipeline.nodes.trend_validator._log_validation")
         _mock_llm_json(mocker, "_call_validation_llm", [

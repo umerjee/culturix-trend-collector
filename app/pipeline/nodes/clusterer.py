@@ -134,8 +134,13 @@ def cluster_trends(state: PipelineState) -> PipelineState:
 Identify the top 10-15 distinct cultural trends or narratives emerging right now.
 
 For each trend return a JSON object with these exact keys:
-- name: short trend name (3-6 words)
-- description: 1-2 sentence description
+- name: short trend name (3-6 words) — must name the actual specific real entity involved
+  (the real person's name, the real movie/show/game title, the real event) wherever the
+  posts identify one. "Celebrity Feud Drama" is not a usable name if the posts actually
+  name who's feuding — use their names. Only fall back to a thematic label (no specific
+  entity) if the posts genuinely don't name one (e.g. a broad format trend like "GRWM
+  videos" with no single subject).
+- description: 1-2 sentence description, same rule — name the real specific thing, not a paraphrase of it
 - emotional_theme: the core emotion driving this trend (e.g. "anxiety", "aspiration", "humor")
 - example_posts: array of 3 verbatim example posts from the input
 - viral_signals: what makes this spread (e.g. "relatability", "FOMO", "shock value")
