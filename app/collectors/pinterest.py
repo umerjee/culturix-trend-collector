@@ -6,6 +6,8 @@ records (keyword, trajectory, growth %, related terms), not raw pins.
 import os
 import logging
 
+from app.collectors.region_codes import normalize_region
+
 logger = logging.getLogger("culturix.collectors.pinterest")
 
 DEFAULT_KEYWORDS = [
@@ -97,6 +99,7 @@ def store_pinterest_signals(keywords: list[str] | None = None, region: str = "US
                 language="en",
                 likes=s.get("likes"),
                 raw_json=s.get("raw"),
+                region=normalize_region(s.get("region")),
             )
             session.add(trend)
             inserted += 1

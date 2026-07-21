@@ -1,5 +1,6 @@
 from app.pipeline.nodes.persona_mapper import (
     _cosine_similarity,
+    _filter_by_region,
     _rank_clusters_by_relevance,
 )
 
@@ -63,3 +64,46 @@ class TestRankClustersByRelevance:
         )
         ranked = _rank_clusters_by_relevance(clusters, [1.0, 0.0], top_n=3)
         assert ranked == clusters[:3]
+
+
+class TestFilterByRegion:
+    def test_empty_target_regions_is_unrestricted(self):
+        clusters = [{"name": "A", "regions": ["IN"]}, {"name": "B", "regions": ["US"]}]
+        assert _filter_by_region(clusters, []) == clusters
+
+    def test_global_in_target_regions_is_unrestricted(self):
+        clusters = [{"name": "A", "regions": ["IN"]}, {"name": "B", "regions": ["US"]}]
+        assert _filter_by_region(clusters, ["Global"]) == clusters
+
+    def test_matching_region_is_kept(self):
+        clusters = [{"name": "US cluster", "regions": ["US"]}]
+        result = _filter_by_region(clusters, ["US"])
+        assert result == clusters
+
+    def test_regression_eu_profile_excludes_india_cluster(self):
+        # The actual reported bug: target_regions=["EU"] getting an India-tagged
+        # trend (an Indian movie, sourced from TikTok/YouTube's India charts).
+        clusters = [
+            {"name": "Indian movie trend", "regions": ["IN"]},
+            {"name": "French fashion trend", "regions": ["FR"]},
+        ]
+        result = _filter_by_region(clusters, ["EU"])
+        assert result == [{"name": "French fashion trend", "regions": ["FR"]}]
+
+    def test_uk_label_maps_to_gb_collector_code(self):
+        clusters = [{"name": "UK cluster", "regions": ["GB"]}]
+        result = _filter_by_region(clusters, ["UK"])
+        assert result == clusters
+
+    def test_cluster_with_unknown_region_fails_open_and_is_kept(self):
+        # No regions resolved (e.g. built entirely from Reddit/Bluesky signals) —
+        # we have no basis to exclude it, unlike a cluster with a KNOWN
+        # non-matching region.
+        clusters = [{"name": "unknown region cluster", "regions": []}]
+        result = _filter_by_region(clusters, ["EU"])
+        assert result == clusters
+
+    def test_unmapped_target_region_label_fails_open(self):
+        clusters = [{"name": "A", "regions": ["IN"]}]
+        result = _filter_by_region(clusters, ["SomeUnknownLabel"])
+        assert result == clusters

@@ -25,6 +25,14 @@ PROJECTS = ["en.wikipedia", "es.wikipedia", "fr.wikipedia", "de.wikipedia", "ja.
 # Meta/navigation pages that show up in every day's top list but aren't real trends
 _NOISE_PREFIXES = ("Special:", "Wikipedia:", "Main_Page", "Portal:", "Wikipédia:", "Wikipedia_talk:")
 
+# de/fr/ja map cleanly to a single country (Germany/France/Japan). es/en don't
+# get a region — Spanish and English are each spoken across too many
+# countries (Spain vs. Latin America; US/UK/Australia/Canada/global) to
+# confidently assign one, and an incorrect guess is worse than "unknown"
+# here since persona_mapper.py's filter fails open on unknown regions but
+# would wrongly exclude a real one.
+_LANG_TO_REGION = {"de": "DE", "fr": "FR", "ja": "JP"}
+
 
 def fetch_top_articles(project: str = "en.wikipedia", date: Optional[datetime] = None, limit: int = 30) -> list:
     d = date or (datetime.utcnow() - timedelta(days=1))
@@ -84,6 +92,7 @@ def store_wikipedia_trends(limit: int = 30) -> int:
                     language=lang,
                     likes=views,
                     raw_json=a,
+                    region=_LANG_TO_REGION.get(lang),
                 )
                 session.add(trend)
                 try:

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from app.db import SessionLocal
 from app.models.trend import Trend
 from app.language import detect_language
+from app.collectors.region_codes import normalize_region
 
 TIKTOK_TRENDING_URL = "https://www.tikwm.com/api/feed/list/"
 TIKTOK_REGIONS = ["US", "GB", "IN", "JP", "KR", "FR", "DE", "BR"]
@@ -72,6 +73,7 @@ def store_tiktok_trends(limit=50, region="US"):
                     comments=item.get("comment_count"),
                     posted_at=datetime.fromtimestamp(item.get("create_time", 0), tz=timezone.utc).replace(tzinfo=None),
                     raw_json=item,
+                    region=normalize_region(r),
                 )
                 session.add(trend)
                 try:

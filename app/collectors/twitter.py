@@ -7,6 +7,7 @@ from datetime import datetime
 from app.db import SessionLocal
 from app.models.trend import Trend
 from app.language import detect_language, translate_to_english_if_needed
+from app.collectors.region_codes import normalize_region
 
 
 # Ensure environment variables from .env are loaded when this module is used directly
@@ -114,6 +115,7 @@ def store_twitter_trends(region="global"):
             comments=None,
             posted_at=datetime.utcnow(),
             raw_json=item,
+            region=normalize_region(region),
         )
 
         session.add(trend)

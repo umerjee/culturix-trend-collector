@@ -6,6 +6,7 @@ import os
 from app.db import SessionLocal
 from app.models.trend import Trend
 from app.language import detect_language
+from app.collectors.region_codes import normalize_region
 
 YOUTUBE_TRENDING_URL = "https://www.googleapis.com/youtube/v3/videos"
 
@@ -112,6 +113,7 @@ def store_youtube_trends(region="US", limit=50):
                     comments=stats.get("commentCount"),
                     posted_at=datetime.strptime(snippet["publishedAt"], "%Y-%m-%dT%H:%M:%SZ"),
                     raw_json=item,
+                    region=normalize_region(r),
                 )
                 session.add(trend)
                 try:

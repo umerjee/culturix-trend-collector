@@ -71,6 +71,9 @@ async def lifespan(_):
             "CREATE INDEX IF NOT EXISTS idx_content_post_snapshots_post ON content_post_snapshots(content_post_id)",
             # Preferred content format (video/photo/text) — empty means unrestricted
             "ALTER TABLE content_profiles ADD COLUMN IF NOT EXISTS preferred_formats TEXT[] DEFAULT '{}'",
+            # Region tagging — NULL means unknown (fail-open in persona_mapper.py's
+            # filter), not "no region." Historical rows stay NULL (not backfillable).
+            "ALTER TABLE trends ADD COLUMN IF NOT EXISTS region VARCHAR(10)",
         ]:
             try:
                 _conn.execute(_text(_stmt))

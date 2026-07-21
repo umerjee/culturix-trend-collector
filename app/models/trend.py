@@ -22,6 +22,11 @@ class Trend(Base):
     posted_at = Column(TIMESTAMP)
     raw_json = Column(JSON)
     language = Column(String(10), nullable=True)
+    # Canonical uppercase code (US, GB, IN, ...) via app.collectors.region_codes,
+    # or NULL for platforms/fetches with no regional concept (Reddit, Wikipedia,
+    # Bluesky, "global" fetches) — NULL means "unknown," not "excluded"; see
+    # persona_mapper.py's region filter for how that distinction is used.
+    region = Column(String(10), nullable=True)
     translated_content = Column(Text, nullable=True)
     embedding = Column(JSON, nullable=True)
     cluster_id = Column(Integer, nullable=True)

@@ -8,6 +8,52 @@ from app.pipeline.state import PipelineState
 
 logger = logging.getLogger("culturix.pipeline.persona_mapper")
 
+# Profile-facing region labels (culturix-web/src/lib/types.ts's REGIONS) mapped
+# to the collector-level region codes (app/collectors/region_codes.py's
+# canonical form) that should match them. "EU" has no single collector code —
+# it's only ever the couple of EU countries collectors actually cover. "UK"
+# (profile label) vs "GB" (collector/ISO code) is a direct alias. "Global" is
+# handled as a bypass sentinel in _filter_by_region, not a code set here.
+_REGION_LABEL_TO_CODES = {
+    "US": {"US"},
+    "CN": {"CN"},
+    "UK": {"GB"},
+    "FR": {"FR"},
+    "CA": {"CA"},
+    "AU": {"AU"},
+    "EU": {"FR", "DE"},
+}
+
+
+def _filter_by_region(clusters: list[dict], target_regions: list[str]) -> list[dict]:
+    """Hard-filters clusters whose known regions don't overlap the profile's
+    target_regions — this is what actually fixes a "target_regions: EU"
+    profile getting an India-region trend (previously target_regions was
+    captured at onboarding/settings but never consulted anywhere downstream).
+
+    Fails open on unknown region data: a cluster with no resolvable regions
+    (state['clusters'][i]['regions'] == [], set by clusterer.py's
+    _tag_cluster_regions) is kept regardless — we have no basis to judge it
+    either way, and excluding it would wrongly punish clusters built from
+    regionless sources (Reddit, Wikipedia's en/es editions, Bluesky) that are
+    legitimately global in nature, not mis-targeted.
+    """
+    if not target_regions or "Global" in target_regions:
+        return clusters
+
+    allowed_codes: set[str] = set()
+    for label in target_regions:
+        allowed_codes |= _REGION_LABEL_TO_CODES.get(label, set())
+    if not allowed_codes:
+        # None of the profile's labels map to anything we can filter on —
+        # fail open rather than accidentally excluding everything.
+        return clusters
+
+    return [
+        c for c in clusters
+        if not c.get("regions") or set(c["regions"]) & allowed_codes
+    ]
+
 
 def _embed_query(text: str) -> list[float]:
     import voyageai
@@ -114,7 +160,11 @@ def map_personas(state: PipelineState) -> PipelineState:
             logger.error("Embedding query failed for user %s: %s", profile.get("user_id"), e)
             top_signals = []
 
-        relevant_clusters = _rank_clusters_by_relevance(clusters, query_vec)
+        # Region filter runs before relevance ranking so the top-N slice is
+        # drawn from an already region-appropriate pool, rather than filtered
+        # down after — the latter could otherwise leave fewer than top_n.
+        region_filtered = _filter_by_region(clusters, profile.get("target_regions") or [])
+        relevant_clusters = _rank_clusters_by_relevance(region_filtered, query_vec)
 
         matches.append({
             "user_id": profile["user_id"],

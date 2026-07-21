@@ -113,6 +113,8 @@ def store_reddit_trends(limit=100):
                         "permalink": post.permalink,
                         "over_18": bool(getattr(post, "over_18", False)),
                     },
+                    # region left unset (NULL) — Reddit has no regional concept;
+                    # a subreddit isn't tied to a single country/market.
                 )
                 session.add(trend)
                 try:

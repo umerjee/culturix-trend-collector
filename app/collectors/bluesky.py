@@ -69,6 +69,8 @@ def store_bluesky_trends(limit: int = 30) -> int:
                 language="en",
                 likes=post_count,
                 raw_json={k: v for k, v in t.items() if k != "actors"},  # drop verbose actor profiles
+                # region left unset (NULL) — Bluesky's public trending topics
+                # API has no regional/market breakdown.
             )
             session.add(trend)
             try:

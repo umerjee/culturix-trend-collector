@@ -101,6 +101,9 @@ def store_twitter_apify(queries: list[str] | None = None, max_items: int = 200) 
                 comments=s.get("comments"),
                 views=s.get("views"),
                 raw_json=s,
+                # region left unset (NULL) — this actor's search results aren't
+                # tied to a single region/market the way tiktok.py/youtube.py's
+                # per-region charts are.
             )
             session.add(trend)
             inserted += 1

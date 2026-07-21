@@ -3,6 +3,7 @@ import re
 from app.db import SessionLocal
 from app.models.trend import Trend
 from app.language import detect_language
+from app.collectors.region_codes import normalize_region
 from datetime import datetime
 from urllib.parse import unquote_plus
 
@@ -93,6 +94,7 @@ def store_twitter_trends_via_proxy(region="us"):
                     comments=None,
                     posted_at=datetime.utcnow(),
                     raw_json={"source": "trends24.in via jina.ai proxy", "region": r},
+                    region=normalize_region(r),
                 )
                 session.add(trend)
                 inserted += 1

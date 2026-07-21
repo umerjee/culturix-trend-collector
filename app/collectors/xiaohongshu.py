@@ -110,6 +110,7 @@ def store_xhs_signals(keywords: Optional[list] = None, max_items: int = 100) -> 
                 likes=s.get("likes"),
                 comments=s.get("comments"),
                 raw_json=s,
+                region="CN",  # Xiaohongshu is a fixed China-only market
             )
             session.add(trend)
             try:

@@ -100,6 +100,29 @@ def _store_in_qdrant(signals: list[dict], embeddings: list[list[float]]):
         logger.error("Qdrant storage failed: %s", e)
 
 
+def _tag_cluster_regions(clusters: list[dict], signals: list[dict]) -> None:
+    """Attaches a `regions` list to each cluster (in place) — the distinct
+    source regions of its example_posts, matched back to the original signals
+    by verbatim text (example_posts are already exact substrings of signal
+    text, per the clustering prompt's own instruction). Region is irrelevant
+    to what a trend is about, only to who should see it, so this is a Python
+    post-processing pass rather than something the clustering LLM call itself
+    needs to know about. A cluster with no resolvable regions gets an empty
+    list — persona_mapper.py's filter treats that as "unknown," not
+    "excluded.\""""
+    text_to_region = {
+        (s.get("translated_content") or s.get("content_text") or s.get("title") or ""): s.get("region")
+        for s in signals
+    }
+    for cluster in clusters:
+        regions = {
+            text_to_region[post]
+            for post in (cluster.get("example_posts") or [])
+            if text_to_region.get(post)
+        }
+        cluster["regions"] = sorted(regions)
+
+
 def cluster_trends(state: PipelineState) -> PipelineState:
     signals = state["raw_signals"]
     if not signals:
@@ -159,6 +182,7 @@ Posts:
             if raw.startswith("json"):
                 raw = raw[4:]
         state["clusters"] = json.loads(raw)
+        _tag_cluster_regions(state["clusters"], signals)
         logger.info("Identified %d clusters", len(state["clusters"]))
     except Exception as e:
         logger.error("Clustering LLM failed: %s", e)
