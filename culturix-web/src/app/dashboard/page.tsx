@@ -1,9 +1,9 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { TrendingUp, Sparkles, Inbox, LayoutList } from "lucide-react";
+import { TrendingUp, Inbox, LayoutList } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import AppNav from "@/components/AppNav";
-import DigestCard from "@/components/DigestCard";
+import TrendIdeaCard from "@/components/TrendIdeaCard";
 import RefreshButton from "@/components/RefreshButton";
 import type { Digest, ContentProfile } from "@/lib/types";
 
@@ -155,45 +155,6 @@ export default async function DashboardPage({
           </div>
         )}
 
-        {/* Trend clusters tied to THIS digest/profile — was previously a
-            separate global /api/trends call (the admin-facing, unpersonalized
-            HDBSCAN cluster list), which is how a Beauty & Self-Care profile
-            ended up showing FIFA World Cup clusters: that endpoint has no
-            concept of which profile is viewing it. digest.clusters is the
-            actual set that fed this profile's own content ideas below —
-            still not perfectly relevance-ranked (persona_mapper.py's cluster
-            selection is a known simple heuristic, not true vector-scored
-            relevance — a deeper fix worth doing separately), but at least
-            consistent with what this specific profile actually generated
-            from, not a disconnected admin view. */}
-        {digest?.clusters && digest.clusters.length > 0 && (
-          <section className="mb-8">
-            <div className="flex items-center gap-2 mb-4">
-              <TrendingUp className="h-4 w-4 text-blue-600" />
-              <h2 className="text-base font-semibold text-gray-900">Trending right now</h2>
-            </div>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {digest.clusters.map((c, i) => (
-                <div key={i} className="rounded-xl bg-white border border-gray-100 p-4">
-                  <div className="flex items-start justify-between gap-2 mb-1">
-                    <p className="font-semibold text-sm text-gray-900">{c.name}</p>
-                    {c.emotional_theme && (
-                      <span className="shrink-0 inline-flex items-center gap-1 text-xs font-medium rounded-full bg-purple-50 text-purple-600 px-2 py-0.5">
-                        <Sparkles className="h-3 w-3" />
-                        {c.emotional_theme}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-gray-500 line-clamp-2">{c.description}</p>
-                  {c.why_it_matters && (
-                    <p className="text-xs text-gray-400 mt-2 italic line-clamp-2">{c.why_it_matters}</p>
-                  )}
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
         {/* No data state */}
         {!digest && (
           <div className="rounded-2xl border-2 border-dashed border-gray-200 py-20 text-center">
@@ -206,25 +167,38 @@ export default async function DashboardPage({
           </div>
         )}
 
-        {digest && (
-          <div className="space-y-8">
-            {/* Content ideas */}
-            {digest.content_ideas && digest.content_ideas.length > 0 && (
-              <section>
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-base font-semibold text-gray-900">
-                    {digest.content_ideas.length} posting proposals for today
-                  </h2>
-                  <span className="text-xs text-gray-400">Click any field or &ldquo;Copy full post&rdquo; to copy</span>
-                </div>
-                <div className="grid sm:grid-cols-2 gap-4">
-                  {digest.content_ideas.map((idea, i) => (
-                    <DigestCard key={i} idea={idea} index={i} contentId={digest.id} plan={plan} connectedPlatforms={connectedPlatforms} />
-                  ))}
-                </div>
-              </section>
-            )}
-          </div>
+        {/* Trends + their connected content, side by side — the top 3 (most
+            relevant) trends already have an idea generated; the rest show a
+            Generate button so nothing is created unless actually wanted.
+            digest.clusters is the set that fed this specific profile's ideas
+            (not a disconnected global admin view) — was previously shown as
+            plain info cards with no link to the ideas list below it, which is
+            exactly the disconnect this replaces. */}
+        {digest?.clusters && digest.clusters.length > 0 && (
+          <section>
+            <div className="flex items-center gap-2 mb-4">
+              <TrendingUp className="h-4 w-4 text-blue-600" />
+              <h2 className="text-base font-semibold text-gray-900">Trending right now</h2>
+            </div>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
+              {digest.clusters.map((cluster, i) => {
+                const existingIdeaIndex = digest.content_ideas?.findIndex((idea) => idea.cluster_index === i) ?? -1;
+                const existingIdea = existingIdeaIndex >= 0 ? digest.content_ideas[existingIdeaIndex] : null;
+                return (
+                  <TrendIdeaCard
+                    key={i}
+                    cluster={cluster}
+                    clusterIndex={i}
+                    existingIdea={existingIdea}
+                    existingIdeaIndex={existingIdeaIndex >= 0 ? existingIdeaIndex : null}
+                    contentId={digest.id}
+                    plan={plan}
+                    connectedPlatforms={connectedPlatforms}
+                  />
+                );
+              })}
+            </div>
+          </section>
         )}
       </main>
     </div>

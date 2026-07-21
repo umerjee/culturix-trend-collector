@@ -696,6 +696,101 @@ def get_digest(user_id: str, profile_id: Optional[str] = None):
         session.close()
 
 
+@app.post("/api/generate-idea")
+def generate_idea_for_trend(body: dict):
+    """On-demand content generation for a single trend — the dashboard proactively
+    generates one idea for each user's top 3 (most relevant) trends at digest-build
+    time; every other trend shows a 'Generate content' button that hits this
+    endpoint instead of costing a generation call unless someone actually wants it.
+
+    Idempotent per (content_id, cluster_index): once an idea exists for a trend, this
+    just returns it — no regeneration. A prior failed attempt never appended anything,
+    so retrying after a failure still works naturally without any extra bookkeeping.
+    """
+    from app.db import SessionLocal
+    from app.models.generated_content import GeneratedContent
+    from app.models.content_profile import ContentProfile
+    from app.pipeline.nodes.content_strategist import _generate_ideas_for_clusters
+    from app.pipeline.nodes.trend_validator import _validate_ideas_via_llm
+    from sqlalchemy.orm.attributes import flag_modified
+    import uuid as _uuid
+
+    content_id = body.get("content_id")
+    cluster_index = body.get("cluster_index")
+    if content_id is None or cluster_index is None:
+        raise HTTPException(status_code=400, detail="content_id and cluster_index required")
+
+    session = SessionLocal()
+    try:
+        content = session.query(GeneratedContent).filter_by(id=_uuid.UUID(content_id)).first()
+        if not content:
+            raise HTTPException(status_code=404, detail="Digest not found")
+
+        clusters = content.clusters or []
+        if not (0 <= cluster_index < len(clusters)):
+            raise HTTPException(status_code=400, detail="cluster_index out of range for this digest")
+
+        ideas = content.content_ideas or []
+        existing_index, existing = next(
+            ((i, idea) for i, idea in enumerate(ideas) if idea.get("cluster_index") == cluster_index),
+            (None, None),
+        )
+        if existing:
+            # idea_index (its position in content_ideas — what GeneratedMedia/ContentPost
+            # key off of) is NOT the same as cluster_index once on-demand ideas start
+            # getting appended out of cluster order — always return it explicitly rather
+            # than let the frontend guess/recompute it.
+            return {**existing, "idea_index": existing_index}
+
+        profile = None
+        if content.content_profile_id:
+            profile = session.query(ContentProfile).filter_by(id=content.content_profile_id).first()
+        profile_dict = {
+            "industry_niche": profile.industry_niche if profile else None,
+            "target_platforms": profile.target_platforms if profile else [],
+            "content_tones": profile.content_tones if profile else [],
+            "content_goals": profile.content_goals if profile else [],
+            "persona_tags": profile.persona_tags if profile else [],
+            "target_age_min": profile.target_age_min if profile else 18,
+            "target_age_max": profile.target_age_max if profile else 35,
+        }
+
+        try:
+            generated = _generate_ideas_for_clusters(profile_dict, [clusters[cluster_index]], top_signals=[])
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Idea generation failed: {e}")
+        if not generated:
+            raise HTTPException(status_code=503, detail="Idea generation returned nothing — try again")
+        idea = generated[0]
+
+        try:
+            validations = _validate_ideas_via_llm([idea])
+            v = validations[0] if validations else {"safe": True, "coherent": True, "specific": True}
+        except Exception:
+            v = {"safe": True, "coherent": True, "specific": True}  # fail-open, matches trend_validator.py's own policy
+        if not (v.get("safe", True) and v.get("coherent", True) and v.get("specific", True)):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Generated idea didn't pass quality review ({v.get('reason', 'no reason given')}) — try again"
+            )
+
+        idea["cluster_index"] = cluster_index
+        idea["source"] = "on_demand"
+        new_idea_index = len(ideas)
+        ideas.append(idea)
+        content.content_ideas = ideas
+        flag_modified(content, "content_ideas")
+        session.commit()
+        return {**idea, "idea_index": new_idea_index}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
 @app.post("/api/generate")
 def trigger_generation(body: dict):
     user_id = body.get("user_id")

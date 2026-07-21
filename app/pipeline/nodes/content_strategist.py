@@ -2,6 +2,13 @@
 Agent 4 — Content Strategist
 Uses Qwen-max (via Alibaba Dashscope) to generate personalized content ideas per user.
 Falls back to Claude if Qwen is unavailable.
+
+Generates exactly one idea per given trend cluster (not a fixed batch of 10) — the
+dashboard links each idea directly to the specific trend it came from, so this needs
+to produce ideas 1:1 with whatever cluster list it's handed. The proactive pipeline
+run calls this with the top 3 (most relevant) clusters per profile; the on-demand
+"Generate content" button (app/main.py's POST /api/generate-idea) calls the exact
+same function with a single-cluster list — one code path for both.
 """
 import json
 import logging
@@ -10,6 +17,12 @@ from typing import Optional
 from app.pipeline.state import PipelineState
 
 logger = logging.getLogger("culturix.pipeline.content_strategist")
+
+# How many of a profile's relevance-ranked clusters get an idea generated
+# automatically at digest-build time. The rest are on-demand only (see
+# POST /api/generate-idea in app/main.py) — most trends never cost a
+# generation call unless a user actually asks for one.
+PROACTIVE_CLUSTER_COUNT = 3
 
 
 def _get_qwen_client():
@@ -28,28 +41,6 @@ def _get_qwen_client():
 def _get_claude_client():
     import anthropic
     return anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-
-
-def _generate_ideas_qwen(profile: dict, clusters: list[dict], top_signals: list[dict]) -> list[dict]:
-    qwen = _get_qwen_client()
-    prompt = _build_prompt(profile, clusters, top_signals)
-    response = qwen.chat.completions.create(
-        model="qwen-max",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-    )
-    return _parse_ideas(response.choices[0].message.content)
-
-
-def _generate_ideas_claude(profile: dict, clusters: list[dict], top_signals: list[dict]) -> list[dict]:
-    client = _get_claude_client()
-    prompt = _build_prompt(profile, clusters, top_signals)
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=6000,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return _parse_ideas(message.content[0].text)
 
 
 _WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
@@ -79,6 +70,10 @@ def _history_note(cluster: dict) -> str:
 
 
 def _build_prompt(profile: dict, clusters: list[dict], top_signals: Optional[list[dict]] = None) -> str:
+    """Builds a prompt asking for exactly len(clusters) ideas, one per cluster, IN THE
+    SAME ORDER as the input list — the caller (not the model) is responsible for
+    tagging each returned idea with its cluster_index, since trusting an LLM to
+    self-report a numeric index reliably is a needless failure mode to design around."""
     niche = profile.get("industry_niche") or "general brand"
     platforms = ", ".join(profile.get("target_platforms") or ["TikTok", "Instagram"])
     tones = ", ".join(profile.get("content_tones") or ["authentic"])
@@ -86,6 +81,7 @@ def _build_prompt(profile: dict, clusters: list[dict], top_signals: Optional[lis
     tags = ", ".join(profile.get("persona_tags") or [])
     age_min = profile.get("target_age_min") or 18
     age_max = profile.get("target_age_max") or 35
+    count = len(clusters)
 
     # example_posts (verbatim real posts clusterer.py extracted) is the one
     # field in a cluster that actually contains concrete named entities — the
@@ -97,7 +93,7 @@ def _build_prompt(profile: dict, clusters: list[dict], top_signals: Optional[lis
         [{"name": c.get("name"), "description": c.get("description"), "emotional_theme": c.get("emotional_theme"),
           "example_posts": (c.get("example_posts") or [])[:3],
           "history": _history_note(c)}
-         for c in (clusters or [])[:6]],
+         for c in clusters],
         ensure_ascii=False,
     )
 
@@ -130,7 +126,9 @@ Today's trending cultural signals (summarized, each with its "history" — how o
 and in what pattern we've observed it before):
 {cluster_summary}
 {signals_section}
-Generate exactly 10 content ideas that tap into these trends.
+Generate EXACTLY {count} content idea{"s" if count != 1 else ""} — ONE per trend above, IN THE SAME ORDER
+they're listed. Idea 1 must be about trend 1, idea 2 about trend 2, and so on — do not
+skip, reorder, merge, or combine trends.
 Where a trend's history shows a real recurring pattern (e.g. "recurs weekly, usually
 Friday" or "recurs yearly"), lean into that in posting_time/trend_connection instead
 of treating it as a one-off — e.g. timing the post ahead of a known recurring spike.
@@ -142,11 +140,9 @@ CRITICAL — every idea must name the actual real, specific thing the trend is a
 the real person's name, the real movie/show title, the real event, the real product —
 whatever the example_posts and signals above actually reference. Read them and extract
 the specific names. Do NOT write generic placeholder phrasing like "this celebrity feud",
-"a movie reboot", "the drama" — that is a rejected idea, not a usable one. If a cluster's
-example_posts don't give you enough to identify the specific real entity, skip that
-cluster and use a different one rather than inventing a vague generic post about it.
+"a movie reboot", "the drama" — that is a rejected idea, not a usable one.
 
-Return ONLY a valid JSON array with exactly 10 objects. Each object must have these exact keys:
+Return ONLY a valid JSON array with exactly {count} object{"s" if count != 1 else ""}. Each object must have these exact keys:
 - hook: attention-grabbing opening line or video hook (max 15 words)
 - caption: full post caption with 3-5 relevant hashtags (50-100 words)
 - cta: clear call to action (max 10 words)
@@ -171,6 +167,40 @@ def _parse_ideas(raw: str) -> list[dict]:
     return json.loads(text.strip())
 
 
+def _generate_ideas_for_clusters(profile: dict, clusters: list[dict], top_signals: Optional[list[dict]] = None) -> list[dict]:
+    """Generates exactly len(clusters) ideas, one per cluster, in the same order as
+    the input list. Used both for proactive top-3 generation and the on-demand
+    single-cluster endpoint — one prompt-building/parsing path for both."""
+    if not clusters:
+        return []
+
+    prompt = _build_prompt(profile, clusters, top_signals)
+    if os.getenv("QWEN_API_KEY"):
+        qwen = _get_qwen_client()
+        response = qwen.chat.completions.create(
+            model="qwen-max",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+        )
+        raw = response.choices[0].message.content
+    else:
+        client = _get_claude_client()
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=2000 * len(clusters),
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = message.content[0].text
+
+    ideas = _parse_ideas(raw)
+    if len(ideas) != len(clusters):
+        logger.warning(
+            "Idea count mismatch: asked for %d, got %d — truncating/padding is not "
+            "attempted, caller must handle a short list", len(clusters), len(ideas),
+        )
+    return ideas
+
+
 def generate_content(state: PipelineState) -> PipelineState:
     matches = state.get("persona_matches", [])
     if not matches:
@@ -184,13 +214,17 @@ def generate_content(state: PipelineState) -> PipelineState:
         profile = match["profile"]
         clusters = match.get("clusters", [])
         top_signals = match.get("top_signals", [])
+        proactive_clusters = clusters[:PROACTIVE_CLUSTER_COUNT]
 
         ideas = []
         try:
-            if os.getenv("QWEN_API_KEY"):
-                ideas = _generate_ideas_qwen(profile, clusters, top_signals)
-            else:
-                ideas = _generate_ideas_claude(profile, clusters, top_signals)
+            ideas = _generate_ideas_for_clusters(profile, proactive_clusters, top_signals)
+            # Tag by position — proactive_clusters is clusters[:N], so its indices
+            # already match the position each cluster holds in the full `clusters`
+            # list stored on the digest below. No remapping needed.
+            for i, idea in enumerate(ideas):
+                idea["cluster_index"] = i
+                idea["source"] = "auto"
             logger.info("Generated %d ideas for user %s", len(ideas), user_id)
         except Exception as e:
             logger.error("Content generation failed for user %s: %s", user_id, e)

@@ -47,6 +47,8 @@ export interface ContentIdea {
   hashtag_strategy?: string;
   status?: "live" | "aging" | "stale" | "retired";
   relevance_score?: number;
+  cluster_index?: number; // links this idea to digest.clusters[cluster_index]
+  source?: "auto" | "on_demand";
 }
 
 export interface GeneratedMedia {
