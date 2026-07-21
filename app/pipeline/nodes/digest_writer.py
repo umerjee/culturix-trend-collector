@@ -135,6 +135,13 @@ def _send_email(to: str, html: str):
 
 
 def write_digests(state: PipelineState) -> PipelineState:
+    """Persists each profile's digest to the DB. Does NOT send email here —
+    email delivery timing is per-profile (delivery_freq/delivery_time/
+    delivery_day_of_week) and handled separately by
+    app.scheduler.run_digest_dispatch, which fires on its own cadence and
+    flips GeneratedContent.delivered once sent. Keeping generation (this
+    function, one shared daily run) decoupled from delivery timing (per
+    profile) means content generation itself doesn't need to change."""
     content_list = state.get("generated_content", [])
     if not content_list:
         logger.warning("No generated content to write")
@@ -145,17 +152,10 @@ def write_digests(state: PipelineState) -> PipelineState:
         ideas = item.get("ideas", [])
         clusters = item.get("clusters", [])
 
-        # Save to DB
         content_profile_id = item.get("content_profile_id")
         digest_id = _save_to_db(user_id, clusters, ideas, content_profile_id)
         if digest_id:
             logger.info("Saved digest %s for user %s", digest_id, user_id)
-
-        # Send email
-        email = _get_user_email(user_id)
-        if email and ideas:
-            html = _render_email(ideas, clusters)
-            _send_email(email, html)
 
     logger.info("Digest writing complete for %d users", len(content_list))
     return state

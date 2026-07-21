@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { Loader2, Check, Plus, Trash2, ChevronRight, CreditCard, Link2, Unlink } from "lucide-react";
 import PersonaChips from "@/components/PersonaChips";
 import {
-  PLATFORMS, REGIONS, CONTENT_GOALS, CONTENT_TONES, CONTENT_FORMATS, AVATAR_TYPES,
+  PLATFORMS, REGIONS, CONTENT_GOALS, CONTENT_TONES, CONTENT_FORMATS, AVATAR_TYPES, DELIVERY_DAYS,
   type ContentProfile, type AvatarTypePreset, type ConnectedAccount,
 } from "@/lib/types";
 
@@ -25,6 +25,7 @@ const EMPTY_PROFILE: Omit<ContentProfile, "id" | "user_id" | "created_at"> = {
   target_age_max: 35,
   delivery_freq: "daily",
   delivery_time: "07:00",
+  delivery_day_of_week: 0,
   is_active: true,
   publish_mode: "manual",
   preferred_formats: ALL_FORMAT_KEYS,
@@ -614,6 +615,22 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
                   ))}
                 </div>
               </div>
+              {draft.delivery_freq === "weekly" && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-3">Day of week</label>
+                  <div className="grid grid-cols-7 gap-1.5">
+                    {DELIVERY_DAYS.map((day, i) => (
+                      <button key={day} type="button"
+                        onClick={() => setDraft(d => ({ ...d, delivery_day_of_week: i }))}
+                        title={day}
+                        className={`rounded-lg border-2 py-2 text-xs font-semibold transition-all ${
+                          (draft.delivery_day_of_week ?? 0) === i ? "border-blue-600 bg-blue-50 text-blue-700" : "border-gray-200 text-gray-600"
+                        }`}
+                      >{day.slice(0, 3)}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">Delivery time</label>
                 <input type="time" value={draft.delivery_time ?? "07:00"}

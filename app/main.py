@@ -84,6 +84,10 @@ async def lifespan(_):
             "ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS content_profile_id UUID",
             "ALTER TABLE connected_accounts DROP CONSTRAINT IF EXISTS uq_connected_accounts_user_platform",
             "ALTER TABLE connected_accounts ADD CONSTRAINT uq_connected_accounts_profile_platform UNIQUE (content_profile_id, platform)",
+            # Which weekday a "weekly" delivery profile's digest email goes out
+            # on (0=Monday..6=Sunday) — ignored for "daily". User-picked, not
+            # derived from anything, per an explicit product decision.
+            "ALTER TABLE content_profiles ADD COLUMN IF NOT EXISTS delivery_day_of_week INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -1998,6 +2002,7 @@ def create_content_profile(user_id: str, body: dict):
             target_age_max=body.get("target_age_max", 35),
             delivery_freq=body.get("delivery_freq", "daily"),
             delivery_time=body.get("delivery_time", "07:00"),
+            delivery_day_of_week=body.get("delivery_day_of_week", 0),
             preferred_formats=body.get("preferred_formats", []),
         )
         session.add(cp)
@@ -2022,8 +2027,8 @@ def update_content_profile(user_id: str, profile_id: str, body: dict):
             raise HTTPException(status_code=404, detail="Profile not found")
         for field in ("name", "industry_niche", "target_platforms", "target_regions",
                       "content_goals", "content_tones", "persona_tags",
-                      "target_age_min", "target_age_max", "delivery_freq", "delivery_time", "is_active",
-                      "publish_mode", "preferred_formats"):
+                      "target_age_min", "target_age_max", "delivery_freq", "delivery_time",
+                      "delivery_day_of_week", "is_active", "publish_mode", "preferred_formats"):
             if field in body:
                 setattr(cp, field, body[field])
         session.commit()
@@ -2067,6 +2072,7 @@ def _serialize_cp(p) -> dict:
         "target_age_max": p.target_age_max,
         "delivery_freq": p.delivery_freq,
         "delivery_time": p.delivery_time,
+        "delivery_day_of_week": p.delivery_day_of_week,
         "is_active": p.is_active,
         "publish_mode": p.publish_mode,
         "preferred_formats": p.preferred_formats or [],

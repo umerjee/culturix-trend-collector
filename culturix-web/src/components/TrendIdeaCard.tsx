@@ -13,10 +13,11 @@ interface Props {
   clusterIndex: number;
   plan: "free" | "pro";
   connectedPlatforms: string[];
+  publishMode: "manual" | "review" | "auto";
 }
 
 export default function TrendIdeaCard({
-  cluster, existingIdea, existingIdeaIndex, contentId, clusterIndex, plan, connectedPlatforms,
+  cluster, existingIdea, existingIdeaIndex, contentId, clusterIndex, plan, connectedPlatforms, publishMode,
 }: Props) {
   const [idea, setIdea] = useState<ContentIdea | null>(existingIdea);
   const [ideaIndex, setIdeaIndex] = useState<number | null>(existingIdeaIndex);
@@ -73,6 +74,7 @@ export default function TrendIdeaCard({
           contentId={contentId}
           plan={plan}
           connectedPlatforms={connectedPlatforms}
+          publishMode={publishMode}
         />
       </div>
     );

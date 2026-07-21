@@ -28,6 +28,7 @@ export interface ContentProfile {
   target_age_max: number;
   delivery_freq: "daily" | "weekly";
   delivery_time: string;
+  delivery_day_of_week?: number; // 0=Monday..6=Sunday, only meaningful when delivery_freq === "weekly"
   is_active: boolean;
   publish_mode?: "manual" | "review" | "auto";
   preferred_formats?: string[]; // subset of CONTENT_FORMATS keys; empty/unset = no restriction
@@ -139,6 +140,9 @@ export const CONTENT_FORMATS = [
   { key: "video", label: "Video", description: "Short-form video — Reels, TikToks, Shorts" },
   { key: "photo", label: "Photo / Carousel", description: "Image posts and swipeable carousels" },
   { key: "text", label: "Text post", description: "Captions, threads, text-first posts" },
+] as const;
+export const DELIVERY_DAYS = [
+  "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
 ] as const;
 export const CONTENT_GOALS = [
   "Brand awareness",

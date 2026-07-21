@@ -45,6 +45,7 @@ interface Props {
   contentId: string;
   plan: "free" | "pro";
   connectedPlatforms: string[]; // lowercase platform keys with an active connected account, e.g. ["youtube"]
+  publishMode: "manual" | "review" | "auto";
 }
 
 // Only YouTube has a working publish()/fetch_post_metrics() provider today —
@@ -72,7 +73,7 @@ function CopyBtn({ text, label }: { text: string; label: string }) {
   );
 }
 
-export default function DigestCard({ idea, index, contentId, plan, connectedPlatforms }: Props) {
+export default function DigestCard({ idea, index, contentId, plan, connectedPlatforms, publishMode }: Props) {
   const [postCopied, setPostCopied] = useState(false);
   const [activeMedia, setActiveMedia] = useState<Set<MediaType>>(new Set());
   const [generating, setGenerating] = useState<Set<MediaType>>(new Set());
@@ -89,7 +90,14 @@ export default function DigestCard({ idea, index, contentId, plan, connectedPlat
   const platformColor = PLATFORM_COLORS[idea.platform] ?? "bg-gray-100 text-gray-700";
   const isPro = plan === "pro";
   const hashtags = idea.hashtag_strategy?.split(/\s+/).filter(h => h.startsWith("#")) ?? [];
-  const canPublishOrTrack = idea.platform === PUBLISHABLE_IDEA_PLATFORM && connectedPlatforms.includes(PUBLISHABLE_BACKEND_PLATFORM);
+  // "Mark as posted" tracking is available regardless of publish_mode — even
+  // Review/Auto users may occasionally post manually and still want tracking.
+  const canTrack = idea.platform === PUBLISHABLE_IDEA_PLATFORM && connectedPlatforms.includes(PUBLISHABLE_BACKEND_PLATFORM);
+  // The one-click "Publish" button is hidden for "manual" profiles — that
+  // mode's whole premise (per the Settings page copy) is "Culturix never
+  // posts for you," so showing an auto-publish button there would contradict it.
+  const canOneClickPublish = canTrack && publishMode !== "manual";
+  const canPublishOrTrack = canTrack;
 
   // One-time check on mount — whether this idea already has a tracked/published
   // post (persists across reloads, unlike activeMedia's session-only state) and
@@ -386,16 +394,18 @@ export default function DigestCard({ idea, index, contentId, plan, connectedPlat
           ) : (
             <>
               <div className="flex gap-2">
-                <button
-                  onClick={publishNow}
-                  disabled={!isPro || postSubmitting}
-                  title={!isPro ? "Upgrade to Pro to publish" : videoReady ? "Publish now" : "Generate a video first, then publish"}
-                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg border py-1.5 text-xs font-medium transition-all border-gray-200 text-gray-500
-                    ${!isPro ? "opacity-40 cursor-not-allowed" : "hover:border-blue-300 hover:text-blue-600 cursor-pointer"}`}
-                >
-                  {postSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                  {videoReady ? "Publish" : "Generate video to publish"}
-                </button>
+                {canOneClickPublish && (
+                  <button
+                    onClick={publishNow}
+                    disabled={!isPro || postSubmitting}
+                    title={!isPro ? "Upgrade to Pro to publish" : videoReady ? "Publish now" : "Generate a video first, then publish"}
+                    className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg border py-1.5 text-xs font-medium transition-all border-gray-200 text-gray-500
+                      ${!isPro ? "opacity-40 cursor-not-allowed" : "hover:border-blue-300 hover:text-blue-600 cursor-pointer"}`}
+                  >
+                    {postSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                    {videoReady ? "Publish" : "Generate video to publish"}
+                  </button>
+                )}
                 <button
                   onClick={() => setShowPostForm(v => !v)}
                   disabled={!isPro}

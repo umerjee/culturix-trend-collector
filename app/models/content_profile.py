@@ -21,6 +21,10 @@ class ContentProfile(Base):
     target_age_max = Column(Integer, default=35)
     delivery_freq = Column(String(10), default="daily")
     delivery_time = Column(Text, default="07:00")
+    # 0=Monday..6=Sunday (matches date.weekday(), same convention as
+    # trend_historian.py's dominant_day_of_week). Only meaningful when
+    # delivery_freq == "weekly"; ignored for "daily".
+    delivery_day_of_week = Column(Integer, nullable=False, default=0)
     is_active = Column(Boolean, default=True)
     publish_mode = Column(String(10), nullable=False, default="manual")  # manual|review|auto
     # video|photo|text — empty/unset means "no restriction" (all three), resolved

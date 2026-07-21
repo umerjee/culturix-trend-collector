@@ -88,6 +88,63 @@ def run_post_metrics_refresh():
         logger.error("Post metrics refresh failed: %s", e)
 
 
+def run_digest_dispatch(now=None):
+    """Sends each active profile's digest email once its own delivery_freq/
+    delivery_time/delivery_day_of_week conditions are met, decoupled from the
+    single shared 07:00 UTC content-generation run (app.pipeline.graph via
+    run_daily_pipeline). Runs every 15 minutes so delivery_time is honored
+    reasonably closely without a much bigger per-profile scheduling rework.
+    Idempotent via GeneratedContent.delivered — once sent, a profile is
+    skipped for the rest of the day.
+
+    `now` is an optional injected datetime (UTC) for deterministic tests;
+    defaults to the real current time in production."""
+    logger.info("Digest dispatch starting...")
+    try:
+        from datetime import datetime
+        from app.db import SessionLocal
+        from app.models.content_profile import ContentProfile
+        from app.models.generated_content import GeneratedContent
+        from app.pipeline.nodes.digest_writer import _get_user_email, _render_email, _send_email
+
+        now = now or datetime.utcnow()
+        today = now.date()
+        current_hhmm = now.strftime("%H:%M")
+
+        session = SessionLocal()
+        sent = 0
+        try:
+            profiles = session.query(ContentProfile).filter_by(is_active=True).all()
+            for profile in profiles:
+                if profile.delivery_freq == "weekly" and now.weekday() != profile.delivery_day_of_week:
+                    continue
+                if current_hhmm < (profile.delivery_time or "07:00"):
+                    continue
+
+                content = (
+                    session.query(GeneratedContent)
+                    .filter_by(content_profile_id=profile.id, trend_date=today)
+                    .order_by(GeneratedContent.generated_at.desc().nullslast())
+                    .first()
+                )
+                if not content or content.delivered or not content.content_ideas:
+                    continue
+
+                email = _get_user_email(str(profile.user_id))
+                if not email:
+                    continue
+                html = _render_email(content.content_ideas, content.clusters or [])
+                _send_email(email, html)
+                content.delivered = True
+                session.commit()
+                sent += 1
+        finally:
+            session.close()
+        logger.info("Digest dispatch done: %d emails sent", sent)
+    except Exception as e:
+        logger.error("Digest dispatch failed: %s", e)
+
+
 def run_auto_publish():
     """Publishes one idea per 'auto' content profile, once per day. Only
     considers ideas that already passed trend_validator.py's legitimacy/
@@ -192,11 +249,15 @@ def start():
     scheduler.add_job(run_post_metrics_refresh, CronTrigger(hour=10, minute=0), id="post_metrics_refresh")
     # Auto-publish — one idea per 'auto' content profile, 11:00 UTC (after the above two)
     scheduler.add_job(run_auto_publish, CronTrigger(hour=11, minute=0), id="auto_publish")
+    # Digest email dispatch — every 15 min, per-profile delivery_freq/delivery_time/
+    # delivery_day_of_week gating (decoupled from the shared 07:00 UTC generation run)
+    scheduler.add_job(run_digest_dispatch, CronTrigger(minute="*/15"), id="digest_dispatch")
     scheduler.start()
     logger.info(
         "Scheduler started — collection at 01:00/07:00/13:00/19:00 UTC, "
         "full pipeline at 07:00 UTC, content check at 09:00 UTC, "
-        "post metrics refresh at 10:00 UTC, auto-publish at 11:00 UTC"
+        "post metrics refresh at 10:00 UTC, auto-publish at 11:00 UTC, "
+        "digest dispatch every 15 min"
     )
 
 

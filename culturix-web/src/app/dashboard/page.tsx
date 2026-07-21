@@ -201,6 +201,7 @@ export default async function DashboardPage({
                     contentId={digest.id}
                     plan={plan}
                     connectedPlatforms={connectedPlatforms}
+                    publishMode={activeProfile?.publish_mode ?? "manual"}
                   />
                 );
               })}
