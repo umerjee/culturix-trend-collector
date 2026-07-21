@@ -123,6 +123,30 @@ def _tag_cluster_regions(clusters: list[dict], signals: list[dict]) -> None:
         cluster["regions"] = sorted(regions)
 
 
+def _tag_cluster_reference_image(clusters: list[dict], signals: list[dict]) -> None:
+    """Attaches a `reference_image_url` to each cluster (in place) — a real
+    photo from one of its example_posts, matched back to the source signal by
+    verbatim text (same technique as _tag_cluster_regions). Used only as an
+    image-to-image generation reference (see app/media/image.py), never
+    republished directly, so picking just the first match is sufficient —
+    this doesn't need to be the "best" photo, only a real one. A cluster with
+    no resolvable image (e.g. built entirely from Reddit/Wikipedia signals,
+    or before TikTok/YouTube's image_url column existed) gets None — the
+    downstream image generator falls back to text-only, no regression."""
+    text_to_image: dict[str, str | None] = {
+        (s.get("translated_content") or s.get("content_text") or s.get("title") or ""): s.get("image_url")
+        for s in signals
+    }
+    for cluster in clusters:
+        reference_image_url = None
+        for post in (cluster.get("example_posts") or []):
+            candidate = text_to_image.get(post)
+            if candidate:
+                reference_image_url = candidate
+                break
+        cluster["reference_image_url"] = reference_image_url
+
+
 def cluster_trends(state: PipelineState) -> PipelineState:
     signals = state["raw_signals"]
     if not signals:
@@ -183,6 +207,7 @@ Posts:
                 raw = raw[4:]
         state["clusters"] = json.loads(raw)
         _tag_cluster_regions(state["clusters"], signals)
+        _tag_cluster_reference_image(state["clusters"], signals)
         logger.info("Identified %d clusters", len(state["clusters"]))
     except Exception as e:
         logger.error("Clustering LLM failed: %s", e)

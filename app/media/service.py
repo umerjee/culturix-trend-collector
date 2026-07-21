@@ -62,6 +62,7 @@ def run_generation(
     user_id: str,
     content_id: str,
     idea_index: int,
+    reference_image_url: Optional[str] = None,
 ) -> None:
     """Called as a background task. Updates the DB row when done or failed."""
     _update_row(row_id, status="processing")
@@ -70,7 +71,9 @@ def run_generation(
 
         if media_type == "voiceover":
             result = provider.synthesize(prompt)
-        elif media_type in ("music", "video", "image"):
+        elif media_type == "image":
+            result = provider.generate(prompt, reference_image_url=reference_image_url)
+        elif media_type in ("music", "video"):
             result = provider.generate(prompt)
         else:
             raise ValueError(f"Unknown media_type: {media_type}")

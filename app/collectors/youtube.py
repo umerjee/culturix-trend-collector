@@ -114,6 +114,7 @@ def store_youtube_trends(region="US", limit=50):
                     posted_at=datetime.strptime(snippet["publishedAt"], "%Y-%m-%dT%H:%M:%SZ"),
                     raw_json=item,
                     region=normalize_region(r),
+                    image_url=snippet.get("thumbnails", {}).get("high", {}).get("url"),
                 )
                 session.add(trend)
                 try:

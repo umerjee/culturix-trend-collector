@@ -10,6 +10,24 @@ TIKTOK_TRENDING_URL = "https://www.tikwm.com/api/feed/list/"
 TIKTOK_REGIONS = ["US", "GB", "IN", "JP", "KR", "FR", "DE", "BR"]
 
 
+def _cache_cover_image(item: dict, external_id: str) -> str | None:
+    """TikTok's cover URLs are signed and time-expiring (x-expires= param) —
+    unusable if fetched later, so re-host to Supabase Storage now to get a
+    durable URL. Fails open (returns None) on any error: tikwm.com is already
+    an unofficial/unstable proxy elsewhere in this codebase, and a failed
+    thumbnail cache should never block the trend row itself from being stored."""
+    cover_url = item.get("origin_cover") or item.get("cover")
+    if not cover_url:
+        return None
+    try:
+        resp = httpx.get(cover_url, timeout=15.0)
+        resp.raise_for_status()
+        from app.media import storage
+        return storage.upload(resp.content, f"trend-thumbnails/tiktok/{external_id}.jpg", "image/jpeg")
+    except Exception:
+        return None
+
+
 def fetch_tiktok_trending(count=50, region="US"):
     params = {"count": count, "region": region}
     try:
@@ -74,6 +92,7 @@ def store_tiktok_trends(limit=50, region="US"):
                     posted_at=datetime.fromtimestamp(item.get("create_time", 0), tz=timezone.utc).replace(tzinfo=None),
                     raw_json=item,
                     region=normalize_region(r),
+                    image_url=_cache_cover_image(item, external_id),
                 )
                 session.add(trend)
                 try:

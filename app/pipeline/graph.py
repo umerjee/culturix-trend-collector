@@ -60,6 +60,7 @@ def load_signals(state: PipelineState) -> PipelineState:
                 "likes": t.likes or 0,
                 "collected_at": str(t.collected_at),
                 "region": t.region,
+                "image_url": t.image_url,
             }
             for t in trends
         ]

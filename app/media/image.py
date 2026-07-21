@@ -10,6 +10,7 @@ International: dashscope-intl.aliyuncs.com) — this account's key only
 authenticates against the international endpoint, confirmed live (same fix
 applied in content_strategist.py's Qwen client)."""
 import os
+from typing import Optional
 import httpx
 from app.media.base import ImageProvider, MediaResult
 
@@ -22,15 +23,26 @@ _COST_USD = None
 
 
 class QwenImageProvider(ImageProvider):
-    def generate(self, prompt: str) -> MediaResult:
+    def generate(self, prompt: str, reference_image_url: Optional[str] = None) -> MediaResult:
         key = os.environ.get("QWEN_API_KEY")
         if not key:
             raise RuntimeError("QWEN_API_KEY not set")
 
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        # When a real photo of the subject is available (see clusterer.py's
+        # _tag_cluster_reference_image), feed it as an image-to-image
+        # reference so the output is actually grounded in reality instead of
+        # a blind text guess — confirmed live that qwen-image-2.0 accepts an
+        # {"image": url} content part alongside {"text": ...}. Falls back to
+        # pure text-to-image, byte-identical to before, when no reference
+        # is available.
+        content = []
+        if reference_image_url:
+            content.append({"image": reference_image_url})
+        content.append({"text": prompt[:2000]})
         body = {
             "model": _MODEL,
-            "input": {"messages": [{"role": "user", "content": [{"text": prompt[:2000]}]}]},
+            "input": {"messages": [{"role": "user", "content": content}]},
             "parameters": {"size": _SIZE, "n": 1, "watermark": False},
         }
         resp = httpx.post(_URL, headers=headers, json=body, timeout=60)

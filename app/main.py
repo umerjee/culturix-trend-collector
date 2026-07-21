@@ -74,6 +74,10 @@ async def lifespan(_):
             # Region tagging — NULL means unknown (fail-open in persona_mapper.py's
             # filter), not "no region." Historical rows stay NULL (not backfillable).
             "ALTER TABLE trends ADD COLUMN IF NOT EXISTS region VARCHAR(10)",
+            # Real per-post image (YouTube's stable thumbnail, or TikTok's cover
+            # re-hosted to Supabase Storage at collection time) — used as an
+            # optional reference for image generation. NULL means unavailable.
+            "ALTER TABLE trends ADD COLUMN IF NOT EXISTS image_url TEXT",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -902,6 +906,21 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
     created_ids = []
     session2 = SessionLocal()
     try:
+        # Resolve a real reference photo for image generation, if this idea's
+        # trend cluster has one (see clusterer.py's _tag_cluster_reference_image) —
+        # grounds the generated image in reality instead of a blind text guess.
+        # Fails open to None on any lookup miss; image generation just falls
+        # back to today's pure text-to-image behavior.
+        reference_image_url = None
+        if "image" in media_types:
+            from app.models.generated_content import GeneratedContent
+            gc = session2.query(GeneratedContent).filter_by(id=_uuid.UUID(content_id)).first()
+            if gc:
+                idea = (gc.content_ideas or [])[idea_index] if idea_index < len(gc.content_ideas or []) else None
+                cluster_index = idea.get("cluster_index") if idea else None
+                if cluster_index is not None and 0 <= cluster_index < len(gc.clusters or []):
+                    reference_image_url = gc.clusters[cluster_index].get("reference_image_url")
+
         for mt in media_types:
             prompt_text = prompts.get(mt, "")
             row = GeneratedMedia(
@@ -923,6 +942,7 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
                 user_id=user_id,
                 content_id=content_id,
                 idea_index=idea_index,
+                reference_image_url=reference_image_url if mt == "image" else None,
             )
         session2.commit()
     except HTTPException:

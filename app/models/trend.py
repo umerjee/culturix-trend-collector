@@ -27,6 +27,12 @@ class Trend(Base):
     # Bluesky, "global" fetches) — NULL means "unknown," not "excluded"; see
     # persona_mapper.py's region filter for how that distinction is used.
     region = Column(String(10), nullable=True)
+    # Durable image URL for the post: YouTube's stable thumbnail URL stored
+    # directly, TikTok's expiring signed cover re-hosted to Supabase Storage
+    # at collection time (see app/collectors/tiktok.py). NULL for platforms
+    # with no per-post image available yet — used as an optional real-photo
+    # reference for image generation, never republished verbatim.
+    image_url = Column(Text, nullable=True)
     translated_content = Column(Text, nullable=True)
     embedding = Column(JSON, nullable=True)
     cluster_id = Column(Integer, nullable=True)
