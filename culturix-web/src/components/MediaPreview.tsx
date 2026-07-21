@@ -66,7 +66,7 @@ export default function MediaPreview({ contentId, ideaIndex, mediaType, onDone }
     return (
       <div className="flex items-start gap-1.5 text-xs text-red-500 mt-1">
         <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-        <span className="line-clamp-2">{media.error ?? "Generation failed"}</span>
+        <span className="line-clamp-2" title={media.error ?? "Generation failed"}>{media.error ?? "Generation failed"}</span>
       </div>
     );
   }
