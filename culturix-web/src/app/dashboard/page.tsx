@@ -38,13 +38,19 @@ async function fetchProfiles(userId: string): Promise<ContentProfile[]> {
   }
 }
 
-async function fetchConnectedPlatforms(userId: string): Promise<string[]> {
+async function fetchConnectedPlatforms(userId: string, activeProfileId?: string): Promise<string[]> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
   try {
     const res = await fetch(`${apiUrl}/api/social/accounts?user_id=${userId}`, { cache: "no-store" });
     if (!res.ok) return [];
-    const data: { platform: string; status: string }[] = await res.json();
-    return data.filter(a => a.status === "active").map(a => a.platform);
+    const data: { platform: string; status: string; content_profile_id: string | null }[] = await res.json();
+    // Scoped to the active profile's own dedicated account, or a legacy
+    // (unbound) account — mirrors app/social/service.py's resolve_active_account
+    // fallback. Without this, a profile with no account of its own would still
+    // show Publish/Track buttons just because a DIFFERENT profile has one.
+    return data
+      .filter(a => a.status === "active" && (a.content_profile_id === activeProfileId || a.content_profile_id === null))
+      .map(a => a.platform);
   } catch {
     return [];
   }
@@ -76,17 +82,18 @@ export default async function DashboardPage({
     }
   }
 
-  const [profiles, digest, connectedPlatforms] = await Promise.all([
-    fetchProfiles(user.id),
-    fetchDigest(user.id, searchParams.profile),
-    fetchConnectedPlatforms(user.id),
-  ]);
+  const profiles = await fetchProfiles(user.id);
   // Single source of truth for "needs onboarding" — a user with zero content
   // profiles has never completed the wizard (or their session outlived it),
   // so send them there instead of showing a permanently-empty dashboard.
   if (profiles.length === 0) redirect("/onboarding");
 
   const activeProfile = profiles.find((p) => p.id === searchParams.profile) ?? profiles[0] ?? null;
+
+  const [digest, connectedPlatforms] = await Promise.all([
+    fetchDigest(user.id, searchParams.profile),
+    fetchConnectedPlatforms(user.id, activeProfile?.id),
+  ]);
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 
   return (
