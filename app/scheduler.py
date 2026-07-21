@@ -127,6 +127,11 @@ def run_auto_publish():
                     (i, idea) for i, idea in enumerate(content.content_ideas)
                     if i not in already_posted and idea.get("status") == "live"
                     and idea.get("platform") == "YouTube"  # only platform with a publish() implementation today
+                    # medium may be absent on ideas generated before the preferred-formats
+                    # feature — treat that as "video" (its prior implicit default) rather
+                    # than excluding old data; explicit non-video mediums are excluded since
+                    # Kling+YouTube publish only makes sense for actual video content.
+                    and idea.get("medium", "video") == "video"
                 ]
                 if not candidates:
                     continue

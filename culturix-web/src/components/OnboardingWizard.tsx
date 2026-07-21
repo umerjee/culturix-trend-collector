@@ -5,14 +5,17 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Loader2, Check } from "lucide-react";
+import { Loader2, Check, Plus } from "lucide-react";
 import {
   PLATFORMS,
   REGIONS,
   CONTENT_GOALS,
   CONTENT_TONES,
+  CONTENT_FORMATS,
   PERSONA_TAGS,
-  type UserProfile,
+  AVATAR_TYPES,
+  type AvatarTypePreset,
+  type ContentProfile,
 } from "@/lib/types";
 
 function Chip({
@@ -73,49 +76,24 @@ const step1Schema = z.object({
   targetRegions: z.array(z.string()).min(1, "Select at least one region"),
 });
 
-const step2Schema = z.object({
-  contentGoals: z.array(z.string()).min(1, "Select at least one goal"),
-  contentTones: z.array(z.string()).min(1, "Select at least one tone"),
-});
-
-const step3Schema = z.object({
-  industryNiche: z.string().min(3, "Describe your niche in a few words"),
-  personaTags: z.array(z.string()),
-});
-
-const step4Schema = z.object({
-  deliveryFreq: z.enum(["daily", "weekly"]),
-  deliveryTime: z.string(),
-});
-
 type Step1 = z.infer<typeof step1Schema>;
-type Step2 = z.infer<typeof step2Schema>;
-type Step3 = z.infer<typeof step3Schema>;
-type Step4 = z.infer<typeof step4Schema>;
 
 interface Props {
   userId: string;
 }
 
-export default function OnboardingWizard({ userId }: Props) {
+const ALL_FORMAT_KEYS = CONTENT_FORMATS.map((f) => f.key);
+
+export default function OnboardingWizard({ userId: _userId }: Props) {
   const router = useRouter();
-  const [step, setStep] = useState(1);
+  // 0 = avatar gallery (pre-step, not counted in the progress bar), 1-5 = the
+  // numbered wizard steps below.
+  const [step, setStep] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const [data, setData] = useState<Partial<UserProfile>>({
-    user_id: userId,
-    targetAgeMin: 18,
-    targetAgeMax: 35,
-    targetPlatforms: [],
-    targetRegions: [],
-    contentGoals: [],
-    contentTones: [],
-    industryNiche: "",
-    personaTags: [],
-    deliveryFreq: "daily",
-    deliveryTime: "07:00",
-  } as unknown as Partial<UserProfile>);
+  const [selectedPreset, setSelectedPreset] = useState<AvatarTypePreset | null>(null);
+  const [profileName, setProfileName] = useState("");
 
   // Step 1 form
   const s1 = useForm<Step1>({
@@ -128,77 +106,107 @@ export default function OnboardingWizard({ userId }: Props) {
     },
   });
 
-  // Step 2
+  // Step 2 — preferred content formats (defaults to all three = unrestricted)
+  const [preferredFormats, setPreferredFormats] = useState<string[]>(ALL_FORMAT_KEYS);
+
+  // Step 3 — Goals & Tone
   const [goals, setGoals] = useState<string[]>([]);
   const [tones, setTones] = useState<string[]>([]);
-  const [s2Error, setS2Error] = useState("");
-
-  // Step 3
-  const [niche, setNiche] = useState("");
-  const [personaTags, setPersonaTags] = useState<string[]>([]);
   const [s3Error, setS3Error] = useState("");
 
-  // Step 4
+  // Step 4 — Industry & Personas
+  const [niche, setNiche] = useState("");
+  const [personaTags, setPersonaTags] = useState<string[]>([]);
+  const [s4Error, setS4Error] = useState("");
+
+  // Step 5 — Delivery
   const [freq, setFreq] = useState<"daily" | "weekly">("daily");
   const [time, setTime] = useState("07:00");
 
-  const totalSteps = 4;
+  const totalSteps = 5;
 
   function toggleArr(arr: string[], val: string, set: (a: string[]) => void) {
     set(arr.includes(val) ? arr.filter((v) => v !== val) : [...arr, val]);
   }
 
-  async function onStep1(values: Step1) {
-    setData((d) => ({
-      ...d,
-      target_age_min: values.targetAgeMin,
-      target_age_max: values.targetAgeMax,
-      target_platforms: values.targetPlatforms,
-      target_regions: values.targetRegions,
-    }));
+  function choosePreset(preset: AvatarTypePreset | null) {
+    setSelectedPreset(preset);
+    if (preset) {
+      setProfileName(preset.label);
+      s1.reset({
+        targetAgeMin: 18,
+        targetAgeMax: 35,
+        targetPlatforms: preset.target_platforms,
+        targetRegions: preset.target_regions,
+      });
+      setGoals(preset.content_goals);
+      setTones(preset.content_tones);
+      setNiche(preset.industry_niche);
+      setPersonaTags(preset.persona_tags);
+    } else {
+      setProfileName("My Profile");
+    }
+    setStep(1);
+  }
+
+  function onStep1(values: Step1) {
+    void values; // already live in s1's form state, read directly at submit time
     setStep(2);
   }
 
   function onStep2Next() {
-    if (goals.length === 0 || tones.length === 0) {
-      setS2Error("Select at least one goal and one tone.");
-      return;
-    }
-    setS2Error("");
-    setData((d) => ({ ...d, content_goals: goals, content_tones: tones }));
     setStep(3);
   }
 
   function onStep3Next() {
-    if (niche.trim().length < 3) {
-      setS3Error("Describe your niche in a few words.");
+    if (goals.length === 0 || tones.length === 0) {
+      setS3Error("Select at least one goal and one tone.");
       return;
     }
     setS3Error("");
-    setData((d) => ({ ...d, industry_niche: niche, persona_tags: personaTags }));
     setStep(4);
   }
 
-  async function onStep4Submit() {
+  function onStep4Next() {
+    if (niche.trim().length < 3) {
+      setS4Error("Describe your niche in a few words.");
+      return;
+    }
+    setS4Error("");
+    setStep(5);
+  }
+
+  async function onStep5Submit() {
     setSaving(true);
     setError("");
-    const profile: UserProfile = {
-      ...(data as UserProfile),
-      user_id: userId,
+
+    const s1values = s1.getValues();
+    const body: Omit<ContentProfile, "id" | "user_id" | "created_at"> = {
+      name: profileName || "My Profile",
+      industry_niche: niche,
+      target_platforms: s1values.targetPlatforms,
+      target_regions: s1values.targetRegions,
+      content_goals: goals,
+      content_tones: tones,
+      persona_tags: personaTags,
+      target_age_min: s1values.targetAgeMin,
+      target_age_max: s1values.targetAgeMax,
       delivery_freq: freq,
       delivery_time: time,
+      is_active: true,
+      preferred_formats: preferredFormats,
     };
 
     try {
-      const res = await fetch("/api/profile", {
+      const res = await fetch("/api/content-profiles", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(profile),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error("Failed to save profile");
       router.push("/dashboard");
       router.refresh();
-    } catch (err) {
+    } catch {
       setError("Failed to save your profile. Please try again.");
     } finally {
       setSaving(false);
@@ -207,6 +215,45 @@ export default function OnboardingWizard({ userId }: Props) {
 
   const s1platforms = s1.watch("targetPlatforms") ?? [];
   const s1regions = s1.watch("targetRegions") ?? [];
+
+  // ── Step 0 — Avatar type gallery ──────────────────────────────────────────
+  if (step === 0) {
+    return (
+      <div className="w-full max-w-lg mx-auto">
+        <div className="mb-6">
+          <h2 className="text-xl font-bold text-gray-900">Choose a starting point</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            Pre-fills a starting point based on durable, evergreen audiences — fully editable in every
+            step after. Or start from scratch.
+          </p>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          {AVATAR_TYPES.map((preset) => (
+            <button
+              key={preset.key}
+              type="button"
+              onClick={() => choosePreset(preset)}
+              className="text-left rounded-xl border border-gray-200 p-4 hover:border-blue-300 hover:bg-blue-50/50 transition-colors"
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-lg">{preset.emoji}</span>
+                <span className="font-semibold text-sm text-gray-900">{preset.label}</span>
+              </div>
+              <p className="text-xs text-gray-500">{preset.description}</p>
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => choosePreset(null)}
+            className="text-left rounded-xl border border-dashed border-gray-300 p-4 hover:border-blue-300 hover:bg-blue-50/50 transition-colors flex flex-col items-center justify-center gap-1 text-gray-400 hover:text-blue-600"
+          >
+            <Plus className="h-5 w-5" />
+            <span className="text-xs font-medium">Start from scratch</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full max-w-lg mx-auto">
@@ -309,21 +356,70 @@ export default function OnboardingWizard({ userId }: Props) {
             type="submit"
             className="w-full bg-blue-600 text-white font-semibold py-3 rounded-xl hover:bg-blue-700 transition-colors"
           >
-            Next: Goals & Tone
+            Next: Content format
           </button>
         </form>
       )}
 
-      {/* Step 2 — Goals & Tone */}
+      {/* Step 2 — Preferred content format */}
       {step === 2 && (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-xl font-bold text-gray-900">What kind of content do you make?</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Ideas and generation tools will focus on these — you can change this anytime in Settings.
+            </p>
+          </div>
+
+          <div className="grid gap-3">
+            {CONTENT_FORMATS.map((f) => {
+              const selected = preferredFormats.includes(f.key);
+              return (
+                <button
+                  key={f.key}
+                  type="button"
+                  onClick={() => toggleArr(preferredFormats, f.key, setPreferredFormats)}
+                  className={`text-left rounded-xl border-2 p-4 transition-all ${
+                    selected ? "border-blue-600 bg-blue-50" : "border-gray-200 hover:border-blue-200"
+                  }`}
+                >
+                  <p className={`text-sm font-semibold ${selected ? "text-blue-700" : "text-gray-700"}`}>
+                    {selected && <Check className="h-3.5 w-3.5 inline mr-1.5" />}
+                    {f.label}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-1">{f.description}</p>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              onClick={() => setStep(1)}
+              className="flex-1 border border-gray-200 text-gray-600 font-semibold py-3 rounded-xl hover:bg-gray-50 transition-colors"
+            >
+              Back
+            </button>
+            <button
+              onClick={onStep2Next}
+              className="flex-1 bg-blue-600 text-white font-semibold py-3 rounded-xl hover:bg-blue-700 transition-colors"
+            >
+              Next: Goals & Tone
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 3 — Goals & Tone */}
+      {step === 3 && (
         <div className="space-y-6">
           <div>
             <h2 className="text-xl font-bold text-gray-900">What do you want to achieve?</h2>
             <p className="text-sm text-gray-500 mt-1">Your content goals and brand voice.</p>
           </div>
 
-          {s2Error && (
-            <p className="text-xs text-red-500 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{s2Error}</p>
+          {s3Error && (
+            <p className="text-xs text-red-500 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{s3Error}</p>
           )}
 
           <div>
@@ -346,13 +442,13 @@ export default function OnboardingWizard({ userId }: Props) {
 
           <div className="flex gap-3">
             <button
-              onClick={() => setStep(1)}
+              onClick={() => setStep(2)}
               className="flex-1 border border-gray-200 text-gray-600 font-semibold py-3 rounded-xl hover:bg-gray-50 transition-colors"
             >
               Back
             </button>
             <button
-              onClick={onStep2Next}
+              onClick={onStep3Next}
               className="flex-1 bg-blue-600 text-white font-semibold py-3 rounded-xl hover:bg-blue-700 transition-colors"
             >
               Next: Industry
@@ -361,8 +457,8 @@ export default function OnboardingWizard({ userId }: Props) {
         </div>
       )}
 
-      {/* Step 3 — Industry & Personas */}
-      {step === 3 && (
+      {/* Step 4 — Industry & Personas */}
+      {step === 4 && (
         <div className="space-y-6">
           <div>
             <h2 className="text-xl font-bold text-gray-900">Your niche & audience personas</h2>
@@ -371,8 +467,8 @@ export default function OnboardingWizard({ userId }: Props) {
             </p>
           </div>
 
-          {s3Error && (
-            <p className="text-xs text-red-500 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{s3Error}</p>
+          {s4Error && (
+            <p className="text-xs text-red-500 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{s4Error}</p>
           )}
 
           <div>
@@ -405,13 +501,13 @@ export default function OnboardingWizard({ userId }: Props) {
 
           <div className="flex gap-3">
             <button
-              onClick={() => setStep(2)}
+              onClick={() => setStep(3)}
               className="flex-1 border border-gray-200 text-gray-600 font-semibold py-3 rounded-xl hover:bg-gray-50 transition-colors"
             >
               Back
             </button>
             <button
-              onClick={onStep3Next}
+              onClick={onStep4Next}
               className="flex-1 bg-blue-600 text-white font-semibold py-3 rounded-xl hover:bg-blue-700 transition-colors"
             >
               Next: Delivery
@@ -420,8 +516,8 @@ export default function OnboardingWizard({ userId }: Props) {
         </div>
       )}
 
-      {/* Step 4 — Delivery */}
-      {step === 4 && (
+      {/* Step 5 — Delivery */}
+      {step === 5 && (
         <div className="space-y-6">
           <div>
             <h2 className="text-xl font-bold text-gray-900">When do you want your digest?</h2>
@@ -466,13 +562,13 @@ export default function OnboardingWizard({ userId }: Props) {
 
           <div className="flex gap-3">
             <button
-              onClick={() => setStep(3)}
+              onClick={() => setStep(4)}
               className="flex-1 border border-gray-200 text-gray-600 font-semibold py-3 rounded-xl hover:bg-gray-50 transition-colors"
             >
               Back
             </button>
             <button
-              onClick={onStep4Submit}
+              onClick={onStep5Submit}
               disabled={saving}
               className="flex-1 bg-blue-600 text-white font-semibold py-3 rounded-xl hover:bg-blue-700 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
             >

@@ -23,5 +23,9 @@ class ContentProfile(Base):
     delivery_time = Column(Text, default="07:00")
     is_active = Column(Boolean, default=True)
     publish_mode = Column(String(10), nullable=False, default="manual")  # manual|review|auto
+    # video|photo|text — empty/unset means "no restriction" (all three), resolved
+    # in content_strategist.py rather than the DB default, so existing profiles
+    # created before this field existed keep behaving exactly as before.
+    preferred_formats = Column(ARRAY(Text), default=list)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

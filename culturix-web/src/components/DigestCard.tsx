@@ -218,12 +218,19 @@ export default function DigestCard({ idea, index, contentId, plan, connectedPlat
     }
   }
 
-  const MEDIA_BTNS: { type: MediaType; label: string; icon: ReactNode }[] = [
+  const ALL_MEDIA_BTNS: { type: MediaType; label: string; icon: ReactNode }[] = [
     { type: "image",     label: "Image",     icon: <ImageIcon className="h-3.5 w-3.5" /> },
     { type: "voiceover", label: "Voiceover", icon: <Mic className="h-3.5 w-3.5" /> },
     { type: "music",     label: "Music",     icon: <Music className="h-3.5 w-3.5" /> },
     { type: "video",     label: "Video",     icon: <Video className="h-3.5 w-3.5" /> },
   ];
+  // idea.medium is absent on ideas generated before the preferred-formats
+  // feature — fail open to "show everything" (video's full set) rather than
+  // "show nothing" for that old data. Photo/text ideas only ever get an Image
+  // button — there's no voiceover/music/video to speak over or score for them.
+  const MEDIA_BTNS = !idea.medium || idea.medium === "video"
+    ? ALL_MEDIA_BTNS
+    : ALL_MEDIA_BTNS.filter(b => b.type === "image");
 
   return (
     <div className="rounded-2xl border border-gray-100 bg-white p-5 flex flex-col gap-4 hover:shadow-md transition-shadow">

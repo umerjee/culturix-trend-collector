@@ -30,6 +30,7 @@ export interface ContentProfile {
   delivery_time: string;
   is_active: boolean;
   publish_mode?: "manual" | "review" | "auto";
+  preferred_formats?: string[]; // subset of CONTENT_FORMATS keys; empty/unset = no restriction
   created_at?: string;
 }
 
@@ -41,6 +42,7 @@ export interface ContentIdea {
   platform: string;
   trend_connection: string;
   format?: string;
+  medium?: "video" | "photo" | "text"; // absent on ideas generated before this field existed — treat as "video"
   video_prompt?: string;
   viral_angle?: string;
   posting_time?: string;
@@ -130,6 +132,11 @@ export interface Digest {
 
 export const PLATFORMS = ["TikTok", "YouTube", "Instagram", "Xiaohongshu", "X/Twitter", "Reddit", "Pinterest"] as const;
 export const REGIONS = ["US", "CN", "Global", "EU", "UK", "FR", "CA", "AU"] as const;
+export const CONTENT_FORMATS = [
+  { key: "video", label: "Video", description: "Short-form video — Reels, TikToks, Shorts" },
+  { key: "photo", label: "Photo / Carousel", description: "Image posts and swipeable carousels" },
+  { key: "text", label: "Text post", description: "Captions, threads, text-first posts" },
+] as const;
 export const CONTENT_GOALS = [
   "Brand awareness",
   "Drive sales",

@@ -5,9 +5,11 @@ import { useSearchParams } from "next/navigation";
 import { Loader2, Check, Plus, Trash2, ChevronRight, CreditCard, Link2, Unlink } from "lucide-react";
 import PersonaChips from "@/components/PersonaChips";
 import {
-  PLATFORMS, REGIONS, CONTENT_GOALS, CONTENT_TONES, AVATAR_TYPES,
+  PLATFORMS, REGIONS, CONTENT_GOALS, CONTENT_TONES, CONTENT_FORMATS, AVATAR_TYPES,
   type ContentProfile, type AvatarTypePreset, type ConnectedAccount,
 } from "@/lib/types";
+
+const ALL_FORMAT_KEYS = CONTENT_FORMATS.map((f) => f.key);
 
 const RAILWAY = process.env.NEXT_PUBLIC_API_URL || "https://culturix-trend-collector-production.up.railway.app";
 
@@ -25,6 +27,7 @@ const EMPTY_PROFILE: Omit<ContentProfile, "id" | "user_id" | "created_at"> = {
   delivery_time: "07:00",
   is_active: true,
   publish_mode: "manual",
+  preferred_formats: ALL_FORMAT_KEYS,
 };
 
 const SUPPORTED_SOCIAL_PLATFORMS: { key: ConnectedAccount["platform"]; label: string; live: boolean }[] = [
@@ -537,6 +540,41 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
                   onChange={tags => setDraft(d => ({ ...d, persona_tags: tags }))}
                 />
               </div>
+            </div>
+          </section>
+
+          {/* Content format */}
+          <section className="bg-white rounded-2xl border border-gray-100 p-6">
+            <h2 className="font-semibold text-gray-900 mb-1">Content format</h2>
+            <p className="text-xs text-gray-400 mb-4">
+              What kind of content do you make? Ideas and generation tools focus on these.
+            </p>
+            <div className="grid gap-2">
+              {CONTENT_FORMATS.map((f) => {
+                const selected = (draft.preferred_formats ?? ALL_FORMAT_KEYS).includes(f.key);
+                return (
+                  <button
+                    key={f.key}
+                    type="button"
+                    onClick={() => {
+                      const current = draft.preferred_formats ?? ALL_FORMAT_KEYS;
+                      const next = current.includes(f.key)
+                        ? current.filter((k) => k !== f.key)
+                        : [...current, f.key];
+                      setDraft((d) => ({ ...d, preferred_formats: next }));
+                    }}
+                    className={`text-left rounded-xl border-2 p-3 transition-all ${
+                      selected ? "border-blue-600 bg-blue-50" : "border-gray-200 hover:border-blue-200"
+                    }`}
+                  >
+                    <p className={`text-sm font-semibold ${selected ? "text-blue-700" : "text-gray-700"}`}>
+                      {selected && <Check className="h-3.5 w-3.5 inline mr-1.5" />}
+                      {f.label}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-1">{f.description}</p>
+                  </button>
+                );
+              })}
             </div>
           </section>
 

@@ -69,6 +69,8 @@ async def lifespan(_):
             "ALTER TABLE content_profiles ADD COLUMN IF NOT EXISTS publish_mode VARCHAR(10) NOT NULL DEFAULT 'manual'",
             "CREATE INDEX IF NOT EXISTS idx_content_posts_content ON content_posts(generated_content_id, idea_index)",
             "CREATE INDEX IF NOT EXISTS idx_content_post_snapshots_post ON content_post_snapshots(content_post_id)",
+            # Preferred content format (video/photo/text) — empty means unrestricted
+            "ALTER TABLE content_profiles ADD COLUMN IF NOT EXISTS preferred_formats TEXT[] DEFAULT '{}'",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -753,6 +755,7 @@ def generate_idea_for_trend(body: dict):
             "persona_tags": profile.persona_tags if profile else [],
             "target_age_min": profile.target_age_min if profile else 18,
             "target_age_max": profile.target_age_max if profile else 35,
+            "preferred_formats": profile.preferred_formats if profile else [],
         }
 
         try:
@@ -1938,6 +1941,7 @@ def create_content_profile(user_id: str, body: dict):
             target_age_max=body.get("target_age_max", 35),
             delivery_freq=body.get("delivery_freq", "daily"),
             delivery_time=body.get("delivery_time", "07:00"),
+            preferred_formats=body.get("preferred_formats", []),
         )
         session.add(cp)
         session.commit()
@@ -1962,7 +1966,7 @@ def update_content_profile(user_id: str, profile_id: str, body: dict):
         for field in ("name", "industry_niche", "target_platforms", "target_regions",
                       "content_goals", "content_tones", "persona_tags",
                       "target_age_min", "target_age_max", "delivery_freq", "delivery_time", "is_active",
-                      "publish_mode"):
+                      "publish_mode", "preferred_formats"):
             if field in body:
                 setattr(cp, field, body[field])
         session.commit()
@@ -2008,5 +2012,6 @@ def _serialize_cp(p) -> dict:
         "delivery_time": p.delivery_time,
         "is_active": p.is_active,
         "publish_mode": p.publish_mode,
+        "preferred_formats": p.preferred_formats or [],
         "created_at": p.created_at.isoformat() if p.created_at else None,
     }

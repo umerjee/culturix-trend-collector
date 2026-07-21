@@ -24,6 +24,13 @@ logger = logging.getLogger("culturix.pipeline.content_strategist")
 # generation call unless a user actually asks for one.
 PROACTIVE_CLUSTER_COUNT = 3
 
+_ALL_MEDIA = ["video", "photo", "text"]
+_MEDIUM_STYLES = {
+    "video": ["short video", "talking head", "GRWM", "duet", "tutorial", "POV skit", "reaction"],
+    "photo": ["carousel", "single image", "infographic", "before/after photo"],
+    "text": ["text post", "thread", "quote card", "poll"],
+}
+
 
 def _get_qwen_client():
     # Dashscope has two separate regional deployments (China: dashscope.aliyuncs.com,
@@ -82,6 +89,14 @@ def _build_prompt(profile: dict, clusters: list[dict], top_signals: Optional[lis
     age_min = profile.get("target_age_min") or 18
     age_max = profile.get("target_age_max") or 35
     count = len(clusters)
+
+    # Empty/unset preferred_formats means "no restriction" — existing profiles
+    # created before this field existed, and new ones that haven't touched the
+    # setting, must keep getting all three media types, not silently zero.
+    allowed_media = profile.get("preferred_formats") or _ALL_MEDIA
+    media_styles_ref = ", ".join(
+        f"{medium} ({', '.join(_MEDIUM_STYLES[medium])})" for medium in allowed_media if medium in _MEDIUM_STYLES
+    )
 
     # example_posts (verbatim real posts clusterer.py extracted) is the one
     # field in a cluster that actually contains concrete named entities — the
@@ -142,16 +157,25 @@ whatever the example_posts and signals above actually reference. Read them and e
 the specific names. Do NOT write generic placeholder phrasing like "this celebrity feud",
 "a movie reboot", "the drama" — that is a rejected idea, not a usable one.
 
+This creator only makes these content mediums: {", ".join(allowed_media)}. Every idea's
+"medium" must be exactly one of these, and "format" must be a specific style within that
+medium — allowed styles per medium: {media_styles_ref}. Do not suggest a medium outside
+this list under any circumstances, even if a trend would suit a different medium better —
+pick whichever allowed medium fits best instead.
+If "video" is not in the allowed list, do not suggest video-only viral mechanics like
+"duet bait" or "challenge" for any idea.
+
 Return ONLY a valid JSON array with exactly {count} object{"s" if count != 1 else ""}. Each object must have these exact keys:
 - hook: attention-grabbing opening line or video hook (max 15 words)
 - caption: full post caption with 3-5 relevant hashtags (50-100 words)
 - cta: clear call to action (max 10 words)
-- music_mood: background music style for TikTok/Reels (e.g. "Dark hypnotic trap", "Upbeat indie pop")
+- medium: exactly one of {allowed_media} — the content medium this idea actually is
+- music_mood: background music style for TikTok/Reels (e.g. "Dark hypnotic trap", "Upbeat indie pop") — still fill this in even for non-video ideas, in case the creator adds a voiceover/music layer later
 - platform: best platform for this specific idea
 - trend_connection: which trend this taps into and why it works (max 20 words)
-- format: content format (e.g. "short video", "carousel", "talking head", "GRWM", "duet")
-- video_prompt: cinematic scene description for AI video generation — subject, setting, camera movement, lighting, visual style (max 40 words)
-- viral_angle: the specific viral mechanism that makes this shareable — e.g. "hot take", "myth-bust", "POV", "transformation", "duet bait", "challenge", "reaction" (max 12 words)
+- format: a specific style within the chosen medium (see the allowed styles per medium above)
+- video_prompt: ONLY if medium is "video" — cinematic scene description for AI video generation (subject, setting, camera movement, lighting, visual style, max 40 words). If medium is not "video", set this to an empty string "".
+- viral_angle: the specific viral mechanism that makes this shareable — e.g. "hot take", "myth-bust", "POV", "transformation", "challenge", "reaction" (video-only mechanics like "duet bait" only if medium is "video") (max 12 words)
 - posting_time: optimal day + time with one-line reasoning (e.g. "Thursday 6–8 PM EST — peak Gen Z scroll window")
 - hashtag_strategy: exactly 5 hashtags mixing broad reach + niche community, space-separated (e.g. "#quietluxury #ootd #slowfashion #aestheticlife #outfitinspo")
 

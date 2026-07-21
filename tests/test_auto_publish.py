@@ -92,6 +92,34 @@ class TestRunAutoPublish:
         finally:
             session.close()
 
+    def test_excludes_non_video_medium_idea_even_if_platform_is_youtube(self, mocker, db):
+        session = db()
+        profile = _make_profile(session, publish_mode="auto")
+        content = GeneratedContent(
+            user_id=profile.user_id, content_profile_id=profile.id, generated_at=datetime.utcnow(),
+            content_ideas=[
+                {"hook": "photo idea", "status": "live", "platform": "YouTube", "relevance_score": 99, "medium": "photo"},
+                {"hook": "video idea", "status": "live", "platform": "YouTube", "relevance_score": 50, "medium": "video"},
+            ],
+        )
+        session.add(content)
+        session.commit()
+        media = GeneratedMedia(
+            generated_content_id=content.id, idea_index=1, media_type="video",
+            provider="kling", status="done", asset_url="https://example.com/v.mp4",
+        )
+        session.add(media)
+        session.commit()
+        session.close()
+
+        mock_publish = mocker.patch("app.social.service.publish_and_record")
+        run_auto_publish()
+
+        # Only the video-medium idea (index 1) is eligible, despite the photo
+        # idea having a higher relevance_score — Kling+YouTube publish only
+        # makes sense for actual video content.
+        mock_publish.assert_called_once()
+
     def test_skips_already_posted_idea_and_falls_through_to_next_candidate(self, mocker, db):
         session = db()
         profile = _make_profile(session, publish_mode="auto")

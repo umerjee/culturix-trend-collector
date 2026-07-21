@@ -33,6 +33,24 @@ class TestBuildPrompt:
         prompt = _build_prompt({}, clusters)
         assert "real post text" in prompt
 
+    def test_empty_preferred_formats_defaults_to_all_three_media(self):
+        prompt = _build_prompt({"preferred_formats": []}, [_cluster("A")])
+        assert "video" in prompt and "photo" in prompt and "text" in prompt
+
+    def test_missing_preferred_formats_key_defaults_to_all_three_media(self):
+        prompt = _build_prompt({}, [_cluster("A")])
+        assert "video" in prompt and "photo" in prompt and "text" in prompt
+
+    def test_restricted_preferred_formats_excludes_other_media_styles(self):
+        # GRWM/thread only ever appear in the allowed-styles reference list built
+        # from _MEDIUM_STYLES — unlike "duet"/"challenge", which also appear in
+        # unrelated instructional text explaining the video-only-mechanics rule
+        # itself, so they're not safe markers for "was this style offered."
+        prompt = _build_prompt({"preferred_formats": ["photo"]}, [_cluster("A")])
+        assert "carousel" in prompt  # a photo-medium style
+        assert "GRWM" not in prompt  # a video-only style should not be offered
+        assert "thread" not in prompt  # a text-only style should not be offered
+
 
 class TestGenerateIdeasForClusters:
     def test_empty_clusters_returns_empty_without_calling_any_client(self, mocker):
