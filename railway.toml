@@ -8,21 +8,12 @@ healthcheckTimeout = 30
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
 
-# ── Railway Cron Services ─────────────────────────────────────────────────────
-# Create 3 additional Cron services in Railway dashboard pointing at this repo:
-#
-# Tier 1 — Signal Crawl (every 2 hours)
-#   Schedule:  0 */2 * * *
-#   Command:   python -m app.collectors.orchestrator
-#
-# Tier 2 — Embed + Cluster (every 4 hours)
-#   Schedule:  0 */4 * * *
-#   Command:   python -c "from app.embedding_processor import process_embeddings; from app.clustering_service import run_clustering; process_embeddings(500); run_clustering(500, min_cluster_size=2)"
-#
-# Tier 3 — Persona Mapping (every 6 hours)
-#   Schedule:  0 */6 * * *
-#   Command:   python -c "from app.personas import generate_clustered_personas; generate_clustered_personas()"
-#
-# Tier 4 — Digest Generation (daily at 06:00 UTC, so users get it by 07:00)
-#   Schedule:  0 6 * * *
-#   Command:   python -m app.pipeline.graph
+# ── Scheduling note ────────────────────────────────────────────────────────
+# Do NOT create separate Railway Cron Services for collection/clustering/
+# pipeline/digests. app/scheduler.py already runs all of this in-process
+# inside this same web service (started from app/main.py's lifespan()):
+# collection 4x/day, the full LangGraph pipeline daily, Content Check daily,
+# plus post-metrics-refresh and auto-publish. A prior version of this file
+# instructed setting up 4 additional Cron Services that duplicated this
+# exact work — confirmed to have doubled real LLM API costs (DeepSeek/Qwen/
+# Claude/Voyage) by running the whole pipeline twice a day. Removed.
