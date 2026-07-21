@@ -22,6 +22,29 @@ def _get_provider(platform: str):
     return getattr(mod, class_name)()
 
 
+def resolve_active_account(session, user_id, platform: str, content_profile_id=None):
+    """Resolves which ConnectedAccount a post/publish/fetch should use for a
+    given user+platform. Prefers the account dedicated to content_profile_id
+    (a user's own "avatar account" for that niche, see ConnectedAccount's
+    content_profile_id) and falls back to the legacy user-wide account
+    (content_profile_id IS NULL) so any existing single-account user sees
+    zero behavior change. Used by both the /api/content-posts* route
+    pre-flight checks and the actual background fetch/publish tasks below,
+    so the two never disagree about which account is in play."""
+    from app.models.connected_account import ConnectedAccount
+
+    if content_profile_id is not None:
+        account = session.query(ConnectedAccount).filter_by(
+            content_profile_id=content_profile_id, platform=platform, status="active"
+        ).first()
+        if account:
+            return account
+
+    return session.query(ConnectedAccount).filter_by(
+        user_id=user_id, platform=platform, content_profile_id=None, status="active"
+    ).first()
+
+
 def _get_valid_access_token(session, connected_account) -> str:
     from app.social.crypto import decrypt, encrypt
 
@@ -58,7 +81,7 @@ def fetch_and_record(content_post_id: str) -> None:
     from app.db import SessionLocal
     from app.models.content_post import ContentPost
     from app.models.content_post_snapshot import ContentPostSnapshot
-    from app.models.connected_account import ConnectedAccount
+    from app.models.generated_content import GeneratedContent
     import uuid as _uuid
 
     session = SessionLocal()
@@ -69,9 +92,11 @@ def fetch_and_record(content_post_id: str) -> None:
         post.status = "fetching"
         session.commit()
 
-        account = session.query(ConnectedAccount).filter_by(
-            user_id=post.user_id, platform=post.platform, status="active"
-        ).first()
+        content = session.query(GeneratedContent).filter_by(id=post.generated_content_id).first()
+        account = resolve_active_account(
+            session, post.user_id, post.platform,
+            content_profile_id=content.content_profile_id if content else None,
+        )
         if not account:
             post.status = "needs_reconnect"
             post.error = f"No active {post.platform} connection"
@@ -119,7 +144,6 @@ def publish_and_record(content_post_id: str) -> None:
     from app.db import SessionLocal
     from app.models.content_post import ContentPost
     from app.models.content_post_snapshot import ContentPostSnapshot
-    from app.models.connected_account import ConnectedAccount
     from app.models.generated_media import GeneratedMedia
     from app.models.generated_content import GeneratedContent
     import uuid as _uuid
@@ -130,9 +154,11 @@ def publish_and_record(content_post_id: str) -> None:
         if not post:
             return
 
-        account = session.query(ConnectedAccount).filter_by(
-            user_id=post.user_id, platform=post.platform, status="active"
-        ).first()
+        content = session.query(GeneratedContent).filter_by(id=post.generated_content_id).first()
+        account = resolve_active_account(
+            session, post.user_id, post.platform,
+            content_profile_id=content.content_profile_id if content else None,
+        )
         if not account:
             post.status = "needs_reconnect"
             post.error = f"No active {post.platform} connection"
@@ -152,7 +178,6 @@ def publish_and_record(content_post_id: str) -> None:
             session.commit()
             return
 
-        content = session.query(GeneratedContent).filter_by(id=post.generated_content_id).first()
         idea = (content.content_ideas or [])[post.idea_index] if content else {}
         title = (idea.get("hook") or "Culturix post")[:100]
         description = "\n\n".join(filter(None, [idea.get("caption"), idea.get("hashtag_strategy")]))

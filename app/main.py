@@ -78,6 +78,12 @@ async def lifespan(_):
             # re-hosted to Supabase Storage at collection time) — used as an
             # optional reference for image generation. NULL means unavailable.
             "ALTER TABLE trends ADD COLUMN IF NOT EXISTS image_url TEXT",
+            # Binds a connected account to one specific ContentProfile (niche) —
+            # a user's own dedicated "avatar account" for that niche. NULL stays
+            # legacy/user-wide; see app/models/connected_account.py.
+            "ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS content_profile_id UUID",
+            "ALTER TABLE connected_accounts DROP CONSTRAINT IF EXISTS uq_connected_accounts_user_platform",
+            "ALTER TABLE connected_accounts ADD CONSTRAINT uq_connected_accounts_profile_platform UNIQUE (content_profile_id, platform)",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -1010,17 +1016,20 @@ def _get_social_provider(platform: str):
 
 
 @app.get("/api/social/{platform}/connect")
-def social_connect(platform: str, user_id: str):
+def social_connect(platform: str, user_id: str, content_profile_id: Optional[str] = None):
     """Redirects to the platform's OAuth consent screen. `state` carries the
-    user_id through the round trip so the callback knows who's connecting —
-    this app has no server-side session of its own (auth lives in the
-    frontend's Supabase session), so, consistent with every other endpoint
-    here trusting a passed-in user_id (e.g. GET /users/{user_id}/content-profiles),
-    it isn't cryptographically signed. Worst case of tampering is a connection
-    landing on the wrong user_id, not a security bypass of anything sensitive."""
+    user_id (and, when connecting a niche's own dedicated "avatar account",
+    the content_profile_id to bind it to) through the round trip so the
+    callback knows who's connecting and to which profile — this app has no
+    server-side session of its own (auth lives in the frontend's Supabase
+    session), so, consistent with every other endpoint here trusting a
+    passed-in user_id (e.g. GET /users/{user_id}/content-profiles), it isn't
+    cryptographically signed. Worst case of tampering is a connection landing
+    on the wrong user_id/profile, not a security bypass of anything sensitive."""
     from fastapi.responses import RedirectResponse
     provider = _get_social_provider(platform)
-    return RedirectResponse(provider.get_authorize_url(state=user_id))
+    state = f"{user_id}:{content_profile_id or ''}"
+    return RedirectResponse(provider.get_authorize_url(state=state))
 
 
 @app.get("/api/social/{platform}/callback")
@@ -1047,10 +1056,27 @@ def social_callback(platform: str, code: Optional[str] = None, state: Optional[s
     session = SessionLocal()
     try:
         try:
-            user_id = _uuid.UUID(state)
-            account = session.query(ConnectedAccount).filter_by(user_id=user_id, platform=platform).first()
+            # state = "{user_id}:{content_profile_id}" (content_profile_id may be
+            # empty — a legacy/user-wide connect not bound to any one niche).
+            # Split on the last ":" isn't needed since UUIDs never contain ":".
+            raw_user_id, _, raw_profile_id = state.partition(":")
+            user_id = _uuid.UUID(raw_user_id)
+            content_profile_id = _uuid.UUID(raw_profile_id) if raw_profile_id else None
+
+            # content_profile_id alone is enough to identify a profile-bound row
+            # (it's globally unique per profile+platform, and a profile belongs
+            # to exactly one user already); a legacy/unbound connect (None) isn't
+            # unique on its own, so that case must also match on user_id — Postgres
+            # doesn't dedupe multiple NULLs under the unique constraint, so without
+            # this a lookup could otherwise land on a different user's legacy row.
+            query = session.query(ConnectedAccount).filter_by(platform=platform)
+            if content_profile_id is not None:
+                query = query.filter_by(content_profile_id=content_profile_id)
+            else:
+                query = query.filter_by(user_id=user_id, content_profile_id=None)
+            account = query.first()
             if not account:
-                account = ConnectedAccount(user_id=user_id, platform=platform)
+                account = ConnectedAccount(user_id=user_id, platform=platform, content_profile_id=content_profile_id)
                 session.add(account)
             account.access_token = encrypt(result.access_token)
             if result.refresh_token:
@@ -1079,16 +1105,16 @@ def social_callback(platform: str, code: Optional[str] = None, state: Optional[s
 
 
 @app.delete("/api/social/{platform}/disconnect")
-def social_disconnect(platform: str, user_id: str):
+def social_disconnect(platform: str, user_id: str, content_profile_id: Optional[str] = None):
     from app.db import SessionLocal
     from app.models.connected_account import ConnectedAccount
     import uuid as _uuid
 
     session = SessionLocal()
     try:
-        account = session.query(ConnectedAccount).filter_by(
-            user_id=_uuid.UUID(user_id), platform=platform
-        ).first()
+        query = session.query(ConnectedAccount).filter_by(user_id=_uuid.UUID(user_id), platform=platform)
+        query = query.filter_by(content_profile_id=_uuid.UUID(content_profile_id) if content_profile_id else None)
+        account = query.first()
         if account:
             account.status = "revoked"  # soft — kept for audit, matches this codebase's status-not-delete pattern
             session.commit()
@@ -1098,20 +1124,24 @@ def social_disconnect(platform: str, user_id: str):
 
 
 @app.get("/api/social/accounts")
-def list_connected_accounts(user_id: str):
+def list_connected_accounts(user_id: str, content_profile_id: Optional[str] = None):
     from app.db import SessionLocal
     from app.models.connected_account import ConnectedAccount
     import uuid as _uuid
 
     session = SessionLocal()
     try:
-        rows = session.query(ConnectedAccount).filter_by(user_id=_uuid.UUID(user_id)).all()
+        query = session.query(ConnectedAccount).filter_by(user_id=_uuid.UUID(user_id))
+        if content_profile_id is not None:
+            query = query.filter_by(content_profile_id=_uuid.UUID(content_profile_id))
+        rows = query.all()
         return [
             {
                 "platform": r.platform,
                 "platform_username": r.platform_username,
                 "status": r.status,
                 "connected_at": r.connected_at.isoformat() if r.connected_at else None,
+                "content_profile_id": str(r.content_profile_id) if r.content_profile_id else None,
             }
             for r in rows if r.status != "revoked"
         ]
@@ -1126,8 +1156,8 @@ def create_content_post(body: dict, background_tasks: BackgroundTasks):
     since even read-only metric fetching needs a valid access token."""
     from app.db import SessionLocal
     from app.models.content_post import ContentPost
-    from app.models.connected_account import ConnectedAccount
-    from app.social.service import fetch_and_record
+    from app.models.generated_content import GeneratedContent
+    from app.social.service import fetch_and_record, resolve_active_account
     import uuid as _uuid
     from datetime import datetime, timedelta
 
@@ -1142,9 +1172,11 @@ def create_content_post(body: dict, background_tasks: BackgroundTasks):
 
     session = SessionLocal()
     try:
-        account = session.query(ConnectedAccount).filter_by(
-            user_id=_uuid.UUID(user_id), platform=platform, status="active"
-        ).first()
+        content = session.query(GeneratedContent).filter_by(id=_uuid.UUID(content_id)).first()
+        account = resolve_active_account(
+            session, _uuid.UUID(user_id), platform,
+            content_profile_id=content.content_profile_id if content else None,
+        )
         if not account:
             raise HTTPException(
                 status_code=400,
@@ -1181,9 +1213,9 @@ def publish_content_post(body: dict, background_tasks: BackgroundTasks):
     platform tells us the post ID once it's live."""
     from app.db import SessionLocal
     from app.models.content_post import ContentPost
-    from app.models.connected_account import ConnectedAccount
+    from app.models.generated_content import GeneratedContent
     from app.models.generated_media import GeneratedMedia
-    from app.social.service import publish_and_record
+    from app.social.service import publish_and_record, resolve_active_account
     import uuid as _uuid
 
     content_id = body.get("content_id")
@@ -1196,9 +1228,11 @@ def publish_content_post(body: dict, background_tasks: BackgroundTasks):
 
     session = SessionLocal()
     try:
-        account = session.query(ConnectedAccount).filter_by(
-            user_id=_uuid.UUID(user_id), platform=platform, status="active"
-        ).first()
+        content = session.query(GeneratedContent).filter_by(id=_uuid.UUID(content_id)).first()
+        account = resolve_active_account(
+            session, _uuid.UUID(user_id), platform,
+            content_profile_id=content.content_profile_id if content else None,
+        )
         if not account:
             raise HTTPException(
                 status_code=400,

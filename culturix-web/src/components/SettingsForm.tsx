@@ -129,7 +129,9 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
   const selected = profiles.find(p => p.id === selectedId) ?? null;
   const profileLimit = plan === "pro" ? 10 : 1;
   const canAddMore = profiles.length < profileLimit;
-  const hasActiveConnection = connectedAccounts.some(a => a.status === "active");
+  // Profile-scoped — reflects whether THIS niche has its own dedicated
+  // account, not whether the user has a connection anywhere.
+  const hasActiveConnection = connectedAccounts.some(a => a.status === "active" && a.content_profile_id === selectedId);
 
   async function loadConnectedAccounts() {
     setAccountsLoading(true);
@@ -140,8 +142,9 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
     setAccountsLoading(false);
   }
 
-  async function handleDisconnect(platform: string) {
-    await fetch(`${RAILWAY}/api/social/${platform}/disconnect?user_id=${userId}`, { method: "DELETE" });
+  async function handleDisconnect(platform: string, contentProfileId: string | null) {
+    const qs = contentProfileId ? `&content_profile_id=${contentProfileId}` : "";
+    await fetch(`${RAILWAY}/api/social/${platform}/disconnect?user_id=${userId}${qs}`, { method: "DELETE" });
     loadConnectedAccounts();
   }
 
@@ -343,55 +346,6 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
           Couldn&apos;t connect that account — please try again.
         </p>
       )}
-
-      {/* Connected accounts */}
-      <section className="bg-white rounded-2xl border border-gray-100 p-6">
-        <h2 className="font-semibold text-gray-900 mb-1">Connected accounts</h2>
-        <p className="text-xs text-gray-400 mb-4">
-          Connect a platform so Culturix can track engagement on posts you mark as published, or publish
-          directly on your behalf.
-        </p>
-        <div className="space-y-2">
-          {SUPPORTED_SOCIAL_PLATFORMS.map(({ key, label, live }) => {
-            const connected = connectedAccounts.find(a => a.platform === key && a.status === "active");
-            if (!live) {
-              return (
-                <div key={key} className="flex items-center justify-between rounded-xl border border-gray-100 px-4 py-3 opacity-50">
-                  <span className="text-sm font-medium text-gray-500">{label}</span>
-                  <span className="text-xs text-gray-400">Coming soon</span>
-                </div>
-              );
-            }
-            return (
-              <div key={key} className="flex items-center justify-between rounded-xl border border-gray-100 px-4 py-3">
-                <div>
-                  <span className="text-sm font-medium text-gray-900">{label}</span>
-                  {connected?.platform_username && (
-                    <span className="text-xs text-gray-400 ml-2">@{connected.platform_username}</span>
-                  )}
-                </div>
-                {accountsLoading ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-300" />
-                ) : connected ? (
-                  <button
-                    onClick={() => handleDisconnect(key)}
-                    className="inline-flex items-center gap-1.5 text-xs font-medium text-red-500 hover:text-red-600"
-                  >
-                    <Unlink className="h-3.5 w-3.5" /> Disconnect
-                  </button>
-                ) : (
-                  <a
-                    href={`${RAILWAY}/api/social/${key}/connect?user_id=${userId}`}
-                    className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-700"
-                  >
-                    <Link2 className="h-3.5 w-3.5" /> Connect
-                  </a>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </section>
 
       {/* Profile selector */}
       <section className="bg-white rounded-2xl border border-gray-100 p-6">
@@ -668,6 +622,77 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
               </div>
             </div>
           </section>
+
+          {/* This avatar's account — one dedicated connected account per profile/niche */}
+          {isNew ? (
+            <section className="bg-white rounded-2xl border border-gray-100 p-6">
+              <h2 className="font-semibold text-gray-900 mb-1">This avatar&apos;s account</h2>
+              <p className="text-xs text-gray-400">
+                Save this profile first, then come back here to connect its dedicated account.
+              </p>
+            </section>
+          ) : selectedId && (
+            <section className="bg-white rounded-2xl border border-gray-100 p-6">
+              <h2 className="font-semibold text-gray-900 mb-1">This avatar&apos;s account</h2>
+              <p className="text-xs text-gray-400 mb-4">
+                Connect the dedicated account you run for this niche so Culturix can publish to it and track
+                performance — a different profile can have its own separate account.
+              </p>
+              <div className="space-y-2">
+                {SUPPORTED_SOCIAL_PLATFORMS.map(({ key, label, live }) => {
+                  const bound = connectedAccounts.find(
+                    a => a.platform === key && a.status === "active" && a.content_profile_id === selectedId
+                  );
+                  const legacy = connectedAccounts.find(
+                    a => a.platform === key && a.status === "active" && a.content_profile_id === null
+                  );
+                  if (!live) {
+                    return (
+                      <div key={key} className="flex items-center justify-between rounded-xl border border-gray-100 px-4 py-3 opacity-50">
+                        <span className="text-sm font-medium text-gray-500">{label}</span>
+                        <span className="text-xs text-gray-400">Coming soon</span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={key} className="rounded-xl border border-gray-100 px-4 py-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="text-sm font-medium text-gray-900">{label}</span>
+                          {bound?.platform_username && (
+                            <span className="text-xs text-gray-400 ml-2">@{bound.platform_username}</span>
+                          )}
+                        </div>
+                        {accountsLoading ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-300" />
+                        ) : bound ? (
+                          <button
+                            onClick={() => handleDisconnect(key, selectedId)}
+                            className="inline-flex items-center gap-1.5 text-xs font-medium text-red-500 hover:text-red-600"
+                          >
+                            <Unlink className="h-3.5 w-3.5" /> Disconnect
+                          </button>
+                        ) : (
+                          <a
+                            href={`${RAILWAY}/api/social/${key}/connect?user_id=${userId}&content_profile_id=${selectedId}`}
+                            className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-700"
+                          >
+                            <Link2 className="h-3.5 w-3.5" /> Connect a dedicated account
+                          </a>
+                        )}
+                      </div>
+                      {!bound && legacy && (
+                        <p className="text-xs text-amber-600 mt-2">
+                          Currently shared with other profiles via @{legacy.platform_username ?? "an older connection"} —
+                          not dedicated to this one. Connect a separate account above to give this niche its own.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
 
           {/* Publish mode */}
           <section className="bg-white rounded-2xl border border-gray-100 p-6">

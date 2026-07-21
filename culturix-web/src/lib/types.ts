@@ -72,6 +72,9 @@ export interface ConnectedAccount {
   platform_username: string | null;
   status: "active" | "expired" | "revoked" | "error";
   connected_at: string | null;
+  // Which Trend profile (niche) this account is dedicated to — the user's own
+  // "avatar account" for that niche. null = legacy/shared across all profiles.
+  content_profile_id: string | null;
 }
 
 export interface ContentPost {
