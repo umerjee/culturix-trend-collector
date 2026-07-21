@@ -925,24 +925,32 @@ def social_callback(platform: str, code: Optional[str] = None, state: Optional[s
 
     session = SessionLocal()
     try:
-        user_id = _uuid.UUID(state)
-        account = session.query(ConnectedAccount).filter_by(user_id=user_id, platform=platform).first()
-        if not account:
-            account = ConnectedAccount(user_id=user_id, platform=platform)
-            session.add(account)
-        account.access_token = encrypt(result.access_token)
-        if result.refresh_token:
-            account.refresh_token = encrypt(result.refresh_token)
-        account.token_expires_at = (
-            datetime.utcnow() + timedelta(seconds=result.expires_in_seconds)
-            if result.expires_in_seconds else None
-        )
-        account.scopes = "readonly,upload" if platform == "youtube" else None
-        account.platform_account_id = result.platform_account_id
-        account.platform_username = result.platform_username
-        account.status = "active"
-        account.connected_at = datetime.utcnow()
-        session.commit()
+        try:
+            user_id = _uuid.UUID(state)
+            account = session.query(ConnectedAccount).filter_by(user_id=user_id, platform=platform).first()
+            if not account:
+                account = ConnectedAccount(user_id=user_id, platform=platform)
+                session.add(account)
+            account.access_token = encrypt(result.access_token)
+            if result.refresh_token:
+                account.refresh_token = encrypt(result.refresh_token)
+            account.token_expires_at = (
+                datetime.utcnow() + timedelta(seconds=result.expires_in_seconds)
+                if result.expires_in_seconds else None
+            )
+            account.scopes = "readonly,upload" if platform == "youtube" else None
+            account.platform_account_id = result.platform_account_id
+            account.platform_username = result.platform_username
+            account.status = "active"
+            account.connected_at = datetime.utcnow()
+            session.commit()
+        except Exception as e:
+            # Covers a missing TOKEN_ENCRYPTION_KEY (encrypt() raises RuntimeError)
+            # as well as any DB error — same clean-redirect contract as the
+            # exchange_code failure above, not a raw 500 on a real OAuth callback.
+            session.rollback()
+            logging.error("Social OAuth callback failed to save connection (%s): %s", platform, e)
+            return RedirectResponse(f"{frontend_base}/settings?social_error=save_failed")
     finally:
         session.close()
 
