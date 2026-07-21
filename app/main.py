@@ -25,6 +25,9 @@ async def lifespan(_):
     from app.models.trend_theme import TrendTheme                  # noqa: F401
     from app.models.trend_occurrence import TrendOccurrence         # noqa: F401
     from app.models.high_velocity_alert import HighVelocityAlert    # noqa: F401
+    from app.models.connected_account import ConnectedAccount       # noqa: F401
+    from app.models.content_post import ContentPost                 # noqa: F401
+    from app.models.content_post_snapshot import ContentPostSnapshot  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -62,6 +65,10 @@ async def lifespan(_):
             # fail against real production data if any duplicates ever slipped
             # through a race; caught below rather than allowed to crash startup.
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_trends_platform_external_id ON trends(platform, external_id)",
+            # Phase 1 — closed feedback loop (connected accounts / publish+track)
+            "ALTER TABLE content_profiles ADD COLUMN IF NOT EXISTS publish_mode VARCHAR(10) NOT NULL DEFAULT 'manual'",
+            "CREATE INDEX IF NOT EXISTS idx_content_posts_content ON content_posts(generated_content_id, idea_index)",
+            "CREATE INDEX IF NOT EXISTS idx_content_post_snapshots_post ON content_post_snapshots(content_post_id)",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -863,6 +870,320 @@ def list_generated_media(generated_content_id: str, idea_index: Optional[int] = 
         session.close()
 
 
+# ---------------------------------------------------------------------------
+# Phase 1 — closed feedback loop: connected accounts (OAuth) + content posts
+# (manual tracking, one-click publish, and the aggregate Performance feed)
+# ---------------------------------------------------------------------------
+
+_SOCIAL_PLATFORMS = {"youtube"}  # twitter/tiktok/instagram land here once their app credentials exist
+
+
+def _get_social_provider(platform: str):
+    if platform not in _SOCIAL_PLATFORMS:
+        raise HTTPException(status_code=404, detail=f"Unsupported platform: {platform}")
+    from app.social.service import _get_provider
+    try:
+        return _get_provider(platform)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.get("/api/social/{platform}/connect")
+def social_connect(platform: str, user_id: str):
+    """Redirects to the platform's OAuth consent screen. `state` carries the
+    user_id through the round trip so the callback knows who's connecting —
+    this app has no server-side session of its own (auth lives in the
+    frontend's Supabase session), so, consistent with every other endpoint
+    here trusting a passed-in user_id (e.g. GET /users/{user_id}/content-profiles),
+    it isn't cryptographically signed. Worst case of tampering is a connection
+    landing on the wrong user_id, not a security bypass of anything sensitive."""
+    from fastapi.responses import RedirectResponse
+    provider = _get_social_provider(platform)
+    return RedirectResponse(provider.get_authorize_url(state=user_id))
+
+
+@app.get("/api/social/{platform}/callback")
+def social_callback(platform: str, code: Optional[str] = None, state: Optional[str] = None):
+    from fastapi.responses import RedirectResponse
+    from app.db import SessionLocal
+    from app.models.connected_account import ConnectedAccount
+    from app.social.crypto import encrypt
+    import uuid as _uuid
+    from datetime import datetime, timedelta
+
+    frontend_base = os.getenv("NEXT_PUBLIC_SITE_URL", "https://culturix-web.vercel.app")
+
+    if not code or not state:
+        return RedirectResponse(f"{frontend_base}/settings?social_error=missing_code")
+
+    provider = _get_social_provider(platform)
+    try:
+        result = provider.exchange_code(code)
+    except Exception as e:
+        logging.error("Social OAuth exchange failed (%s): %s", platform, e)
+        return RedirectResponse(f"{frontend_base}/settings?social_error=exchange_failed")
+
+    session = SessionLocal()
+    try:
+        user_id = _uuid.UUID(state)
+        account = session.query(ConnectedAccount).filter_by(user_id=user_id, platform=platform).first()
+        if not account:
+            account = ConnectedAccount(user_id=user_id, platform=platform)
+            session.add(account)
+        account.access_token = encrypt(result.access_token)
+        if result.refresh_token:
+            account.refresh_token = encrypt(result.refresh_token)
+        account.token_expires_at = (
+            datetime.utcnow() + timedelta(seconds=result.expires_in_seconds)
+            if result.expires_in_seconds else None
+        )
+        account.scopes = "readonly,upload" if platform == "youtube" else None
+        account.platform_account_id = result.platform_account_id
+        account.platform_username = result.platform_username
+        account.status = "active"
+        account.connected_at = datetime.utcnow()
+        session.commit()
+    finally:
+        session.close()
+
+    return RedirectResponse(f"{frontend_base}/settings?connected={platform}")
+
+
+@app.delete("/api/social/{platform}/disconnect")
+def social_disconnect(platform: str, user_id: str):
+    from app.db import SessionLocal
+    from app.models.connected_account import ConnectedAccount
+    import uuid as _uuid
+
+    session = SessionLocal()
+    try:
+        account = session.query(ConnectedAccount).filter_by(
+            user_id=_uuid.UUID(user_id), platform=platform
+        ).first()
+        if account:
+            account.status = "revoked"  # soft — kept for audit, matches this codebase's status-not-delete pattern
+            session.commit()
+        return {"status": "disconnected"}
+    finally:
+        session.close()
+
+
+@app.get("/api/social/accounts")
+def list_connected_accounts(user_id: str):
+    from app.db import SessionLocal
+    from app.models.connected_account import ConnectedAccount
+    import uuid as _uuid
+
+    session = SessionLocal()
+    try:
+        rows = session.query(ConnectedAccount).filter_by(user_id=_uuid.UUID(user_id)).all()
+        return [
+            {
+                "platform": r.platform,
+                "platform_username": r.platform_username,
+                "status": r.status,
+                "connected_at": r.connected_at.isoformat() if r.connected_at else None,
+            }
+            for r in rows if r.status != "revoked"
+        ]
+    finally:
+        session.close()
+
+
+@app.post("/api/content-posts")
+def create_content_post(body: dict, background_tasks: BackgroundTasks):
+    """Manual tracking — user posted this idea themselves somewhere and is
+    pasting the link. Still requires a connected account for that platform,
+    since even read-only metric fetching needs a valid access token."""
+    from app.db import SessionLocal
+    from app.models.content_post import ContentPost
+    from app.models.connected_account import ConnectedAccount
+    from app.social.service import fetch_and_record
+    import uuid as _uuid
+    from datetime import datetime, timedelta
+
+    content_id = body.get("content_id")
+    idea_index = body.get("idea_index")
+    user_id = body.get("user_id")
+    platform = body.get("platform")
+    post_url = body.get("post_url")
+
+    if not all([content_id, idea_index is not None, user_id, platform, post_url]):
+        raise HTTPException(status_code=400, detail="content_id, idea_index, user_id, platform, post_url required")
+
+    session = SessionLocal()
+    try:
+        account = session.query(ConnectedAccount).filter_by(
+            user_id=_uuid.UUID(user_id), platform=platform, status="active"
+        ).first()
+        if not account:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Connect your {platform} account in Settings before tracking a post."
+            )
+
+        post = ContentPost(
+            generated_content_id=_uuid.UUID(content_id),
+            idea_index=idea_index,
+            user_id=_uuid.UUID(user_id),
+            platform=platform,
+            post_url=post_url,
+            created_via="manual",
+            status="pending",
+            tracking_until=datetime.utcnow() + timedelta(days=14),
+        )
+        session.add(post)
+        session.commit()
+        background_tasks.add_task(fetch_and_record, content_post_id=str(post.id))
+        return {"status": "queued", "content_post_id": str(post.id)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.post("/api/content-posts/publish")
+def publish_content_post(body: dict, background_tasks: BackgroundTasks):
+    """One-click / autonomous publish — Culturix posts the idea's finished
+    video directly via the platform's API. No post_url from the caller; the
+    platform tells us the post ID once it's live."""
+    from app.db import SessionLocal
+    from app.models.content_post import ContentPost
+    from app.models.connected_account import ConnectedAccount
+    from app.models.generated_media import GeneratedMedia
+    from app.social.service import publish_and_record
+    import uuid as _uuid
+
+    content_id = body.get("content_id")
+    idea_index = body.get("idea_index")
+    user_id = body.get("user_id")
+    platform = body.get("platform")
+
+    if not all([content_id, idea_index is not None, user_id, platform]):
+        raise HTTPException(status_code=400, detail="content_id, idea_index, user_id, platform required")
+
+    session = SessionLocal()
+    try:
+        account = session.query(ConnectedAccount).filter_by(
+            user_id=_uuid.UUID(user_id), platform=platform, status="active"
+        ).first()
+        if not account:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Connect your {platform} account in Settings before publishing."
+            )
+
+        media = session.query(GeneratedMedia).filter_by(
+            generated_content_id=_uuid.UUID(content_id), idea_index=idea_index,
+            media_type="video", status="done",
+        ).first()
+        if not media:
+            raise HTTPException(status_code=400, detail="Generate a video for this idea before publishing.")
+
+        post = ContentPost(
+            generated_content_id=_uuid.UUID(content_id),
+            idea_index=idea_index,
+            user_id=_uuid.UUID(user_id),
+            platform=platform,
+            created_via="published",
+            status="pending",
+        )
+        session.add(post)
+        session.commit()
+        background_tasks.add_task(publish_and_record, content_post_id=str(post.id))
+        return {"status": "queued", "content_post_id": str(post.id)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.get("/api/content-posts/{generated_content_id}")
+def list_content_posts(generated_content_id: str, idea_index: Optional[int] = None):
+    """Poll endpoint — same shape as GET /api/generate-media/{id}, used by
+    both the manual-tracking and publish frontend flows."""
+    from app.db import SessionLocal
+    from app.models.content_post import ContentPost
+    import uuid as _uuid
+
+    session = SessionLocal()
+    try:
+        q = session.query(ContentPost).filter_by(generated_content_id=_uuid.UUID(generated_content_id))
+        if idea_index is not None:
+            q = q.filter_by(idea_index=idea_index)
+        rows = q.order_by(ContentPost.created_at.desc()).all()
+        return [_serialize_content_post(r) for r in rows]
+    finally:
+        session.close()
+
+
+@app.post("/api/content-posts/{content_post_id}/refresh")
+def refresh_content_post(content_post_id: str, background_tasks: BackgroundTasks):
+    from app.social.service import fetch_and_record
+    background_tasks.add_task(fetch_and_record, content_post_id=content_post_id)
+    return {"status": "queued"}
+
+
+@app.get("/api/content-posts")
+def list_all_content_posts(user_id: str):
+    """Aggregate feed for the Performance page — every tracked/published post
+    across all of a user's content profiles, latest metrics, views desc."""
+    from app.db import SessionLocal
+    from app.models.content_post import ContentPost
+    from app.models.generated_content import GeneratedContent
+    import uuid as _uuid
+
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(ContentPost)
+            .filter_by(user_id=_uuid.UUID(user_id))
+            .order_by(ContentPost.latest_views.desc().nullslast())
+            .all()
+        )
+        content_ids = {r.generated_content_id for r in rows}
+        contents = {
+            c.id: c for c in session.query(GeneratedContent).filter(GeneratedContent.id.in_(content_ids)).all()
+        } if content_ids else {}
+
+        out = []
+        for r in rows:
+            data = _serialize_content_post(r)
+            content = contents.get(r.generated_content_id)
+            idea = (content.content_ideas or [])[r.idea_index] if content and content.content_ideas else {}
+            data["hook"] = idea.get("hook")
+            out.append(data)
+        return out
+    finally:
+        session.close()
+
+
+def _serialize_content_post(r) -> dict:
+    return {
+        "id": str(r.id),
+        "generated_content_id": str(r.generated_content_id),
+        "idea_index": r.idea_index,
+        "platform": r.platform,
+        "post_url": r.post_url,
+        "created_via": r.created_via,
+        "status": r.status,
+        "latest_views": r.latest_views,
+        "latest_likes": r.latest_likes,
+        "latest_comments": r.latest_comments,
+        "latest_shares": r.latest_shares,
+        "last_fetched_at": r.last_fetched_at.isoformat() if r.last_fetched_at else None,
+        "error": r.error,
+        "posted_at": r.posted_at.isoformat() if r.posted_at else None,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    }
+
+
 @app.post("/api/webhooks/delivery")
 def webhook_delivery():
     import threading
@@ -1537,7 +1858,8 @@ def update_content_profile(user_id: str, profile_id: str, body: dict):
             raise HTTPException(status_code=404, detail="Profile not found")
         for field in ("name", "industry_niche", "target_platforms", "target_regions",
                       "content_goals", "content_tones", "persona_tags",
-                      "target_age_min", "target_age_max", "delivery_freq", "delivery_time", "is_active"):
+                      "target_age_min", "target_age_max", "delivery_freq", "delivery_time", "is_active",
+                      "publish_mode"):
             if field in body:
                 setattr(cp, field, body[field])
         session.commit()
@@ -1582,5 +1904,6 @@ def _serialize_cp(p) -> dict:
         "delivery_freq": p.delivery_freq,
         "delivery_time": p.delivery_time,
         "is_active": p.is_active,
+        "publish_mode": p.publish_mode,
         "created_at": p.created_at.isoformat() if p.created_at else None,
     }

@@ -27,3 +27,4 @@ PyJWT
 # Workstream 5 — Media generation (voiceover: free, no API key)
 edge-tts
 stripe
+cryptography

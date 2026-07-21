@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { Settings, Zap, TrendingUp, Sparkles, Inbox, ShieldCheck, LayoutList } from "lucide-react";
+import { TrendingUp, Sparkles, Inbox, LayoutList } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
+import AppNav from "@/components/AppNav";
 import DigestCard from "@/components/DigestCard";
 import RefreshButton from "@/components/RefreshButton";
 import type { Digest, ContentProfile } from "@/lib/types";
@@ -37,6 +38,18 @@ async function fetchProfiles(userId: string): Promise<ContentProfile[]> {
   }
 }
 
+async function fetchConnectedPlatforms(userId: string): Promise<string[]> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
+  try {
+    const res = await fetch(`${apiUrl}/api/social/accounts?user_id=${userId}`, { cache: "no-store" });
+    if (!res.ok) return [];
+    const data: { platform: string; status: string }[] = await res.json();
+    return data.filter(a => a.status === "active").map(a => a.platform);
+  } catch {
+    return [];
+  }
+}
+
 export default async function DashboardPage({
   searchParams,
 }: {
@@ -63,9 +76,10 @@ export default async function DashboardPage({
     }
   }
 
-  const [profiles, digest] = await Promise.all([
+  const [profiles, digest, connectedPlatforms] = await Promise.all([
     fetchProfiles(user.id),
     fetchDigest(user.id, searchParams.profile),
+    fetchConnectedPlatforms(user.id),
   ]);
   // Single source of truth for "needs onboarding" — a user with zero content
   // profiles has never completed the wizard (or their session outlived it),
@@ -77,43 +91,21 @@ export default async function DashboardPage({
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Top nav */}
-      <header className="bg-white border-b border-gray-100 sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Zap className="h-5 w-5 text-blue-600" />
-            <span className="font-bold text-lg tracking-tight">Culturix</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <RefreshButton profileId={searchParams.profile} />
-            <Link
-              href="/settings"
-              className="inline-flex items-center gap-2 text-sm font-medium text-gray-600 border border-gray-200 rounded-lg px-3 py-2 hover:bg-gray-50 transition-colors"
-            >
-              <Settings className="h-3.5 w-3.5" /> Settings
-            </Link>
-            {isSuperAdmin && (
-              <Link
-                href="/admin"
-                className="inline-flex items-center gap-2 text-sm font-medium text-indigo-600 border border-indigo-200 rounded-lg px-3 py-2 hover:bg-indigo-50 transition-colors"
-              >
-                <ShieldCheck className="h-3.5 w-3.5" /> Admin
-              </Link>
-            )}
-          </div>
-        </div>
-      </header>
+      <AppNav active="dashboard" isSuperAdmin={isSuperAdmin} />
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         {/* Header */}
-        <div className="mb-6">
-          <p className="text-sm text-gray-500 mb-1">{today}</p>
-          <h1 className="text-2xl font-bold text-gray-900">Your daily content brief</h1>
-          {digest?.generated_at && (
-            <p className="text-xs text-gray-400 mt-1">
-              Generated {new Date(digest.generated_at).toLocaleTimeString()}
-            </p>
-          )}
+        <div className="mb-6 flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <p className="text-sm text-gray-500 mb-1">{today}</p>
+            <h1 className="text-2xl font-bold text-gray-900">Your daily content brief</h1>
+            {digest?.generated_at && (
+              <p className="text-xs text-gray-400 mt-1">
+                Generated {new Date(digest.generated_at).toLocaleTimeString()}
+              </p>
+            )}
+          </div>
+          <RefreshButton profileId={searchParams.profile} />
         </div>
 
         {/* Quick stats */}
@@ -227,7 +219,7 @@ export default async function DashboardPage({
                 </div>
                 <div className="grid sm:grid-cols-2 gap-4">
                   {digest.content_ideas.map((idea, i) => (
-                    <DigestCard key={i} idea={idea} index={i} contentId={digest.id} plan={plan} />
+                    <DigestCard key={i} idea={idea} index={i} contentId={digest.id} plan={plan} connectedPlatforms={connectedPlatforms} />
                   ))}
                 </div>
               </section>

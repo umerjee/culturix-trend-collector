@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
-import { Music, Target, Megaphone, Copy, Check, Film, Mic, Video, Image as ImageIcon, Loader2, Clock, Zap, ChevronDown, ChevronUp } from "lucide-react";
-import type { ContentIdea } from "@/lib/types";
+import { useEffect, useState, type ReactNode } from "react";
+import { Music, Target, Megaphone, Copy, Check, Film, Mic, Video, Image as ImageIcon, Loader2, Clock, Zap, ChevronDown, ChevronUp, Send, Link2 } from "lucide-react";
+import type { ContentIdea, ContentPost } from "@/lib/types";
 import MediaPreview from "@/components/MediaPreview";
+import PostPerformance from "@/components/PostPerformance";
 
 const PLATFORM_COLORS: Record<string, string> = {
   TikTok: "bg-pink-100 text-pink-700",
@@ -43,7 +44,13 @@ interface Props {
   index: number;
   contentId: string;
   plan: "free" | "pro";
+  connectedPlatforms: string[]; // lowercase platform keys with an active connected account, e.g. ["youtube"]
 }
+
+// Only YouTube has a working publish()/fetch_post_metrics() provider today —
+// same gate app/scheduler.py's run_auto_publish() applies backend-side.
+const PUBLISHABLE_IDEA_PLATFORM = "YouTube";
+const PUBLISHABLE_BACKEND_PLATFORM = "youtube";
 
 type MediaType = "voiceover" | "music" | "video" | "image";
 
@@ -65,16 +72,50 @@ function CopyBtn({ text, label }: { text: string; label: string }) {
   );
 }
 
-export default function DigestCard({ idea, index, contentId, plan }: Props) {
+export default function DigestCard({ idea, index, contentId, plan, connectedPlatforms }: Props) {
   const [postCopied, setPostCopied] = useState(false);
   const [activeMedia, setActiveMedia] = useState<Set<MediaType>>(new Set());
   const [generating, setGenerating] = useState<Set<MediaType>>(new Set());
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [showVideoPrompt, setShowVideoPrompt] = useState(false);
 
+  const [existingPost, setExistingPost] = useState<ContentPost | null>(null);
+  const [videoReady, setVideoReady] = useState(false);
+  const [showPostForm, setShowPostForm] = useState(false);
+  const [postUrl, setPostUrl] = useState("");
+  const [postSubmitting, setPostSubmitting] = useState(false);
+  const [postError, setPostError] = useState<string | null>(null);
+
   const platformColor = PLATFORM_COLORS[idea.platform] ?? "bg-gray-100 text-gray-700";
   const isPro = plan === "pro";
   const hashtags = idea.hashtag_strategy?.split(/\s+/).filter(h => h.startsWith("#")) ?? [];
+  const canPublishOrTrack = idea.platform === PUBLISHABLE_IDEA_PLATFORM && connectedPlatforms.includes(PUBLISHABLE_BACKEND_PLATFORM);
+
+  // One-time check on mount — whether this idea already has a tracked/published
+  // post (persists across reloads, unlike activeMedia's session-only state) and
+  // whether its video has already finished generating (gates the Publish button).
+  useEffect(() => {
+    if (!canPublishOrTrack) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [postsRes, mediaRes] = await Promise.all([
+          fetch(`/api/content-posts/${contentId}?idea_index=${index}`),
+          fetch(`/api/generate-media/${contentId}?idea_index=${index}`),
+        ]);
+        if (!cancelled && postsRes.ok) {
+          const rows: ContentPost[] = await postsRes.json();
+          if (rows[0]) setExistingPost(rows[0]);
+        }
+        if (!cancelled && mediaRes.ok) {
+          const rows: { media_type: string; status: string }[] = await mediaRes.json();
+          if (rows.some(r => r.media_type === "video" && r.status === "done")) setVideoReady(true);
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const fullPost = [
     idea.hook, "",
@@ -122,6 +163,59 @@ export default function DigestCard({ idea, index, contentId, plan }: Props) {
       setMediaError("Network error — check your connection");
     }
     setGenerating(prev => { const s = new Set(prev); s.delete(mt); return s; });
+  }
+
+  async function markAsPosted() {
+    if (!postUrl.trim() || postSubmitting) return;
+    setPostSubmitting(true);
+    setPostError(null);
+    try {
+      const res = await fetch("/api/content-posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content_id: contentId, idea_index: index,
+          platform: PUBLISHABLE_BACKEND_PLATFORM, post_url: postUrl.trim(),
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setPostError(err.detail ?? `Error ${res.status}`);
+        return;
+      }
+      const data = await res.json();
+      setExistingPost({ id: data.content_post_id, status: "pending" } as ContentPost);
+      setShowPostForm(false);
+    } catch {
+      setPostError("Network error — check your connection");
+    } finally {
+      setPostSubmitting(false);
+    }
+  }
+
+  async function publishNow() {
+    if (postSubmitting) return;
+    if (!videoReady) { generateMedia("video"); return; }
+    setPostSubmitting(true);
+    setPostError(null);
+    try {
+      const res = await fetch("/api/content-posts/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content_id: contentId, idea_index: index, platform: PUBLISHABLE_BACKEND_PLATFORM }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setPostError(err.detail ?? `Error ${res.status}`);
+        return;
+      }
+      const data = await res.json();
+      setExistingPost({ id: data.content_post_id, status: "pending" } as ContentPost);
+    } catch {
+      setPostError("Network error — check your connection");
+    } finally {
+      setPostSubmitting(false);
+    }
   }
 
   const MEDIA_BTNS: { type: MediaType; label: string; icon: ReactNode }[] = [
@@ -270,9 +364,65 @@ export default function DigestCard({ idea, index, contentId, plan }: Props) {
           <p className="text-xs text-red-500 text-center">{mediaError}</p>
         )}
         {Array.from(activeMedia).map(mt => (
-          <MediaPreview key={mt} contentId={contentId} ideaIndex={index} mediaType={mt} />
+          <MediaPreview
+            key={mt} contentId={contentId} ideaIndex={index} mediaType={mt}
+            onDone={mt === "video" ? () => setVideoReady(true) : undefined}
+          />
         ))}
       </div>
+
+      {/* Publish / track */}
+      {canPublishOrTrack && (
+        <div className="border-t border-gray-50 pt-3 space-y-2">
+          {existingPost ? (
+            <PostPerformance contentId={contentId} ideaIndex={index} />
+          ) : (
+            <>
+              <div className="flex gap-2">
+                <button
+                  onClick={publishNow}
+                  disabled={!isPro || postSubmitting}
+                  title={!isPro ? "Upgrade to Pro to publish" : videoReady ? "Publish now" : "Generate a video first, then publish"}
+                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg border py-1.5 text-xs font-medium transition-all border-gray-200 text-gray-500
+                    ${!isPro ? "opacity-40 cursor-not-allowed" : "hover:border-blue-300 hover:text-blue-600 cursor-pointer"}`}
+                >
+                  {postSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                  {videoReady ? "Publish" : "Generate video to publish"}
+                </button>
+                <button
+                  onClick={() => setShowPostForm(v => !v)}
+                  disabled={!isPro}
+                  title={!isPro ? "Upgrade to Pro to track posts" : "Mark as posted"}
+                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg border py-1.5 text-xs font-medium transition-all border-gray-200 text-gray-500
+                    ${!isPro ? "opacity-40 cursor-not-allowed" : "hover:border-blue-300 hover:text-blue-600 cursor-pointer"}`}
+                >
+                  <Link2 className="h-3.5 w-3.5" />
+                  Mark as posted
+                </button>
+              </div>
+              {showPostForm && (
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    value={postUrl}
+                    onChange={e => setPostUrl(e.target.value)}
+                    placeholder="Paste the YouTube link…"
+                    className="flex-1 rounded-lg border border-gray-200 px-3 py-1.5 text-xs focus:border-blue-500 outline-none"
+                  />
+                  <button
+                    onClick={markAsPosted}
+                    disabled={postSubmitting || !postUrl.trim()}
+                    className="rounded-lg bg-blue-600 text-white px-3 py-1.5 text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {postSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Track"}
+                  </button>
+                </div>
+              )}
+              {postError && <p className="text-xs text-red-500 text-center">{postError}</p>}
+            </>
+          )}
+        </div>
+      )}
 
       {/* Copy full post */}
       <button

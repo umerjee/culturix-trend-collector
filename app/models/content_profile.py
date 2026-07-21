@@ -22,5 +22,6 @@ class ContentProfile(Base):
     delivery_freq = Column(String(10), default="daily")
     delivery_time = Column(Text, default="07:00")
     is_active = Column(Boolean, default=True)
+    publish_mode = Column(String(10), nullable=False, default="manual")  # manual|review|auto
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

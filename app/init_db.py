@@ -8,6 +8,9 @@ from app.models.generated_content import GeneratedContent  # noqa: F401
 from app.models.trend_theme import TrendTheme               # noqa: F401
 from app.models.trend_occurrence import TrendOccurrence     # noqa: F401
 from app.models.high_velocity_alert import HighVelocityAlert  # noqa: F401
+from app.models.connected_account import ConnectedAccount     # noqa: F401
+from app.models.content_post import ContentPost                # noqa: F401
+from app.models.content_post_snapshot import ContentPostSnapshot  # noqa: F401
 
 print("Creating tables...")
 Base.metadata.create_all(bind=engine)

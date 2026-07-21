@@ -29,6 +29,7 @@ export interface ContentProfile {
   delivery_freq: "daily" | "weekly";
   delivery_time: string;
   is_active: boolean;
+  publish_mode?: "manual" | "review" | "auto";
   created_at?: string;
 }
 
@@ -60,6 +61,32 @@ export interface GeneratedMedia {
   error: string | null;
   created_at: string | null;
   completed_at: string | null;
+}
+
+export interface ConnectedAccount {
+  platform: "youtube" | "twitter" | "tiktok" | "instagram";
+  platform_username: string | null;
+  status: "active" | "expired" | "revoked" | "error";
+  connected_at: string | null;
+}
+
+export interface ContentPost {
+  id: string;
+  generated_content_id: string;
+  idea_index: number;
+  platform: string;
+  post_url: string | null;
+  created_via: "manual" | "published";
+  status: "pending" | "fetching" | "tracked" | "failed" | "needs_reconnect";
+  latest_views: number | null;
+  latest_likes: number | null;
+  latest_comments: number | null;
+  latest_shares: number | null;
+  last_fetched_at: string | null;
+  error: string | null;
+  posted_at: string | null;
+  created_at: string | null;
+  hook?: string; // present only on the aggregate GET /api/content-posts feed
 }
 
 export interface TrendSignal {
