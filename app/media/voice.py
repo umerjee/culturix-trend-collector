@@ -10,11 +10,36 @@ pointing service.py's _PROVIDERS["voiceover"] at it again.
 """
 import asyncio
 import io
+import re
 from typing import Optional
 from app.media.base import VoiceProvider, MediaResult
 
 # Natural-sounding neutral English voice. Full voice list: `edge-tts --list-voices`
 _DEFAULT_VOICE = "en-US-AriaNeural"
+
+# edge-tts narrates emoji aloud by their alt-text description ("fire", "party
+# popper", ...) rather than silently skipping them — hooks routinely contain
+# emoji (e.g. "...fans buzzing! 🏃🔥"), so without stripping these first the
+# voiceover reads that description out loud, which is the reported bug.
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F600-\U0001F64F"  # emoticons
+    "\U0001F300-\U0001F5FF"  # symbols & pictographs
+    "\U0001F680-\U0001F6FF"  # transport & map symbols
+    "\U0001F1E0-\U0001F1FF"  # flags
+    "\U00002700-\U000027BF"  # dingbats
+    "\U0001F900-\U0001F9FF"  # supplemental symbols & pictographs
+    "\U00002600-\U000026FF"  # misc symbols
+    "\U0001FA70-\U0001FAFF"  # symbols & pictographs extended-A
+    "\U0000FE0F"             # variation selector-16
+    "\U0000200D"             # zero-width joiner (compound emoji sequences)
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def _strip_emoji(text: str) -> str:
+    return re.sub(r"\s{2,}", " ", _EMOJI_PATTERN.sub("", text)).strip()
 
 
 class EdgeTTSProvider(VoiceProvider):
@@ -24,6 +49,7 @@ class EdgeTTSProvider(VoiceProvider):
         except ImportError:
             raise RuntimeError("edge-tts not installed — add 'edge-tts' to requirements.txt")
 
+        text = _strip_emoji(text)
         voice_id = voice or _DEFAULT_VOICE
         audio_bytes = asyncio.run(_generate(text, voice_id))
         if not audio_bytes:
