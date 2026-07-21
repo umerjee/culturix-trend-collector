@@ -13,6 +13,22 @@ from typing import Optional
 _BASE = "https://api.klingai.com"
 _POLL_INTERVAL = 10   # seconds
 _MAX_POLLS = 36       # ~6 minutes max
+_MAX_RATE_LIMIT_RETRIES = 4
+_RATE_LIMIT_BACKOFF_SECONDS = 15  # doubles each retry: 15, 30, 60, 120
+
+
+def _post_with_retry(url: str, **kwargs) -> httpx.Response:
+    """Kling's account-level rate limit (concurrent/per-minute request cap)
+    returns 429 — previously this was a hard failure on the very first
+    request. Retries with backoff before giving up, since a 429 here usually
+    means "try again shortly," not "this request is invalid"."""
+    for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+        resp = httpx.post(url, **kwargs)
+        if resp.status_code != 429 or attempt == _MAX_RATE_LIMIT_RETRIES:
+            return resp
+        wait = int(resp.headers.get("Retry-After", _RATE_LIMIT_BACKOFF_SECONDS * (2 ** attempt)))
+        time.sleep(wait)
+    return resp
 
 
 def _make_jwt(access_key: str, secret_key: str) -> str:
@@ -42,7 +58,7 @@ class KlingProvider(VideoProvider):
     def generate(self, prompt: str, duration_seconds: int = 5,
                  aspect_ratio: str = "9:16") -> MediaResult:
         # Step 1 — create task
-        resp = httpx.post(
+        resp = _post_with_retry(
             f"{_BASE}/v1/videos/text2video",
             headers=self._headers(),
             json={

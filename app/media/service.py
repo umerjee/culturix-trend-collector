@@ -26,6 +26,20 @@ def _get_provider(media_type: str):
     return getattr(mod, class_name)()
 
 
+def _error_detail(exc: Exception) -> str:
+    """httpx.HTTPStatusError's default str() is just 'Client error 400 Bad
+    Request for url ...' — the actual reason (Supabase/Kling/aimlapi's real
+    error body) is on .response.text and was previously discarded entirely,
+    making failures like a Storage 400 or a Kling 429 undiagnosable from the
+    stored error alone."""
+    response = getattr(exc, "response", None)
+    if response is not None:
+        body = getattr(response, "text", "") or ""
+        if body:
+            return f"{exc} | response body: {body[:500]}"
+    return str(exc)
+
+
 def _update_row(row_id: str, **kwargs):
     from app.db import SessionLocal
     from app.models.generated_media import GeneratedMedia
@@ -78,5 +92,6 @@ def run_generation(
         logger.info("Media done: %s %s → %s", media_type, row_id, public_url)
 
     except Exception as exc:
-        logger.error("Media generation failed (%s %s): %s", media_type, row_id, exc)
-        _update_row(row_id, status="failed", error=str(exc), completed_at=datetime.utcnow())
+        detail = _error_detail(exc)
+        logger.error("Media generation failed (%s %s): %s", media_type, row_id, detail)
+        _update_row(row_id, status="failed", error=detail, completed_at=datetime.utcnow())
