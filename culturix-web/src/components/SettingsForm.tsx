@@ -2,11 +2,11 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Loader2, Check, Plus, Trash2, ChevronRight, CreditCard, Link2, Unlink } from "lucide-react";
+import { Loader2, Check, Plus, Trash2, ChevronRight, CreditCard, Link2, Unlink, Sparkles, Copy } from "lucide-react";
 import PersonaChips from "@/components/PersonaChips";
 import {
   PLATFORMS, REGIONS, CONTENT_GOALS, CONTENT_TONES, CONTENT_FORMATS, AVATAR_TYPES, DELIVERY_DAYS,
-  type ContentProfile, type AvatarTypePreset, type ConnectedAccount,
+  type ContentProfile, type AvatarTypePreset, type ConnectedAccount, type AccountSuggestions,
 } from "@/lib/types";
 
 const ALL_FORMAT_KEYS = CONTENT_FORMATS.map((f) => f.key);
@@ -86,6 +86,35 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
 
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccount[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
+
+  const [suggestions, setSuggestions] = useState<AccountSuggestions | null>(null);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
+  const [copiedName, setCopiedName] = useState<string | null>(null);
+
+  async function fetchSuggestions(profileId: string) {
+    setSuggestionsLoading(true);
+    setSuggestionsError(null);
+    try {
+      const res = await fetch(`/api/content-profiles/${profileId}/account-suggestions`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setSuggestionsError(data.detail ?? "Could not generate suggestions — try again.");
+        return;
+      }
+      setSuggestions(data as AccountSuggestions);
+    } catch {
+      setSuggestionsError("Network error — could not generate suggestions.");
+    } finally {
+      setSuggestionsLoading(false);
+    }
+  }
+
+  function copyToClipboard(text: string) {
+    navigator.clipboard.writeText(text).catch(() => {});
+    setCopiedName(text);
+    setTimeout(() => setCopiedName(null), 2000);
+  }
 
   async function handleUpgrade() {
     setBillingLoading(true);
@@ -186,6 +215,8 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
     setShowAvatarGallery(false);
     setSaved(false);
     setError("");
+    setSuggestions(null);
+    setSuggestionsError(null);
   }
 
   function startNew() {
@@ -374,45 +405,83 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
           <p className="text-sm text-gray-400 text-center py-4">No profiles yet. Create your first one.</p>
         )}
 
-        <div className="space-y-1">
-          {profiles.map(p => (
-            <div
-              key={p.id}
-              className={`w-full flex items-center justify-between rounded-xl text-sm transition-colors ${
-                selectedId === p.id && !isNew && !showAvatarGallery ? "bg-blue-50 text-blue-700 font-medium" : "hover:bg-gray-50 text-gray-700"
-              }`}
-            >
-              <button
-                type="button"
+        <div className="grid sm:grid-cols-2 gap-3">
+          {profiles.map(p => {
+            const boundAccount = connectedAccounts.find(
+              a => a.status === "active" && a.content_profile_id === p.id
+            );
+            const isSelected = selectedId === p.id && !isNew && !showAvatarGallery;
+            const platforms = p.target_platforms ?? [];
+            return (
+              <div
+                key={p.id}
+                role="button"
+                tabIndex={0}
                 onClick={() => selectProfile(p)}
-                className="flex-1 flex items-center gap-3 px-4 py-3 text-left min-w-0"
+                onKeyDown={(e) => { if (e.key === "Enter") selectProfile(p); }}
+                className={`text-left rounded-xl border p-4 space-y-3 cursor-pointer transition-colors ${
+                  isSelected ? "border-blue-300 ring-1 ring-blue-100 bg-blue-50/30" : "border-gray-100 hover:border-gray-200"
+                }`}
               >
-                <span>{p.name || "Untitled"}</span>
-                {p.industry_niche && <span className="text-xs text-gray-400 truncate">· {p.industry_niche}</span>}
-              </button>
-              <div className="flex items-center gap-1.5 pr-3 shrink-0">
-                <button
-                  type="button"
-                  onClick={(e) => toggleActive(p, e)}
-                  title={p.is_active ? "Pause posting for this avatar" : "Activate posting for this avatar"}
-                  className={`text-xs font-medium px-2.5 py-1 rounded-full transition-colors ${
-                    p.is_active ? "bg-green-50 text-green-600 hover:bg-green-100" : "bg-gray-100 text-gray-500 hover:bg-gray-200"
-                  }`}
-                >
-                  {p.is_active ? "Active" : "Paused"}
-                </button>
-                <ChevronRight className="h-4 w-4 text-gray-300" />
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className={`h-2 w-2 rounded-full shrink-0 ${p.is_active ? "bg-green-400" : "bg-gray-300"}`} />
+                    <div className="min-w-0">
+                      <p className="font-semibold text-sm text-gray-900 truncate">{p.name || "Untitled"}</p>
+                      {p.industry_niche && <p className="text-xs text-gray-400 truncate">{p.industry_niche}</p>}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={(e) => toggleActive(p, e)}
+                      title={p.is_active ? "Pause posting for this avatar" : "Activate posting for this avatar"}
+                      className={`text-xs font-medium px-2.5 py-1 rounded-full transition-colors ${
+                        p.is_active ? "bg-green-50 text-green-600 hover:bg-green-100" : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                      }`}
+                    >
+                      {p.is_active ? "Active" : "Paused"}
+                    </button>
+                    <ChevronRight className="h-4 w-4 text-gray-300" />
+                  </div>
+                </div>
+
+                {platforms.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {platforms.slice(0, 4).map(pl => (
+                      <span key={pl} className="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded text-xs">{pl}</span>
+                    ))}
+                    {platforms.length > 4 && (
+                      <span className="px-1.5 py-0.5 text-gray-400 text-xs">+{platforms.length - 4} more</span>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {boundAccount ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
+                      <Link2 className="h-3 w-3" /> @{boundAccount.platform_username ?? boundAccount.platform}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">
+                      No dedicated account yet
+                    </span>
+                  )}
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-600 capitalize">
+                    {p.publish_mode ?? "manual"}
+                  </span>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           {showAvatarGallery && (
-            <div className="px-4 py-3 rounded-xl bg-blue-50 text-blue-700 text-sm font-medium flex items-center gap-3">
+            <div className="rounded-xl bg-blue-50 text-blue-700 text-sm font-medium flex items-center gap-3 p-4">
               <div className="h-2 w-2 rounded-full bg-blue-400" />
               Choosing avatar type…
             </div>
           )}
           {isNew && (
-            <div className="px-4 py-3 rounded-xl bg-blue-50 text-blue-700 text-sm font-medium flex items-center gap-3">
+            <div className="rounded-xl bg-blue-50 text-blue-700 text-sm font-medium flex items-center gap-3 p-4">
               <div className="h-2 w-2 rounded-full bg-blue-400" />
               New profile
             </div>
@@ -655,6 +724,73 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
                 Connect the dedicated account you run for this niche so Culturix can publish to it and track
                 performance — a different profile can have its own separate account.
               </p>
+
+              {!connectedAccounts.some(a => a.status === "active" && a.content_profile_id === selectedId) && (
+                <div className="mb-4">
+                  <button
+                    type="button"
+                    onClick={() => fetchSuggestions(selectedId)}
+                    disabled={suggestionsLoading}
+                    className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-gray-200 py-2 text-xs font-medium text-gray-500 hover:border-blue-300 hover:text-blue-600 transition-colors disabled:opacity-60"
+                  >
+                    {suggestionsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                    {suggestionsLoading ? "Thinking…" : suggestions ? "Regenerate suggestions" : "Get name & platform suggestions"}
+                  </button>
+                  {suggestionsError && (
+                    <p className="text-xs text-red-500 mt-2">{suggestionsError}</p>
+                  )}
+                  {suggestions && (
+                    <div className="mt-3 space-y-3 rounded-xl bg-gray-50 border border-gray-100 p-4">
+                      <div>
+                        <p className="text-xs font-semibold text-gray-700 mb-1.5">Best platform fit</p>
+                        <div className="space-y-1">
+                          {suggestions.recommended_platforms.map((rp) => (
+                            <p key={rp.platform} className="text-xs text-gray-600">
+                              <span className="font-medium text-gray-900">{rp.platform}</span> — {rp.reason}
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-gray-700 mb-1.5">Account name ideas</p>
+                        <div className="space-y-1">
+                          {suggestions.name_suggestions.map((ns) => (
+                            <div key={ns.name} className="flex items-start justify-between gap-2 rounded-lg bg-white border border-gray-100 px-3 py-2">
+                              <div className="min-w-0">
+                                <p className="text-xs font-semibold text-gray-900 truncate">{ns.name}</p>
+                                <p className="text-xs text-gray-400">{ns.reason}</p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => copyToClipboard(ns.name)}
+                                title="Copy"
+                                className="shrink-0 p-1 rounded text-gray-300 hover:text-gray-500 hover:bg-gray-100 transition-colors"
+                              >
+                                {copiedName === ns.name ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-gray-700 mb-1.5">Sample bio</p>
+                        <div className="flex items-start justify-between gap-2 rounded-lg bg-white border border-gray-100 px-3 py-2">
+                          <p className="text-xs text-gray-600">{suggestions.bio_suggestion}</p>
+                          <button
+                            type="button"
+                            onClick={() => copyToClipboard(suggestions.bio_suggestion)}
+                            title="Copy"
+                            className="shrink-0 p-1 rounded text-gray-300 hover:text-gray-500 hover:bg-gray-100 transition-colors"
+                          >
+                            {copiedName === suggestions.bio_suggestion ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="space-y-2">
                 {SUPPORTED_SOCIAL_PLATFORMS.map(({ key, label, live }) => {
                   const bound = connectedAccounts.find(

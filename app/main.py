@@ -2038,6 +2038,42 @@ def update_content_profile(user_id: str, profile_id: str, body: dict):
         session.close()
 
 
+@app.post("/users/{user_id}/content-profiles/{profile_id}/account-suggestions")
+def get_account_suggestions(user_id: str, profile_id: str):
+    """Ephemeral, regenerate-on-demand suggestions for a NEW dedicated social
+    account (platform fit + name/handle ideas) for this profile's niche —
+    helps the user decide what account to go create before connecting one.
+    Nothing here is persisted; a fresh call always regenerates."""
+    from app.db import SessionLocal
+    from app.models.content_profile import ContentProfile
+    from app.account_suggestions import generate_account_suggestions
+    import uuid as _uuid
+
+    session = SessionLocal()
+    try:
+        cp = session.query(ContentProfile).filter_by(
+            id=_uuid.UUID(profile_id), user_id=_uuid.UUID(user_id)
+        ).first()
+        if not cp:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        profile_dict = {
+            "industry_niche": cp.industry_niche,
+            "target_platforms": cp.target_platforms or [],
+            "content_goals": cp.content_goals or [],
+            "content_tones": cp.content_tones or [],
+            "persona_tags": cp.persona_tags or [],
+        }
+        try:
+            return generate_account_suggestions(profile_dict)
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Suggestion generation failed: {e}")
+    except HTTPException:
+        raise
+    finally:
+        session.close()
+
+
 @app.delete("/users/{user_id}/content-profiles/{profile_id}")
 def delete_content_profile(user_id: str, profile_id: str):
     from app.db import SessionLocal

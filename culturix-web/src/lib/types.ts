@@ -68,6 +68,12 @@ export interface GeneratedMedia {
   completed_at: string | null;
 }
 
+export interface AccountSuggestions {
+  recommended_platforms: { platform: string; reason: string }[];
+  name_suggestions: { name: string; reason: string }[];
+  bio_suggestion: string;
+}
+
 export interface ConnectedAccount {
   platform: "youtube" | "twitter" | "tiktok" | "instagram";
   platform_username: string | null;
