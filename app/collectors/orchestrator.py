@@ -91,6 +91,16 @@ def run_all_collectors() -> dict:
         logger.error("Bluesky failed: %s", e)
         results["bluesky"] = 0
 
+    # Instagram — hashtag search via ScrapeCreators, only runs if
+    # SCRAPE_CREATORS_API_KEY is set (store_instagram_trends no-ops otherwise)
+    try:
+        from app.collectors.instagram import store_instagram_trends
+        results["instagram"] = store_instagram_trends()
+        logger.info("Instagram: %d inserted", results["instagram"])
+    except Exception as e:
+        logger.error("Instagram failed: %s", e)
+        results["instagram"] = 0
+
     total = sum(results.values())
     logger.info("Collection complete. Total inserted: %d | breakdown: %s", total, results)
     return {"total": total, **results}
