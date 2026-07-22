@@ -3,7 +3,6 @@ Master orchestrator — runs all collectors in sequence and returns totals.
 Called by the Railway cron tier 1 every 2 hours.
 """
 import logging
-import os
 
 logger = logging.getLogger("culturix.orchestrator")
 
@@ -48,14 +47,10 @@ def run_all_collectors() -> dict:
         logger.error("Xiaohongshu failed: %s", e)
         results["xhs"] = 0
 
-    # Twitter — prefer Apify, fall back to proxy
+    # Twitter — single entry point now self-gates Apify-vs-proxy internally
     try:
-        if os.getenv("APIFY_API_TOKEN"):
-            from app.collectors.twitter_apify import store_twitter_apify
-            results["twitter"] = store_twitter_apify()
-        else:
-            from app.collectors.twitter_fallback import store_twitter_trends_via_proxy
-            results["twitter"] = store_twitter_trends_via_proxy("us")
+        from app.collectors.twitter import store_twitter_trends
+        results["twitter"] = store_twitter_trends()
         logger.info("Twitter: %d inserted", results["twitter"])
     except Exception as e:
         logger.error("Twitter failed: %s", e)

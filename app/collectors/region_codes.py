@@ -2,8 +2,8 @@
 consistent vocabulary before they're stored on Trend.region.
 
 Different collectors use different conventions today: tiktok.py/youtube.py use
-ISO-2-letter codes ("US", "GB", "IN"), twitter_fallback.py uses lowercase
-names ("us", "uk", "india", "japan", "global"). Without normalizing these to
+ISO-2-letter codes ("US", "GB", "IN"), twitter.py's proxy fallback uses
+lowercase names ("us", "uk", "india", "japan", "global"). Without normalizing these to
 one canonical form, persona_mapper.py's region filter would have to know
 about every collector's private vocabulary instead of comparing against one
 set of codes.

@@ -1,126 +1,221 @@
+"""Twitter/X collector — single canonical path, Apify actor primary,
+trends24.in-via-Jina-proxy fallback.
+
+Consolidated from three previously-divergent files (twitter.py's official
+API path, twitter_fallback.py, twitter_apify.py) that formed two different
+fallback chains depending on entry point. The official Twitter API v1.1
+`trends/place.json` path was retired entirely — live-tested and confirmed
+403 Forbidden ("limited v1.1 endpoints only... different access level
+needed") on this account's current API tier, and even when it worked it
+only returned bare trend names (no content/engagement/author), the same
+shallow shape as the proxy fallback, for more fragility (a hand-rolled
+raw-.env-file-parsing workaround) and no data-quality upside over the
+Apify actor path below.
+"""
+import logging
 import os
-import httpx
-from dotenv import load_dotenv
-from urllib.parse import unquote_plus
 from datetime import datetime
 
-from app.db import SessionLocal
-from app.models.trend import Trend
-from app.language import detect_language, translate_to_english_if_needed
 from app.collectors.region_codes import normalize_region
 
+logger = logging.getLogger("culturix.collectors.twitter")
 
-# Ensure environment variables from .env are loaded when this module is used directly
-load_dotenv()
+DEFAULT_QUERIES = [
+    "trending now -is:retweet",
+    "viral today -is:retweet",
+    "breaking culture -is:retweet",
+]
 
-# Try normal env first, but fall back to reading .env if dotenv misses the key
-_raw_bearer = os.getenv("TWITTER_BEARER_TOKEN")
-if not _raw_bearer:
+JINA_PROXY = "https://r.jina.ai/http://trends24.in/?geo={region}"
+TWITTER_REGIONS = ["us", "uk", "india", "japan", "global"]
+
+
+def _collect_via_apify(queries: list[str] | None = None, max_items: int = 200) -> list[dict]:
+    token = os.getenv("APIFY_API_TOKEN")
+    if not token:
+        return []
+
     try:
-        with open('.env', 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip().startswith('TWITTER_BEARER_TOKEN='):
-                    _raw_bearer = line.strip().split('=', 1)[1]
-                    break
-    except Exception:
-        _raw_bearer = None
+        from apify_client import ApifyClient
+    except ImportError:
+        logger.error("apify-client not installed — run: pip install apify-client")
+        return []
 
-TWITTER_BEARER = unquote_plus(_raw_bearer) if _raw_bearer else None
-TWITTER_TRENDS_URL = "https://api.twitter.com/1.1/trends/place.json"
+    qrs = queries or DEFAULT_QUERIES
+    client = ApifyClient(token)
+    signals = []
 
+    try:
+        run = client.actor("apidojo/tweet-scraper").call(
+            run_input={
+                "searchTerms": qrs,
+                "maxItems": max_items,
+                "sort": "Latest",
+                "lang": "",  # all languages
+            }
+        )
+        if not run:
+            logger.error("Twitter/Apify actor run returned no result")
+            return []
+        for item in client.dataset(run.default_dataset_id).iterate_items():
+            signals.append({
+                "external_id": str(item.get("id") or item.get("tweetId") or ""),
+                "content_text": item.get("text") or item.get("fullText") or "",
+                "author": item.get("author", {}).get("userName") if isinstance(item.get("author"), dict) else item.get("authorName"),
+                "url": item.get("url") or f"https://x.com/i/web/status/{item.get('id')}",
+                "likes": int(item.get("likeCount") or item.get("favoriteCount") or 0),
+                "comments": int(item.get("replyCount") or 0),
+                "shares": int(item.get("retweetCount") or 0),
+                "views": int(item.get("viewCount") or 0),
+                "language": item.get("lang") or "en",
+            })
+        logger.info("Collected %d tweets via Apify", len(signals))
+    except Exception as e:
+        logger.error("Twitter/Apify collection failed: %s", e)
 
-WOEIDS = {
-    "global": 1,
-    "us": 23424977,
-    "uk": 23424975,
-    "india": 23424848,
-    "japan": 23424856,
-    "uae": 23424738,
-}
-
-
-def _get_bearer_from_env():
-    # Resolve token at call time so running processes pick up environment changes
-    raw = os.getenv("TWITTER_BEARER_TOKEN")
-    if not raw:
-        try:
-            with open('.env', 'r', encoding='utf-8') as f:
-                for line in f:
-                    if line.strip().startswith('TWITTER_BEARER_TOKEN='):
-                        raw = line.strip().split('=', 1)[1]
-                        break
-        except Exception:
-            raw = None
-    return unquote_plus(raw) if raw else None
-
-
-def _build_headers():
-    bearer = _get_bearer_from_env()
-    if not bearer:
-        return None
-    return {"Authorization": f"Bearer {bearer}", "User-Agent": "culturix-trend-collector/0.1"}
+    return signals
 
 
-def fetch_twitter_trending(region="global"):
-    headers = _build_headers()
-    if headers is None:
-        raise RuntimeError("TWITTER_BEARER_TOKEN not set in environment")
+def _store_via_apify(queries: list[str] | None = None, max_items: int = 200) -> int:
+    from app.db import SessionLocal
+    from app.models.trend import Trend
+    from app.language import detect_language, translate_to_english_if_needed
 
-    woeid = WOEIDS.get(region.lower(), 1)
-    resp = httpx.get(TWITTER_TRENDS_URL, params={"id": woeid}, headers=headers, timeout=15.0)
-    resp.raise_for_status()
-    data = resp.json()
-    # Twitter returns a list; first item contains 'trends'
-    if isinstance(data, list) and data:
-        return data[0].get("trends", [])
-    return []
-
-
-def store_twitter_trends(region="global"):
-    headers = _build_headers()
-    if headers is None:
-        # Graceful fallback: nothing to do without credentials
+    signals = _collect_via_apify(queries, max_items)
+    if not signals:
         return 0
 
     session = SessionLocal()
-    try:
-        items = fetch_twitter_trending(region)
-    except Exception:
-        session.close()
-        raise
-
     inserted = 0
-    for item in items:
-        name = item.get("name") or ""
-        url = item.get("url")
+    try:
+        for s in signals:
+            if not s.get("external_id"):
+                continue
+            exists = session.query(Trend).filter_by(
+                platform="twitter", external_id=s["external_id"]
+            ).first()
+            if exists:
+                continue
+            lang = detect_language(s["content_text"])
+            translated = translate_to_english_if_needed(s["content_text"], lang)
+            trend = Trend(
+                platform="twitter",
+                external_id=s["external_id"],
+                title=s["content_text"][:200],
+                content=s["content_text"],
+                translated_content=translated,
+                language=lang,
+                url=s.get("url"),
+                author=s.get("author"),
+                likes=s.get("likes"),
+                comments=s.get("comments"),
+                views=s.get("views"),
+                raw_json=s,
+                # region left unset (NULL) — this actor's search results aren't
+                # tied to a single region/market the way tiktok.py/youtube.py's
+                # per-region charts are.
+            )
+            session.add(trend)
+            inserted += 1
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
-        # Skip duplicates by external_id
-        exists = session.query(Trend).filter_by(platform="twitter", external_id=name).first()
-        if exists:
-            continue
-
-        lang = detect_language(name)
-        translated = translate_to_english_if_needed(name, lang)
-
-        trend = Trend(
-            platform="twitter",
-            external_id=name,
-            url=url,
-            title=name,
-            content=name,
-            translated_content=translated,
-            language=lang,
-            author=None,
-            likes=None,
-            comments=None,
-            posted_at=datetime.utcnow(),
-            raw_json=item,
-            region=normalize_region(region),
-        )
-
-        session.add(trend)
-        inserted += 1
-
-    session.commit()
-    session.close()
     return inserted
+
+
+def _fetch_via_proxy(region: str = "US") -> list[str]:
+    """Scrapes trends24.in through the Jina.ai markdown proxy — free, no API
+    key. Returns trend names extracted from the markdown numbered list."""
+    import httpx
+    import re
+
+    try:
+        geo_map = {
+            "global": "US",  # trends24 doesn't use 'global' so use US as fallback
+            "us": "US", "uk": "GB", "india": "IN", "japan": "JP",
+        }
+        geo_code = geo_map.get(region.lower(), "US")
+
+        resp = httpx.get(JINA_PROXY.format(region=geo_code), timeout=20.0)
+        if resp.status_code != 200:
+            return []
+
+        # Extract numbered items from markdown (e.g., "1.   [Trend Name](url)")
+        matches = re.findall(r'^\d+\.\s+\[([^\]]+)\]', resp.text, re.MULTILINE)
+        return [m.strip() for m in matches[:30] if m.strip() and len(m.strip()) > 1]
+    except Exception as e:
+        logger.warning("Twitter proxy fetch failed for region %s: %s", region, e)
+        return []
+
+
+def _store_via_proxy(region: str = "us") -> int:
+    from app.db import SessionLocal
+    from app.models.trend import Trend
+    from app.language import detect_language
+
+    regions = TWITTER_REGIONS if region in ("us", "global") else [region]
+    session = SessionLocal()
+    inserted = 0
+
+    try:
+        seen_in_run: set[str] = set()
+        for r in regions:
+            for name in _fetch_via_proxy(r):
+                key = name.lower().strip()
+                if key in seen_in_run:
+                    continue
+                seen_in_run.add(key)
+
+                exists = session.query(Trend).filter_by(platform="twitter", external_id=name).first()
+                if exists:
+                    continue
+
+                lang = detect_language(name)
+                trend = Trend(
+                    platform="twitter",
+                    external_id=name,
+                    url=f"https://twitter.com/search?q={name.replace('#', '')}",
+                    title=name,
+                    content=name,
+                    translated_content=None,
+                    language=lang,
+                    author=None,
+                    likes=None,
+                    comments=None,
+                    posted_at=datetime.utcnow(),
+                    raw_json={"source": "trends24.in via jina.ai proxy", "region": r},
+                    region=normalize_region(r),
+                )
+                session.add(trend)
+                inserted += 1
+
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+    return inserted
+
+
+def store_twitter_trends(region: str = "global") -> int:
+    """Single entry point for both the scheduled orchestrator and the manual
+    /collect/twitter route. Tries the Apify actor first (richer data: real
+    tweet content, author, engagement) when APIFY_API_TOKEN is set; falls
+    back to the free trends24.in proxy (bare trend names only) otherwise or
+    on failure. `region` only affects the proxy fallback — the Apify actor
+    searches fixed DEFAULT_QUERIES rather than per-region terms."""
+    if os.getenv("APIFY_API_TOKEN"):
+        try:
+            inserted = _store_via_apify()
+            if inserted > 0:
+                return inserted
+        except Exception as e:
+            logger.warning("Apify path failed, falling back to proxy: %s", e)
+
+    return _store_via_proxy(region)

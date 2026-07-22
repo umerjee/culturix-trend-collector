@@ -208,21 +208,14 @@ def collect_youtube(region: str = "US"):
 
 @app.post("/collect/twitter")
 def collect_twitter(region: str = "global"):
-    from app.collectors.twitter import store_twitter_trends, _get_bearer_from_env
-    from app.collectors.twitter_fallback import store_twitter_trends_via_proxy
+    """Same Apify-primary/proxy-fallback path the scheduled orchestrator uses
+    (app.collectors.twitter.store_twitter_trends). `region` only affects the
+    proxy fallback branch — the Apify actor searches fixed queries, not
+    per-region terms, so it's ignored when that branch succeeds."""
+    from app.collectors.twitter import store_twitter_trends
 
-    if _get_bearer_from_env():
-        try:
-            inserted = store_twitter_trends(region)
-            if inserted > 0:
-                return {"inserted": inserted}
-        except Exception as e:
-            print(f"Twitter API failed: {e}, falling back to proxy")
-
-    inserted = store_twitter_trends_via_proxy(region)
-    if inserted > 0:
-        return {"inserted": inserted, "source": "trends24.in proxy"}
-    return {"inserted": 0, "warning": "Could not fetch Twitter trends from API or proxy fallback"}
+    inserted = store_twitter_trends(region)
+    return {"inserted": inserted}
 
 
 # ── Processing ────────────────────────────────────────────────────────────────
