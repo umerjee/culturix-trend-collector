@@ -160,6 +160,16 @@ def run_digest_dispatch(now=None):
         logger.error("Digest dispatch failed: %s", e)
 
 
+
+# idea.get("platform") (an LLM-suggested display value, e.g. "YouTube") to
+# the internal provider key app.social.service._PROVIDERS is keyed by.
+# Only platforms with a real publish() implementation belong here — adding
+# a platform here without one lets candidates match but then fail at
+# publish_and_record's provider lookup instead of being filtered out
+# cleanly up front.
+_AUTO_PUBLISH_PLATFORMS = {"YouTube": "youtube", "TikTok": "tiktok"}
+
+
 def run_auto_publish():
     """Publishes one idea per 'auto' content profile, once per day. Only
     considers ideas that already passed trend_validator.py's legitimacy/
@@ -198,16 +208,17 @@ def run_auto_publish():
                 candidates = [
                     (i, idea) for i, idea in enumerate(content.content_ideas)
                     if i not in already_posted and idea.get("status") == "live"
-                    and idea.get("platform") == "YouTube"  # only platform with a publish() implementation today
+                    and idea.get("platform") in _AUTO_PUBLISH_PLATFORMS
                     # medium may be absent on ideas generated before the preferred-formats
                     # feature — treat that as "video" (its prior implicit default) rather
                     # than excluding old data; explicit non-video mediums are excluded since
-                    # Kling+YouTube publish only makes sense for actual video content.
+                    # Kling+video-publish only makes sense for actual video content.
                     and idea.get("medium", "video") == "video"
                 ]
                 if not candidates:
                     continue
                 idea_index, idea = max(candidates, key=lambda pair: pair[1].get("relevance_score") or 0)
+                platform_key = _AUTO_PUBLISH_PLATFORMS[idea["platform"]]
 
                 media = session.query(GeneratedMedia).filter_by(
                     generated_content_id=content.id, idea_index=idea_index,
@@ -235,7 +246,7 @@ def run_auto_publish():
 
                 post = ContentPost(
                     generated_content_id=content.id, idea_index=idea_index,
-                    user_id=profile.user_id, platform="youtube", created_via="published", status="pending",
+                    user_id=profile.user_id, platform=platform_key, created_via="published", status="pending",
                 )
                 session.add(post)
                 session.commit()

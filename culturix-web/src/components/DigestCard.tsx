@@ -48,10 +48,10 @@ interface Props {
   publishMode: "manual" | "review" | "auto";
 }
 
-// Only YouTube has a working publish()/fetch_post_metrics() provider today —
-// same gate app/scheduler.py's run_auto_publish() applies backend-side.
-const PUBLISHABLE_IDEA_PLATFORM = "YouTube";
-const PUBLISHABLE_BACKEND_PLATFORM = "youtube";
+// idea.platform (LLM-suggested display value) -> internal provider key —
+// only platforms with a real publish()/fetch_post_metrics() implementation
+// belong here, matching app/scheduler.py's _AUTO_PUBLISH_PLATFORMS.
+const PUBLISHABLE_PLATFORMS: Record<string, string> = { YouTube: "youtube", TikTok: "tiktok" };
 
 type MediaType = "voiceover" | "music" | "video" | "image";
 
@@ -90,9 +90,10 @@ export default function DigestCard({ idea, index, contentId, plan, connectedPlat
   const platformColor = PLATFORM_COLORS[idea.platform] ?? "bg-gray-100 text-gray-700";
   const isPro = plan === "pro";
   const hashtags = idea.hashtag_strategy?.split(/\s+/).filter(h => h.startsWith("#")) ?? [];
+  const backendPlatform = PUBLISHABLE_PLATFORMS[idea.platform];
   // "Mark as posted" tracking is available regardless of publish_mode — even
   // Review/Auto users may occasionally post manually and still want tracking.
-  const canTrack = idea.platform === PUBLISHABLE_IDEA_PLATFORM && connectedPlatforms.includes(PUBLISHABLE_BACKEND_PLATFORM);
+  const canTrack = !!backendPlatform && connectedPlatforms.includes(backendPlatform);
   // The one-click "Publish" button is hidden for "manual" profiles — that
   // mode's whole premise (per the Settings page copy) is "Culturix never
   // posts for you," so showing an auto-publish button there would contradict it.
@@ -183,7 +184,7 @@ export default function DigestCard({ idea, index, contentId, plan, connectedPlat
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           content_id: contentId, idea_index: index,
-          platform: PUBLISHABLE_BACKEND_PLATFORM, post_url: postUrl.trim(),
+          platform: backendPlatform, post_url: postUrl.trim(),
         }),
       });
       if (!res.ok) {
@@ -210,7 +211,7 @@ export default function DigestCard({ idea, index, contentId, plan, connectedPlat
       const res = await fetch("/api/content-posts/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content_id: contentId, idea_index: index, platform: PUBLISHABLE_BACKEND_PLATFORM }),
+        body: JSON.stringify({ content_id: contentId, idea_index: index, platform: backendPlatform }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -423,7 +424,7 @@ export default function DigestCard({ idea, index, contentId, plan, connectedPlat
                     type="url"
                     value={postUrl}
                     onChange={e => setPostUrl(e.target.value)}
-                    placeholder="Paste the YouTube link…"
+                    placeholder={`Paste the ${idea.platform} link…`}
                     className="flex-1 rounded-lg border border-gray-200 px-3 py-1.5 text-xs focus:border-blue-500 outline-none"
                   />
                   <button

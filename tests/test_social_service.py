@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app.models.connected_account import ConnectedAccount
-from app.social.service import resolve_active_account
+from app.social.service import resolve_active_account, _post_url
 
 
 @pytest.fixture
@@ -105,3 +105,22 @@ class TestResolveActiveAccount:
         account = resolve_active_account(db_session, user_id, "youtube", content_profile_id=profile_id)
 
         assert account is None
+
+
+class TestPostUrl:
+    def test_youtube_constructs_watch_url_from_bare_id(self):
+        assert _post_url("youtube", "abc123DEF45") == "https://www.youtube.com/watch?v=abc123DEF45"
+
+    def test_tiktok_passes_through_full_share_url_unchanged(self):
+        # TikTokProvider.publish() already returns the full share URL as
+        # platform_post_id (constructing it needs the username, which isn't
+        # available here) — must not be re-wrapped or mangled.
+        url = "https://www.tiktok.com/@creator/video/987654321"
+        assert _post_url("tiktok", url) == url
+
+    def test_unknown_platform_returns_none(self):
+        assert _post_url("twitter", "some-id") is None
+
+    def test_no_post_id_returns_none_regardless_of_platform(self):
+        assert _post_url("youtube", None) is None
+        assert _post_url("tiktok", None) is None

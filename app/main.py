@@ -1000,7 +1000,7 @@ def list_generated_media(generated_content_id: str, idea_index: Optional[int] = 
 # (manual tracking, one-click publish, and the aggregate Performance feed)
 # ---------------------------------------------------------------------------
 
-_SOCIAL_PLATFORMS = {"youtube"}  # twitter/tiktok/instagram land here once their app credentials exist
+_SOCIAL_PLATFORMS = {"youtube", "tiktok"}  # twitter/instagram land here once their app credentials exist
 
 
 def _get_social_provider(platform: str):

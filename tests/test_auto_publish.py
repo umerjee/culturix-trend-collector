@@ -60,7 +60,7 @@ class TestRunAutoPublish:
                 {"hook": "low score", "status": "live", "platform": "YouTube", "relevance_score": 40},
                 {"hook": "high score", "status": "live", "platform": "YouTube", "relevance_score": 90},
                 {"hook": "stale one", "status": "stale", "platform": "YouTube", "relevance_score": 99},
-                {"hook": "wrong platform", "status": "live", "platform": "TikTok", "relevance_score": 99},
+                {"hook": "unsupported platform", "status": "live", "platform": "Instagram", "relevance_score": 99},
             ],
         )
         session.add(content)
@@ -89,6 +89,41 @@ class TestRunAutoPublish:
             assert post.generated_content_id == content_id
             assert post.idea_index == 1  # the highest-relevance_score "live" YouTube idea
             assert post.created_via == "published"
+        finally:
+            session.close()
+
+    def test_tiktok_idea_is_now_eligible_and_posted_with_tiktok_platform_key(self, mocker, db):
+        session = db()
+        profile = _make_profile(session, publish_mode="auto")
+        content = GeneratedContent(
+            user_id=profile.user_id, content_profile_id=profile.id, generated_at=datetime.utcnow(),
+            content_ideas=[
+                {"hook": "youtube idea", "status": "live", "platform": "YouTube", "relevance_score": 50},
+                {"hook": "tiktok idea", "status": "live", "platform": "TikTok", "relevance_score": 90},
+            ],
+        )
+        session.add(content)
+        session.commit()
+        media = GeneratedMedia(
+            generated_content_id=content.id, idea_index=1, media_type="video",
+            provider="kling", status="done", asset_url="https://example.com/v.mp4",
+        )
+        session.add(media)
+        session.commit()
+        content_id = content.id
+        session.close()
+
+        mock_publish = mocker.patch("app.social.service.publish_and_record")
+        run_auto_publish()
+
+        mock_publish.assert_called_once()
+        published_post_id = mock_publish.call_args.args[0]
+
+        session = db()
+        try:
+            post = session.query(ContentPost).filter_by(id=uuid.UUID(published_post_id)).first()
+            assert post.idea_index == 1  # the higher-scoring TikTok idea, not the YouTube one
+            assert post.platform == "tiktok"
         finally:
             session.close()
 

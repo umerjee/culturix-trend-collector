@@ -12,6 +12,7 @@ logger = logging.getLogger("culturix.social")
 
 _PROVIDERS = {
     "youtube": ("app.social.youtube", "YouTubeProvider"),
+    "tiktok": ("app.social.tiktok", "TikTokProvider"),
 }
 
 
@@ -226,4 +227,9 @@ def _post_url(platform: str, platform_post_id: Optional[str]) -> Optional[str]:
         return None
     if platform == "youtube":
         return f"https://www.youtube.com/watch?v={platform_post_id}"
+    if platform == "tiktok":
+        # TikTokProvider.publish() already returns the full share URL as
+        # platform_post_id (constructing it needs the username, which isn't
+        # otherwise available here) — pass it through as-is.
+        return platform_post_id
     return None
