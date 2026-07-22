@@ -167,7 +167,10 @@ def run_digest_dispatch(now=None):
 # a platform here without one lets candidates match but then fail at
 # publish_and_record's provider lookup instead of being filtered out
 # cleanly up front.
-_AUTO_PUBLISH_PLATFORMS = {"YouTube": "youtube", "TikTok": "tiktok"}
+_AUTO_PUBLISH_PLATFORMS = {
+    "YouTube": "youtube", "TikTok": "tiktok",
+    "Instagram": "instagram", "X/Twitter": "twitter",
+}
 
 
 def run_auto_publish():

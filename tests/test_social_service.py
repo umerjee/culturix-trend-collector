@@ -118,8 +118,15 @@ class TestPostUrl:
         url = "https://www.tiktok.com/@creator/video/987654321"
         assert _post_url("tiktok", url) == url
 
+    def test_instagram_passes_through_full_permalink_unchanged(self):
+        url = "https://www.instagram.com/reel/Cxyz123abc/#mid=17895695668004550"
+        assert _post_url("instagram", url) == url
+
+    def test_twitter_constructs_status_url_from_tweet_id(self):
+        assert _post_url("twitter", "1234567890") == "https://x.com/i/web/status/1234567890"
+
     def test_unknown_platform_returns_none(self):
-        assert _post_url("twitter", "some-id") is None
+        assert _post_url("unknown_platform", "some-id") is None
 
     def test_no_post_id_returns_none_regardless_of_platform(self):
         assert _post_url("youtube", None) is None

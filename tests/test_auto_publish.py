@@ -60,7 +60,7 @@ class TestRunAutoPublish:
                 {"hook": "low score", "status": "live", "platform": "YouTube", "relevance_score": 40},
                 {"hook": "high score", "status": "live", "platform": "YouTube", "relevance_score": 90},
                 {"hook": "stale one", "status": "stale", "platform": "YouTube", "relevance_score": 99},
-                {"hook": "unsupported platform", "status": "live", "platform": "Instagram", "relevance_score": 99},
+                {"hook": "unsupported platform", "status": "live", "platform": "Facebook", "relevance_score": 99},
             ],
         )
         session.add(content)

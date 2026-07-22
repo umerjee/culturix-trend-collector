@@ -34,8 +34,8 @@ const EMPTY_PROFILE: Omit<ContentProfile, "id" | "user_id" | "created_at"> = {
 const SUPPORTED_SOCIAL_PLATFORMS: { key: ConnectedAccount["platform"]; label: string; live: boolean }[] = [
   { key: "youtube", label: "YouTube", live: true },
   { key: "tiktok", label: "TikTok", live: true },
-  { key: "twitter", label: "X / Twitter", live: false },
-  { key: "instagram", label: "Instagram", live: false },
+  { key: "instagram", label: "Instagram", live: true },
+  { key: "twitter", label: "X / Twitter", live: true },
 ];
 
 function Chip({ label, selected, onClick }: { label: string; selected: boolean; onClick: () => void }) {

@@ -51,7 +51,9 @@ interface Props {
 // idea.platform (LLM-suggested display value) -> internal provider key —
 // only platforms with a real publish()/fetch_post_metrics() implementation
 // belong here, matching app/scheduler.py's _AUTO_PUBLISH_PLATFORMS.
-const PUBLISHABLE_PLATFORMS: Record<string, string> = { YouTube: "youtube", TikTok: "tiktok" };
+const PUBLISHABLE_PLATFORMS: Record<string, string> = {
+  YouTube: "youtube", TikTok: "tiktok", Instagram: "instagram", "X/Twitter": "twitter",
+};
 
 type MediaType = "voiceover" | "music" | "video" | "image";
 
