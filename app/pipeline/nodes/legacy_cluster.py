@@ -2,6 +2,10 @@
 Cluster & Persist — thin LangGraph wrapper around the existing HDBSCAN clustering
 service. Keeps the Cluster table and Trend.cluster_id populated so the admin
 dashboard (/admin/clusters, /admin/stats) keeps working under the new orchestrator.
+
+Confirmed intentional alongside cluster_trends (app/pipeline/nodes/clusterer.py),
+not unreconciled duplication (audited 2026-07-22) — see app/clustering_service.py's
+module docstring for the full "why two clustering paths" explanation.
 """
 import logging
 from app.pipeline.state import PipelineState

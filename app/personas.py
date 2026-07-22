@@ -1,3 +1,20 @@
+"""Legacy HDBSCAN-based admin persona/cluster system.
+
+Confirmed intentional, not unreconciled duplication (audited 2026-07-22):
+this module + app/clustering_service.py + app/pipeline/nodes/legacy_cluster.py
+feed the RAW, admin-facing Cluster/Persona/TrendPersona tables — exposed via
+/admin/clusters, /admin/personas, /admin/stats and rendered directly in
+AdminDashboard.tsx (clusters/personas state, cluster/persona drill-down
+detail panels, momentum badges — confirmed a real, actively-fetched view,
+not dead UI). This is a distinct consumer from
+app/pipeline/nodes/clusterer.py's Voyage+Qdrant+DeepSeek path, which never
+persists to a browsable table — its clusters exist only transiently within
+one pipeline run's state, purpose-built for content-generation matching
+(trend_validator.py, trend_historian.py, persona_mapper.py,
+content_strategist.py). Keep both: the admin view needs a persisted,
+browsable, momentum-tracked table; the content pipeline needs neither.
+Retiring either would be a real functional regression, not cleanup.
+"""
 import os
 import json
 from anthropic import Anthropic

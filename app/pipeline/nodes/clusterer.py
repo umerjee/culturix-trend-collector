@@ -1,6 +1,17 @@
 """
 Agent 2 — Trend Clusterer
 Embeds signals with Voyage AI, stores in Qdrant, asks DeepSeek to identify clusters.
+
+This is one of two clustering paths in this codebase — confirmed intentional,
+not unreconciled duplication (audited 2026-07-22). This path feeds actual
+content-generation matching (trend_validator.py, trend_historian.py,
+persona_mapper.py, content_strategist.py) and never persists its clusters to
+a table — they live only within one pipeline run's in-memory state. The
+other path, app/clustering_service.py (HDBSCAN, wrapped by
+app/pipeline/nodes/legacy_cluster.py), feeds the raw, persisted, admin-facing
+Cluster table with momentum-over-time tracking that this path has no
+equivalent for. See app/personas.py's module docstring for the fuller
+explanation of why both exist.
 """
 import json
 import logging

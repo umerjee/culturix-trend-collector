@@ -8,6 +8,18 @@ Incremental: a cluster whose trend membership exactly matches a previous
 run (same fingerprint) is reused as-is — no AI relabeling call. Only new
 or changed clusters get a fresh AI label, and clusters whose membership
 no longer appears in the current run are removed.
+
+This is one of two clustering paths in this codebase — confirmed
+intentional, not unreconciled duplication (audited 2026-07-22). This one
+feeds the raw, persisted, admin-facing Cluster table (browsable via
+/admin/clusters, rendered with momentum badges + drill-down detail in
+AdminDashboard.tsx — a real, actively-used view). The other path,
+app/pipeline/nodes/clusterer.py (Voyage+Qdrant+DeepSeek), feeds actual
+content-generation matching and never persists to a table — its clusters
+live only within one pipeline run's in-memory state. See app/personas.py's
+module docstring for the fuller explanation. Don't merge or retire either
+without checking what breaks: this one's momentum-over-time tracking has
+no equivalent on the other path.
 """
 import hashlib
 import os

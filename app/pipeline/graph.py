@@ -6,7 +6,11 @@ map_personas → generate_content → validate_ideas → write_digests
 
 cluster_and_persist / generate_personas keep the admin-facing Cluster/Persona
 tables populated (HDBSCAN + Claude labeling); cluster_trends/map_personas use
-Voyage+Qdrant+DeepSeek for the actual content-generation matching.
+Voyage+Qdrant+DeepSeek for the actual content-generation matching. These are
+two intentionally separate paths, not unreconciled duplication (audited
+2026-07-22, confirmed the admin-facing tables are real, actively-rendered
+UI in AdminDashboard.tsx, not dead code) — see app/personas.py's module
+docstring for the full explanation of why both exist.
 validate_clusters/validate_ideas are the AI legitimacy/safety/durability gate
 that reviews proposed trends and generated ideas before they can influence
 or reach users — see app/pipeline/nodes/trend_validator.py.
