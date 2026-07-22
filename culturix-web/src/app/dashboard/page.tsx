@@ -154,12 +154,24 @@ export default async function DashboardPage({
                 </Link>
               );
             })}
-            {activeProfile && (
-              <span className="text-xs text-gray-400 ml-1 shrink-0">
-                · {activeProfile.industry_niche}
-              </span>
-            )}
           </div>
+        )}
+
+        {/* Audience summary — the trends/ideas below are generated for THIS
+            specific audience; easy to lose track of once managing several
+            niches via the tabs above, and directly relevant once a profile
+            is actually publishing (the whole point of targeting is moot if
+            nobody's reminded what it is at the moment they hit Publish). */}
+        {activeProfile && (
+          <p className="text-xs text-gray-400 mb-6 -mt-4">
+            {activeProfile.industry_niche}
+            {(activeProfile.target_age_min || activeProfile.target_age_max) && (
+              <> · Ages {activeProfile.target_age_min}–{activeProfile.target_age_max}</>
+            )}
+            {activeProfile.persona_tags && activeProfile.persona_tags.length > 0 && (
+              <> · {activeProfile.persona_tags.join(", ")}</>
+            )}
+          </p>
         )}
 
         {/* No data state */}
