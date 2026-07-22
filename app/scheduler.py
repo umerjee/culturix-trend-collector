@@ -173,6 +173,45 @@ _AUTO_PUBLISH_PLATFORMS = {
 }
 
 
+def select_auto_publish_candidate(session, profile):
+    """Pure selection — the exact filters run_auto_publish() actually
+    publishes against (status=='live', platform in _AUTO_PUBLISH_PLATFORMS,
+    medium defaults to 'video' for pre-preferred-formats ideas), extracted
+    so a read-only "next up" preview can never drift from what actually
+    gets published. Returns (content, idea_index, idea, platform_key) or
+    None if there's nothing eligible right now."""
+    from app.models.generated_content import GeneratedContent
+    from app.models.content_post import ContentPost
+
+    content = (
+        session.query(GeneratedContent)
+        .filter_by(content_profile_id=profile.id)
+        .order_by(GeneratedContent.generated_at.desc().nullslast())
+        .first()
+    )
+    if not content or not content.content_ideas:
+        return None
+
+    already_posted = {
+        r.idea_index for r in session.query(ContentPost.idea_index)
+        .filter_by(generated_content_id=content.id).all()
+    }
+    candidates = [
+        (i, idea) for i, idea in enumerate(content.content_ideas)
+        if i not in already_posted and idea.get("status") == "live"
+        and idea.get("platform") in _AUTO_PUBLISH_PLATFORMS
+        # medium may be absent on ideas generated before the preferred-formats
+        # feature — treat that as "video" (its prior implicit default) rather
+        # than excluding old data; explicit non-video mediums are excluded since
+        # Kling+video-publish only makes sense for actual video content.
+        and idea.get("medium", "video") == "video"
+    ]
+    if not candidates:
+        return None
+    idea_index, idea = max(candidates, key=lambda pair: pair[1].get("relevance_score") or 0)
+    return content, idea_index, idea, _AUTO_PUBLISH_PLATFORMS[idea["platform"]]
+
+
 def run_auto_publish():
     """Publishes one idea per 'auto' content profile, once per day. Only
     considers ideas that already passed trend_validator.py's legitimacy/
@@ -184,7 +223,6 @@ def run_auto_publish():
     try:
         from app.db import SessionLocal
         from app.models.content_profile import ContentProfile
-        from app.models.generated_content import GeneratedContent
         from app.models.generated_media import GeneratedMedia
         from app.models.content_post import ContentPost
         from app.media.service import run_generation as run_media_generation
@@ -195,33 +233,10 @@ def run_auto_publish():
             profiles = session.query(ContentProfile).filter_by(publish_mode="auto", is_active=True).all()
             published = 0
             for profile in profiles:
-                content = (
-                    session.query(GeneratedContent)
-                    .filter_by(content_profile_id=profile.id)
-                    .order_by(GeneratedContent.generated_at.desc().nullslast())
-                    .first()
-                )
-                if not content or not content.content_ideas:
+                candidate = select_auto_publish_candidate(session, profile)
+                if not candidate:
                     continue
-
-                already_posted = {
-                    r.idea_index for r in session.query(ContentPost.idea_index)
-                    .filter_by(generated_content_id=content.id).all()
-                }
-                candidates = [
-                    (i, idea) for i, idea in enumerate(content.content_ideas)
-                    if i not in already_posted and idea.get("status") == "live"
-                    and idea.get("platform") in _AUTO_PUBLISH_PLATFORMS
-                    # medium may be absent on ideas generated before the preferred-formats
-                    # feature — treat that as "video" (its prior implicit default) rather
-                    # than excluding old data; explicit non-video mediums are excluded since
-                    # Kling+video-publish only makes sense for actual video content.
-                    and idea.get("medium", "video") == "video"
-                ]
-                if not candidates:
-                    continue
-                idea_index, idea = max(candidates, key=lambda pair: pair[1].get("relevance_score") or 0)
-                platform_key = _AUTO_PUBLISH_PLATFORMS[idea["platform"]]
+                content, idea_index, idea, platform_key = candidate
 
                 media = session.query(GeneratedMedia).filter_by(
                     generated_content_id=content.id, idea_index=idea_index,

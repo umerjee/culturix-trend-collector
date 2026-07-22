@@ -15,7 +15,7 @@ from typing import Optional
 
 import httpx
 
-from app.social.base import OAuthProvider, PostMetrics, TokenResult
+from app.social.base import AccountInfo, OAuthProvider, PostMetrics, TokenResult
 
 _AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -114,6 +114,16 @@ class YouTubeProvider(OAuthProvider):
         if not items:
             return None, None
         return items[0]["id"], items[0]["snippet"].get("title")
+
+    def verify(self, access_token: str) -> AccountInfo:
+        # _fetch_channel_identity returns (None, None) on an empty result,
+        # which is fine inside exchange_code (nothing to compare against
+        # yet) but wrong here — verify()'s whole job is answering "does this
+        # work," so an empty identity must raise, not pass through silently.
+        account_id, username = self._fetch_channel_identity(access_token)
+        if not account_id:
+            raise RuntimeError("No YouTube channel found for this account")
+        return AccountInfo(platform_account_id=account_id, platform_username=username)
 
     def fetch_post_metrics(self, access_token: str, post_url: str) -> PostMetrics:
         video_id = _parse_video_id(post_url)

@@ -66,6 +66,28 @@ class TestExchangeCode:
         assert result.platform_username == "My Channel"
 
 
+class TestVerify:
+    def test_returns_account_info_from_channel_identity(self, mocker):
+        resp = Mock(status_code=200)
+        resp.json.return_value = {"items": [{"id": "UC123", "snippet": {"title": "My Channel"}}]}
+        resp.raise_for_status = Mock()
+        mocker.patch("app.social.youtube.httpx.get", return_value=resp)
+
+        info = YouTubeProvider().verify("at-1")
+
+        assert info.platform_account_id == "UC123"
+        assert info.platform_username == "My Channel"
+
+    def test_no_channel_raises(self, mocker):
+        resp = Mock(status_code=200)
+        resp.json.return_value = {"items": []}
+        resp.raise_for_status = Mock()
+        mocker.patch("app.social.youtube.httpx.get", return_value=resp)
+
+        with pytest.raises(RuntimeError):
+            YouTubeProvider().verify("at-1")
+
+
 class TestFetchPostMetrics:
     def test_parses_statistics_from_response(self, mocker):
         resp = Mock(status_code=200)

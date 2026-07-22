@@ -25,7 +25,7 @@ from typing import Optional
 
 import httpx
 
-from app.social.base import OAuthProvider, PostMetrics, TokenResult
+from app.social.base import AccountInfo, OAuthProvider, PostMetrics, TokenResult
 
 # Source: Meta developer docs, "Instagram API with Instagram Login" (fetched 2026-07-22)
 _AUTH_URL = "https://www.instagram.com/oauth/authorize"
@@ -143,6 +143,19 @@ class InstagramProvider(OAuthProvider):
         }, timeout=20)
         resp.raise_for_status()
         return str(resp.json()["user_id"])
+
+    def verify(self, access_token: str) -> AccountInfo:
+        # Combines _fetch_username/_fetch_user_id's two separate calls into
+        # one — same /me endpoint, just both fields requested at once.
+        resp = httpx.get(f"{_GRAPH_BASE}/me", params={
+            "fields": "username,user_id",
+            "access_token": access_token,
+        }, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("user_id"):
+            raise RuntimeError("Instagram returned no user for this token")
+        return AccountInfo(platform_account_id=str(data["user_id"]), platform_username=data.get("username"))
 
     def fetch_post_metrics(self, access_token: str, post_url: str) -> PostMetrics:
         match = _OWN_MEDIA_ID_PATTERN.search(post_url)

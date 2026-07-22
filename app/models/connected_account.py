@@ -28,3 +28,9 @@ class ConnectedAccount(Base):
     status = Column(String(20), nullable=False, default="active")  # active|expired|revoked|error
     connected_at = Column(DateTime, default=datetime.utcnow)
     last_refreshed_at = Column(DateTime, nullable=True)
+    # Explicit "does this connection actually work" probe, distinct from
+    # `status` (which only reflects OAuth token lifecycle) — see
+    # app/social/service.py's test_connection(). NULL = never tested.
+    last_tested_at = Column(DateTime, nullable=True)
+    last_test_status = Column(String(10), nullable=True)  # ok|error
+    last_test_error = Column(Text, nullable=True)

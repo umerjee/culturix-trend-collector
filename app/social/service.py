@@ -78,6 +78,54 @@ def _get_valid_access_token(session, connected_account) -> str:
     return decrypt(connected_account.access_token)
 
 
+def test_connection(session, connected_account) -> dict:
+    """Synchronous — one cheap identity call, not backgrounded like
+    publish_and_record. Reuses _get_valid_access_token (already handles
+    refresh + already sets needs_reconnect/error on token failure) rather
+    than duplicating that logic here."""
+    now = datetime.utcnow()
+    try:
+        access_token = _get_valid_access_token(session, connected_account)
+    except Exception as exc:
+        connected_account.last_tested_at = now
+        connected_account.last_test_status = "error"
+        connected_account.last_test_error = str(exc)[:500]
+        session.commit()
+        return {"ok": False, "reason": _categorize_test_error(exc)}
+
+    provider = _get_provider(connected_account.platform)
+    try:
+        info = provider.verify(access_token)
+    except Exception as exc:
+        connected_account.last_tested_at = now
+        connected_account.last_test_status = "error"
+        connected_account.last_test_error = str(exc)[:500]
+        session.commit()
+        return {"ok": False, "reason": _categorize_test_error(exc)}
+
+    if info.platform_username:
+        connected_account.platform_username = info.platform_username
+    if info.platform_account_id:
+        connected_account.platform_account_id = info.platform_account_id
+    connected_account.last_tested_at = now
+    connected_account.last_test_status = "ok"
+    connected_account.last_test_error = None
+    session.commit()
+    return {"ok": True, "platform_username": connected_account.platform_username}
+
+
+def _categorize_test_error(exc: Exception) -> str:
+    # Covers both an expired/revoked token surfaced as an HTTP 401/403 from
+    # the platform's own API, and _get_valid_access_token's own RuntimeError
+    # for "expired with no refresh_token available" (never reaches the API).
+    is_auth_failure = (
+        isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (401, 403)
+    ) or "expired" in str(exc).lower() or "reconnect" in str(exc).lower()
+    if is_auth_failure:
+        return "Your connection appears to be expired or revoked — reconnect in Settings."
+    return "Could not verify the connection right now — try again shortly."
+
+
 def fetch_and_record(content_post_id: str) -> None:
     """Background task for manual tracking — fetches current metrics for an
     already-created ContentPost row and writes a snapshot."""

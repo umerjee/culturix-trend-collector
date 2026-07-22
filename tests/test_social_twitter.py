@@ -60,6 +60,28 @@ class TestExchangeCode:
         assert mock_post.call_args.kwargs["auth"] == ("test-client-id", "test-client-secret")
 
 
+class TestVerify:
+    def test_returns_account_info_from_users_me(self, mocker):
+        resp = Mock(status_code=200)
+        resp.json.return_value = {"data": {"id": "12345", "username": "my_x_handle"}}
+        resp.raise_for_status = Mock()
+        mocker.patch("app.social.twitter.httpx.get", return_value=resp)
+
+        info = TwitterProvider().verify("at-1")
+
+        assert info.platform_account_id == "12345"
+        assert info.platform_username == "my_x_handle"
+
+    def test_no_data_raises(self, mocker):
+        resp = Mock(status_code=200)
+        resp.json.return_value = {}
+        resp.raise_for_status = Mock()
+        mocker.patch("app.social.twitter.httpx.get", return_value=resp)
+
+        with pytest.raises(RuntimeError):
+            TwitterProvider().verify("at-1")
+
+
 class TestFetchPostMetrics:
     def test_parses_tweet_id_and_public_metrics(self, mocker):
         resp = Mock(status_code=200)

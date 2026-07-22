@@ -1,12 +1,18 @@
+import os
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+os.environ.setdefault("TOKEN_ENCRYPTION_KEY", "zJZ2n2n0vXW5X8mYQKqVYV9YQe3F2Z8h0m3nQeF1nQ8=")
+
 from app.db import Base
 from app.models.connected_account import ConnectedAccount
-from app.social.service import resolve_active_account, _post_url
+from app.social.base import AccountInfo
+from app.social.crypto import encrypt
+from app.social.service import resolve_active_account, test_connection as run_test_connection, _post_url
 
 
 @pytest.fixture
@@ -105,6 +111,66 @@ class TestResolveActiveAccount:
         account = resolve_active_account(db_session, user_id, "youtube", content_profile_id=profile_id)
 
         assert account is None
+
+
+class TestTestConnection:
+    def _make_account(self, session, platform="youtube"):
+        account = ConnectedAccount(
+            user_id=uuid.uuid4(), platform=platform,
+            access_token=encrypt("plain-access-token"),
+            refresh_token=encrypt("plain-refresh-token"),
+            token_expires_at=datetime.utcnow() + timedelta(hours=1),
+            status="active",
+        )
+        session.add(account)
+        session.commit()
+        return account
+
+    def test_success_writes_ok_status_and_refreshes_identity(self, mocker, db_session):
+        account = self._make_account(db_session)
+        mock_provider = mocker.Mock()
+        mock_provider.verify.return_value = AccountInfo(platform_account_id="chan-1", platform_username="New Name")
+        mocker.patch("app.social.service._get_provider", return_value=mock_provider)
+
+        result = run_test_connection(db_session, account)
+
+        assert result == {"ok": True, "platform_username": "New Name"}
+        assert account.last_test_status == "ok"
+        assert account.last_tested_at is not None
+        assert account.last_test_error is None
+        assert account.platform_username == "New Name"
+        assert account.platform_account_id == "chan-1"
+
+    def test_verify_failure_marks_error_status(self, mocker, db_session):
+        account = self._make_account(db_session)
+        mock_provider = mocker.Mock()
+        mock_provider.verify.side_effect = RuntimeError("No channel found")
+        mocker.patch("app.social.service._get_provider", return_value=mock_provider)
+
+        result = run_test_connection(db_session, account)
+
+        assert result["ok"] is False
+        assert account.last_test_status == "error"
+        assert account.last_test_error == "No channel found"
+        assert account.last_tested_at is not None
+
+    def test_expired_token_without_refresh_token_marks_error_with_reconnect_reason(self, mocker, db_session):
+        account = ConnectedAccount(
+            user_id=uuid.uuid4(), platform="youtube",
+            access_token=encrypt("plain-access-token"),
+            refresh_token=None,
+            token_expires_at=datetime.utcnow() - timedelta(hours=1),
+            status="active",
+        )
+        db_session.add(account)
+        db_session.commit()
+
+        result = run_test_connection(db_session, account)
+
+        assert result["ok"] is False
+        assert "reconnect" in result["reason"].lower()
+        assert account.last_test_status == "error"
+        assert account.status == "needs_reconnect"
 
 
 class TestPostUrl:

@@ -1,9 +1,10 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Loader2, Check, Plus, Trash2, ChevronRight, CreditCard, Link2, Unlink, Sparkles, Copy } from "lucide-react";
+import { Loader2, Check, Plus, Trash2, ChevronRight, CreditCard, Link2, Unlink, Sparkles, Copy, ShieldCheck, ShieldAlert, Settings2 } from "lucide-react";
 import PersonaChips from "@/components/PersonaChips";
+import PublishingWizard from "@/components/PublishingWizard";
 import {
   PLATFORMS, REGIONS, CONTENT_GOALS, CONTENT_TONES, CONTENT_FORMATS, AVATAR_TYPES, DELIVERY_DAYS,
   type ContentProfile, type AvatarTypePreset, type ConnectedAccount, type AccountSuggestions,
@@ -92,6 +93,12 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
   const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
   const [copiedName, setCopiedName] = useState<string | null>(null);
 
+  const [wizard, setWizard] = useState<{
+    platform: ConnectedAccount["platform"]; step: "connect" | "test" | "mode" | "next";
+  } | null>(null);
+  const [testingPlatform, setTestingPlatform] = useState<string | null>(null);
+  const autoOpenedRef = useRef(false);
+
   async function fetchSuggestions(profileId: string) {
     setSuggestionsLoading(true);
     setSuggestionsError(null);
@@ -178,6 +185,33 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
     loadConnectedAccounts();
   }
 
+  async function handleQuickTest(platform: string) {
+    if (testingPlatform) return;
+    setTestingPlatform(platform);
+    try {
+      await fetch(
+        `${RAILWAY}/api/social/${platform}/test?user_id=${userId}&content_profile_id=${selectedId}`,
+        { method: "POST" }
+      );
+      await loadConnectedAccounts();
+    } finally {
+      setTestingPlatform(null);
+    }
+  }
+
+  async function persistPublishMode(profileId: string, mode: "manual" | "review" | "auto") {
+    const res = await fetch(`/api/content-profiles/${profileId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ publish_mode: mode }),
+    });
+    if (res.ok) {
+      const updated: ContentProfile = await res.json();
+      setProfiles(prev => prev.map(p => p.id === profileId ? updated : p));
+      if (selectedId === profileId) setDraft(d => ({ ...d, publish_mode: updated.publish_mode }));
+    }
+  }
+
   useEffect(() => {
     async function load() {
       try {
@@ -207,6 +241,24 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
     loadConnectedAccounts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Auto-open the wizard at the Test step right after an OAuth callback
+  // redirect (?connected=<platform>) — closes the "connect, then nothing"
+  // gap instead of just showing a static toast.
+  useEffect(() => {
+    if (autoOpenedRef.current) return;
+    if (!connectedParam || loading || accountsLoading || profiles.length === 0) return;
+    const bound = connectedAccounts.find(
+      a => a.platform === connectedParam && a.status === "active" && a.content_profile_id
+    );
+    if (bound) {
+      const matchProfile = profiles.find(p => p.id === bound.content_profile_id);
+      if (matchProfile) selectProfile(matchProfile);
+      setWizard({ platform: connectedParam as ConnectedAccount["platform"], step: "test" });
+      autoOpenedRef.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectedParam, loading, accountsLoading, connectedAccounts, profiles]);
 
   function selectProfile(p: ContentProfile) {
     setSelectedId(p.id);
@@ -809,30 +861,61 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
                   }
                   return (
                     <div key={key} className="rounded-xl border border-gray-100 px-4 py-3">
-                      <div className="flex items-center justify-between">
-                        <div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
                           <span className="text-sm font-medium text-gray-900">{label}</span>
                           {bound?.platform_username && (
                             <span className="text-xs text-gray-400 ml-2">@{bound.platform_username}</span>
                           )}
+                          {bound && (
+                            <span
+                              className={`inline-flex items-center gap-1 text-xs ml-2 ${
+                                bound.last_test_status === "ok" ? "text-green-600"
+                                  : bound.last_test_status === "error" ? "text-red-500" : "text-gray-400"
+                              }`}
+                            >
+                              {bound.last_test_status === "ok" && <ShieldCheck className="h-3 w-3" />}
+                              {bound.last_test_status === "error" && <ShieldAlert className="h-3 w-3" />}
+                              {bound.last_test_status ? (bound.last_test_status === "ok" ? "Verified" : "Test failed") : "Not tested yet"}
+                            </span>
+                          )}
                         </div>
-                        {accountsLoading ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-300" />
-                        ) : bound ? (
-                          <button
-                            onClick={() => handleDisconnect(key, selectedId)}
-                            className="inline-flex items-center gap-1.5 text-xs font-medium text-red-500 hover:text-red-600"
-                          >
-                            <Unlink className="h-3.5 w-3.5" /> Disconnect
-                          </button>
-                        ) : (
-                          <a
-                            href={`${RAILWAY}/api/social/${key}/connect?user_id=${userId}&content_profile_id=${selectedId}`}
-                            className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-700"
-                          >
-                            <Link2 className="h-3.5 w-3.5" /> Connect a dedicated account
-                          </a>
-                        )}
+                        <div className="flex items-center gap-2 shrink-0">
+                          {accountsLoading ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-300" />
+                          ) : bound ? (
+                            <>
+                              <button
+                                onClick={() => handleQuickTest(key)}
+                                disabled={testingPlatform === key}
+                                title="Test connection"
+                                className="inline-flex items-center gap-1 text-xs font-medium text-gray-400 hover:text-blue-600 disabled:opacity-50"
+                              >
+                                {testingPlatform === key ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+                                Test
+                              </button>
+                              <button
+                                onClick={() => setWizard({ platform: key, step: "test" })}
+                                className="inline-flex items-center gap-1 text-xs font-medium text-gray-400 hover:text-blue-600"
+                              >
+                                <Settings2 className="h-3.5 w-3.5" /> Manage
+                              </button>
+                              <button
+                                onClick={() => handleDisconnect(key, selectedId)}
+                                className="inline-flex items-center gap-1.5 text-xs font-medium text-red-500 hover:text-red-600"
+                              >
+                                <Unlink className="h-3.5 w-3.5" /> Disconnect
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              onClick={() => setWizard({ platform: key, step: "connect" })}
+                              className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-700"
+                            >
+                              <Link2 className="h-3.5 w-3.5" /> Set up publishing
+                            </button>
+                          )}
+                        </div>
                       </div>
                       {!bound && legacy && (
                         <p className="text-xs text-amber-600 mt-2">
@@ -896,6 +979,20 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
             )}
           </div>
         </form>
+      )}
+
+      {wizard && selected && (
+        <PublishingWizard
+          userId={userId}
+          profile={selected}
+          platform={wizard.platform}
+          platformLabel={SUPPORTED_SOCIAL_PLATFORMS.find(p => p.key === wizard.platform)?.label ?? wizard.platform}
+          connectedAccounts={connectedAccounts}
+          initialStep={wizard.step}
+          onAccountsChanged={loadConnectedAccounts}
+          onModeChange={(mode) => persistPublishMode(selected.id, mode)}
+          onClose={() => setWizard(null)}
+        />
       )}
     </main>
   );

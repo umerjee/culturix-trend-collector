@@ -35,7 +35,7 @@ from typing import Optional
 
 import httpx
 
-from app.social.base import OAuthProvider, PostMetrics, TokenResult
+from app.social.base import AccountInfo, OAuthProvider, PostMetrics, TokenResult
 
 # Source: docs.x.com (fetched 2026-07-22)
 _AUTH_URL = "https://twitter.com/i/oauth2/authorize"
@@ -138,6 +138,20 @@ class TwitterProvider(OAuthProvider):
         )
         resp.raise_for_status()
         return resp.json().get("data", {}).get("username")
+
+    def verify(self, access_token: str) -> AccountInfo:
+        # /users/me already returns id/name/username in its default field
+        # set — same call _fetch_username makes, just also reading `id`.
+        resp = httpx.get(
+            f"{_API_BASE}/users/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data")
+        if not data:
+            raise RuntimeError("X returned no user for this token")
+        return AccountInfo(platform_account_id=data.get("id"), platform_username=data.get("username"))
 
     def fetch_post_metrics(self, access_token: str, post_url: str) -> PostMetrics:
         match = _TWEET_ID_PATTERN.search(post_url)

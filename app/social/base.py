@@ -21,6 +21,12 @@ class TokenResult:
     platform_username: Optional[str] = None
 
 
+@dataclass
+class AccountInfo:
+    platform_account_id: Optional[str] = None
+    platform_username: Optional[str] = None
+
+
 class OAuthProvider(ABC):
     @abstractmethod
     def get_authorize_url(self, state: str) -> str: ...
@@ -30,6 +36,14 @@ class OAuthProvider(ABC):
 
     @abstractmethod
     def refresh_access_token(self, refresh_token: str) -> TokenResult: ...
+
+    @abstractmethod
+    def verify(self, access_token: str) -> AccountInfo:
+        """Lightweight 'does this token still work' probe — one cheap identity
+        call, not a full re-auth. Must raise on failure (expired/revoked token,
+        no identity returned) rather than returning an empty AccountInfo, so
+        callers can tell 'confirmed working' apart from 'confirmed broken'."""
+        ...
 
     @abstractmethod
     def fetch_post_metrics(self, access_token: str, post_url: str) -> PostMetrics: ...

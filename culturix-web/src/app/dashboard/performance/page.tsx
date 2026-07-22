@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import AppNav from "@/components/AppNav";
-import { Eye, Heart, MessageCircle, ExternalLink, BarChart3 } from "lucide-react";
+import { Eye, Heart, MessageCircle, ExternalLink, BarChart3, Sparkles } from "lucide-react";
 import type { ContentPost } from "@/lib/types";
 
 const RAILWAY = process.env.NEXT_PUBLIC_API_URL || "https://culturix-trend-collector-production.up.railway.app";
@@ -45,6 +45,10 @@ export default async function PerformancePage() {
   const isSuperAdmin = user.email === "umer.ali79@gmail.com";
   const posts = await fetchContentPosts(user.id);
   const totalViews = posts.reduce((sum, p) => sum + (p.latest_views ?? 0), 0);
+  const recentAutoPublished = posts
+    .filter((p) => p.created_via === "published")
+    .sort((a, b) => new Date(b.posted_at ?? 0).getTime() - new Date(a.posted_at ?? 0).getTime())
+    .slice(0, 5);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -71,6 +75,41 @@ export default async function PerformancePage() {
                 <p className="text-xs text-gray-400 mt-1">{s.label}</p>
               </div>
             ))}
+          </div>
+        )}
+
+        {recentAutoPublished.length > 0 && (
+          <div className="mb-6 rounded-2xl bg-white border border-gray-100 p-4">
+            <div className="flex items-center gap-1.5 mb-3">
+              <Sparkles className="h-4 w-4 text-indigo-500" />
+              <h2 className="text-sm font-semibold text-gray-900">Recently auto-published</h2>
+            </div>
+            <div className="space-y-2">
+              {recentAutoPublished.map((p) => (
+                <div key={p.id} className="flex items-center justify-between gap-3 rounded-xl bg-gray-50 px-3 py-2.5">
+                  <div className="min-w-0 flex items-center gap-2">
+                    <span className={`text-xs font-semibold rounded-full px-2 py-0.5 capitalize shrink-0 ${PLATFORM_COLORS[p.platform] ?? "bg-gray-100 text-gray-700"}`}>
+                      {p.platform}
+                    </span>
+                    <p className="text-sm text-gray-700 truncate">{p.hook ?? "Untitled idea"}</p>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-gray-500 shrink-0">
+                    {p.latest_views != null && (
+                      <span className="flex items-center gap-1"><Eye className="h-3.5 w-3.5 text-gray-400" />{p.latest_views.toLocaleString()}</span>
+                    )}
+                    {p.latest_likes != null && (
+                      <span className="flex items-center gap-1"><Heart className="h-3.5 w-3.5 text-gray-400" />{p.latest_likes.toLocaleString()}</span>
+                    )}
+                    <span>{formatDate(p.posted_at)}</span>
+                    {p.post_url && (
+                      <a href={p.post_url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-600">
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

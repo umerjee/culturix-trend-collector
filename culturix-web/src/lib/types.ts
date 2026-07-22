@@ -82,6 +82,16 @@ export interface ConnectedAccount {
   // Which Trend profile (niche) this account is dedicated to — the user's own
   // "avatar account" for that niche. null = legacy/shared across all profiles.
   content_profile_id: string | null;
+  // Whether a live "does this connection actually work" probe has been run —
+  // distinct from `status`, which only reflects OAuth token lifecycle.
+  last_tested_at: string | null;
+  last_test_status: "ok" | "error" | null;
+}
+
+export interface NextAutoPublish {
+  candidate: { hook: string; platform: string; relevance_score: number | null } | null;
+  reason?: "not_auto_mode" | "no_eligible_idea";
+  scheduled_for?: string;
 }
 
 export interface ContentPost {

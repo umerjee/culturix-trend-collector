@@ -1,11 +1,11 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { TrendingUp, Inbox, LayoutList } from "lucide-react";
+import { TrendingUp, Inbox, LayoutList, Sparkles } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import AppNav from "@/components/AppNav";
 import TrendIdeaCard from "@/components/TrendIdeaCard";
 import RefreshButton from "@/components/RefreshButton";
-import type { Digest, ContentProfile } from "@/lib/types";
+import type { Digest, ContentProfile, ContentPost } from "@/lib/types";
 
 const RAILWAY = "https://culturix-trend-collector-production.up.railway.app";
 
@@ -33,6 +33,25 @@ async function fetchProfiles(userId: string): Promise<ContentProfile[]> {
     if (!res.ok) return [];
     const data = await res.json();
     return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+async function fetchRecentAutoPublished(userId: string, profileId?: string): Promise<ContentPost[]> {
+  if (!profileId) return [];
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
+  try {
+    const res = await fetch(
+      `${apiUrl}/api/content-posts?user_id=${userId}&content_profile_id=${profileId}`,
+      { cache: "no-store" }
+    );
+    if (!res.ok) return [];
+    const data: ContentPost[] = await res.json();
+    return (Array.isArray(data) ? data : [])
+      .filter((p) => p.created_via === "published")
+      .sort((a, b) => new Date(b.posted_at ?? 0).getTime() - new Date(a.posted_at ?? 0).getTime())
+      .slice(0, 2);
   } catch {
     return [];
   }
@@ -90,9 +109,10 @@ export default async function DashboardPage({
 
   const activeProfile = profiles.find((p) => p.id === searchParams.profile) ?? profiles[0] ?? null;
 
-  const [digest, connectedPlatforms] = await Promise.all([
+  const [digest, connectedPlatforms, recentAutoPublished] = await Promise.all([
     fetchDigest(user.id, searchParams.profile),
     fetchConnectedPlatforms(user.id, activeProfile?.id),
+    fetchRecentAutoPublished(user.id, activeProfile?.id),
   ]);
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 
@@ -172,6 +192,27 @@ export default async function DashboardPage({
               <> · {activeProfile.persona_tags.join(", ")}</>
             )}
           </p>
+        )}
+
+        {/* Recently auto-published — Culturix's own automation is otherwise
+            invisible until you happen to check Performance; a quick "here's
+            what I did for you" highlight right where the ideas live. */}
+        {recentAutoPublished.length > 0 && (
+          <div className="mb-6 -mt-2 rounded-xl bg-indigo-50 border border-indigo-100 px-4 py-3">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <Sparkles className="h-3.5 w-3.5 text-indigo-500" />
+              <p className="text-xs font-semibold text-indigo-700">Culturix recently posted for you</p>
+            </div>
+            <div className="space-y-1">
+              {recentAutoPublished.map((p) => (
+                <p key={p.id} className="text-xs text-indigo-600 truncate">
+                  &ldquo;{p.hook ?? "Untitled idea"}&rdquo; on{" "}
+                  <span className="capitalize">{p.platform}</span>
+                  {p.latest_views != null && <> — {p.latest_views.toLocaleString()} views</>}
+                </p>
+              ))}
+            </div>
+          </div>
         )}
 
         {/* No data state */}

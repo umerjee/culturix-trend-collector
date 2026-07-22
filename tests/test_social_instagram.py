@@ -66,6 +66,31 @@ class TestRefreshAccessToken:
         assert result.refresh_token == "refreshed-1"
 
 
+class TestVerify:
+    def test_returns_account_info_from_combined_me_call(self, mocker):
+        resp = Mock(status_code=200)
+        resp.json.return_value = {"username": "my_ig_account", "user_id": 999}
+        resp.raise_for_status = Mock()
+        mock_get = mocker.patch("app.social.instagram.httpx.get", return_value=resp)
+
+        info = InstagramProvider().verify("at-1")
+
+        assert info.platform_account_id == "999"
+        assert info.platform_username == "my_ig_account"
+        # Combined into one call, not the two separate _fetch_username/_fetch_user_id calls.
+        assert mock_get.call_count == 1
+        assert mock_get.call_args.kwargs["params"]["fields"] == "username,user_id"
+
+    def test_no_user_id_raises(self, mocker):
+        resp = Mock(status_code=200)
+        resp.json.return_value = {"username": "my_ig_account"}
+        resp.raise_for_status = Mock()
+        mocker.patch("app.social.instagram.httpx.get", return_value=resp)
+
+        with pytest.raises(RuntimeError):
+            InstagramProvider().verify("at-1")
+
+
 class TestFetchPostMetrics:
     def test_parses_own_media_id_fragment_and_stats(self, mocker):
         resp = Mock(status_code=200)

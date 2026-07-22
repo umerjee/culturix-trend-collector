@@ -34,7 +34,7 @@ from typing import Optional
 
 import httpx
 
-from app.social.base import OAuthProvider, PostMetrics, TokenResult
+from app.social.base import AccountInfo, OAuthProvider, PostMetrics, TokenResult
 
 # Source: https://developers.tiktok.com/doc/login-kit-web (fetched 2026-07-22)
 _AUTH_URL = "https://www.tiktok.com/v2/auth/authorize/"
@@ -125,6 +125,19 @@ class TikTokProvider(OAuthProvider):
         resp.raise_for_status()
         user = resp.json().get("data", {}).get("user") or {}
         return user.get("display_name")
+
+    def verify(self, access_token: str) -> AccountInfo:
+        resp = httpx.get(
+            f"{_API_BASE}/user/info/",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"fields": "open_id,display_name"},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        user = resp.json().get("data", {}).get("user") or {}
+        if not user:
+            raise RuntimeError("TikTok returned no user for this token")
+        return AccountInfo(platform_account_id=user.get("open_id"), platform_username=user.get("display_name"))
 
     def fetch_post_metrics(self, access_token: str, post_url: str) -> PostMetrics:
         match = _VIDEO_ID_PATTERN.search(post_url)

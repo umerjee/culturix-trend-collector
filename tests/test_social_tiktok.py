@@ -69,6 +69,28 @@ class TestRefreshAccessToken:
         assert result.refresh_token == "rt-2"
 
 
+class TestVerify:
+    def test_returns_account_info_from_user_info(self, mocker):
+        resp = Mock(status_code=200)
+        resp.json.return_value = {"data": {"user": {"open_id": "open-id-123", "display_name": "My TikTok"}}}
+        resp.raise_for_status = Mock()
+        mocker.patch("app.social.tiktok.httpx.get", return_value=resp)
+
+        info = TikTokProvider().verify("at-1")
+
+        assert info.platform_account_id == "open-id-123"
+        assert info.platform_username == "My TikTok"
+
+    def test_no_user_raises(self, mocker):
+        resp = Mock(status_code=200)
+        resp.json.return_value = {"data": {}}
+        resp.raise_for_status = Mock()
+        mocker.patch("app.social.tiktok.httpx.get", return_value=resp)
+
+        with pytest.raises(RuntimeError):
+            TikTokProvider().verify("at-1")
+
+
 class TestFetchPostMetrics:
     def test_parses_video_id_and_stats_from_response(self, mocker):
         resp = Mock(status_code=200)

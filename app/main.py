@@ -89,6 +89,12 @@ async def lifespan(_):
             # on (0=Monday..6=Sunday) — ignored for "daily". User-picked, not
             # derived from anything, per an explicit product decision.
             "ALTER TABLE content_profiles ADD COLUMN IF NOT EXISTS delivery_day_of_week INTEGER NOT NULL DEFAULT 0",
+            # Explicit "does this connection actually work" probe, distinct
+            # from `status` (which only reflects OAuth token lifecycle) —
+            # see app/social/service.py's test_connection().
+            "ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS last_tested_at TIMESTAMP",
+            "ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS last_test_status VARCHAR(10)",
+            "ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS last_test_error TEXT",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -1140,9 +1146,35 @@ def list_connected_accounts(user_id: str, content_profile_id: Optional[str] = No
                 "status": r.status,
                 "connected_at": r.connected_at.isoformat() if r.connected_at else None,
                 "content_profile_id": str(r.content_profile_id) if r.content_profile_id else None,
+                "last_tested_at": r.last_tested_at.isoformat() if r.last_tested_at else None,
+                "last_test_status": r.last_test_status,
             }
             for r in rows if r.status != "revoked"
         ]
+    finally:
+        session.close()
+
+
+@app.post("/api/social/{platform}/test")
+def test_social_connection(platform: str, user_id: str, content_profile_id: Optional[str] = None):
+    """Live 'does this connection actually work' probe — a single cheap
+    identity call via the provider's verify(), not a full re-auth. Always
+    200s with {"ok": ...} since this is a diagnostic read, not a mutation
+    that can meaningfully fail at the HTTP layer."""
+    from app.db import SessionLocal
+    from app.social.service import resolve_active_account, test_connection
+    import uuid as _uuid
+
+    _get_social_provider(platform)  # 404s on an unsupported platform
+    session = SessionLocal()
+    try:
+        account = resolve_active_account(
+            session, _uuid.UUID(user_id), platform,
+            content_profile_id=_uuid.UUID(content_profile_id) if content_profile_id else None,
+        )
+        if not account:
+            raise HTTPException(status_code=400, detail=f"No {platform} account connected for this profile yet.")
+        return test_connection(session, account)
     finally:
         session.close()
 
@@ -1292,9 +1324,12 @@ def refresh_content_post(content_post_id: str, background_tasks: BackgroundTasks
 
 
 @app.get("/api/content-posts")
-def list_all_content_posts(user_id: str):
+def list_all_content_posts(user_id: str, content_profile_id: Optional[str] = None):
     """Aggregate feed for the Performance page — every tracked/published post
-    across all of a user's content profiles, latest metrics, views desc."""
+    across all of a user's content profiles, latest metrics, views desc.
+    Optionally scoped to one profile (via its GeneratedContent rows, since
+    ContentPost has no content_profile_id column of its own) — used by the
+    Dashboard's "recently auto-published" highlight."""
     from app.db import SessionLocal
     from app.models.content_post import ContentPost
     from app.models.generated_content import GeneratedContent
@@ -1302,12 +1337,15 @@ def list_all_content_posts(user_id: str):
 
     session = SessionLocal()
     try:
-        rows = (
-            session.query(ContentPost)
-            .filter_by(user_id=_uuid.UUID(user_id))
-            .order_by(ContentPost.latest_views.desc().nullslast())
-            .all()
-        )
+        query = session.query(ContentPost).filter_by(user_id=_uuid.UUID(user_id))
+        if content_profile_id is not None:
+            matching_ids = (
+                session.query(GeneratedContent.id)
+                .filter_by(content_profile_id=_uuid.UUID(content_profile_id))
+                .subquery()
+            )
+            query = query.filter(ContentPost.generated_content_id.in_(matching_ids))
+        rows = query.order_by(ContentPost.latest_views.desc().nullslast()).all()
         content_ids = {r.generated_content_id for r in rows}
         contents = {
             c.id: c for c in session.query(GeneratedContent).filter(GeneratedContent.id.in_(content_ids)).all()
@@ -2111,6 +2149,47 @@ def get_account_suggestions(user_id: str, profile_id: str):
             return generate_account_suggestions(profile_dict)
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Suggestion generation failed: {e}")
+    except HTTPException:
+        raise
+    finally:
+        session.close()
+
+
+@app.get("/users/{user_id}/content-profiles/{profile_id}/next-auto-publish")
+def next_auto_publish(user_id: str, profile_id: str):
+    """Read-only preview of what run_auto_publish() would post next for this
+    profile — shares its exact selection logic (select_auto_publish_candidate)
+    so this can never promise something the real job wouldn't actually pick.
+    A full day separates this read from the actual scheduled run, so it's a
+    preview, not a guarantee — new digests, Content Check status changes, or
+    a Review-mode publish in the meantime can all change the outcome."""
+    from app.db import SessionLocal
+    from app.models.content_profile import ContentProfile
+    from app.scheduler import select_auto_publish_candidate
+    import uuid as _uuid
+
+    session = SessionLocal()
+    try:
+        cp = session.query(ContentProfile).filter_by(
+            id=_uuid.UUID(profile_id), user_id=_uuid.UUID(user_id)
+        ).first()
+        if not cp:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        if cp.publish_mode != "auto":
+            return {"candidate": None, "reason": "not_auto_mode"}
+
+        result = select_auto_publish_candidate(session, cp)
+        if not result:
+            return {"candidate": None, "reason": "no_eligible_idea"}
+        _content, _idea_index, idea, platform_key = result
+        return {
+            "candidate": {
+                "hook": idea.get("hook"),
+                "platform": platform_key,
+                "relevance_score": idea.get("relevance_score"),
+            },
+            "scheduled_for": "~11:00 UTC daily",
+        }
     except HTTPException:
         raise
     finally:
