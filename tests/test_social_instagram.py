@@ -124,6 +124,36 @@ class TestPublish:
         assert isinstance(metrics, PostMetrics)
         assert metrics.platform_post_id == "https://www.instagram.com/reel/Cxyz123abc/#mid=17895695668004550"
 
+    def test_discloses_ai_generated_content(self, mocker):
+        # Every video this codebase publishes is Kling-generated — must
+        # always self-certify via is_ai_generated, unconditionally.
+        mocker.patch("app.social.instagram.time.sleep")
+        mocker.patch("app.media.storage.upload", return_value="https://storage.example.com/video.mp4")
+
+        user_id_resp = Mock(status_code=200)
+        user_id_resp.json.return_value = {"user_id": 999}
+        user_id_resp.raise_for_status = Mock()
+        init_resp = Mock(status_code=200)
+        init_resp.json.return_value = {"id": "container-1"}
+        init_resp.raise_for_status = Mock()
+        status_resp = Mock(status_code=200)
+        status_resp.json.return_value = {"status_code": "FINISHED"}
+        status_resp.raise_for_status = Mock()
+        publish_resp = Mock(status_code=200)
+        publish_resp.json.return_value = {"id": "17895695668004550"}
+        publish_resp.raise_for_status = Mock()
+        permalink_resp = Mock(status_code=200)
+        permalink_resp.json.return_value = {"permalink": "https://www.instagram.com/reel/Cxyz123abc/"}
+        permalink_resp.raise_for_status = Mock()
+
+        mock_post = mocker.patch("app.social.instagram.httpx.post", side_effect=[init_resp, publish_resp])
+        mocker.patch("app.social.instagram.httpx.get", side_effect=[user_id_resp, status_resp, permalink_resp])
+
+        InstagramProvider().publish("at-1", b"fake-video-bytes", "title", "desc")
+
+        init_call = mock_post.call_args_list[0]
+        assert init_call.kwargs["data"]["is_ai_generated"] == "true"
+
     def test_container_error_status_raises(self, mocker):
         mocker.patch("app.social.instagram.time.sleep")
         mocker.patch("app.media.storage.upload", return_value="https://storage.example.com/video.mp4")

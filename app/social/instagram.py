@@ -186,6 +186,10 @@ class InstagramProvider(OAuthProvider):
                 "media_type": "REELS",
                 "video_url": public_url,
                 "caption": description[:2200] or title[:2200],
+                # Every video this codebase publishes is Kling-generated —
+                # always disclose, never conditional (matches TikTok's
+                # is_aigc and YouTube's containsSyntheticMedia).
+                "is_ai_generated": "true",  # form-encoded POST — string, not a JSON bool
                 "access_token": access_token,
             },
             timeout=30,

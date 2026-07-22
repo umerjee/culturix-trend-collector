@@ -162,6 +162,12 @@ class TikTokProvider(OAuthProvider):
                 "post_info": {
                     "title": title[:150],
                     "privacy_level": os.environ.get("TIKTOK_PUBLISH_PRIVACY_LEVEL", "SELF_ONLY"),
+                    # Every video this codebase publishes is Kling-generated —
+                    # always disclose, never conditional. TikTok's 2026 AI
+                    # content policy enforces this (undisclosed AI content risks
+                    # a shadow ban); confirmed field name against TikTok's own
+                    # docs, not a third-party guess.
+                    "is_aigc": True,
                 },
                 "source_info": {
                     "source": "FILE_UPLOAD",

@@ -208,3 +208,23 @@ class TestPublish:
         TikTokProvider().publish("at-1", video_bytes, "title", "desc")
 
         assert mock_put.call_args.kwargs["headers"]["Content-Range"] == "bytes 0-4/5"
+
+    def test_discloses_ai_generated_content(self, mocker):
+        # Every video this codebase publishes is Kling-generated — TikTok's
+        # 2026 AI content policy enforces disclosure (undisclosed AI content
+        # risks a shadow ban), so this must always be set, unconditionally.
+        mock_post = self._mock_init_and_upload(mocker)
+        mocker.patch("app.social.tiktok.time.sleep")
+        status_resp = Mock(status_code=200)
+        status_resp.json.return_value = {"data": {"status": "PUBLISH_COMPLETE", "publicaly_available_post_id": ["1"]}}
+        status_resp.raise_for_status = Mock()
+        mock_post.side_effect = [mock_post.return_value, status_resp]
+        mocker.patch("app.social.tiktok.httpx.get", return_value=Mock(
+            status_code=200, json=lambda: {"data": {"user": {}}}, raise_for_status=Mock()
+        ))
+        mocker.patch("app.social.tiktok.httpx.put", return_value=Mock(status_code=200, raise_for_status=Mock()))
+
+        TikTokProvider().publish("at-1", b"video-bytes", "title", "desc")
+
+        init_call = mock_post.call_args_list[0]
+        assert init_call.kwargs["json"]["post_info"]["is_aigc"] is True

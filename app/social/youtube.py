@@ -142,7 +142,18 @@ class YouTubeProvider(OAuthProvider):
         boundary = "culturix_upload_boundary"
         metadata = json.dumps({
             "snippet": {"title": title[:100], "description": description[:5000], "categoryId": "22"},
-            "status": {"privacyStatus": _DEFAULT_PRIVACY_STATUS, "selfDeclaredMadeForKids": False},
+            "status": {
+                "privacyStatus": _DEFAULT_PRIVACY_STATUS,
+                "selfDeclaredMadeForKids": False,
+                # Every video this codebase publishes is Kling-generated —
+                # always disclose, never conditional. YouTube added this
+                # self-certification field specifically for realistic
+                # altered/synthetic content; defaulting to True is the safe
+                # choice given Kling's output can be realistic depending on
+                # the prompt, and there's no reliable way to detect
+                # "realistic enough to need it" automatically.
+                "containsSyntheticMedia": True,
+            },
         })
         body = (
             f"--{boundary}\r\n"

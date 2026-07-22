@@ -112,3 +112,16 @@ class TestPublish:
         # Confirm the upload actually included the video bytes
         sent_body = mock_post.call_args.kwargs["content"]
         assert b"fake-video-bytes" in sent_body
+
+    def test_discloses_ai_generated_content(self, mocker):
+        # Every video this codebase publishes is Kling-generated — must
+        # always self-certify via containsSyntheticMedia, unconditionally.
+        resp = Mock(status_code=200)
+        resp.json.return_value = {"id": "newVideoId1"}
+        resp.raise_for_status = Mock()
+        mock_post = mocker.patch("app.social.youtube.httpx.post", return_value=resp)
+
+        YouTubeProvider().publish("at-1", b"fake-video-bytes", title="title", description="desc")
+
+        sent_body = mock_post.call_args.kwargs["content"]
+        assert b'"containsSyntheticMedia": true' in sent_body
