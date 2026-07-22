@@ -88,6 +88,21 @@ def run_post_metrics_refresh():
         logger.error("Post metrics refresh failed: %s", e)
 
 
+def run_integration_health_check():
+    """Daily check of the two unofficial/no-SLA integrations (edge-tts,
+    Twitter's Jina/trends24.in proxy) — see app/integration_health.py.
+    Results are persisted (IntegrationHealth), not just logged, so trend-
+    over-time is visible via GET /admin/integration-health, not only
+    whatever's in the log at the moment someone happens to look."""
+    logger.info("Integration health check starting...")
+    try:
+        from app.integration_health import run_all_health_checks
+        results = run_all_health_checks()
+        logger.info("Integration health check done: %s", results)
+    except Exception as e:
+        logger.error("Integration health check failed: %s", e)
+
+
 def run_digest_dispatch(now=None):
     """Sends each active profile's digest email once its own delivery_freq/
     delivery_time/delivery_day_of_week conditions are met, decoupled from the
@@ -252,12 +267,14 @@ def start():
     # Digest email dispatch — every 15 min, per-profile delivery_freq/delivery_time/
     # delivery_day_of_week gating (decoupled from the shared 07:00 UTC generation run)
     scheduler.add_job(run_digest_dispatch, CronTrigger(minute="*/15"), id="digest_dispatch")
+    # Integration health check — once daily, 12:00 UTC (after the other morning jobs)
+    scheduler.add_job(run_integration_health_check, CronTrigger(hour=12, minute=0), id="integration_health_check")
     scheduler.start()
     logger.info(
         "Scheduler started — collection at 01:00/07:00/13:00/19:00 UTC, "
         "full pipeline at 07:00 UTC, content check at 09:00 UTC, "
         "post metrics refresh at 10:00 UTC, auto-publish at 11:00 UTC, "
-        "digest dispatch every 15 min"
+        "digest dispatch every 15 min, integration health check at 12:00 UTC"
     )
 
 

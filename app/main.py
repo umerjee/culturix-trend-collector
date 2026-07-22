@@ -28,6 +28,7 @@ async def lifespan(_):
     from app.models.connected_account import ConnectedAccount       # noqa: F401
     from app.models.content_post import ContentPost                 # noqa: F401
     from app.models.content_post_snapshot import ContentPostSnapshot  # noqa: F401
+    from app.models.integration_health import IntegrationHealth       # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -1742,6 +1743,55 @@ def admin_stats():
         }
     finally:
         session.close()
+
+
+@app.get("/admin/integration-health")
+def get_integration_health():
+    """Latest health-check result per integration — see
+    app/integration_health.py. Checked daily by the scheduler; use
+    POST /admin/integration-health/check-now for an on-demand check."""
+    from app.db import SessionLocal
+    from app.models.integration_health import IntegrationHealth
+    import sqlalchemy as sa
+
+    session = SessionLocal()
+    try:
+        subq = (
+            session.query(
+                IntegrationHealth.integration_name,
+                sa.func.max(IntegrationHealth.checked_at).label("max_checked"),
+            )
+            .group_by(IntegrationHealth.integration_name)
+            .subquery()
+        )
+        rows = (
+            session.query(IntegrationHealth)
+            .join(
+                subq,
+                sa.and_(
+                    IntegrationHealth.integration_name == subq.c.integration_name,
+                    IntegrationHealth.checked_at == subq.c.max_checked,
+                ),
+            )
+            .all()
+        )
+        return [
+            {
+                "integration": r.integration_name,
+                "status": r.status,
+                "error": r.error,
+                "checked_at": r.checked_at.isoformat() if r.checked_at else None,
+            }
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
+@app.post("/admin/integration-health/check-now")
+def check_integration_health_now():
+    from app.integration_health import run_all_health_checks
+    return run_all_health_checks()
 
 
 @app.post("/admin/collect")
