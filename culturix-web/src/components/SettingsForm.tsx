@@ -8,7 +8,7 @@ import RegionChips from "@/components/RegionChips";
 import PublishingWizard from "@/components/PublishingWizard";
 import { optIntoPush, isPushSupported, isIosNonStandalone } from "@/lib/onesignal";
 import {
-  PLATFORMS, CONTENT_GOALS, CONTENT_TONES, CONTENT_FORMATS, AVATAR_TYPES, DELIVERY_DAYS,
+  PLATFORMS, IDEAS_ONLY_PLATFORMS, CONTENT_GOALS, CONTENT_TONES, CONTENT_FORMATS, AVATAR_TYPES, DELIVERY_DAYS,
   CONNECTABLE_PLATFORMS,
   type ContentProfile, type AvatarTypePreset, type ConnectedAccount, type AccountSuggestions, type ContentPost,
 } from "@/lib/types";
@@ -806,6 +806,9 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
                     <Chip key={p} label={p} selected={(draft.target_platforms ?? []).includes(p)} onClick={() => toggle("target_platforms", p)} />
                   ))}
                 </div>
+                <p className="text-xs text-gray-400 mt-1.5">
+                  {IDEAS_ONLY_PLATFORMS.join(", ")}: content ideas only — connecting an account, publishing, and tracking aren&apos;t available for these yet.
+                </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Regions</label>

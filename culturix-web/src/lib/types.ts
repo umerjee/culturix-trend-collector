@@ -167,6 +167,22 @@ export const CONNECTABLE_PLATFORMS: { key: string; label: string; display: strin
 
 export const PLATFORMS = ["TikTok", "YouTube", "Instagram", "Xiaohongshu", "X/Twitter", "Reddit", "Pinterest"] as const;
 
+// Platforms offered as a target_platforms pick that Culturix can generate
+// content ideas for, but can't connect an account to, publish to, or track
+// performance on — derived from CONNECTABLE_PLATFORMS above so this can't
+// drift the way target_regions/persona_tags used to (two independently
+// maintained lists silently disagreeing). Not a hard filter like
+// target_regions was — ideas targeting these still get generated normally,
+// they just never show a Stage/Publish button (DigestCard.tsx's
+// PUBLISHABLE_PLATFORMS lookup resolves to undefined for them, which
+// degrades gracefully to "no button" rather than an error) — surfaced here
+// so the picker is honest about the limitation instead of silently
+// degrading later.
+const _CONNECTABLE_DISPLAY_NAMES = CONNECTABLE_PLATFORMS.map((p) => p.display);
+export const IDEAS_ONLY_PLATFORMS = PLATFORMS.filter(
+  (p) => !_CONNECTABLE_DISPLAY_NAMES.includes(p)
+);
+
 // @deprecated — kept only as RegionChips.tsx's fallback if GET /api/regions
 // is unreachable. app/regions.py is now the single source of truth (also
 // used by persona_mapper.py's region filter) — don't add regions here

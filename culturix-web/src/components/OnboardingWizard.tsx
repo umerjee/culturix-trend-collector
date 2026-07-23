@@ -8,6 +8,7 @@ import { z } from "zod";
 import { Loader2, Check, Plus } from "lucide-react";
 import {
   PLATFORMS,
+  IDEAS_ONLY_PLATFORMS,
   CONTENT_GOALS,
   CONTENT_TONES,
   CONTENT_FORMATS,
@@ -325,6 +326,9 @@ export default function OnboardingWizard({ userId: _userId }: Props) {
                 />
               ))}
             </div>
+            <p className="text-xs text-gray-400 mt-1.5">
+              {IDEAS_ONLY_PLATFORMS.join(", ")}: content ideas only — connecting an account, publishing, and tracking aren&apos;t available for these yet.
+            </p>
             {s1.formState.errors.targetPlatforms && (
               <p className="text-xs text-red-500 mt-1">{s1.formState.errors.targetPlatforms.message}</p>
             )}
