@@ -102,6 +102,7 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
 
   const [pushBusy, setPushBusy] = useState(false);
   const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushError, setPushError] = useState<string | null>(null);
   // Computed client-side only (window/navigator-dependent) to avoid an
   // SSR/hydration mismatch — starts false on the server render either way.
   const [pushSupported, setPushSupported] = useState(false);
@@ -112,11 +113,21 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
     setIosNeedsHomeScreen(isIosNonStandalone());
   }, []);
 
+  const PUSH_ERROR_MESSAGES: Record<string, string> = {
+    unsupported: "This browser doesn't support push notifications.",
+    blocked: "Couldn't load the notification service — an ad blocker or privacy extension may be blocking it. Try disabling it for this site.",
+    permission_denied: "Notifications were blocked — check your browser's site settings to allow them.",
+  };
+
   async function handleEnablePush() {
     setPushBusy(true);
+    setPushError(null);
     try {
       const result = await optIntoPush(userId);
       setPushEnabled(result.ok);
+      if (!result.ok) {
+        setPushError(PUSH_ERROR_MESSAGES[result.reason ?? "blocked"]);
+      }
     } finally {
       setPushBusy(false);
     }
@@ -483,6 +494,7 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
             </button>
           )}
         </div>
+        {pushError && <p className="text-xs text-red-500 mt-3">{pushError}</p>}
       </section>
 
       {/* Profile selector */}

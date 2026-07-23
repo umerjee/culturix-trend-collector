@@ -10,9 +10,17 @@ declare global {
   }
 }
 
+// 8s timeout — if the OneSignal SDK script never loads (blocked by an ad
+// blocker/Brave Shields, network issue, etc.) window.OneSignalDeferred stays
+// a plain array forever and our queued callback would otherwise never run,
+// leaving the caller's promise pending indefinitely with no feedback to the
+// user (this is exactly what caused the "Enable notifications" button to
+// spin forever before this was added).
+const ONESIGNAL_TIMEOUT_MS = 8000;
+
 function withOneSignal<T>(fn: (OneSignal: any) => Promise<T>): Promise<T | null> {
   if (typeof window === "undefined" || !window.OneSignalDeferred) return Promise.resolve(null);
-  return new Promise((resolve) => {
+  const queued = new Promise<T | null>((resolve) => {
     window.OneSignalDeferred!.push(async (OneSignal) => {
       try {
         resolve(await fn(OneSignal));
@@ -21,6 +29,8 @@ function withOneSignal<T>(fn: (OneSignal: any) => Promise<T>): Promise<T | null>
       }
     });
   });
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), ONESIGNAL_TIMEOUT_MS));
+  return Promise.race([queued, timeout]);
 }
 
 // iOS Safari only supports web push once the site has been "Added to Home
@@ -44,14 +54,24 @@ export function isPushSupported(): boolean {
 
 // Opts the current user into push: ties their OneSignal subscription to
 // their Culturix user id and requests browser notification permission.
-export async function optIntoPush(userId: string): Promise<{ ok: boolean }> {
-  if (!isPushSupported()) return { ok: false };
+// `reason` is set only on failure, so callers can show a useful message
+// instead of a bare "didn't work" — "blocked" covers both a real timeout
+// and the SDK script never loading, since from here they're indistinguishable.
+export async function optIntoPush(
+  userId: string
+): Promise<{ ok: boolean; reason?: "unsupported" | "blocked" | "permission_denied" }> {
+  if (!isPushSupported()) return { ok: false, reason: "unsupported" };
+  if (typeof window === "undefined" || !window.OneSignalDeferred) {
+    return { ok: false, reason: "blocked" };
+  }
   const result = await withOneSignal(async (OneSignal) => {
     await OneSignal.login(userId);
     await OneSignal.Notifications.requestPermission();
     return OneSignal.Notifications.permission === true;
   });
-  return { ok: result === true };
+  if (result === true) return { ok: true };
+  if (result === null) return { ok: false, reason: "blocked" };
+  return { ok: false, reason: "permission_denied" };
 }
 
 export async function optOutOfPush(): Promise<void> {
