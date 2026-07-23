@@ -177,6 +177,8 @@ app.add_middleware(
         "https://culturix-web.vercel.app",
         "https://culturix-trend-collector.vercel.app",
         "https://culturix-trend-collector-production.up.railway.app",
+        "https://culturixcloud.com",
+        "https://www.culturixcloud.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],
