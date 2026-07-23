@@ -31,10 +31,10 @@ from datetime import date, datetime, timedelta
 
 from app.pipeline.state import PipelineState
 from app.pipeline.nodes._similarity import cosine_similarity, average_embedding
+from app.pipeline.nodes._similarity import SIMILARITY_THRESHOLD as _SIMILARITY_THRESHOLD
 
 logger = logging.getLogger("culturix.pipeline.persona_tag_tracker")
 
-_SIMILARITY_THRESHOLD = 0.85
 _PROMOTION_MIN_OCCURRENCES = 3
 _PENDING_EXPIRY_DAYS = 14
 _DORMANT_AFTER_DAYS = 45

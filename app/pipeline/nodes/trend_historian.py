@@ -22,10 +22,10 @@ from datetime import date, datetime
 from app.pipeline.state import PipelineState
 from app.pipeline.nodes._similarity import cosine_similarity as _cosine_similarity
 from app.pipeline.nodes._similarity import average_embedding as _average_embedding
+from app.pipeline.nodes._similarity import SIMILARITY_THRESHOLD as _SIMILARITY_THRESHOLD
 
 logger = logging.getLogger("culturix.pipeline.trend_historian")
 
-_SIMILARITY_THRESHOLD = 0.85
 _MIN_OCCURRENCES_FOR_PATTERN = 3
 
 

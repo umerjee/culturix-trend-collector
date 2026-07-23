@@ -5,6 +5,33 @@ both of which match a fresh embedding against a running centroid to decide
 two nodes don't carry their own private, silently-divergent copies of this
 math."""
 
+# Both consumers embed "{name}. {description}" via Voyage's voyage-3 model
+# (no input_type specified — symmetric/general-purpose mode) on short,
+# freshly LLM-generated text, and both were originally set to 0.85 as a
+# guess with no measurement behind it.
+#
+# Recalibrated 2026-07-23 after a real-data audit found /admin/trend-history
+# stuck at 103/103 themes showing "unclear" — every theme capped at
+# occurrence_count 1-2 despite 4 days of real operation. Pulled actual
+# same-real-world-topic pairs from production (same day's LLM re-wording a
+# recurring trend) and measured their true cosine similarity directly:
+#   "Lamine Yamal rising stardom" <-> "...Football Star Hype"      0.844
+#   "FIFA World Cup 2026 hype" <-> "2026 FIFA World Cup"           0.808
+#   "AI Influencer Monetization" <-> itself, reworded description  0.798
+#   "The Odyssey 2026 film buzz" <-> "...Film Phenomenon"          0.793
+#   "Kaylee Hottle rising star" <-> "...Career Breakthrough"       0.769
+# Every one of these — genuinely the same real-world trend, one day apart —
+# fell below the old 0.85 threshold, meaning matching was silently failing
+# on almost every real recurrence. 0.75 was chosen to catch all five of the
+# above while still excluding the more tangentially-related pairs also
+# measured that day (e.g. general "World Cup sports culture" discourse vs.
+# the specific FIFA hype cluster, at 0.54-0.55) — a deliberate, evidence-
+# based judgment call, not a definitive number; revisit if false-positive
+# merges (unrelated trends folding into the same theme) turn out to be a
+# problem at this level, or if occurrence counts still aren't climbing after
+# a couple more weeks of real data.
+SIMILARITY_THRESHOLD = 0.75
+
 
 def cosine_similarity(a: list, b: list) -> float:
     if not a or not b or len(a) != len(b):
