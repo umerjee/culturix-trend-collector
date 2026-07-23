@@ -14,6 +14,17 @@ _ALIASES = {
     "japan": "JP",
     "global": None,  # no single region — genuinely unknown, not a real code
     "us": "US",
+    # Added so Twitter's proxy fallback (app/collectors/twitter.py's
+    # TWITTER_REGIONS) can tag these — previously only "us"/"uk"/"india"/
+    # "japan" were resolvable, leaving Twitter (the single largest collector
+    # by volume) unable to ever tag FR/CA/AU even though those are offered
+    # as target_regions picker options and TikTok/YouTube do tag them —
+    # a profile targeting e.g. France-only could get zero clusters on any
+    # day where the top clusters happened to carry a resolved-but-non-FR
+    # region from Twitter-sourced posts instead of staying unknown.
+    "france": "FR",
+    "canada": "CA",
+    "australia": "AU",
 }
 
 

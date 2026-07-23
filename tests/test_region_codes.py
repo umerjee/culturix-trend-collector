@@ -15,6 +15,15 @@ class TestNormalizeRegion:
         assert normalize_region("india") == "IN"
         assert normalize_region("japan") == "JP"
         assert normalize_region("us") == "US"
+        # France/Canada/Australia are full-name strings (>3 chars), so
+        # without an explicit alias they'd hit the long-unrecognized-string
+        # fallback below and silently resolve to None — this is exactly the
+        # bug that made a "France only" target_regions profile see zero
+        # clusters (Twitter, the largest source, sends "france" as a region
+        # value through TWITTER_REGIONS, and it needs to resolve to "FR").
+        assert normalize_region("france") == "FR"
+        assert normalize_region("canada") == "CA"
+        assert normalize_region("australia") == "AU"
 
     def test_global_maps_to_none(self):
         assert normalize_region("global") is None
