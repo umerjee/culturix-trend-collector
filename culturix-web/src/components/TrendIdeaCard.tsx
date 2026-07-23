@@ -50,8 +50,8 @@ export default function TrendIdeaCard({
   }
 
   const trendHeader = (
-    <div className="flex items-start justify-between gap-2 px-1">
-      <p className="font-semibold text-sm text-gray-900">{cluster.name}</p>
+    <div className="flex flex-wrap items-start gap-x-2 gap-y-1 px-1">
+      <p className="flex-1 min-w-[10rem] font-semibold text-sm text-gray-900">{cluster.name}</p>
       {cluster.emotional_theme && (
         <span className="shrink-0 inline-flex items-center gap-1 text-xs font-medium rounded-full bg-purple-50 text-purple-600 px-2 py-0.5">
           <Sparkles className="h-3 w-3" />

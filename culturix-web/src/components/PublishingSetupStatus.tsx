@@ -66,9 +66,9 @@ export default function PublishingSetupStatus(props: Props) {
     return (
       <a
         href={props.settingsHref}
-        className="mb-6 -mt-2 flex items-center justify-between gap-2 rounded-xl bg-amber-50 border border-amber-100 px-4 py-3 text-xs text-amber-700 hover:border-amber-200 transition-colors"
+        className="mb-6 -mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 rounded-xl bg-amber-50 border border-amber-100 px-4 py-3 text-xs text-amber-700 hover:border-amber-200 transition-colors"
       >
-        <span>
+        <span className="flex-1 min-w-[14rem]">
           <span className="font-semibold">Finish setting up publishing</span> — {parts.join(" · ")}
         </span>
         <span className="inline-flex items-center gap-1 font-medium shrink-0">
