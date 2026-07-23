@@ -107,7 +107,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {ONESIGNAL_APP_ID && (
           <>
             <Script
-              src="https://cdn.onesignal.com/sdks/OneSignalSDK.page.js"
+              src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js"
               strategy="afterInteractive"
               defer
             />
