@@ -25,6 +25,9 @@ _ALIASES = {
     "france": "FR",
     "canada": "CA",
     "australia": "AU",
+    "italy": "IT",
+    "spain": "ES",
+    "portugal": "PT",
 }
 
 

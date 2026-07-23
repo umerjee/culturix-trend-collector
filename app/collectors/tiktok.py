@@ -7,7 +7,10 @@ from app.language import detect_language
 from app.collectors.region_codes import normalize_region
 
 TIKTOK_TRENDING_URL = "https://www.tikwm.com/api/feed/list/"
-TIKTOK_REGIONS = ["US", "GB", "IN", "JP", "KR", "FR", "DE", "BR"]
+# IT/ES/PT added alongside FR/DE/GB so persona_mapper.py's "EU" target-region
+# mapping has real collectors actually tagging those countries, not just
+# filter-permission with nothing behind it — see that file's _REGION_LABEL_TO_CODES.
+TIKTOK_REGIONS = ["US", "GB", "IN", "JP", "KR", "FR", "DE", "BR", "IT", "ES", "PT"]
 
 
 def _cache_cover_image(item: dict, external_id: str) -> str | None:

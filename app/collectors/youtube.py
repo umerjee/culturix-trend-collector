@@ -72,7 +72,10 @@ def fetch_youtube_trending(region="US", limit=30):
         return _fetch_via_scrape(limit)
 
 
-YOUTUBE_REGIONS = ["US", "GB", "IN", "CA", "AU", "FR", "DE", "BR", "JP", "KR"]
+# IT/ES/PT added alongside FR/DE/GB so persona_mapper.py's "EU" target-region
+# mapping has real collectors actually tagging those countries, not just
+# filter-permission with nothing behind it — see that file's _REGION_LABEL_TO_CODES.
+YOUTUBE_REGIONS = ["US", "GB", "IN", "CA", "AU", "FR", "DE", "BR", "JP", "KR", "IT", "ES", "PT"]
 
 
 def store_youtube_trends(region="US", limit=50):

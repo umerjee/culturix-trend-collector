@@ -90,6 +90,15 @@ class TestFilterByRegion:
         result = _filter_by_region(clusters, ["EU"])
         assert result == [{"name": "French fashion trend", "regions": ["FR"]}]
 
+    def test_eu_covers_the_major_european_markets_not_just_fr_de(self):
+        # "EU" used to only match FR/DE — too narrow for the "broad Europe"
+        # sense it's meant to cover. GB is included deliberately (colloquial
+        # Europe, not the strict political union — see persona_mapper.py's
+        # comment on _REGION_LABEL_TO_CODES).
+        for code in ("GB", "ES", "IT", "PT", "DE", "FR"):
+            clusters = [{"name": f"{code} cluster", "regions": [code]}]
+            assert _filter_by_region(clusters, ["EU"]) == clusters, f"{code} should match EU"
+
     def test_uk_label_maps_to_gb_collector_code(self):
         clusters = [{"name": "UK cluster", "regions": ["GB"]}]
         result = _filter_by_region(clusters, ["UK"])

@@ -24,6 +24,9 @@ class TestNormalizeRegion:
         assert normalize_region("france") == "FR"
         assert normalize_region("canada") == "CA"
         assert normalize_region("australia") == "AU"
+        assert normalize_region("italy") == "IT"
+        assert normalize_region("spain") == "ES"
+        assert normalize_region("portugal") == "PT"
 
     def test_global_maps_to_none(self):
         assert normalize_region("global") is None

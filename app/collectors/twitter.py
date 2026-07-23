@@ -34,7 +34,7 @@ JINA_PROXY = "https://r.jina.ai/http://trends24.in/?geo={region}"
 # Twitter-sourced cluster hard-excluded by persona_mapper.py's region
 # filter for having a resolved-but-non-matching region, on top of getting
 # none of Twitter's volume as region-unknown (fail-open) content either.
-TWITTER_REGIONS = ["us", "uk", "india", "japan", "france", "canada", "australia", "global"]
+TWITTER_REGIONS = ["us", "uk", "india", "japan", "france", "canada", "australia", "italy", "spain", "portugal", "global"]
 
 
 def _collect_via_apify(queries: list[str] | None = None, max_items: int = 200) -> list[dict]:
@@ -145,6 +145,7 @@ def _fetch_via_proxy(region: str = "US") -> list[str]:
             "global": "US",  # trends24 doesn't use 'global' so use US as fallback
             "us": "US", "uk": "GB", "india": "IN", "japan": "JP",
             "france": "FR", "canada": "CA", "australia": "AU",
+            "italy": "IT", "spain": "ES", "portugal": "PT",
         }
         geo_code = geo_map.get(region.lower(), "US")
 
