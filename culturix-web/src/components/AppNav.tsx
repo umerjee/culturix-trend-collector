@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Zap, LayoutDashboard, TrendingUp, Settings, ShieldCheck, LogOut } from "lucide-react";
+import { Zap, LayoutDashboard, TrendingUp, Settings, ShieldCheck, LogOut, HelpCircle } from "lucide-react";
 
 type NavKey = "dashboard" | "performance" | "settings";
 
@@ -38,6 +38,16 @@ export default function AppNav({ active, isSuperAdmin }: Props) {
               <span className="hidden sm:inline">{label}</span>
             </Link>
           ))}
+          <Link
+            href="/how-it-works"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="How publishing works"
+            className="inline-flex items-center gap-1.5 text-sm font-medium rounded-lg px-3 py-2 text-gray-400 hover:bg-gray-50 hover:text-gray-600 transition-colors"
+          >
+            <HelpCircle className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">How it works</span>
+          </Link>
           {isSuperAdmin && (
             <Link
               href="/admin"

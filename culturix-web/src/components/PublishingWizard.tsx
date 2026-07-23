@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, X, Link2, ShieldCheck, ShieldAlert, ArrowRight, Info } from "lucide-react";
 import type { ContentProfile, ConnectedAccount, NextAutoPublish } from "@/lib/types";
+import { WHY_NOT_DIRECT_PUBLISH, IOS_PUSH_NOTE, PUBLISH_MODE_DESCRIPTIONS, PUBLISH_MODE_LABELS } from "@/content/publishingCopy";
 
 const RAILWAY = process.env.NEXT_PUBLIC_API_URL || "https://culturix-trend-collector-production.up.railway.app";
 
@@ -199,11 +200,10 @@ export default function PublishingWizard({
         {step === "mode" && (
           <div className="space-y-3">
             <p className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
-              Why we don&apos;t post for you: platforms only let apps post automatically through a{" "}
-              <span className="font-medium">Business account</span>, which loses access to the
-              trending-audio library that makes videos take off. Review and Auto keep your{" "}
-              <span className="font-medium">Personal/Creator account</span> — we prep everything
-              and notify you at the right moment, you do the final tap-to-post.
+              {WHY_NOT_DIRECT_PUBLISH}{" "}
+              <a href="/how-it-works" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline whitespace-nowrap">
+                Learn more →
+              </a>
             </p>
             {testResult && !testResult.ok && (
               <p className="text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
@@ -212,11 +212,7 @@ export default function PublishingWizard({
               </p>
             )}
             <div className="grid grid-cols-3 gap-2">
-              {([
-                { key: "manual", label: "Manual", desc: "You post it yourself, then paste the link to track it." },
-                { key: "review", label: "Review", desc: "Click Stage & notify me — Culturix preps it and pings you when it's ready to launch." },
-                { key: "auto", label: "Auto", desc: "Culturix preps the best idea and notifies you, once a day — you do the final tap to post." },
-              ] as const).map(({ key, label, desc }) => (
+              {(["manual", "review", "auto"] as const).map((key) => (
                 <button
                   key={key}
                   type="button"
@@ -225,8 +221,8 @@ export default function PublishingWizard({
                     mode === key ? "border-blue-600 bg-blue-50" : "border-gray-200"
                   }`}
                 >
-                  <p className={`text-xs font-semibold ${mode === key ? "text-blue-700" : "text-gray-700"}`}>{label}</p>
-                  <p className="text-xs text-gray-400 mt-1">{desc}</p>
+                  <p className={`text-xs font-semibold ${mode === key ? "text-blue-700" : "text-gray-700"}`}>{PUBLISH_MODE_LABELS[key]}</p>
+                  <p className="text-xs text-gray-400 mt-1">{PUBLISH_MODE_DESCRIPTIONS[key]}</p>
                 </button>
               ))}
             </div>
@@ -250,9 +246,7 @@ export default function PublishingWizard({
           <div className="space-y-3">
             {(mode === "review" || mode === "auto") && (
               <p className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
-                Notifications are sent via web push — on iPhone, add Culturix to your Home Screen
-                first (Share → Add to Home Screen) for them to come through, per Apple&apos;s rules
-                for web apps.
+                {IOS_PUSH_NOTE}
               </p>
             )}
             {mode === "manual" && (

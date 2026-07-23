@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Download, Copy, Check, ExternalLink, Loader2 } from "lucide-react";
+import { LAUNCH_DISCLAIMER } from "@/content/publishingCopy";
 
 interface StageInfo {
   content_post_id: string;
@@ -147,10 +148,7 @@ export default function PublishLaunchCard({ stage }: { stage: StageInfo }) {
         </div>
       )}
 
-      <p className="text-xs text-gray-400">
-        Heads up: no platform lets an app drop a video straight into its composer with the caption pre-filled — that
-        one paste-and-post tap inside {platformLabel} is still yours to make.
-      </p>
+      <p className="text-xs text-gray-400">Heads up: {LAUNCH_DISCLAIMER}</p>
 
       <div className="border-t border-gray-100 pt-4">
         {confirmed ? (

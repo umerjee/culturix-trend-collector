@@ -12,6 +12,7 @@ import {
   type ContentProfile, type AvatarTypePreset, type ConnectedAccount, type AccountSuggestions, type ContentPost,
 } from "@/lib/types";
 import PublishingSetupStatus from "@/components/PublishingSetupStatus";
+import { IOS_PUSH_NOTE, PUBLISH_MODE_DESCRIPTIONS, PUBLISH_MODE_LABELS } from "@/content/publishingCopy";
 
 const ALL_FORMAT_KEYS = CONTENT_FORMATS.map((f) => f.key);
 
@@ -513,7 +514,7 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
           </div>
           {iosNeedsHomeScreen ? (
             <p className="text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 max-w-xs">
-              On iPhone: add Culturix to your Home Screen first (Share → Add to Home Screen), then come back here to enable notifications.
+              {IOS_PUSH_NOTE} Come back here once you have.
             </p>
           ) : pushEnabled ? (
             <span className="inline-flex items-center gap-1.5 text-xs font-medium text-green-600">
@@ -1058,11 +1059,7 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
               {!hasActiveConnection && " Connect an account above to unlock Review and Auto."}
             </p>
             <div className="grid grid-cols-3 gap-3">
-              {([
-                { key: "manual", label: "Manual", desc: "You post it yourself, then paste the link to track it." },
-                { key: "review", label: "Review", desc: "Click Stage & notify me — Culturix preps it and pings you when it's ready to launch." },
-                { key: "auto", label: "Auto", desc: "Culturix preps the best idea and notifies you, once a day — you do the final tap to post." },
-              ] as const).map(({ key, label, desc }) => {
+              {(["manual", "review", "auto"] as const).map((key) => {
                 const disabled = key !== "manual" && !hasActiveConnection;
                 return (
                   <button key={key} type="button" disabled={disabled}
@@ -1072,8 +1069,8 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
                       draft.publish_mode === key ? "border-blue-600 bg-blue-50" : "border-gray-200"
                     } ${disabled ? "opacity-40 cursor-not-allowed" : "hover:border-blue-300"}`}
                   >
-                    <p className={`text-sm font-semibold ${draft.publish_mode === key ? "text-blue-700" : "text-gray-700"}`}>{label}</p>
-                    <p className="text-xs text-gray-400 mt-1">{desc}</p>
+                    <p className={`text-sm font-semibold ${draft.publish_mode === key ? "text-blue-700" : "text-gray-700"}`}>{PUBLISH_MODE_LABELS[key]}</p>
+                    <p className="text-xs text-gray-400 mt-1">{PUBLISH_MODE_DESCRIPTIONS[key]}</p>
                   </button>
                 );
               })}

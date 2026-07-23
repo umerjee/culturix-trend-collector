@@ -445,6 +445,7 @@ export default function LandingPage() {
             <span className="font-semibold text-gray-300">Culturix</span>
           </div>
           <div className="flex items-center gap-4">
+            <Link href="/how-it-works" className="text-gray-500 hover:text-gray-300 transition-colors">How Publishing Works</Link>
             <Link href="/privacy" className="text-gray-500 hover:text-gray-300 transition-colors">Privacy Policy</Link>
             <Link href="/terms" className="text-gray-500 hover:text-gray-300 transition-colors">Terms of Service</Link>
           </div>
