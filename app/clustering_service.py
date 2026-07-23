@@ -22,6 +22,7 @@ without checking what breaks: this one's momentum-over-time tracking has
 no equivalent on the other path.
 """
 import hashlib
+import logging
 import os
 import json
 from datetime import datetime
@@ -37,6 +38,7 @@ from app.clustering_hdbscan import cluster_embeddings_hdbscan
 
 load_dotenv()
 _anthropic = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+logger = logging.getLogger("culturix.clustering_service")
 
 # Arbitrary fixed key for a Postgres session-level advisory lock — see the
 # lock acquisition in run_clustering() for why this exists.
@@ -109,7 +111,16 @@ Return ONLY valid JSON with:
         max_tokens=200,
         messages=[{"role": "user", "content": prompt}],
     )
-    raw = response.content[0].text.strip()
+    raw = response.content[0].text.strip() if response.content else ""
+    if not raw:
+        # Seen in practice: Haiku occasionally returns empty content for a
+        # cluster (borderline/sensitive source posts groupbed together) with
+        # no explicit refusal message — json.loads("") raises the unhelpful
+        # "Expecting value: line 1 column 1 (char 0)". Raise something
+        # diagnosable instead of letting that generic message be the only
+        # trace, since the caller now catches this per-cluster (see
+        # run_clustering) rather than aborting the whole batch.
+        raise ValueError("Claude returned empty content for cluster labeling")
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
@@ -202,6 +213,7 @@ def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
         surviving_ids = set()
         reused = 0
         created = 0
+        failed = 0
         for label, cluster_trends in sorted(label_map.items()):
             fp = _fingerprint(cluster_trends)
             new_ids = {t.id for t in cluster_trends}
@@ -225,7 +237,25 @@ def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
                 reused += 1
                 continue
 
-            ai_label = _ai_label_cluster(cluster_trends)
+            # Isolated per-cluster — one bad AI label call (seen in practice:
+            # Claude Haiku returning empty content for a borderline cluster)
+            # used to raise out of this whole loop, rolling back the entire
+            # batch via the except block below and leaving every OTHER
+            # cluster's real update silently discarded too. That's what left
+            # /admin/clusters showing stale data for days: any single failure
+            # anywhere in a run meant nothing from that run ever persisted.
+            # Now a failed cluster is just skipped — its trends stay
+            # unclustered (cluster_id already None from the reset above) and
+            # get picked up again on the next run instead of blocking
+            # everything else that succeeded.
+            try:
+                ai_label = _ai_label_cluster(cluster_trends)
+            except Exception as e:
+                logger.warning("AI labeling failed for a cluster (label=%s, size=%d) — skipping: %s",
+                                label, len(cluster_trends), e)
+                failed += 1
+                continue
+
             cluster = Cluster(
                 label=label,
                 theme=ai_label.get("theme"),
@@ -259,6 +289,7 @@ def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
             "clusters_created": created,
             "clusters_reused": reused,
             "clusters_removed": len(stale),
+            "clusters_failed": failed,
             "noise": noise_count,
             "total_trends": len(trends),
         }
