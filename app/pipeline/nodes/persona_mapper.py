@@ -5,27 +5,9 @@ Matches trend clusters to user profiles using Voyage AI semantic search + Qdrant
 import logging
 import os
 from app.pipeline.state import PipelineState
+from app.regions import REGION_LABEL_TO_CODES as _REGION_LABEL_TO_CODES
 
 logger = logging.getLogger("culturix.pipeline.persona_mapper")
-
-# Profile-facing region labels (culturix-web/src/lib/types.ts's REGIONS) mapped
-# to the collector-level region codes (app/collectors/region_codes.py's
-# canonical form) that should match them. "EU" has no single collector code —
-# it's the set of major European markets collectors actually cover (used in
-# the broad/colloquial "Europe" sense here, not the strict political union —
-# GB is included on that basis despite not being an EU member post-Brexit).
-# "UK" (profile label) vs "GB" (collector/ISO code) is a direct alias.
-# "Global" is handled as a bypass sentinel in _filter_by_region, not a code
-# set here.
-_REGION_LABEL_TO_CODES = {
-    "US": {"US"},
-    "CN": {"CN"},
-    "UK": {"GB"},
-    "FR": {"FR"},
-    "CA": {"CA"},
-    "AU": {"AU"},
-    "EU": {"FR", "GB", "ES", "IT", "PT", "DE"},
-}
 
 
 def _filter_by_region(clusters: list[dict], target_regions: list[str]) -> list[dict]:

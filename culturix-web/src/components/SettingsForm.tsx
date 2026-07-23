@@ -4,10 +4,11 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Loader2, Check, Plus, Trash2, ChevronRight, CreditCard, Link2, Unlink, Sparkles, Copy, ShieldCheck, ShieldAlert, Settings2, Bell } from "lucide-react";
 import PersonaChips from "@/components/PersonaChips";
+import RegionChips from "@/components/RegionChips";
 import PublishingWizard from "@/components/PublishingWizard";
 import { optIntoPush, isPushSupported, isIosNonStandalone } from "@/lib/onesignal";
 import {
-  PLATFORMS, REGIONS, CONTENT_GOALS, CONTENT_TONES, CONTENT_FORMATS, AVATAR_TYPES, DELIVERY_DAYS,
+  PLATFORMS, CONTENT_GOALS, CONTENT_TONES, CONTENT_FORMATS, AVATAR_TYPES, DELIVERY_DAYS,
   CONNECTABLE_PLATFORMS,
   type ContentProfile, type AvatarTypePreset, type ConnectedAccount, type AccountSuggestions, type ContentPost,
 } from "@/lib/types";
@@ -808,11 +809,10 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Regions</label>
-                <div className="flex flex-wrap gap-2">
-                  {REGIONS.map(r => (
-                    <Chip key={r} label={r} selected={(draft.target_regions ?? []).includes(r)} onClick={() => toggle("target_regions", r)} />
-                  ))}
-                </div>
+                <RegionChips
+                  selected={draft.target_regions ?? []}
+                  onChange={(regions) => setDraft(d => ({ ...d, target_regions: regions }))}
+                />
               </div>
             </div>
           </section>

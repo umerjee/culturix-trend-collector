@@ -166,6 +166,14 @@ export const CONNECTABLE_PLATFORMS: { key: string; label: string; display: strin
 ];
 
 export const PLATFORMS = ["TikTok", "YouTube", "Instagram", "Xiaohongshu", "X/Twitter", "Reddit", "Pinterest"] as const;
+
+// @deprecated — kept only as RegionChips.tsx's fallback if GET /api/regions
+// is unreachable. app/regions.py is now the single source of truth (also
+// used by persona_mapper.py's region filter) — don't add regions here
+// without adding them there too, or you'll recreate the exact drift that
+// caused a France-only profile to see zero clusters (FR offered here with
+// no real collector tagging it) and makes "CN" a permanently empty option
+// today (offered here, but its only tagger contributes zero rows).
 export const REGIONS = ["US", "CN", "Global", "EU", "UK", "FR", "CA", "AU"] as const;
 export const CONTENT_FORMATS = [
   { key: "video", label: "Video", description: "Short-form video — Reels, TikToks, Shorts" },

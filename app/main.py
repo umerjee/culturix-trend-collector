@@ -553,6 +553,19 @@ def get_recommendations(persona_id: int = None, cluster_id: int = None, limit: i
         session.close()
 
 
+# ── Regions ───────────────────────────────────────────────────────────────────
+
+@app.get("/regions")
+def list_regions():
+    """Canonical target-region catalog, served from app/regions.py — the
+    single source of truth also used by persona_mapper.py's region filter.
+    Powers the Settings/Onboarding region picker (RegionChips.tsx) so the
+    picker can never offer a label the filter doesn't know how to match,
+    and vice versa. Preserves REGION_LABEL_TO_CODES's insertion order."""
+    from app.regions import REGION_LABEL_TO_CODES
+    return [{"label": label, "codes": sorted(codes)} for label, codes in REGION_LABEL_TO_CODES.items()]
+
+
 # ── Personas & Suggestions ────────────────────────────────────────────────────
 
 @app.get("/personas")

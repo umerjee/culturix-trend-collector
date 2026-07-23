@@ -8,7 +8,6 @@ import { z } from "zod";
 import { Loader2, Check, Plus } from "lucide-react";
 import {
   PLATFORMS,
-  REGIONS,
   CONTENT_GOALS,
   CONTENT_TONES,
   CONTENT_FORMATS,
@@ -17,6 +16,7 @@ import {
   type ContentProfile,
 } from "@/lib/types";
 import PersonaChips from "@/components/PersonaChips";
+import RegionChips from "@/components/RegionChips";
 
 function Chip({
   label,
@@ -332,21 +332,10 @@ export default function OnboardingWizard({ userId: _userId }: Props) {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-3">Target regions</label>
-            <div className="flex flex-wrap gap-2">
-              {REGIONS.map((r) => (
-                <Chip
-                  key={r}
-                  label={r}
-                  selected={s1regions.includes(r)}
-                  onClick={() => {
-                    const next = s1regions.includes(r)
-                      ? s1regions.filter((v) => v !== r)
-                      : [...s1regions, r];
-                    s1.setValue("targetRegions", next, { shouldValidate: true });
-                  }}
-                />
-              ))}
-            </div>
+            <RegionChips
+              selected={s1regions}
+              onChange={(next) => s1.setValue("targetRegions", next, { shouldValidate: true })}
+            />
             {s1.formState.errors.targetRegions && (
               <p className="text-xs text-red-500 mt-1">{s1.formState.errors.targetRegions.message}</p>
             )}
