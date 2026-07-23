@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { Music, Target, Megaphone, Copy, Check, Film, Mic, Video, Image as ImageIcon, Loader2, Clock, Zap, ChevronDown, ChevronUp, Send, Link2 } from "lucide-react";
-import type { ContentIdea, ContentPost } from "@/lib/types";
+import { CONNECTABLE_PLATFORMS, type ContentIdea, type ContentPost } from "@/lib/types";
 import MediaPreview from "@/components/MediaPreview";
 import PostPerformance from "@/components/PostPerformance";
 
@@ -51,9 +51,9 @@ interface Props {
 // idea.platform (LLM-suggested display value) -> internal provider key —
 // only platforms with a real publish()/fetch_post_metrics() implementation
 // belong here, matching app/scheduler.py's _AUTO_PUBLISH_PLATFORMS.
-const PUBLISHABLE_PLATFORMS: Record<string, string> = {
-  YouTube: "youtube", TikTok: "tiktok", Instagram: "instagram", "X/Twitter": "twitter",
-};
+const PUBLISHABLE_PLATFORMS: Record<string, string> = Object.fromEntries(
+  CONNECTABLE_PLATFORMS.map((p) => [p.display, p.key])
+);
 
 type MediaType = "voiceover" | "music" | "video" | "image";
 

@@ -22,13 +22,19 @@ export async function POST(req: Request) {
   return NextResponse.json(data, { status: res.status });
 }
 
-// GET /api/content-posts  →  aggregate feed for the Performance page
-export async function GET() {
+// GET /api/content-posts[?content_profile_id=...]  →  aggregate feed for the
+// Performance page, optionally scoped to one profile (used by the
+// publishing-setup status view on the Dashboard and in Settings).
+export async function GET(req: Request) {
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const res = await fetch(`${RAILWAY}/api/content-posts?user_id=${user.id}`, {
+  const { searchParams } = new URL(req.url);
+  const profileId = searchParams.get("content_profile_id");
+  const qs = profileId ? `&content_profile_id=${profileId}` : "";
+
+  const res = await fetch(`${RAILWAY}/api/content-posts?user_id=${user.id}${qs}`, {
     cache: "no-store",
     signal: AbortSignal.timeout(15000),
   });

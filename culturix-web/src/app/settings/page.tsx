@@ -7,7 +7,11 @@ export const dynamic = "force-dynamic";
 
 const RAILWAY = process.env.NEXT_PUBLIC_API_URL || "https://culturix-trend-collector-production.up.railway.app";
 
-export default async function SettingsPage() {
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: { profile?: string };
+}) {
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/signup");
@@ -29,7 +33,7 @@ export default async function SettingsPage() {
   return (
     <div className="min-h-screen bg-gray-50">
       <AppNav active="settings" isSuperAdmin={isSuperAdmin} />
-      <SettingsForm userId={user.id} initialPlan={plan} />
+      <SettingsForm userId={user.id} initialPlan={plan} initialProfileId={searchParams.profile} />
     </div>
   );
 }

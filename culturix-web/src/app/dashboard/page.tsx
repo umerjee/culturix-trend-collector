@@ -5,7 +5,8 @@ import { createClient } from "@/lib/supabase/server";
 import AppNav from "@/components/AppNav";
 import TrendIdeaCard from "@/components/TrendIdeaCard";
 import RefreshButton from "@/components/RefreshButton";
-import type { Digest, ContentProfile, ContentPost } from "@/lib/types";
+import PublishingSetupStatus, { type PlatformStatus } from "@/components/PublishingSetupStatus";
+import { CONNECTABLE_PLATFORMS, type Digest, type ContentProfile, type ContentPost } from "@/lib/types";
 
 const RAILWAY = "https://culturix-trend-collector-production.up.railway.app";
 
@@ -38,7 +39,7 @@ async function fetchProfiles(userId: string): Promise<ContentProfile[]> {
   }
 }
 
-async function fetchRecentAutoPublished(userId: string, profileId?: string): Promise<ContentPost[]> {
+async function fetchProfileContentPosts(userId: string, profileId?: string): Promise<ContentPost[]> {
   if (!profileId) return [];
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
   try {
@@ -48,31 +49,56 @@ async function fetchRecentAutoPublished(userId: string, profileId?: string): Pro
     );
     if (!res.ok) return [];
     const data: ContentPost[] = await res.json();
-    return (Array.isArray(data) ? data : [])
-      .filter((p) => p.created_via === "published")
-      .sort((a, b) => new Date(b.posted_at ?? 0).getTime() - new Date(a.posted_at ?? 0).getTime())
-      .slice(0, 2);
+    return Array.isArray(data) ? data : [];
   } catch {
     return [];
   }
 }
 
-async function fetchConnectedPlatforms(userId: string, activeProfileId?: string): Promise<string[]> {
+interface RawConnectedAccount {
+  platform: string;
+  status: string;
+  content_profile_id: string | null;
+  last_test_status: string | null;
+}
+
+async function fetchConnectedAccounts(userId: string): Promise<RawConnectedAccount[]> {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
   try {
     const res = await fetch(`${apiUrl}/api/social/accounts?user_id=${userId}`, { cache: "no-store" });
     if (!res.ok) return [];
-    const data: { platform: string; status: string; content_profile_id: string | null }[] = await res.json();
-    // Scoped to the active profile's own dedicated account, or a legacy
-    // (unbound) account — mirrors app/social/service.py's resolve_active_account
-    // fallback. Without this, a profile with no account of its own would still
-    // show Publish/Track buttons just because a DIFFERENT profile has one.
-    return data
-      .filter(a => a.status === "active" && (a.content_profile_id === activeProfileId || a.content_profile_id === null))
-      .map(a => a.platform);
+    return await res.json();
   } catch {
     return [];
   }
+}
+
+// Scoped to the active profile's own dedicated account, or a legacy
+// (unbound) account — mirrors app/social/service.py's resolve_active_account
+// fallback. Without this, a profile with no account of its own would still
+// show Publish/Track buttons just because a DIFFERENT profile has one.
+function connectedPlatformsForProfile(accounts: RawConnectedAccount[], activeProfileId?: string): string[] {
+  return accounts
+    .filter(a => a.status === "active" && (a.content_profile_id === activeProfileId || a.content_profile_id === null))
+    .map(a => a.platform);
+}
+
+function platformStatusesForProfile(
+  accounts: RawConnectedAccount[], activeProfile: ContentProfile | null
+): PlatformStatus[] {
+  if (!activeProfile) return [];
+  const targetKeys = new Set(
+    (activeProfile.target_platforms ?? [])
+      .map((display) => CONNECTABLE_PLATFORMS.find((p) => p.display === display)?.key)
+      .filter((k): k is string => !!k)
+  );
+  return CONNECTABLE_PLATFORMS.filter((p) => targetKeys.has(p.key)).map((p) => {
+    const account = accounts.find(
+      (a) => a.platform === p.key && a.status === "active" &&
+        (a.content_profile_id === activeProfile.id || a.content_profile_id === null)
+    );
+    return { key: p.key, label: p.label, connected: !!account, verified: account?.last_test_status === "ok" };
+  });
 }
 
 export default async function DashboardPage({
@@ -109,11 +135,25 @@ export default async function DashboardPage({
 
   const activeProfile = profiles.find((p) => p.id === searchParams.profile) ?? profiles[0] ?? null;
 
-  const [digest, connectedPlatforms, recentAutoPublished] = await Promise.all([
+  const [digest, connectedAccounts, profileContentPosts] = await Promise.all([
     fetchDigest(user.id, searchParams.profile),
-    fetchConnectedPlatforms(user.id, activeProfile?.id),
-    fetchRecentAutoPublished(user.id, activeProfile?.id),
+    fetchConnectedAccounts(user.id),
+    fetchProfileContentPosts(user.id, activeProfile?.id),
   ]);
+  const connectedPlatforms = connectedPlatformsForProfile(connectedAccounts, activeProfile?.id);
+  const platformStatuses = platformStatusesForProfile(connectedAccounts, activeProfile);
+  const hasContentReady = profileContentPosts.some((p) => ["staged", "pending", "fetching", "tracked"].includes(p.status));
+  const hasConfirmedPost = profileContentPosts.some((p) => !!p.post_url);
+  // "Recently posted" highlight — Culturix's own automation (or a staged
+  // idea the user launched and confirmed) is otherwise invisible until you
+  // happen to check Performance; a quick "here's what happened" nudge right
+  // where the ideas live. Covers both the dormant direct-publish path
+  // (created_via "published") and the default stage-and-notify path (any
+  // post that's actually been confirmed posted, i.e. has a post_url).
+  const recentlyPosted = profileContentPosts
+    .filter((p) => p.created_via === "published" || (p.created_via === "staged" && !!p.post_url))
+    .sort((a, b) => new Date(b.posted_at ?? 0).getTime() - new Date(a.posted_at ?? 0).getTime())
+    .slice(0, 2);
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 
   return (
@@ -194,17 +234,31 @@ export default async function DashboardPage({
           </p>
         )}
 
-        {/* Recently auto-published — Culturix's own automation is otherwise
-            invisible until you happen to check Performance; a quick "here's
-            what I did for you" highlight right where the ideas live. */}
-        {recentAutoPublished.length > 0 && (
+        {/* Publishing setup status — only shown while something's incomplete;
+            once every step passes for this profile it stops rendering here,
+            Settings remains the durable place to check/change it later. */}
+        {activeProfile && platformStatuses.length > 0 && (
+          <PublishingSetupStatus
+            variant="compact"
+            platforms={platformStatuses}
+            publishMode={activeProfile.publish_mode ?? "manual"}
+            hasContentReady={hasContentReady}
+            hasConfirmedPost={hasConfirmedPost}
+            settingsHref={`/settings?profile=${activeProfile.id}`}
+          />
+        )}
+
+        {/* Recently posted — otherwise invisible until you happen to check
+            Performance; a quick "here's what happened" highlight right
+            where the ideas live. */}
+        {recentlyPosted.length > 0 && (
           <div className="mb-6 -mt-2 rounded-xl bg-indigo-50 border border-indigo-100 px-4 py-3">
             <div className="flex items-center gap-1.5 mb-1.5">
               <Sparkles className="h-3.5 w-3.5 text-indigo-500" />
-              <p className="text-xs font-semibold text-indigo-700">Culturix recently posted for you</p>
+              <p className="text-xs font-semibold text-indigo-700">Recently posted</p>
             </div>
             <div className="space-y-1">
-              {recentAutoPublished.map((p) => (
+              {recentlyPosted.map((p) => (
                 <p key={p.id} className="text-xs text-indigo-600 truncate">
                   &ldquo;{p.hook ?? "Untitled idea"}&rdquo; on{" "}
                   <span className="capitalize">{p.platform}</span>

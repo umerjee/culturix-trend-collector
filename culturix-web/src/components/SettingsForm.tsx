@@ -8,8 +8,10 @@ import PublishingWizard from "@/components/PublishingWizard";
 import { optIntoPush, isPushSupported, isIosNonStandalone } from "@/lib/onesignal";
 import {
   PLATFORMS, REGIONS, CONTENT_GOALS, CONTENT_TONES, CONTENT_FORMATS, AVATAR_TYPES, DELIVERY_DAYS,
-  type ContentProfile, type AvatarTypePreset, type ConnectedAccount, type AccountSuggestions,
+  CONNECTABLE_PLATFORMS,
+  type ContentProfile, type AvatarTypePreset, type ConnectedAccount, type AccountSuggestions, type ContentPost,
 } from "@/lib/types";
+import PublishingSetupStatus from "@/components/PublishingSetupStatus";
 
 const ALL_FORMAT_KEYS = CONTENT_FORMATS.map((f) => f.key);
 
@@ -33,12 +35,8 @@ const EMPTY_PROFILE: Omit<ContentProfile, "id" | "user_id" | "created_at"> = {
   preferred_formats: ALL_FORMAT_KEYS,
 };
 
-const SUPPORTED_SOCIAL_PLATFORMS: { key: ConnectedAccount["platform"]; label: string; live: boolean }[] = [
-  { key: "youtube", label: "YouTube", live: true },
-  { key: "tiktok", label: "TikTok", live: true },
-  { key: "instagram", label: "Instagram", live: true },
-  { key: "twitter", label: "X / Twitter", live: true },
-];
+const SUPPORTED_SOCIAL_PLATFORMS: { key: ConnectedAccount["platform"]; label: string; live: boolean }[] =
+  CONNECTABLE_PLATFORMS.map((p) => ({ key: p.key as ConnectedAccount["platform"], label: p.label, live: true }));
 
 function Chip({ label, selected, onClick }: { label: string; selected: boolean; onClick: () => void }) {
   return (
@@ -58,21 +56,22 @@ function Chip({ label, selected, onClick }: { label: string; selected: boolean; 
 interface Props {
   userId: string;
   initialPlan: "free" | "pro";
+  initialProfileId?: string;
 }
 
-export default function SettingsForm({ userId, initialPlan }: Props) {
+export default function SettingsForm({ userId, initialPlan, initialProfileId }: Props) {
   return (
     <Suspense fallback={
       <div className="flex items-center justify-center py-20">
         <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
       </div>
     }>
-      <SettingsFormInner userId={userId} initialPlan={initialPlan} />
+      <SettingsFormInner userId={userId} initialPlan={initialPlan} initialProfileId={initialProfileId} />
     </Suspense>
   );
 }
 
-function SettingsFormInner({ userId, initialPlan }: Props) {
+function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
   const searchParams = useSearchParams();
 
   const [loading, setLoading] = useState(true);
@@ -204,6 +203,41 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
   // account, not whether the user has a connection anywhere.
   const hasActiveConnection = connectedAccounts.some(a => a.status === "active" && a.content_profile_id === selectedId);
 
+  // Publishing-setup status — deliberately recomputed from live data on
+  // every render (connectedAccounts + this profile's ContentPost rows), not
+  // a stored "onboarding complete" flag, so disconnecting an account or
+  // switching platforms is reflected immediately without any special-casing.
+  const [profileContentPosts, setProfileContentPosts] = useState<ContentPost[]>([]);
+  const modeRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!selectedId) { setProfileContentPosts([]); return; }
+    let cancelled = false;
+    fetch(`/api/content-posts?content_profile_id=${selectedId}`, { cache: "no-store" })
+      .then(res => res.ok ? res.json() : [])
+      .then((data: ContentPost[]) => { if (!cancelled) setProfileContentPosts(Array.isArray(data) ? data : []); })
+      .catch(() => { if (!cancelled) setProfileContentPosts([]); });
+    return () => { cancelled = true; };
+  }, [selectedId]);
+
+  const platformStatuses = selected
+    ? CONNECTABLE_PLATFORMS
+        .filter(p => (selected.target_platforms ?? []).includes(
+          // target_platforms stores the LLM-facing display name (e.g. "X/Twitter"),
+          // CONNECTABLE_PLATFORMS.display mirrors that exact spelling.
+          p.display
+        ))
+        .map(p => {
+          const account = connectedAccounts.find(
+            a => a.platform === p.key && a.status === "active" &&
+              (a.content_profile_id === selectedId || a.content_profile_id === null)
+          );
+          return { key: p.key, label: p.label, connected: !!account, verified: account?.last_test_status === "ok" };
+        })
+    : [];
+  const hasContentReady = profileContentPosts.some(p => ["staged", "pending", "fetching", "tracked"].includes(p.status));
+  const hasConfirmedPost = profileContentPosts.some(p => !!p.post_url);
+
   async function loadConnectedAccounts() {
     setAccountsLoading(true);
     try {
@@ -254,8 +288,11 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
           const data: ContentProfile[] = await res.json();
           setProfiles(data);
           if (data.length > 0) {
-            setSelectedId(data[0].id);
-            setDraft({ ...EMPTY_PROFILE, ...data[0] });
+            // Deep-linked from the Dashboard's setup-status nudge, if present —
+            // falls back to the first profile otherwise (existing behavior).
+            const initial = (initialProfileId && data.find(p => p.id === initialProfileId)) || data[0];
+            setSelectedId(initial.id);
+            setDraft({ ...EMPTY_PROFILE, ...initial });
           }
         }
 
@@ -649,6 +686,23 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
       {/* Edit form */}
       {(selected || isNew) && (
         <form onSubmit={handleSave} className="space-y-6">
+          {selected && platformStatuses.length > 0 && (
+            <PublishingSetupStatus
+              variant="full"
+              platforms={platformStatuses}
+              publishMode={selected.publish_mode ?? "manual"}
+              hasContentReady={hasContentReady}
+              hasConfirmedPost={hasConfirmedPost}
+              onManagePlatform={(platformKey) => {
+                const bound = connectedAccounts.some(
+                  a => a.platform === platformKey && a.status === "active" && a.content_profile_id === selectedId
+                );
+                setWizard({ platform: platformKey as ConnectedAccount["platform"], step: bound ? "test" : "connect" });
+              }}
+              onChangeMode={() => modeRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
+            />
+          )}
+
           {/* Profile name */}
           <section className="bg-white rounded-2xl border border-gray-100 p-6">
             <h2 className="font-semibold text-gray-900 mb-4">Profile name</h2>
@@ -997,7 +1051,7 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
           )}
 
           {/* Publish mode */}
-          <section className="bg-white rounded-2xl border border-gray-100 p-6">
+          <section ref={modeRef} className="bg-white rounded-2xl border border-gray-100 p-6">
             <h2 className="font-semibold text-gray-900 mb-1">Publish mode</h2>
             <p className="text-xs text-gray-400 mb-4">
               How ideas from this profile turn into real posts.

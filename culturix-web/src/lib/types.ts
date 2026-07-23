@@ -152,6 +152,19 @@ export interface Digest {
   delivered: boolean;
 }
 
+// The platforms Culturix can actually connect/verify/track a post on — a
+// subset of PLATFORMS below. Maps the LLM-facing display name (used in
+// ContentIdea.platform, target_platforms, etc.) to the internal provider key
+// app.social.service._PROVIDERS is keyed by. Single source of truth, reused
+// by DigestCard.tsx, SettingsForm.tsx, and PublishingSetupStatus.tsx —
+// previously duplicated separately in the first two.
+export const CONNECTABLE_PLATFORMS: { key: string; label: string; display: string }[] = [
+  { key: "youtube", label: "YouTube", display: "YouTube" },
+  { key: "tiktok", label: "TikTok", display: "TikTok" },
+  { key: "instagram", label: "Instagram", display: "Instagram" },
+  { key: "twitter", label: "X / Twitter", display: "X/Twitter" },
+];
+
 export const PLATFORMS = ["TikTok", "YouTube", "Instagram", "Xiaohongshu", "X/Twitter", "Reddit", "Pinterest"] as const;
 export const REGIONS = ["US", "CN", "Global", "EU", "UK", "FR", "CA", "AU"] as const;
 export const CONTENT_FORMATS = [
