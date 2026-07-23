@@ -100,8 +100,8 @@ export interface ContentPost {
   idea_index: number;
   platform: string;
   post_url: string | null;
-  created_via: "manual" | "published";
-  status: "pending" | "fetching" | "tracked" | "failed" | "needs_reconnect";
+  created_via: "manual" | "published" | "staged";
+  status: "pending" | "fetching" | "tracked" | "failed" | "needs_reconnect" | "staged";
   latest_views: number | null;
   latest_likes: number | null;
   latest_comments: number | null;
@@ -111,6 +111,8 @@ export interface ContentPost {
   posted_at: string | null;
   created_at: string | null;
   hook?: string; // present only on the aggregate GET /api/content-posts feed
+  caption_text: string | null;
+  notification_status: "sent" | "failed" | null;
 }
 
 export interface TrendSignal {

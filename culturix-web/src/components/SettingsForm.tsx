@@ -2,9 +2,10 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Loader2, Check, Plus, Trash2, ChevronRight, CreditCard, Link2, Unlink, Sparkles, Copy, ShieldCheck, ShieldAlert, Settings2 } from "lucide-react";
+import { Loader2, Check, Plus, Trash2, ChevronRight, CreditCard, Link2, Unlink, Sparkles, Copy, ShieldCheck, ShieldAlert, Settings2, Bell } from "lucide-react";
 import PersonaChips from "@/components/PersonaChips";
 import PublishingWizard from "@/components/PublishingWizard";
+import { optIntoPush, isPushSupported, isIosNonStandalone } from "@/lib/onesignal";
 import {
   PLATFORMS, REGIONS, CONTENT_GOALS, CONTENT_TONES, CONTENT_FORMATS, AVATAR_TYPES, DELIVERY_DAYS,
   type ContentProfile, type AvatarTypePreset, type ConnectedAccount, type AccountSuggestions,
@@ -98,6 +99,28 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
   } | null>(null);
   const [testingPlatform, setTestingPlatform] = useState<string | null>(null);
   const autoOpenedRef = useRef(false);
+
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushEnabled, setPushEnabled] = useState(false);
+  // Computed client-side only (window/navigator-dependent) to avoid an
+  // SSR/hydration mismatch — starts false on the server render either way.
+  const [pushSupported, setPushSupported] = useState(false);
+  const [iosNeedsHomeScreen, setIosNeedsHomeScreen] = useState(false);
+
+  useEffect(() => {
+    setPushSupported(isPushSupported());
+    setIosNeedsHomeScreen(isIosNonStandalone());
+  }, []);
+
+  async function handleEnablePush() {
+    setPushBusy(true);
+    try {
+      const result = await optIntoPush(userId);
+      setPushEnabled(result.ok);
+    } finally {
+      setPushBusy(false);
+    }
+  }
 
   async function fetchSuggestions(profileId: string) {
     setSuggestionsLoading(true);
@@ -430,6 +453,37 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
           Couldn&apos;t connect that account — please try again.
         </p>
       )}
+
+      {/* Notifications */}
+      <section className="bg-white rounded-2xl border border-gray-100 p-6">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <h2 className="font-semibold text-gray-900 flex items-center gap-1.5"><Bell className="h-4 w-4" /> Notifications</h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              Get notified the moment your content&apos;s ready to post — Review and Auto profiles use this to reach you.
+            </p>
+          </div>
+          {iosNeedsHomeScreen ? (
+            <p className="text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 max-w-xs">
+              On iPhone: add Culturix to your Home Screen first (Share → Add to Home Screen), then come back here to enable notifications.
+            </p>
+          ) : pushEnabled ? (
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-green-600">
+              <Check className="h-3.5 w-3.5" /> Notifications enabled
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={handleEnablePush}
+              disabled={pushBusy || !pushSupported}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 text-gray-600 text-xs font-medium rounded-lg hover:border-blue-300 hover:text-blue-600 disabled:opacity-40 transition"
+            >
+              {pushBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bell className="h-3.5 w-3.5" />}
+              Enable notifications
+            </button>
+          )}
+        </div>
+      </section>
 
       {/* Profile selector */}
       <section className="bg-white rounded-2xl border border-gray-100 p-6">
@@ -940,8 +994,8 @@ function SettingsFormInner({ userId, initialPlan }: Props) {
             <div className="grid grid-cols-3 gap-3">
               {([
                 { key: "manual", label: "Manual", desc: "You post it yourself, then paste the link to track it." },
-                { key: "review", label: "Review", desc: "Click Publish on an idea — Culturix posts it for you." },
-                { key: "auto", label: "Auto", desc: "Culturix publishes the best idea on its own, once a day." },
+                { key: "review", label: "Review", desc: "Click Stage & notify me — Culturix preps it and pings you when it's ready to launch." },
+                { key: "auto", label: "Auto", desc: "Culturix preps the best idea and notifies you, once a day — you do the final tap to post." },
               ] as const).map(({ key, label, desc }) => {
                 const disabled = key !== "manual" && !hasActiveConnection;
                 return (

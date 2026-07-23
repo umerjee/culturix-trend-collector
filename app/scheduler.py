@@ -5,6 +5,7 @@ external cron reliability (recommended: set up a Railway Cron Job or cron-job.or
 pointing to POST /collect/all every 6 hours as a belt-and-suspenders backup).
 """
 import logging
+import os
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -213,7 +214,14 @@ def select_auto_publish_candidate(session, profile):
 
 
 def run_auto_publish():
-    """Publishes one idea per 'auto' content profile, once per day. Only
+    """DORMANT by default — only registered when ENABLE_DIRECT_PUBLISH is
+    truthy (see start()). Superseded by run_stage_and_notify(), which stages
+    the same candidate and notifies the user to publish it themselves rather
+    than posting on their behalf via each platform's direct API. Kept intact
+    (not deleted) in case direct-API publishing is revived for a platform
+    later — see CLAUDE.md's rollback notes.
+
+    Publishes one idea per 'auto' content profile, once per day. Only
     considers ideas that already passed trend_validator.py's legitimacy/
     safety gate at generation time and haven't since been downgraded by
     Content Check (status must still be 'live') — auto-publish never
@@ -277,6 +285,80 @@ def run_auto_publish():
         logger.error("Auto-publish failed: %s", e)
 
 
+def run_stage_and_notify():
+    """Default replacement for run_auto_publish — stages one idea per 'auto'
+    content profile per day (video generated if missing, caption compiled
+    and persisted) and notifies the user via push to publish it themselves,
+    keeping their Personal/Creator account's trending-audio access intact.
+    Shares candidate selection with the dormant run_auto_publish() via
+    select_auto_publish_candidate, so both jobs stay in lockstep about which
+    idea is "next up" regardless of which one is actually live.
+
+    "Peak traffic hour" for v1 is just this fixed daily UTC slot (same one
+    run_auto_publish used) — there's no per-platform/per-region peak-hour
+    intelligence anywhere in this codebase; real peak-hour targeting is a
+    future enhancement, not built here."""
+    logger.info("Stage-and-notify starting...")
+    try:
+        from app.db import SessionLocal
+        from app.models.content_profile import ContentProfile
+        from app.models.generated_media import GeneratedMedia
+        from app.models.content_post import ContentPost
+        from app.media.service import run_generation as run_media_generation
+        from app.social.service import stage_and_notify, compile_caption_text
+
+        session = SessionLocal()
+        try:
+            profiles = session.query(ContentProfile).filter_by(publish_mode="auto", is_active=True).all()
+            staged = 0
+            for profile in profiles:
+                candidate = select_auto_publish_candidate(session, profile)
+                if not candidate:
+                    continue
+                content, idea_index, idea, platform_key = candidate
+
+                media = session.query(GeneratedMedia).filter_by(
+                    generated_content_id=content.id, idea_index=idea_index,
+                    media_type="video", status="done",
+                ).first()
+                if not media:
+                    media = GeneratedMedia(
+                        generated_content_id=content.id, idea_index=idea_index,
+                        media_type="video", provider="kling",
+                        status="pending", prompt=idea.get("video_prompt") or idea.get("hook"),
+                    )
+                    session.add(media)
+                    session.commit()
+                    run_media_generation(
+                        row_id=str(media.id), media_type="video",
+                        prompt=idea.get("video_prompt") or idea.get("hook"),
+                        user_id=str(profile.user_id), content_id=str(content.id), idea_index=idea_index,
+                    )
+                    session.refresh(media)
+                    if media.status != "done":
+                        continue  # generation failed — try this profile again tomorrow
+
+                post = ContentPost(
+                    generated_content_id=content.id, idea_index=idea_index,
+                    user_id=profile.user_id, platform=platform_key,
+                    created_via="staged", status="staged",
+                    caption_text=compile_caption_text(idea),
+                )
+                session.add(post)
+                session.commit()
+                stage_and_notify(str(post.id))
+                staged += 1
+        finally:
+            session.close()
+        logger.info("Stage-and-notify done: %d posts staged", staged)
+    except Exception as e:
+        logger.error("Stage-and-notify failed: %s", e)
+
+
+def _direct_publish_enabled() -> bool:
+    return os.getenv("ENABLE_DIRECT_PUBLISH", "").lower() in ("1", "true", "yes")
+
+
 def start():
     # Collect 4× per day: 01:00, 07:00, 13:00, 19:00 UTC
     for hour in (1, 13, 19):
@@ -291,8 +373,15 @@ def start():
     scheduler.add_job(run_content_check, CronTrigger(hour=9, minute=0), id="content_check")
     # Post metrics refresh — re-fetch engagement for tracked/published posts, 10:00 UTC
     scheduler.add_job(run_post_metrics_refresh, CronTrigger(hour=10, minute=0), id="post_metrics_refresh")
-    # Auto-publish — one idea per 'auto' content profile, 11:00 UTC (after the above two)
-    scheduler.add_job(run_auto_publish, CronTrigger(hour=11, minute=0), id="auto_publish")
+    # Stage-and-notify (default) or auto-publish (dormant, ENABLE_DIRECT_PUBLISH=true
+    # only) — one idea per 'auto' content profile, 11:00 UTC (after the above two).
+    # Mutually exclusive on the same job id/slot, so there's never a double-publish race.
+    if _direct_publish_enabled():
+        scheduler.add_job(run_auto_publish, CronTrigger(hour=11, minute=0), id="auto_publish")
+        publish_job_desc = "auto-publish (direct API) at 11:00 UTC"
+    else:
+        scheduler.add_job(run_stage_and_notify, CronTrigger(hour=11, minute=0), id="stage_and_notify")
+        publish_job_desc = "stage & notify at 11:00 UTC"
     # Digest email dispatch — every 15 min, per-profile delivery_freq/delivery_time/
     # delivery_day_of_week gating (decoupled from the shared 07:00 UTC generation run)
     scheduler.add_job(run_digest_dispatch, CronTrigger(minute="*/15"), id="digest_dispatch")
@@ -302,8 +391,9 @@ def start():
     logger.info(
         "Scheduler started — collection at 01:00/07:00/13:00/19:00 UTC, "
         "full pipeline at 07:00 UTC, content check at 09:00 UTC, "
-        "post metrics refresh at 10:00 UTC, auto-publish at 11:00 UTC, "
-        "digest dispatch every 15 min, integration health check at 12:00 UTC"
+        "post metrics refresh at 10:00 UTC, %s, "
+        "digest dispatch every 15 min, integration health check at 12:00 UTC",
+        publish_job_desc,
     )
 
 

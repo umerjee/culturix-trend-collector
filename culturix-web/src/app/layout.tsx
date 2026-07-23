@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
+import Script from "next/script";
 import "./globals.css";
+
+const ONESIGNAL_APP_ID = process.env.NEXT_PUBLIC_ONESIGNAL_APP_ID;
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -99,7 +102,26 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
       </head>
-      <body className={inter.className}>{children}</body>
+      <body className={inter.className}>
+        {children}
+        {ONESIGNAL_APP_ID && (
+          <>
+            <Script
+              src="https://cdn.onesignal.com/sdks/OneSignalSDK.page.js"
+              strategy="afterInteractive"
+              defer
+            />
+            <Script id="onesignal-init" strategy="afterInteractive">
+              {`
+                window.OneSignalDeferred = window.OneSignalDeferred || [];
+                OneSignalDeferred.push(async function(OneSignal) {
+                  await OneSignal.init({ appId: "${ONESIGNAL_APP_ID}" });
+                });
+              `}
+            </Script>
+          </>
+        )}
+      </body>
     </html>
   );
 }

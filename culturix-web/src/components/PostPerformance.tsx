@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, AlertCircle, Eye, Heart, MessageCircle, ExternalLink, RefreshCw } from "lucide-react";
+import { Loader2, AlertCircle, Eye, Heart, MessageCircle, ExternalLink, RefreshCw, Bell } from "lucide-react";
 import type { ContentPost } from "@/lib/types";
 
 interface Props {
@@ -36,7 +36,7 @@ export default function PostPerformance({ contentId, ideaIndex }: Props) {
         const row = rows[0]; // most recent, backend orders created_at desc
         if (!row || stopped) return;
         setPost(row);
-        if (["tracked", "failed", "needs_reconnect"].includes(row.status) && intervalRef.current) {
+        if (["tracked", "failed", "needs_reconnect", "staged"].includes(row.status) && intervalRef.current) {
           clearInterval(intervalRef.current);
         }
       } catch {}
@@ -79,6 +79,22 @@ export default function PostPerformance({ contentId, ideaIndex }: Props) {
       <div className="flex items-center gap-2 text-xs text-gray-400 mt-1">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
         {post.created_via === "published" ? "Publishing…" : "Fetching stats…"}
+      </div>
+    );
+  }
+
+  if (post.status === "staged") {
+    return (
+      <div className="mt-2 rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 space-y-1.5 text-xs text-blue-700">
+        <div className="flex items-center gap-1.5">
+          <Bell className="h-3.5 w-3.5 shrink-0" />
+          <span>
+            {post.notification_status === "failed"
+              ? "Ready to launch — notification didn't send, but you can still launch it now."
+              : "Notification sent — check your phone to launch it."}
+          </span>
+        </div>
+        <a href={`/publish/${post.id}`} className="underline">Open launch page</a>
       </div>
     );
   }

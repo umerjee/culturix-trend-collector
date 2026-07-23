@@ -272,6 +272,67 @@ def publish_and_record(content_post_id: str) -> None:
         session.close()
 
 
+def compile_caption_text(idea: dict) -> str:
+    """Builds the caption+hashtags text persisted to ContentPost.caption_text
+    for the notify-to-publish flow — shared by the on-demand /api/content-posts/stage
+    route and the scheduler's run_stage_and_notify so both stage exactly the
+    same copy. Richer than the title/description pair the dormant publish()
+    path used (that pair existed for per-platform API length limits, which
+    don't apply here — the user pastes this by hand)."""
+    cta = idea.get("cta")
+    parts = [
+        idea.get("hook") or "", "",
+        idea.get("caption") or "", "",
+        f"👉 {cta}" if cta else "", "",
+        idea.get("hashtag_strategy") or "",
+    ]
+    return "\n".join(parts).strip()
+
+
+def stage_and_notify(content_post_id: str) -> None:
+    """Background task for the notify-to-publish flow — loads an already-
+    created (status='staged') ContentPost row (caption_text already set by
+    the caller) and fires a OneSignal push pointing the user at the 1-click
+    launch landing page. Push failure never flips the post to 'failed' — the
+    staged content (video + caption) is already fully usable in-app via
+    /publish/{id} regardless of whether the nudge arrived; notification_status
+    just records the attempt."""
+    from datetime import datetime
+    from app.db import SessionLocal
+    from app.models.content_post import ContentPost
+    from app.models.generated_media import GeneratedMedia
+    from app.notifications.onesignal import send_stage_ready_push
+    import uuid as _uuid
+
+    session = SessionLocal()
+    try:
+        post = session.query(ContentPost).filter_by(id=_uuid.UUID(content_post_id)).first()
+        if not post:
+            return
+
+        media = (
+            session.query(GeneratedMedia)
+            .filter_by(generated_content_id=post.generated_content_id, idea_index=post.idea_index,
+                       media_type="video", status="done")
+            .order_by(GeneratedMedia.created_at.desc())
+            .first()
+        )
+        result = send_stage_ready_push(
+            user_id=str(post.user_id),
+            post_id=str(post.id),
+            video_url=media.asset_url if media else "",
+            caption_text=post.caption_text or "",
+            target_platform=post.platform,
+        )
+        post.notification_status = "sent" if result.get("ok") else "failed"
+        post.notified_at = datetime.utcnow()
+        session.commit()
+    except Exception as exc:
+        logger.error("stage_and_notify failed for %s: %s", content_post_id, exc)
+    finally:
+        session.close()
+
+
 def _post_url(platform: str, platform_post_id: Optional[str]) -> Optional[str]:
     if not platform_post_id:
         return None

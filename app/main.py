@@ -95,6 +95,12 @@ async def lifespan(_):
             "ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS last_tested_at TIMESTAMP",
             "ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS last_test_status VARCHAR(10)",
             "ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS last_test_error TEXT",
+            # Staging / notify-to-publish flow (replaces direct-API auto/one-click
+            # publish as the default — see app/notifications/onesignal.py and
+            # app/social/service.py's stage_and_notify()).
+            "ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS caption_text TEXT",
+            "ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS notification_status VARCHAR(10)",
+            "ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS notified_at TIMESTAMP",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -1238,9 +1244,18 @@ def create_content_post(body: dict, background_tasks: BackgroundTasks):
 
 @app.post("/api/content-posts/publish")
 def publish_content_post(body: dict, background_tasks: BackgroundTasks):
-    """One-click / autonomous publish — Culturix posts the idea's finished
-    video directly via the platform's API. No post_url from the caller; the
-    platform tells us the post ID once it's live."""
+    """DORMANT unless ENABLE_DIRECT_PUBLISH is set — one-click / autonomous
+    publish, where Culturix posts the idea's finished video directly via the
+    platform's API. Superseded by POST /api/content-posts/stage, which
+    prepares the same content and notifies the user to publish it themselves
+    instead (keeps their Personal/Creator account's trending-audio access
+    intact). Kept working, not deleted, in case direct-API publishing is
+    revived for a platform later."""
+    if os.getenv("ENABLE_DIRECT_PUBLISH", "").lower() not in ("1", "true", "yes"):
+        raise HTTPException(
+            status_code=503,
+            detail="Direct publish is disabled — use /api/content-posts/stage instead.",
+        )
     from app.db import SessionLocal
     from app.models.content_post import ContentPost
     from app.models.generated_content import GeneratedContent
@@ -1293,6 +1308,139 @@ def publish_content_post(body: dict, background_tasks: BackgroundTasks):
     except Exception as e:
         session.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.post("/api/content-posts/stage")
+def stage_content_post(body: dict, background_tasks: BackgroundTasks):
+    """Default publish action — prepares the idea's video+caption and
+    notifies the user to publish it themselves (see app/notifications/
+    onesignal.py, app/social/service.py's stage_and_notify). Always live,
+    regardless of ENABLE_DIRECT_PUBLISH. Same request shape as the dormant
+    /api/content-posts/publish."""
+    from app.db import SessionLocal
+    from app.models.content_post import ContentPost
+    from app.models.generated_content import GeneratedContent
+    from app.models.generated_media import GeneratedMedia
+    from app.social.service import resolve_active_account, compile_caption_text, stage_and_notify
+    import uuid as _uuid
+
+    content_id = body.get("content_id")
+    idea_index = body.get("idea_index")
+    user_id = body.get("user_id")
+    platform = body.get("platform")
+
+    if not all([content_id, idea_index is not None, user_id, platform]):
+        raise HTTPException(status_code=400, detail="content_id, idea_index, user_id, platform required")
+
+    session = SessionLocal()
+    try:
+        content = session.query(GeneratedContent).filter_by(id=_uuid.UUID(content_id)).first()
+        account = resolve_active_account(
+            session, _uuid.UUID(user_id), platform,
+            content_profile_id=content.content_profile_id if content else None,
+        )
+        if not account:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Connect your {platform} account in Settings before staging."
+            )
+
+        media = session.query(GeneratedMedia).filter_by(
+            generated_content_id=_uuid.UUID(content_id), idea_index=idea_index,
+            media_type="video", status="done",
+        ).first()
+        if not media:
+            raise HTTPException(status_code=400, detail="Generate a video for this idea before staging.")
+
+        idea = (content.content_ideas or [])[idea_index] if content and content.content_ideas else {}
+        post = ContentPost(
+            generated_content_id=_uuid.UUID(content_id),
+            idea_index=idea_index,
+            user_id=_uuid.UUID(user_id),
+            platform=platform,
+            created_via="staged",
+            status="staged",
+            caption_text=compile_caption_text(idea),
+        )
+        session.add(post)
+        session.commit()
+        background_tasks.add_task(stage_and_notify, content_post_id=str(post.id))
+        return {"status": "staged", "content_post_id": str(post.id)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()
+
+
+@app.get("/api/content-posts/{content_post_id}/stage")
+def get_stage_info(content_post_id: str):
+    """Payload for the 1-click launch landing page (culturix-web's
+    /publish/[postId]). Keyed by ContentPost.id itself — the id carried in
+    the push notification's payload — unlike list_content_posts below,
+    which is keyed by generated_content_id."""
+    from app.db import SessionLocal
+    from app.models.content_post import ContentPost
+    from app.models.generated_media import GeneratedMedia
+    import uuid as _uuid
+
+    session = SessionLocal()
+    try:
+        post = session.query(ContentPost).filter_by(id=_uuid.UUID(content_post_id)).first()
+        if not post:
+            raise HTTPException(status_code=404, detail="Not found")
+        media = (
+            session.query(GeneratedMedia)
+            .filter_by(generated_content_id=post.generated_content_id, idea_index=post.idea_index,
+                       media_type="video", status="done")
+            .order_by(GeneratedMedia.created_at.desc())
+            .first()
+        )
+        return {
+            "content_post_id": str(post.id),
+            "video_url": media.asset_url if media else None,
+            "caption_text": post.caption_text,
+            "target_platform": post.platform,
+            "status": post.status,
+            "post_url": post.post_url,
+        }
+    finally:
+        session.close()
+
+
+@app.post("/api/content-posts/{content_post_id}/confirm-posted")
+def confirm_content_post_posted(content_post_id: str, body: dict, background_tasks: BackgroundTasks):
+    """User published the staged content themselves and pastes the link —
+    hands the row off into the existing manual-tracking pipeline
+    (fetch_and_record) unchanged, rather than duplicating that logic here."""
+    from app.db import SessionLocal
+    from app.models.content_post import ContentPost
+    from app.social.service import fetch_and_record
+    from datetime import datetime, timedelta
+    import uuid as _uuid
+
+    post_url = body.get("post_url")
+    if not post_url:
+        raise HTTPException(status_code=400, detail="post_url required")
+
+    session = SessionLocal()
+    try:
+        post = session.query(ContentPost).filter_by(id=_uuid.UUID(content_post_id)).first()
+        if not post:
+            raise HTTPException(status_code=404, detail="Not found")
+        post.post_url = post_url
+        post.status = "pending"
+        post.posted_at = datetime.utcnow()
+        post.tracking_until = datetime.utcnow() + timedelta(days=14)
+        session.commit()
+        background_tasks.add_task(fetch_and_record, content_post_id=content_post_id)
+        return {"status": "queued"}
+    except HTTPException:
+        raise
     finally:
         session.close()
 
@@ -1380,6 +1528,8 @@ def _serialize_content_post(r) -> dict:
         "error": r.error,
         "posted_at": r.posted_at.isoformat() if r.posted_at else None,
         "created_at": r.created_at.isoformat() if r.created_at else None,
+        "caption_text": r.caption_text,
+        "notification_status": r.notification_status,
     }
 
 

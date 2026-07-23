@@ -198,6 +198,13 @@ export default function PublishingWizard({
 
         {step === "mode" && (
           <div className="space-y-3">
+            <p className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
+              Why we don&apos;t post for you: platforms only let apps post automatically through a{" "}
+              <span className="font-medium">Business account</span>, which loses access to the
+              trending-audio library that makes videos take off. Review and Auto keep your{" "}
+              <span className="font-medium">Personal/Creator account</span> — we prep everything
+              and notify you at the right moment, you do the final tap-to-post.
+            </p>
             {testResult && !testResult.ok && (
               <p className="text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
                 The last test didn&apos;t pass — Review/Auto may not work until this is fixed, but
@@ -207,8 +214,8 @@ export default function PublishingWizard({
             <div className="grid grid-cols-3 gap-2">
               {([
                 { key: "manual", label: "Manual", desc: "You post it yourself, then paste the link to track it." },
-                { key: "review", label: "Review", desc: "Click Publish on an idea — Culturix posts it for you." },
-                { key: "auto", label: "Auto", desc: "Culturix publishes the best idea on its own, once a day." },
+                { key: "review", label: "Review", desc: "Click Stage & notify me — Culturix preps it and pings you when it's ready to launch." },
+                { key: "auto", label: "Auto", desc: "Culturix preps the best idea and notifies you, once a day — you do the final tap to post." },
               ] as const).map(({ key, label, desc }) => (
                 <button
                   key={key}
@@ -241,6 +248,13 @@ export default function PublishingWizard({
 
         {step === "next" && (
           <div className="space-y-3">
+            {(mode === "review" || mode === "auto") && (
+              <p className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
+                Notifications are sent via web push — on iPhone, add Culturix to your Home Screen
+                first (Share → Add to Home Screen) for them to come through, per Apple&apos;s rules
+                for web apps.
+              </p>
+            )}
             {mode === "manual" && (
               <p className="text-sm text-gray-600">
                 You&apos;re set. Post ideas yourself whenever you&apos;re ready, then use{" "}
@@ -251,14 +265,18 @@ export default function PublishingWizard({
             {mode === "review" && (
               <p className="text-sm text-gray-600">
                 You&apos;re set. Eligible ideas on your dashboard now have a{" "}
-                <span className="font-medium">Publish</span> button — Culturix posts it the moment
-                you click.
+                <span className="font-medium">Stage &amp; notify me</span> button — Culturix preps
+                it (video rendered, caption written) and pings you the moment it&apos;s ready to
+                launch.
               </p>
             )}
             {mode === "auto" && (
               <div className="space-y-2">
                 <p className="text-sm text-gray-600">
-                  You&apos;re set. Culturix will publish automatically, once a day.
+                  You&apos;re set. Once a day, Culturix preps your best idea — video rendered,
+                  caption written — and sends you a notification. Tap it to launch: video saved,
+                  caption copied, the app opened. You do the final tap-to-post yourself, from your
+                  own account, so nothing about your trending-audio access changes.
                 </p>
                 {nextLoading ? (
                   <div className="flex items-center gap-2 text-xs text-gray-400">

@@ -15,8 +15,12 @@ class ContentPost(Base):
     platform = Column(String(20), nullable=False)
     post_url = Column(Text, nullable=True)
     platform_post_id = Column(String(255), nullable=True)
-    created_via = Column(String(10), nullable=False)  # manual|published
-    status = Column(String(20), nullable=False, default="pending")  # pending|fetching|tracked|failed|needs_reconnect
+    created_via = Column(String(10), nullable=False)  # manual|published|staged
+    # pending|fetching|tracked|failed|needs_reconnect|staged — "staged" means
+    # video+caption are ready and a notification has been attempted; the row
+    # moves to "pending" once the user confirms they posted it themselves
+    # (see /confirm-posted), then flows through the states above unchanged.
+    status = Column(String(20), nullable=False, default="pending")
     latest_views = Column(Integer, nullable=True)
     latest_likes = Column(Integer, nullable=True)
     latest_comments = Column(Integer, nullable=True)
@@ -26,3 +30,9 @@ class ContentPost(Base):
     error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     posted_at = Column(DateTime, nullable=True)
+    # Pre-written caption+hashtags for the notify-to-publish flow (see
+    # app/social/service.py's compile_caption_text) — persisted so the
+    # landing page and push payload always show exactly what was staged.
+    caption_text = Column(Text, nullable=True)
+    notification_status = Column(String(10), nullable=True)  # sent|failed — NULL = not attempted
+    notified_at = Column(DateTime, nullable=True)

@@ -96,9 +96,11 @@ export default function DigestCard({ idea, index, contentId, plan, connectedPlat
   // "Mark as posted" tracking is available regardless of publish_mode — even
   // Review/Auto users may occasionally post manually and still want tracking.
   const canTrack = !!backendPlatform && connectedPlatforms.includes(backendPlatform);
-  // The one-click "Publish" button is hidden for "manual" profiles — that
-  // mode's whole premise (per the Settings page copy) is "Culturix never
-  // posts for you," so showing an auto-publish button there would contradict it.
+  // The "Stage & notify me" button is hidden for "manual" profiles — that
+  // mode's whole premise (per the Settings page copy) is ideas stay fully
+  // in the user's hands until they act, so a profile-level nudge button
+  // would contradict it; manual users still get the on-demand generate +
+  // "Mark as posted" tracking flow below.
   const canOneClickPublish = canTrack && publishMode !== "manual";
   const canPublishOrTrack = canTrack;
 
@@ -204,13 +206,13 @@ export default function DigestCard({ idea, index, contentId, plan, connectedPlat
     }
   }
 
-  async function publishNow() {
+  async function stageAndNotify() {
     if (postSubmitting) return;
     if (!videoReady) { generateMedia("video"); return; }
     setPostSubmitting(true);
     setPostError(null);
     try {
-      const res = await fetch("/api/content-posts/publish", {
+      const res = await fetch("/api/content-posts/stage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content_id: contentId, idea_index: index, platform: backendPlatform }),
@@ -221,7 +223,7 @@ export default function DigestCard({ idea, index, contentId, plan, connectedPlat
         return;
       }
       const data = await res.json();
-      setExistingPost({ id: data.content_post_id, status: "pending" } as ContentPost);
+      setExistingPost({ id: data.content_post_id, status: "staged" } as ContentPost);
     } catch {
       setPostError("Network error — check your connection");
     } finally {
@@ -399,14 +401,14 @@ export default function DigestCard({ idea, index, contentId, plan, connectedPlat
               <div className="flex gap-2">
                 {canOneClickPublish && (
                   <button
-                    onClick={publishNow}
+                    onClick={stageAndNotify}
                     disabled={!isPro || postSubmitting}
-                    title={!isPro ? "Upgrade to Pro to publish" : videoReady ? "Publish now" : "Generate a video first, then publish"}
+                    title={!isPro ? "Upgrade to Pro to publish" : videoReady ? "Stage this and notify me when it's ready to launch" : "Generate a video first, then stage"}
                     className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg border py-1.5 text-xs font-medium transition-all border-gray-200 text-gray-500
                       ${!isPro ? "opacity-40 cursor-not-allowed" : "hover:border-blue-300 hover:text-blue-600 cursor-pointer"}`}
                   >
                     {postSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                    {videoReady ? "Publish" : "Generate video to publish"}
+                    {videoReady ? "Stage & notify me" : "Generate video to stage"}
                   </button>
                 )}
                 <button
