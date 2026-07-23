@@ -28,9 +28,22 @@ export default function PersonaChips({ selected, onChange, readOnly = false }: P
 
   // Falls back to the static list (no description/momentum) if the live
   // catalog is empty or unreachable — see PERSONA_TAGS's deprecation note.
-  const effective: PersonaTag[] = tags.length > 0
+  const catalog: PersonaTag[] = tags.length > 0
     ? tags
     : PERSONA_TAGS.map((name) => ({ name, description: "", momentum: null }));
+
+  // Any already-selected tag not currently in the catalog (e.g. an
+  // AVATAR_TYPES preset's persona_tags naming an archetype that isn't
+  // among today's live-promoted ones, or a tag that's since gone dormant)
+  // still gets a chip appended so it's visible and deselectable — without
+  // this, a preset selection could silently render as "nothing selected"
+  // even though the value is still saved and still fed to the LLM.
+  const effective: PersonaTag[] = [
+    ...catalog,
+    ...selected
+      .filter((name) => !catalog.some((t) => t.name === name))
+      .map((name) => ({ name, description: "", momentum: null })),
+  ];
 
   function toggle(tag: string) {
     if (readOnly) return;
