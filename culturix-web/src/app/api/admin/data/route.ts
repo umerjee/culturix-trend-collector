@@ -18,6 +18,7 @@ const ID_PATH_MAP: Record<string, (id: string) => string> = {
   "cluster-detail":            (id) => `/clusters/${id}`,
   "persona-detail":            (id) => `/personas/${id}`,
   "trend-history-occurrences": (id) => `/admin/trend-history/${id}/occurrences?limit=200`,
+  "persona-occurrences":       (id) => `/admin/personas/${id}/occurrences?limit=200`,
 };
 
 export async function GET(req: Request) {

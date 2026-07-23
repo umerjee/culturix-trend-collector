@@ -12,11 +12,11 @@ import {
   CONTENT_GOALS,
   CONTENT_TONES,
   CONTENT_FORMATS,
-  PERSONA_TAGS,
   AVATAR_TYPES,
   type AvatarTypePreset,
   type ContentProfile,
 } from "@/lib/types";
+import PersonaChips from "@/components/PersonaChips";
 
 function Chip({
   label,
@@ -487,16 +487,7 @@ export default function OnboardingWizard({ userId: _userId }: Props) {
               Audience persona tags{" "}
               <span className="text-gray-400 font-normal">(optional)</span>
             </label>
-            <div className="flex flex-wrap gap-2">
-              {PERSONA_TAGS.map((t) => (
-                <Chip
-                  key={t}
-                  label={t}
-                  selected={personaTags.includes(t)}
-                  onClick={() => toggleArr(personaTags, t, setPersonaTags)}
-                />
-              ))}
-            </div>
+            <PersonaChips selected={personaTags} onChange={setPersonaTags} />
           </div>
 
           <div className="flex gap-3">

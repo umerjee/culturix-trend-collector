@@ -29,6 +29,7 @@ async def lifespan(_):
     from app.models.content_post import ContentPost                 # noqa: F401
     from app.models.content_post_snapshot import ContentPostSnapshot  # noqa: F401
     from app.models.integration_health import IntegrationHealth       # noqa: F401
+    from app.models.persona_occurrence import PersonaOccurrence       # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -101,6 +102,22 @@ async def lifespan(_):
             "ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS caption_text TEXT",
             "ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS notification_status VARCHAR(10)",
             "ALTER TABLE content_posts ADD COLUMN IF NOT EXISTS notified_at TIMESTAMP",
+            # Connected persona-tag system (supersedes the old per-cluster
+            # 1:1 Persona.cluster_id generation path as of 2026-07-23) — see
+            # app/pipeline/nodes/persona_tag_tracker.py.
+            "ALTER TABLE personas ADD COLUMN IF NOT EXISTS centroid_embedding JSON",
+            "ALTER TABLE personas ADD COLUMN IF NOT EXISTS status VARCHAR(10) NOT NULL DEFAULT 'pending'",
+            "ALTER TABLE personas ADD COLUMN IF NOT EXISTS momentum VARCHAR(10)",
+            "ALTER TABLE personas ADD COLUMN IF NOT EXISTS occurrence_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE personas ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMP",
+            "ALTER TABLE personas ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP",
+            "CREATE INDEX IF NOT EXISTS idx_personas_status ON personas(status)",
+            # Pre-existing rows predate this system and will never be evaluated
+            # again now that their generating functions are unwired from the
+            # live pipeline — flip them to dormant rather than leaving them
+            # stuck at the 'pending' default, which would misleadingly imply
+            # they're still active candidates awaiting promotion.
+            "UPDATE personas SET status = 'dormant' WHERE status = 'pending' AND centroid_embedding IS NULL",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -268,6 +285,9 @@ def run_embeddings(limit: int = 500):
     return {"embedded": process_embeddings(limit)}
 
 
+# Both routes below are superseded by app/pipeline/nodes/persona_tag_tracker.py's
+# map_persona_tags, which runs live in the daily pipeline — kept only for
+# manual backfill/debugging, not called from anywhere else.
 @app.post("/process/personas")
 def process_personas():
     return generate_personas_for_recent_trends(limit=50)
@@ -557,8 +577,38 @@ def list_personas(limit: int = 50, offset: int = 0):
                 "motivations": p.motivations,
                 "interests": p.interests,
                 "content_suggestions": json.loads(p.content_suggestions) if p.content_suggestions else None,
+                "status": p.status,
+                "momentum": p.momentum,
                 "created_at": p.created_at,
             }
+            for p in personas
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/personas/active")
+def list_active_personas(limit: int = 100):
+    """Powers the frontend audience-tag picker (PersonaChips.tsx) — replaces
+    the old static PERSONA_TAGS array with live, momentum-tracked archetypes.
+    Only 'active' (promoted, currently recurring or recently so) personas are
+    selectable for new picks; 'dormant' ones stay valid for profiles that
+    already chose them (see /users/{user_id}/content-profiles/{profile_id}/
+    persona-advisory) but drop out of this list."""
+    from app.db import SessionLocal
+    from app.models.persona import Persona
+
+    session = SessionLocal()
+    try:
+        personas = (
+            session.query(Persona)
+            .filter(Persona.status == "active")
+            .order_by(Persona.name)
+            .limit(limit)
+            .all()
+        )
+        return [
+            {"name": p.name, "description": p.description, "momentum": p.momentum}
             for p in personas
         ]
     finally:
@@ -594,7 +644,15 @@ def get_persona(persona_id: int):
             "motivations": persona.motivations,
             "interests": persona.interests,
             "content_suggestions": json.loads(persona.content_suggestions) if persona.content_suggestions else None,
+            "status": persona.status,
+            "momentum": persona.momentum,
+            "first_seen_at": persona.first_seen_at.isoformat() if persona.first_seen_at else None,
+            "last_seen_at": persona.last_seen_at.isoformat() if persona.last_seen_at else None,
             "created_at": persona.created_at,
+            # Populated only for legacy rows created by the now-superseded
+            # generate_clustered_personas — always empty for new-style
+            # personas, which use PersonaOccurrence (see
+            # GET /admin/personas/{id}/occurrences) instead.
             "sample_trends": [
                 {"id": t.id, "platform": t.platform, "title": t.title, "url": t.url}
                 for t in linked
@@ -1860,7 +1918,12 @@ def personas_recent(limit: int = 50):
     from app.models.persona import Persona
     session = SessionLocal()
     try:
-        personas = session.query(Persona).order_by(Persona.created_at.desc()).limit(limit).all()
+        personas = (
+            session.query(Persona)
+            .order_by(Persona.last_seen_at.desc().nullslast())
+            .limit(limit)
+            .all()
+        )
         import json as _json
         def _split(v):
             if not v:
@@ -1875,9 +1938,48 @@ def personas_recent(limit: int = 50):
                 "id": p.id, "name": p.name, "description": p.description,
                 "motivations": _split(p.motivations),
                 "interests": _split(p.interests),
+                "status": p.status,
+                "momentum": p.momentum,
+                "first_seen_at": p.first_seen_at.isoformat() if p.first_seen_at else None,
+                "last_seen_at": p.last_seen_at.isoformat() if p.last_seen_at else None,
                 "created_at": p.created_at.isoformat() if p.created_at else None,
             }
             for p in personas
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/admin/personas/{persona_id}/occurrences")
+def persona_occurrences(persona_id: int, limit: int = 200):
+    """Structural mirror of GET /admin/trend-history/{theme_id}/occurrences —
+    feeds AdminDashboard.tsx's WeekdayBarChart/OccurrenceTimeline directly.
+    Those components only read occurrence_date/day_of_week; the extra
+    name_snapshot/description_snapshot/size/durability keys are included as
+    null purely so the response satisfies the frontend's existing
+    TrendOccurrence TS interface without needing a second one."""
+    from app.db import SessionLocal
+    from app.models.persona_occurrence import PersonaOccurrence
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(PersonaOccurrence)
+            .filter(PersonaOccurrence.persona_id == persona_id)
+            .order_by(PersonaOccurrence.occurrence_date.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "id": o.id,
+                "occurrence_date": o.occurrence_date.isoformat() if o.occurrence_date else None,
+                "day_of_week": o.day_of_week,
+                "name_snapshot": None,
+                "description_snapshot": None,
+                "size": None,
+                "durability": None,
+            }
+            for o in rows
         ]
     finally:
         session.close()
@@ -2341,6 +2443,40 @@ def next_auto_publish(user_id: str, profile_id: str):
                 "relevance_score": idea.get("relevance_score"),
             },
             "scheduled_for": "~11:00 UTC daily",
+        }
+    except HTTPException:
+        raise
+    finally:
+        session.close()
+
+
+@app.get("/users/{user_id}/content-profiles/{profile_id}/persona-advisory")
+def persona_advisory(user_id: str, profile_id: str):
+    """Read-only: which of this profile's persona_tags currently need
+    attention. Matches by Persona.name against the profile's persona_tags
+    strings (ContentProfile.persona_tags stays plain name-strings — no
+    schema change) — same upsert-by-name key app/personas.py already used.
+    Powers the Dashboard's PersonaAdvisory banner and the digest email
+    callout (see app/scheduler.py's run_digest_dispatch)."""
+    from app.db import SessionLocal
+    from app.models.content_profile import ContentProfile
+    from app.models.persona import Persona
+    import uuid as _uuid
+
+    session = SessionLocal()
+    try:
+        cp = session.query(ContentProfile).filter_by(
+            id=_uuid.UUID(profile_id), user_id=_uuid.UUID(user_id)
+        ).first()
+        if not cp:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        if not cp.persona_tags:
+            return {"declining": [], "dormant": []}
+
+        rows = session.query(Persona).filter(Persona.name.in_(cp.persona_tags)).all()
+        return {
+            "declining": [{"name": p.name} for p in rows if p.status == "active" and p.momentum == "down"],
+            "dormant": [{"name": p.name} for p in rows if p.status == "dormant"],
         }
     except HTTPException:
         raise

@@ -1,16 +1,14 @@
 """
 LangGraph pipeline — daily orchestrator. Runs collection→digest end to end:
 translate_signals → load_signals → embed_signals → cluster_and_persist →
-generate_personas → cluster_trends → validate_clusters → map_trend_history →
+cluster_trends → validate_clusters → map_trend_history → map_persona_tags →
 map_personas → generate_content → validate_ideas → write_digests
 
-cluster_and_persist / generate_personas keep the admin-facing Cluster/Persona
-tables populated (HDBSCAN + Claude labeling); cluster_trends/map_personas use
-Voyage+Qdrant+DeepSeek for the actual content-generation matching. These are
-two intentionally separate paths, not unreconciled duplication (audited
-2026-07-22, confirmed the admin-facing tables are real, actively-rendered
-UI in AdminDashboard.tsx, not dead code) — see app/personas.py's module
-docstring for the full explanation of why both exist.
+cluster_and_persist keeps the admin-facing Cluster table populated (HDBSCAN);
+cluster_trends/map_personas use Voyage+Qdrant+DeepSeek for the actual
+content-generation matching — two intentionally separate clustering paths,
+not unreconciled duplication (audited 2026-07-22, the admin-facing Cluster
+table is real, actively-rendered UI in AdminDashboard.tsx, not dead code).
 validate_clusters/validate_ideas are the AI legitimacy/safety/durability gate
 that reviews proposed trends and generated ideas before they can influence
 or reach users — see app/pipeline/nodes/trend_validator.py.
@@ -19,6 +17,16 @@ cross-day trend history (TrendTheme/TrendOccurrence) and attaches recurrence
 context (weekly/yearly/sustained/spike, dominant day-of-week) back onto each
 cluster for content_strategist and trend_validator to consult — see
 app/pipeline/nodes/trend_historian.py.
+map_persona_tags (added 2026-07-23) tracks recurring audience-persona
+archetypes the same way — centroid-match, occurrence log, momentum — and
+supersedes the old generate_personas node/app/personas.py's
+generate_clustered_personas, which kept a *separate*, disconnected
+per-cluster Persona table with no recurrence or momentum tracking at all.
+That old generation path is intentionally superseded, not merely
+duplicative — see app/pipeline/nodes/persona_tag_tracker.py's module
+docstring. (The 2026-07-22 audit above concluded "keep both" for the
+*clustering* paths, which still stands; it did not evaluate persona
+*generation* specifically, which this entry now supersedes.)
 
 Usage:
     python -m app.pipeline.graph
@@ -28,10 +36,10 @@ from app.pipeline.state import PipelineState
 from app.pipeline.nodes.translator import translate_signals
 from app.pipeline.nodes.embedder import embed_signals
 from app.pipeline.nodes.legacy_cluster import cluster_and_persist
-from app.pipeline.nodes.persona_generator import generate_personas
 from app.pipeline.nodes.clusterer import cluster_trends
 from app.pipeline.nodes.trend_validator import validate_clusters, validate_ideas
 from app.pipeline.nodes.trend_historian import map_trend_history
+from app.pipeline.nodes.persona_tag_tracker import map_persona_tags
 from app.pipeline.nodes.persona_mapper import map_personas
 from app.pipeline.nodes.content_strategist import generate_content
 from app.pipeline.nodes.digest_writer import write_digests
@@ -121,10 +129,10 @@ def build_pipeline():
     graph.add_node("translate_signals", translate_signals)
     graph.add_node("embed_signals", embed_signals)
     graph.add_node("cluster_and_persist", cluster_and_persist)
-    graph.add_node("generate_personas", generate_personas)
     graph.add_node("cluster_trends", cluster_trends)
     graph.add_node("validate_clusters", validate_clusters)
     graph.add_node("map_trend_history", map_trend_history)
+    graph.add_node("map_persona_tags", map_persona_tags)
     graph.add_node("map_personas", map_personas)
     graph.add_node("generate_content", generate_content)
     graph.add_node("validate_ideas", validate_ideas)
@@ -134,11 +142,11 @@ def build_pipeline():
     graph.add_edge("translate_signals", "load_signals")
     graph.add_edge("load_signals", "embed_signals")
     graph.add_edge("embed_signals", "cluster_and_persist")
-    graph.add_edge("cluster_and_persist", "generate_personas")
-    graph.add_edge("generate_personas", "cluster_trends")
+    graph.add_edge("cluster_and_persist", "cluster_trends")
     graph.add_edge("cluster_trends", "validate_clusters")
     graph.add_edge("validate_clusters", "map_trend_history")
-    graph.add_edge("map_trend_history", "map_personas")
+    graph.add_edge("map_trend_history", "map_persona_tags")
+    graph.add_edge("map_persona_tags", "map_personas")
     graph.add_edge("map_personas", "generate_content")
     graph.add_edge("generate_content", "validate_ideas")
     graph.add_edge("validate_ideas", "write_digests")

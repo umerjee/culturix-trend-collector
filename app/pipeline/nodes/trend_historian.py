@@ -20,30 +20,13 @@ from collections import Counter
 from datetime import date, datetime
 
 from app.pipeline.state import PipelineState
+from app.pipeline.nodes._similarity import cosine_similarity as _cosine_similarity
+from app.pipeline.nodes._similarity import average_embedding as _average_embedding
 
 logger = logging.getLogger("culturix.pipeline.trend_historian")
 
 _SIMILARITY_THRESHOLD = 0.85
 _MIN_OCCURRENCES_FOR_PATTERN = 3
-
-
-def _cosine_similarity(a: list, b: list) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(y * y for y in b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
-def _average_embedding(centroid: list, new_vec: list, n: int) -> list:
-    """Running average weighted by n prior occurrences, so early occurrences
-    aren't drowned out but the centroid still drifts to track wording drift."""
-    if not centroid or n <= 0:
-        return new_vec
-    return [(c * n + v) / (n + 1) for c, v in zip(centroid, new_vec)]
 
 
 def _compute_recurrence(occurrence_dates: list) -> tuple:
@@ -122,6 +105,10 @@ def map_trend_history(state: PipelineState) -> PipelineState:
         for cluster, vector in zip(clusters, vectors):
             if not vector:
                 continue
+            # Exposed for persona_tag_tracker.py (runs right after this node)
+            # to reuse instead of paying for a second Voyage embedding call
+            # on the same cluster text.
+            cluster["_embedding"] = vector
             try:
                 theme = _match_or_create_theme(session, themes, cluster, vector, today)
 

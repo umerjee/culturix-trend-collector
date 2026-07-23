@@ -39,6 +39,8 @@ interface Persona {
   description: string;
   motivations: string[];
   interests: string[];
+  status?: "pending" | "active" | "dormant";
+  momentum?: "up" | "down" | "neutral" | null;
   created_at: string | null;
 }
 
@@ -56,6 +58,13 @@ interface PersonaDetail {
   motivations: string | null;
   interests: string | null;
   content_suggestions: ContentSuggestion[] | null;
+  status?: "pending" | "active" | "dormant";
+  momentum?: "up" | "down" | "neutral" | null;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  // Populated only for legacy rows from the now-superseded per-cluster
+  // generation path — always empty for new-style personas, which use
+  // PersonaOccurrence (see personaOccurrences state) instead.
   sample_trends: { id: number; platform: string; title: string; url: string | null }[];
 }
 
@@ -281,6 +290,7 @@ export default function AdminDashboard() {
   const [selectedPersonaId, setSelectedPersonaId] = useState<number | null>(null);
   const [personaDetail, setPersonaDetail] = useState<PersonaDetail | null>(null);
   const [personaDetailLoading, setPersonaDetailLoading] = useState(false);
+  const [personaOccurrences, setPersonaOccurrences] = useState<TrendOccurrence[]>([]);
 
   async function loadAll() {
     setLoading(true);
@@ -343,9 +353,15 @@ export default function AdminDashboard() {
     setSelectedPersonaId(id);
     setPersonaDetailLoading(true);
     try {
-      setPersonaDetail(await fetchDetail("persona-detail", id));
+      const [detail, occurrences] = await Promise.all([
+        fetchDetail("persona-detail", id),
+        fetchDetail("persona-occurrences", id).catch(() => []),
+      ]);
+      setPersonaDetail(detail);
+      setPersonaOccurrences(Array.isArray(occurrences) ? occurrences : []);
     } catch {
       setPersonaDetail(null);
+      setPersonaOccurrences([]);
     } finally {
       setPersonaDetailLoading(false);
     }
@@ -736,7 +752,10 @@ export default function AdminDashboard() {
                       selectedPersonaId === p.id ? "border-blue-300 ring-1 ring-blue-100" : "border-gray-100 hover:border-gray-200"
                     }`}
                   >
-                    <h3 className="font-semibold text-gray-900">{p.name}</h3>
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="font-semibold text-gray-900">{p.name}</h3>
+                      <MomentumBadge momentum={p.momentum} />
+                    </div>
                     <p className="text-sm text-gray-500 line-clamp-2">{p.description}</p>
                     {p.interests?.length > 0 && (
                       <div className="flex flex-wrap gap-1.5">
@@ -766,9 +785,32 @@ export default function AdminDashboard() {
                 {selectedPersonaId && !personaDetailLoading && personaDetail && (
                   <div className="space-y-5">
                     <div>
-                      <h3 className="font-semibold text-gray-900">{personaDetail.name}</h3>
+                      <div className="flex items-start justify-between gap-3">
+                        <h3 className="font-semibold text-gray-900">{personaDetail.name}</h3>
+                        <MomentumBadge momentum={personaDetail.momentum} />
+                      </div>
                       <p className="text-sm text-gray-500 mt-1">{personaDetail.description}</p>
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-xs text-gray-400">
+                        {personaDetail.status && <span className="capitalize">{personaDetail.status}</span>}
+                        {personaDetail.first_seen_at && <span>First seen {fmt(personaDetail.first_seen_at)}</span>}
+                        {personaDetail.last_seen_at && <span>Last seen {fmt(personaDetail.last_seen_at)}</span>}
+                      </div>
                     </div>
+
+                    {personaOccurrences.length > 0 && (
+                      <>
+                        <div>
+                          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
+                            Occurrences by day of week
+                          </p>
+                          <WeekdayBarChart occurrences={personaOccurrences} dominantDay={null} />
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-4">Timeline</p>
+                          <OccurrenceTimeline occurrences={personaOccurrences} />
+                        </div>
+                      </>
+                    )}
 
                     {personaDetail.content_suggestions && personaDetail.content_suggestions.length > 0 && (
                       <div>

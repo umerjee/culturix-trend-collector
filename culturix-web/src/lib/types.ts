@@ -193,6 +193,17 @@ export const CONTENT_TONES = [
   "Motivational",
   "Trendy & playful",
 ] as const;
+export interface PersonaTag {
+  name: string;
+  description: string;
+  momentum: "up" | "down" | "neutral" | null;
+}
+
+// @deprecated — kept only as a fallback for PersonaChips.tsx when GET
+// /api/personas/active is unreachable or hasn't promoted anything yet (e.g.
+// a fresh DB before the pipeline has run a few times). The live, momentum-
+// tracked catalog (app/models/persona.py + persona_tag_tracker.py) is now
+// the source of truth — don't add new tags here.
 export const PERSONA_TAGS = [
   "Gen Z",
   "Millennials",

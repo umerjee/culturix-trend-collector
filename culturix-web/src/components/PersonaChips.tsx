@@ -1,7 +1,8 @@
 "use client";
 
-import { PERSONA_TAGS } from "@/lib/types";
-import { Check } from "lucide-react";
+import { useEffect, useState } from "react";
+import { PERSONA_TAGS, type PersonaTag } from "@/lib/types";
+import { Check, ArrowUpRight, ArrowDownRight } from "lucide-react";
 
 interface Props {
   selected: string[];
@@ -9,7 +10,28 @@ interface Props {
   readOnly?: boolean;
 }
 
+function MomentumDot({ momentum }: { momentum: PersonaTag["momentum"] }) {
+  if (momentum === "up") return <ArrowUpRight className="h-3 w-3 text-green-500" />;
+  if (momentum === "down") return <ArrowDownRight className="h-3 w-3 text-red-400" />;
+  return null;
+}
+
 export default function PersonaChips({ selected, onChange, readOnly = false }: Props) {
+  const [tags, setTags] = useState<PersonaTag[]>([]);
+
+  useEffect(() => {
+    fetch("/api/personas/active")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data: PersonaTag[]) => setTags(Array.isArray(data) ? data : []))
+      .catch(() => setTags([]));
+  }, []);
+
+  // Falls back to the static list (no description/momentum) if the live
+  // catalog is empty or unreachable — see PERSONA_TAGS's deprecation note.
+  const effective: PersonaTag[] = tags.length > 0
+    ? tags
+    : PERSONA_TAGS.map((name) => ({ name, description: "", momentum: null }));
+
   function toggle(tag: string) {
     if (readOnly) return;
     onChange(
@@ -19,14 +41,15 @@ export default function PersonaChips({ selected, onChange, readOnly = false }: P
 
   return (
     <div className="flex flex-wrap gap-2">
-      {PERSONA_TAGS.map((tag) => {
-        const active = selected.includes(tag);
+      {effective.map((tag) => {
+        const active = selected.includes(tag.name);
         return (
           <button
-            key={tag}
+            key={tag.name}
             type="button"
-            onClick={() => toggle(tag)}
+            onClick={() => toggle(tag.name)}
             disabled={readOnly}
+            title={tag.description || undefined}
             className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
               active
                 ? "bg-blue-600 border-blue-600 text-white"
@@ -36,7 +59,8 @@ export default function PersonaChips({ selected, onChange, readOnly = false }: P
             }`}
           >
             {active && <Check className="h-3 w-3" />}
-            {tag}
+            {tag.name}
+            <MomentumDot momentum={tag.momentum} />
           </button>
         );
       })}

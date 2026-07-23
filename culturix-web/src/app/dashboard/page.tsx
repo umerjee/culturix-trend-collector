@@ -6,6 +6,7 @@ import AppNav from "@/components/AppNav";
 import TrendIdeaCard from "@/components/TrendIdeaCard";
 import RefreshButton from "@/components/RefreshButton";
 import PublishingSetupStatus, { type PlatformStatus } from "@/components/PublishingSetupStatus";
+import PersonaAdvisory from "@/components/PersonaAdvisory";
 import { CONNECTABLE_PLATFORMS, type Digest, type ContentProfile, type ContentPost } from "@/lib/types";
 
 const RAILWAY = "https://culturix-trend-collector-production.up.railway.app";
@@ -52,6 +53,30 @@ async function fetchProfileContentPosts(userId: string, profileId?: string): Pro
     return Array.isArray(data) ? data : [];
   } catch {
     return [];
+  }
+}
+
+interface PersonaAdvisoryData {
+  declining: { name: string }[];
+  dormant: { name: string }[];
+}
+
+async function fetchPersonaAdvisory(userId: string, profileId?: string): Promise<PersonaAdvisoryData> {
+  if (!profileId) return { declining: [], dormant: [] };
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
+  try {
+    // Direct-to-Railway, not through the Next.js proxy route — this runs
+    // server-side in the page itself, which doesn't have the browser's
+    // cookies to forward for the proxy's cookie-based auth check. user.id
+    // is already known here, so the auth check is redundant anyway.
+    const res = await fetch(
+      `${apiUrl}/users/${userId}/content-profiles/${profileId}/persona-advisory`,
+      { cache: "no-store" }
+    );
+    if (!res.ok) return { declining: [], dormant: [] };
+    return await res.json();
+  } catch {
+    return { declining: [], dormant: [] };
   }
 }
 
@@ -135,10 +160,11 @@ export default async function DashboardPage({
 
   const activeProfile = profiles.find((p) => p.id === searchParams.profile) ?? profiles[0] ?? null;
 
-  const [digest, connectedAccounts, profileContentPosts] = await Promise.all([
+  const [digest, connectedAccounts, profileContentPosts, personaAdvisory] = await Promise.all([
     fetchDigest(user.id, searchParams.profile),
     fetchConnectedAccounts(user.id),
     fetchProfileContentPosts(user.id, activeProfile?.id),
+    fetchPersonaAdvisory(user.id, activeProfile?.id),
   ]);
   const connectedPlatforms = connectedPlatformsForProfile(connectedAccounts, activeProfile?.id);
   const platformStatuses = platformStatusesForProfile(connectedAccounts, activeProfile);
@@ -244,6 +270,14 @@ export default async function DashboardPage({
             publishMode={activeProfile.publish_mode ?? "manual"}
             hasContentReady={hasContentReady}
             hasConfirmedPost={hasConfirmedPost}
+            settingsHref={`/settings?profile=${activeProfile.id}`}
+          />
+        )}
+
+        {activeProfile && (activeProfile.persona_tags?.length ?? 0) > 0 && (
+          <PersonaAdvisory
+            declining={personaAdvisory.declining}
+            dormant={personaAdvisory.dormant}
             settingsHref={`/settings?profile=${activeProfile.id}`}
           />
         )}

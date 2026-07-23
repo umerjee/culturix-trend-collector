@@ -1,19 +1,21 @@
-"""Legacy HDBSCAN-based admin persona/cluster system.
+"""Legacy HDBSCAN-based admin cluster system + SUPERSEDED persona generation.
 
-Confirmed intentional, not unreconciled duplication (audited 2026-07-22):
-this module + app/clustering_service.py + app/pipeline/nodes/legacy_cluster.py
-feed the RAW, admin-facing Cluster/Persona/TrendPersona tables — exposed via
-/admin/clusters, /admin/personas, /admin/stats and rendered directly in
-AdminDashboard.tsx (clusters/personas state, cluster/persona drill-down
-detail panels, momentum badges — confirmed a real, actively-fetched view,
-not dead UI). This is a distinct consumer from
-app/pipeline/nodes/clusterer.py's Voyage+Qdrant+DeepSeek path, which never
-persists to a browsable table — its clusters exist only transiently within
-one pipeline run's state, purpose-built for content-generation matching
-(trend_validator.py, trend_historian.py, persona_mapper.py,
-content_strategist.py). Keep both: the admin view needs a persisted,
-browsable, momentum-tracked table; the content pipeline needs neither.
-Retiring either would be a real functional regression, not cleanup.
+The clustering half of this module's neighborhood (app/clustering_service.py,
+app/pipeline/nodes/legacy_cluster.py, the admin-facing Cluster table) is still
+intentional and live — confirmed real, actively-rendered UI in
+AdminDashboard.tsx, not dead code (audited 2026-07-22).
+
+The PERSONA generation functions in *this specific file*
+(generate_personas_for_recent_trends, generate_clustered_personas) are
+SUPERSEDED as of 2026-07-23 by app/pipeline/nodes/persona_tag_tracker.py's
+connected persona-tag system, which tracks recurrence/momentum across many
+clusters over many days (via PersonaOccurrence) instead of this module's old
+1:1 Persona.cluster_id, and feeds both the admin Personas page and the
+user-facing persona picker from one source instead of two disconnected ones.
+Kept in this file, not deleted, per this codebase's convention for superseded
+code — but no longer reachable from graph.py's live pipeline (see graph.py's
+module docstring). POST /process/personas and POST /process/personas/clustered
+still call these directly if ever needed for manual backfill/debugging.
 """
 import os
 import json

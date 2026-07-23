@@ -74,8 +74,18 @@ def _get_user_email(user_id: str) -> Optional[str]:
         return None
 
 
-def _render_email(ideas: list[dict], clusters: list[dict]) -> str:
+def _render_email(ideas: list[dict], clusters: list[dict], declining_personas: list[str] | None = None) -> str:
     today = date.today().strftime("%B %d, %Y")
+
+    advisory_html = ""
+    if declining_personas:
+        names = ", ".join(declining_personas)
+        plural = len(declining_personas) > 1
+        advisory_html = f"""
+      <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:20px;font-size:12px;color:#92400e">
+        <strong>Heads up:</strong> your audience persona{"s" if plural else ""} {names} {"are" if plural else "is"} losing momentum — consider reviewing your audience targeting in Settings.
+      </div>"""
+
     idea_html = ""
     for i, idea in enumerate(ideas[:10], 1):
         idea_html += f"""
@@ -102,6 +112,7 @@ def _render_email(ideas: list[dict], clusters: list[dict]) -> str:
         <h2 style="font-size:18px;font-weight:700;color:#111827;margin:0 0 12px">Today's cultural signals</h2>
         {trend_html}
       </div>
+      {advisory_html}
       <h2 style="font-size:18px;font-weight:700;color:#111827;margin:0 0 16px">Your 10 content ideas</h2>
       {idea_html}
       <div style="text-align:center;padding:24px 0;border-top:1px solid #f3f4f6;margin-top:24px">

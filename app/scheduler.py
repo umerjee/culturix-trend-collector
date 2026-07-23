@@ -121,6 +121,7 @@ def run_digest_dispatch(now=None):
         from app.db import SessionLocal
         from app.models.content_profile import ContentProfile
         from app.models.generated_content import GeneratedContent
+        from app.models.persona import Persona
         from app.pipeline.nodes.digest_writer import _get_user_email, _render_email, _send_email
 
         now = now or datetime.utcnow()
@@ -149,7 +150,21 @@ def run_digest_dispatch(now=None):
                 email = _get_user_email(str(profile.user_id))
                 if not email:
                     continue
-                html = _render_email(content.content_ideas, content.clusters or [])
+
+                # Best-effort — a lookup failure here must never block digest
+                # delivery, so it's isolated from the rest of this iteration.
+                declining_tags = []
+                try:
+                    if profile.persona_tags:
+                        rows = session.query(Persona.name).filter(
+                            Persona.name.in_(profile.persona_tags),
+                            ((Persona.status == "active") & (Persona.momentum == "down")) | (Persona.status == "dormant"),
+                        ).all()
+                        declining_tags = [r[0] for r in rows]
+                except Exception as e:
+                    logger.warning("Persona advisory lookup failed for profile %s: %s", profile.id, e)
+
+                html = _render_email(content.content_ideas, content.clusters or [], declining_tags)
                 _send_email(email, html)
                 content.delivered = True
                 session.commit()

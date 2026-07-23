@@ -1,6 +1,11 @@
 """
-Generate Personas — thin LangGraph wrapper around the existing cluster-aware
-persona generator. Keeps Persona/TrendPersona populated for the admin dashboard.
+Generate Personas — thin LangGraph wrapper around app/personas.py's
+cluster-aware persona generator.
+
+SUPERSEDED as of 2026-07-23, no longer wired into graph.py — see
+app/pipeline/nodes/persona_tag_tracker.py's module docstring for why. Kept
+in place, not deleted, per this codebase's dormant-not-deleted convention
+for superseded code; not called from anywhere live.
 """
 import logging
 from app.pipeline.state import PipelineState
