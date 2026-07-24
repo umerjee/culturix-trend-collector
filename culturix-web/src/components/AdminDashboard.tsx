@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Zap, LayoutDashboard, TrendingUp, Layers, Users, Search, LogOut, CheckCircle, XCircle, Clock, RefreshCw, History, ArrowUpRight, ArrowDownRight, Minus, ExternalLink, Lightbulb } from "lucide-react";
+import { Zap, LayoutDashboard, TrendingUp, Layers, Users, Search, LogOut, CheckCircle, XCircle, Clock, RefreshCw, History, ArrowUpRight, ArrowDownRight, Minus, ExternalLink, Lightbulb, ShieldCheck } from "lucide-react";
 
 interface Trend {
   id: number;
@@ -119,7 +119,19 @@ interface UserRecord {
   content_profiles: ContentProfileRecord[];
 }
 
-type Page = "overview" | "trends" | "clusters" | "personas" | "history" | "users" | "search";
+interface ValidationLogEntry {
+  id: string;
+  source: string;
+  subject: string;
+  legitimate: boolean | null;
+  safe: boolean | null;
+  durability: string | null;
+  status: "approved" | "rejected";
+  reason: string | null;
+  checked_at: string | null;
+}
+
+type Page = "overview" | "trends" | "clusters" | "personas" | "history" | "validation" | "users" | "search";
 
 async function fetchData(type: string) {
   const res = await fetch(`/api/admin/data?type=${type}`, { cache: "no-store" });
@@ -292,6 +304,11 @@ export default function AdminDashboard() {
   const [personaDetailLoading, setPersonaDetailLoading] = useState(false);
   const [personaOccurrences, setPersonaOccurrences] = useState<TrendOccurrence[]>([]);
 
+  const [validationLog, setValidationLog] = useState<ValidationLogEntry[]>([]);
+  const [validationLoaded, setValidationLoaded] = useState(false);
+  const [validationStatusFilter, setValidationStatusFilter] = useState("all");
+  const [validationSourceFilter, setValidationSourceFilter] = useState("all");
+
   async function loadAll() {
     setLoading(true);
     setError(null);
@@ -323,6 +340,15 @@ export default function AdminDashboard() {
         .catch(() => setTrendHistory([]));
     }
   }, [page, historyLoaded]);
+
+  useEffect(() => {
+    if (page === "validation" && !validationLoaded) {
+      setValidationLoaded(true);
+      fetchData("validation")
+        .then((data) => setValidationLog(Array.isArray(data) ? data : []))
+        .catch(() => setValidationLog([]));
+    }
+  }, [page, validationLoaded]);
 
   async function selectTheme(id: number) {
     setSelectedThemeId(id);
@@ -422,6 +448,7 @@ export default function AdminDashboard() {
     { key: "clusters", icon: <Layers className="h-4 w-4" />, label: "Clusters" },
     { key: "personas", icon: <Users className="h-4 w-4" />, label: "Personas" },
     { key: "history", icon: <History className="h-4 w-4" />, label: "History" },
+    { key: "validation", icon: <ShieldCheck className="h-4 w-4" />, label: "Validation" },
     { key: "users" as const, icon: <Users className="h-4 w-4" />, label: `Users${userList.filter(u => !u.approved).length ? ` (${userList.filter(u => !u.approved).length})` : ""}` },
     { key: "search", icon: <Search className="h-4 w-4" />, label: "Search" },
   ];
@@ -993,6 +1020,99 @@ export default function AdminDashboard() {
               </div>
             </div>
           )}
+
+          {/* ── Validation ── */}
+          {page === "validation" && (() => {
+            const filteredLog = validationLog.filter((v) => {
+              if (validationStatusFilter !== "all" && v.status !== validationStatusFilter) return false;
+              if (validationSourceFilter !== "all" && v.source !== validationSourceFilter) return false;
+              return true;
+            });
+            const approvedCount = validationLog.filter((v) => v.status === "approved").length;
+            const rejectedCount = validationLog.filter((v) => v.status === "rejected").length;
+            return (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  <div className="bg-white rounded-xl border border-gray-100 p-4">
+                    <p className="text-2xl font-bold text-gray-900">{validationLog.length}</p>
+                    <span className="text-xs text-gray-500">Checked</span>
+                  </div>
+                  <div className="bg-white rounded-xl border border-gray-100 p-4">
+                    <p className="text-2xl font-bold text-emerald-600">{approvedCount}</p>
+                    <span className="text-xs text-gray-500">Approved</span>
+                  </div>
+                  <div className="bg-white rounded-xl border border-gray-100 p-4">
+                    <p className="text-2xl font-bold text-red-600">{rejectedCount}</p>
+                    <span className="text-xs text-gray-500">Rejected</span>
+                  </div>
+                </div>
+
+                <div className="flex gap-3 flex-wrap">
+                  <select
+                    value={validationStatusFilter}
+                    onChange={(e) => setValidationStatusFilter(e.target.value)}
+                    className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm bg-white"
+                  >
+                    <option value="all">All statuses</option>
+                    <option value="approved">Approved</option>
+                    <option value="rejected">Rejected</option>
+                  </select>
+                  <select
+                    value={validationSourceFilter}
+                    onChange={(e) => setValidationSourceFilter(e.target.value)}
+                    className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm bg-white"
+                  >
+                    <option value="all">All sources</option>
+                    <option value="cluster">Cluster</option>
+                    <option value="idea">Idea</option>
+                  </select>
+                  <span className="text-sm text-gray-400 self-center">{filteredLog.length} entries</span>
+                </div>
+
+                <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-50 bg-gray-50">
+                        <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+                        <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Source</th>
+                        <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Subject</th>
+                        <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Reason</th>
+                        <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Checked</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-50">
+                      {filteredLog.length === 0 && (
+                        <tr>
+                          <td colSpan={5} className="px-6 py-10 text-center text-sm text-gray-400">
+                            No validation records yet.
+                          </td>
+                        </tr>
+                      )}
+                      {filteredLog.slice(0, 200).map((v) => (
+                        <tr key={v.id} className="hover:bg-gray-50 align-top">
+                          <td className="px-6 py-3 whitespace-nowrap">
+                            {v.status === "approved" ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-emerald-50 text-emerald-700">
+                                <CheckCircle className="h-3 w-3" /> Approved
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-red-50 text-red-700">
+                                <XCircle className="h-3 w-3" /> Rejected
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-6 py-3 text-gray-500 capitalize whitespace-nowrap">{v.source}</td>
+                          <td className="px-6 py-3 max-w-xs text-gray-800">{v.subject || "(untitled)"}</td>
+                          <td className="px-6 py-3 max-w-sm text-gray-500">{v.reason || "—"}</td>
+                          <td className="px-6 py-3 text-gray-400 text-xs whitespace-nowrap">{fmt(v.checked_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* ── Users ── */}
           {page === "users" && (

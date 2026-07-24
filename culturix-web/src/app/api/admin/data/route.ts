@@ -11,6 +11,7 @@ const PATH_MAP: Record<string, string> = {
   digests:       "/admin/digests?limit=20",
   users:         "/admin/users",
   "trend-history": "/admin/trend-history?limit=100",
+  validation:    "/admin/trend-validation-log?limit=500",
 };
 
 // Types that need an :id substituted into the backend path
