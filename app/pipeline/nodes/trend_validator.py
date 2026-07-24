@@ -3,8 +3,12 @@ Trend & content validation — an AI gate that reviews proposed trend clusters
 and generated content ideas before they're used/shown, checking:
   - legitimate: does the cluster genuinely match its example posts, or is it
     a clustering hallucination?
-  - safe: is this appropriate to build content around (no hate speech,
-    extremism, illegal activity, highly inflammatory politics)?
+  - safe: is this appropriate to build content around (hard gate: hate
+    speech, harassment, extremism, incitement/glorification of violence,
+    illegal activity, graphic violence, or fabricated claims presented as
+    fact — NOT merely being about politics, protests, immigration, gender,
+    sexual orientation, or other real, currently-trending social topics;
+    see the 2026-07-24 recalibration note below)
   - durability (clusters only): "sustained" (ongoing cultural/fandom
     interest) vs "spike" (tied to one dated event, e.g. a specific match/
     election/awards show) vs "unclear".
@@ -14,6 +18,17 @@ are dropped). Durability is a soft tag, not a hard filter — a "spike" isn't
 unsafe or fake, and some profiles legitimately want timely/newsjacking
 content; the tag lets content_strategist phrase it appropriately instead of
 blanket-blocking it platform-wide.
+
+Recalibrated 2026-07-24: an audit of trend_validation_log found the "safe"
+gate was over-rejecting — real, mainstream trending topics (student
+protests, immigration-policy debate, gender/dating discourse, geopolitical
+news) were being marked unsafe purely for being political/social/divisive,
+not for containing actual hate speech or incitement. Real trending topics
+covering social issues, politics, or sexual orientation are not themselves
+a safety problem and must not be filtered out just for being sensitive —
+the prompts below were narrowed to only hard-gate genuine hate
+speech/extremism/incitement/illegal activity/graphic violence/fabricated-
+as-fact claims, not "divisive" or "controversial" topics in general.
 
 Fail-open: if the validation call itself fails, skip filtering and log a
 warning — a validation outage must never take down the whole daily pipeline.
@@ -107,8 +122,8 @@ def _validate_clusters_via_llm(clusters: list) -> list:
     prompt = f"""You are a content moderation and quality-assurance reviewer for a trend-intelligence platform.
 
 Review these {len(payload)} candidate trend clusters, each identified by an AI from real social media posts. For EACH cluster, assess:
-1. legitimate (bool): does the theme/description genuinely and coherently match the example posts? (false = hallucinated or incoherent grouping)
-2. safe (bool): is this an appropriate topic to build brand/creator content around? (false = hate speech, extremism, illegal activity, graphic violence, highly inflammatory politics)
+1. legitimate (bool): does the theme/description genuinely and coherently match the example posts? (false = hallucinated or incoherent grouping, or a claim about real-world events/people that is fabricated or factually false)
+2. safe (bool): mark false ONLY for genuine hate speech targeting a protected group, harassment, extremism, incitement or glorification of violence, illegal activity, or graphic/gratuitous violence. Being about politics, protests, immigration policy, gender, sexual orientation, war/geopolitics, or other real, currently-trending social issues is NOT by itself unsafe — these are legitimate news and cultural topics that real creators and brands do cover, and a topic being divisive, polarizing, or emotionally charged is not a reason to reject it. Only reject for the actual presence of hateful, violent, illegal, or extremist content — not for the subject matter being political or sensitive.
 3. durability ("sustained" | "spike" | "unclear"): is this an ongoing cultural/fandom/lifestyle interest likely still relevant in a few weeks ("sustained"), or tied to one specific dated event like a single match/election/awards show/holiday that loses relevance almost immediately after ("spike")? Use "unclear" if genuinely ambiguous.
 
 Clusters:
@@ -129,7 +144,7 @@ def _validate_ideas_via_llm(ideas: list) -> list:
     prompt = f"""You are a content moderation and quality reviewer for a social media content-idea generator.
 
 Review these {len(payload)} generated content ideas for a brand/creator profile. For EACH idea, assess:
-1. safe (bool): is this appropriate/brand-safe to post publicly? (false = hate speech, harassment, illegal activity encouragement, impersonation, misleading claims)
+1. safe (bool): mark false ONLY for genuine hate speech, harassment, illegal activity encouragement, impersonation, or misleading/fabricated factual claims. Covering a real trending political, social, or sexual-orientation/identity topic is NOT by itself unsafe — these are legitimate topics real creators post about; do not reject an idea merely for touching a sensitive or divisive subject.
 2. coherent (bool): does the idea make basic sense as a real, postable piece of content (not garbled/nonsensical)?
 3. specific (bool): does the hook/caption/trend_connection name an actual real, concrete
    entity — a real person's name, a real movie/show title, a real event, a real product —
