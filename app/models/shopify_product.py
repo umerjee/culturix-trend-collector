@@ -33,3 +33,14 @@ class ShopifyProduct(Base):
     product_url = Column(String(1000), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     synced_at = Column(DateTime, default=datetime.utcnow)
+
+    # AI-generated post idea for this product (see app/shopify/content_ideas.py)
+    # — one proposed post per product, matching the digest's "one card per
+    # product" shape. Regenerating overwrites these rather than versioning;
+    # nothing here needs history the way trend ideas do.
+    idea_hook = Column(Text, nullable=True)
+    idea_caption = Column(Text, nullable=True)
+    idea_cta = Column(String(255), nullable=True)
+    idea_hashtags = Column(Text, nullable=True)
+    idea_platform = Column(String(50), nullable=True)
+    idea_generated_at = Column(DateTime, nullable=True)

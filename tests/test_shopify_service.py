@@ -289,6 +289,141 @@ class TestGetStoreAndListProducts:
         assert len(everything) == 2
 
 
+def _sync_one_product(mocker, user_id, shopify_product_id="1", title="Kurta"):
+    page = {
+        "products": [
+            {"shopify_product_id": shopify_product_id, "title": title, "description": "d",
+             "product_type": "Kurta", "tags": "eid", "price": "45.00", "currency": "USD",
+             "product_url": f"https://x/{shopify_product_id}", "image_urls": [], "created_at": _RECENT},
+        ],
+        "has_next_page": False,
+        "end_cursor": None,
+    }
+    mocker.patch("app.shopify.client.fetch_products_page", return_value=page)
+    shopify_service.sync_products(user_id)
+
+
+_FAKE_IDEA = {
+    "hook": "This kurta is the Eid piece everyone will ask about",
+    "caption": "Hand-embroidered, made to be worn on repeat.",
+    "cta": "Shop the link in bio",
+    "hashtag_strategy": "#eidfashion #kurta #handmade #emeraldgreen #ootd",
+    "platform": "Instagram",
+}
+
+
+class TestGenerateIdeaForProduct:
+    def test_generates_and_persists_idea(self, shopify_db, mocker):
+        user_id = uuid.uuid4()
+        _connect(shopify_db, mocker, user_id)
+        _sync_one_product(mocker, user_id)
+        mocker.patch("app.shopify.content_ideas.generate_product_post_idea", return_value=_FAKE_IDEA)
+
+        session = shopify_db()
+        product = session.query(ShopifyProduct).first()
+        product_id = product.id
+        session.close()
+
+        result = shopify_service.generate_idea_for_product(user_id, product_id)
+
+        assert result["idea"]["hook"] == _FAKE_IDEA["hook"]
+        assert result["idea"]["platform"] == "Instagram"
+        assert result["idea"]["generated_at"] is not None
+
+        session = shopify_db()
+        row = session.query(ShopifyProduct).filter_by(id=product_id).first()
+        assert row.idea_hook == _FAKE_IDEA["hook"]
+        assert row.idea_generated_at is not None
+        session.close()
+
+    def test_no_store_raises(self, shopify_db):
+        with pytest.raises(ValueError, match="No connected Shopify store"):
+            shopify_service.generate_idea_for_product(uuid.uuid4(), uuid.uuid4())
+
+    def test_product_from_a_different_store_is_not_found(self, shopify_db, mocker):
+        user_a = uuid.uuid4()
+        user_b = uuid.uuid4()
+        _connect(shopify_db, mocker, user_a, domain="store-a.myshopify.com")
+        _sync_one_product(mocker, user_a)
+        _connect(shopify_db, mocker, user_b, domain="store-b.myshopify.com")
+
+        session = shopify_db()
+        other_users_product_id = session.query(ShopifyProduct).first().id
+        session.close()
+
+        with pytest.raises(ValueError, match="Product not found"):
+            shopify_service.generate_idea_for_product(user_b, other_users_product_id)
+
+
+class TestGenerateIdeasBulk:
+    def test_generates_for_products_missing_an_idea(self, shopify_db, mocker):
+        user_id = uuid.uuid4()
+        _connect(shopify_db, mocker, user_id)
+        _sync_one_product(mocker, user_id, shopify_product_id="1", title="Kurta")
+        mocker.patch("app.shopify.content_ideas.generate_product_post_idea", return_value=_FAKE_IDEA)
+
+        result = shopify_service.generate_ideas_bulk(user_id)
+
+        assert result == {"generated": 1, "failed": 0, "remaining_without_idea": 0}
+        session = shopify_db()
+        row = session.query(ShopifyProduct).first()
+        assert row.idea_hook == _FAKE_IDEA["hook"]
+        session.close()
+
+    def test_skips_products_that_already_have_an_idea(self, shopify_db, mocker):
+        user_id = uuid.uuid4()
+        _connect(shopify_db, mocker, user_id)
+        _sync_one_product(mocker, user_id)
+        mocker.patch("app.shopify.content_ideas.generate_product_post_idea", return_value=_FAKE_IDEA)
+        shopify_service.generate_ideas_bulk(user_id)
+
+        mock_generate = mocker.patch(
+            "app.shopify.content_ideas.generate_product_post_idea", return_value=_FAKE_IDEA
+        )
+        result = shopify_service.generate_ideas_bulk(user_id)
+
+        assert result == {"generated": 0, "failed": 0, "remaining_without_idea": 0}
+        mock_generate.assert_not_called()
+
+    def test_a_failure_on_one_product_does_not_stop_the_batch(self, shopify_db, mocker):
+        user_id = uuid.uuid4()
+        _connect(shopify_db, mocker, user_id)
+        page = {
+            "products": [
+                {"shopify_product_id": "1", "title": "Kurta", "description": "d", "product_type": "Kurta",
+                 "tags": "", "price": "45.00", "currency": "USD", "product_url": "https://x/1",
+                 "image_urls": [], "created_at": _RECENT},
+                {"shopify_product_id": "2", "title": "Shalwar", "description": "d", "product_type": "SK",
+                 "tags": "", "price": "60.00", "currency": "USD", "product_url": "https://x/2",
+                 "image_urls": [], "created_at": _RECENT},
+            ],
+            "has_next_page": False,
+            "end_cursor": None,
+        }
+        mocker.patch("app.shopify.client.fetch_products_page", return_value=page)
+        shopify_service.sync_products(user_id)
+        mocker.patch(
+            "app.shopify.content_ideas.generate_product_post_idea",
+            side_effect=[RuntimeError("LLM error"), _FAKE_IDEA],
+        )
+
+        result = shopify_service.generate_ideas_bulk(user_id)
+
+        assert result["generated"] == 1
+        assert result["failed"] == 1
+
+    def test_limit_is_capped_regardless_of_requested_value(self, shopify_db, mocker):
+        user_id = uuid.uuid4()
+        _connect(shopify_db, mocker, user_id)
+        mock_generate = mocker.patch(
+            "app.shopify.content_ideas.generate_product_post_idea", return_value=_FAKE_IDEA
+        )
+
+        shopify_service.generate_ideas_bulk(user_id, limit=999)
+
+        assert mock_generate.call_count == 0  # no products synced yet, but limit itself must not error/blow up
+
+
 class TestDisconnectStore:
     def test_disconnect_soft_deactivates_not_deletes(self, shopify_db, mocker):
         user_id = uuid.uuid4()

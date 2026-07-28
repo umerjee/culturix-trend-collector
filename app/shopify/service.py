@@ -229,6 +229,31 @@ def get_store(user_id) -> Optional[dict]:
         session.close()
 
 
+def _serialize_product(p) -> dict:
+    return {
+        "id": str(p.id),
+        "shopify_product_id": p.shopify_product_id,
+        "title": p.title,
+        "description": p.description,
+        "product_type": p.product_type,
+        "tags": p.tags,
+        "price": p.price,
+        "currency": p.currency,
+        "product_url": p.product_url,
+        "image_urls": p.image_urls or [],
+        "product_created_at": p.product_created_at.isoformat() if p.product_created_at else None,
+        "synced_at": p.synced_at.isoformat() if p.synced_at else None,
+        "idea": {
+            "hook": p.idea_hook,
+            "caption": p.idea_caption,
+            "cta": p.idea_cta,
+            "hashtag_strategy": p.idea_hashtags,
+            "platform": p.idea_platform,
+            "generated_at": p.idea_generated_at.isoformat() if p.idea_generated_at else None,
+        } if p.idea_generated_at else None,
+    }
+
+
 def list_products(user_id, active_only: bool = True) -> list:
     from app.db import SessionLocal
     from app.models.shopify_store import ShopifyStore
@@ -242,23 +267,99 @@ def list_products(user_id, active_only: bool = True) -> list:
         query = session.query(ShopifyProduct).filter_by(store_id=store.id)
         if active_only:
             query = query.filter_by(is_active=True)
-        return [
-            {
-                "id": str(p.id),
-                "shopify_product_id": p.shopify_product_id,
-                "title": p.title,
-                "description": p.description,
-                "product_type": p.product_type,
-                "tags": p.tags,
-                "price": p.price,
-                "currency": p.currency,
-                "product_url": p.product_url,
-                "image_urls": p.image_urls or [],
-                "product_created_at": p.product_created_at.isoformat() if p.product_created_at else None,
-                "synced_at": p.synced_at.isoformat() if p.synced_at else None,
-            }
-            for p in query.order_by(ShopifyProduct.title).all()
-        ]
+        return [_serialize_product(p) for p in query.order_by(ShopifyProduct.title).all()]
+    finally:
+        session.close()
+
+
+def generate_idea_for_product(user_id, product_id) -> dict:
+    """Generates (or regenerates) an AI post idea for one product, scoped to
+    the caller's own store — a product_id alone isn't enough to authorize
+    this, since a UUID could otherwise be guessed/reused across stores."""
+    from app.db import SessionLocal
+    from app.models.shopify_store import ShopifyStore
+    from app.models.shopify_product import ShopifyProduct
+    from app.shopify.content_ideas import generate_product_post_idea
+
+    session = SessionLocal()
+    try:
+        store = session.query(ShopifyStore).filter_by(user_id=_uuid.UUID(str(user_id))).first()
+        if not store:
+            raise ValueError("No connected Shopify store for this user")
+        product = (
+            session.query(ShopifyProduct)
+            .filter_by(id=_uuid.UUID(str(product_id)), store_id=store.id)
+            .first()
+        )
+        if not product:
+            raise ValueError("Product not found for this store")
+
+        idea = generate_product_post_idea(_serialize_product(product))
+        product.idea_hook = idea.get("hook")
+        product.idea_caption = idea.get("caption")
+        product.idea_cta = idea.get("cta")
+        product.idea_hashtags = idea.get("hashtag_strategy")
+        product.idea_platform = idea.get("platform")
+        product.idea_generated_at = datetime.utcnow()
+        session.commit()
+        return _serialize_product(product)
+    finally:
+        session.close()
+
+
+_BULK_IDEA_LIMIT_DEFAULT = 10
+_BULK_IDEA_LIMIT_MAX = 25
+
+
+def generate_ideas_bulk(user_id, limit: int = _BULK_IDEA_LIMIT_DEFAULT) -> dict:
+    """Generates ideas for up to `limit` active products that don't have one
+    yet. Capped hard at _BULK_IDEA_LIMIT_MAX regardless of what's requested
+    — this calls a paid LLM per product, so a request can't silently trigger
+    an unbounded batch of generations."""
+    from app.db import SessionLocal
+    from app.models.shopify_store import ShopifyStore
+    from app.models.shopify_product import ShopifyProduct
+    from app.shopify.content_ideas import generate_product_post_idea
+
+    limit = min(max(1, limit), _BULK_IDEA_LIMIT_MAX)
+
+    session = SessionLocal()
+    try:
+        store = session.query(ShopifyStore).filter_by(user_id=_uuid.UUID(str(user_id))).first()
+        if not store:
+            raise ValueError("No connected Shopify store for this user")
+
+        products = (
+            session.query(ShopifyProduct)
+            .filter_by(store_id=store.id, is_active=True, idea_generated_at=None)
+            .order_by(ShopifyProduct.synced_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        generated, failed = 0, 0
+        for product in products:
+            try:
+                idea = generate_product_post_idea(_serialize_product(product))
+                product.idea_hook = idea.get("hook")
+                product.idea_caption = idea.get("caption")
+                product.idea_cta = idea.get("cta")
+                product.idea_hashtags = idea.get("hashtag_strategy")
+                product.idea_platform = idea.get("platform")
+                product.idea_generated_at = datetime.utcnow()
+                session.commit()
+                generated += 1
+            except Exception as e:
+                session.rollback()
+                logger.warning("Idea generation failed for product %s: %s", product.id, e)
+                failed += 1
+
+        remaining = (
+            session.query(ShopifyProduct)
+            .filter_by(store_id=store.id, is_active=True, idea_generated_at=None)
+            .count()
+        )
+        return {"generated": generated, "failed": failed, "remaining_without_idea": remaining}
     finally:
         session.close()
 

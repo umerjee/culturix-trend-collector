@@ -124,6 +124,14 @@ async def lifespan(_):
             # stale-deactivation logic to only products within its lookback
             # window; see app/shopify/service.py.
             "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS product_created_at TIMESTAMP",
+            # AI-generated post idea per product (posting digest) — see
+            # app/shopify/content_ideas.py.
+            "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS idea_hook TEXT",
+            "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS idea_caption TEXT",
+            "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS idea_cta VARCHAR(255)",
+            "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS idea_hashtags TEXT",
+            "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS idea_platform VARCHAR(50)",
+            "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS idea_generated_at TIMESTAMP",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -1357,6 +1365,40 @@ def shopify_disconnect(user_id: str):
     from app.shopify.service import disconnect_store
     disconnect_store(user_id)
     return {"status": "disconnected"}
+
+
+@app.post("/api/shopify/products/{product_id}/generate-idea")
+def shopify_generate_product_idea(product_id: str, body: dict):
+    """Synchronous — a single LLM call, and the caller (the digest UI) needs
+    the result immediately to render the new hook/caption on that one card."""
+    user_id = body.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    from app.shopify.service import generate_idea_for_product
+    try:
+        return generate_idea_for_product(user_id, product_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logging.error("Shopify product idea generation failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Idea generation failed: {e}")
+
+
+@app.post("/api/shopify/generate-ideas")
+def shopify_generate_ideas_bulk(body: dict, background_tasks: BackgroundTasks):
+    """Backgrounded — generates ideas for up to `limit` products missing one
+    (capped server-side, see service.py), which is multiple sequential LLM
+    calls and could take a while for a full batch."""
+    user_id = body.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    limit = body.get("limit", 10)
+    from app.shopify.service import get_store
+    if not get_store(user_id):
+        raise HTTPException(status_code=404, detail="No connected Shopify store for this user")
+    from app.shopify.service import generate_ideas_bulk
+    background_tasks.add_task(generate_ideas_bulk, user_id=user_id, limit=limit)
+    return {"status": "generation_started"}
 
 
 @app.post("/api/content-posts")
