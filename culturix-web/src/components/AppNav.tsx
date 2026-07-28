@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { Zap, LayoutDashboard, TrendingUp, Settings, ShieldCheck, LogOut, HelpCircle } from "lucide-react";
+import { Zap, LayoutDashboard, TrendingUp, Settings, ShieldCheck, LogOut, HelpCircle, ShoppingBag } from "lucide-react";
 
-type NavKey = "dashboard" | "performance" | "settings";
+type NavKey = "dashboard" | "performance" | "shopify" | "settings";
 
 interface Props {
   active: NavKey;
@@ -11,6 +11,7 @@ interface Props {
 const ITEMS: { key: NavKey; href: string; icon: React.ReactNode; label: string }[] = [
   { key: "dashboard", href: "/dashboard", icon: <LayoutDashboard className="h-3.5 w-3.5" />, label: "Dashboard" },
   { key: "performance", href: "/dashboard/performance", icon: <TrendingUp className="h-3.5 w-3.5" />, label: "Performance" },
+  { key: "shopify", href: "/dashboard/shopify", icon: <ShoppingBag className="h-3.5 w-3.5" />, label: "Shopify" },
   { key: "settings", href: "/settings", icon: <Settings className="h-3.5 w-3.5" />, label: "Settings" },
 ];
 

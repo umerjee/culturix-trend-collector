@@ -325,3 +325,39 @@ export const AVATAR_TYPES: AvatarTypePreset[] = [
     persona_tags: ["Clean Girl", "Soft Life", "That Girl"],
   },
 ];
+
+export interface ShopifyStore {
+  shop_domain: string;
+  shop_name: string | null;
+  currency: string | null;
+  connected_at: string | null;
+  last_synced_at: string | null;
+  last_sync_status: "running" | "ok" | "error" | null;
+  last_sync_error: string | null;
+  product_count: number;
+}
+
+export interface ShopifyProductIdea {
+  hook: string | null;
+  caption: string | null;
+  cta: string | null;
+  hashtag_strategy: string | null;
+  platform: string | null;
+  generated_at: string | null;
+}
+
+export interface ShopifyProduct {
+  id: string;
+  shopify_product_id: string;
+  title: string;
+  description: string | null;
+  product_type: string | null;
+  tags: string | null;
+  price: string | null;
+  currency: string | null;
+  product_url: string | null;
+  image_urls: string[];
+  product_created_at: string | null;
+  synced_at: string | null;
+  idea: ShopifyProductIdea | null;
+}
