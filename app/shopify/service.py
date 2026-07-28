@@ -2,12 +2,13 @@
 for the planned Shopify-linked content feature (daily reels/posts generated
 from a brand's real product catalog).
 
-Auth is a per-store custom-app access token, pasted in by the store owner
-from their own Shopify admin (Settings -> Apps -> Develop apps), not a full
-OAuth flow: no Partner account or app review needed, works immediately for
-a pilot on one store. app/social/'s OAuthProvider ABC doesn't apply here —
-there's no authorize/exchange/refresh cycle, just a static token, so this
-gets its own small module instead of being forced into that shape.
+Auth is OAuth (custom distribution — see app/shopify/oauth.py for why not a
+public App Store listing yet): main.py's /api/shopify/connect and /callback
+routes handle the authorize/exchange cycle and hand this module a real
+access_token to persist. app/social/'s OAuthProvider ABC doesn't apply here
+— Shopify's token flow has no refresh step and none of the publish/
+fetch_post_metrics shape that ABC assumes — so this gets its own small
+module instead of being forced into that shape.
 
 One store per user for now, matching the pilot's single-store scope.
 """
@@ -19,7 +20,7 @@ import uuid as _uuid
 logger = logging.getLogger("culturix.shopify")
 
 
-def _normalize_domain(shop_domain: str) -> str:
+def normalize_domain(shop_domain: str) -> str:
     d = shop_domain.strip().lower()
     if d.startswith("https://"):
         d = d[len("https://"):]
@@ -40,7 +41,7 @@ def connect_store(user_id, shop_domain: str, access_token: str):
     from app.shopify.client import fetch_shop_info
     from app.social.crypto import encrypt
 
-    domain = _normalize_domain(shop_domain)
+    domain = normalize_domain(shop_domain)
     info = fetch_shop_info(domain, access_token)
 
     session = SessionLocal()

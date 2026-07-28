@@ -1262,26 +1262,62 @@ def test_social_connection(platform: str, user_id: str, content_profile_id: Opti
 
 # ── Shopify (product-catalog ingestion — see app/shopify/service.py) ──
 
-@app.post("/api/shopify/connect")
-def shopify_connect(body: dict, background_tasks: BackgroundTasks):
-    """Validates the token live against Shopify before persisting, then
-    kicks off a first catalog sync in the background so the connect call
-    itself doesn't block on paginating the whole store."""
-    user_id = body.get("user_id")
-    shop_domain = body.get("shop_domain")
-    access_token = body.get("access_token")
-    if not user_id or not shop_domain or not access_token:
-        raise HTTPException(status_code=400, detail="user_id, shop_domain, and access_token are required")
+@app.get("/api/shopify/connect")
+def shopify_connect(user_id: str, shop_domain: str):
+    """Redirects to Shopify's OAuth consent screen for the given store —
+    custom distribution, so this only works for stores that have accepted
+    this app's install invitation from the Shopify Dev Dashboard (see
+    app/shopify/oauth.py's module docstring). No server-side session here
+    (auth lives in the frontend's Supabase session), so `state` carries the
+    user_id through the round trip untrusted, same convention as
+    social_connect()'s state param above — the difference is Shopify signs
+    the whole callback with an HMAC of our client secret, so a forged
+    callback can't actually forge a working state value either."""
+    from fastapi.responses import RedirectResponse
+    from app.shopify.oauth import get_authorize_url, is_valid_shop_domain
+    from app.shopify.service import normalize_domain
 
-    from app.shopify.service import connect_store, sync_products
+    domain = normalize_domain(shop_domain)
+    if not is_valid_shop_domain(domain):
+        raise HTTPException(status_code=400, detail="Invalid Shopify store domain")
+
+    backend_base = os.getenv("BACKEND_BASE_URL", "https://culturix-trend-collector-production.up.railway.app")
+    redirect_uri = f"{backend_base}/api/shopify/callback"
     try:
-        result = connect_store(user_id, shop_domain, access_token)
+        return RedirectResponse(get_authorize_url(domain, redirect_uri, state=user_id))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.get("/api/shopify/callback")
+def shopify_callback(request: Request, background_tasks: BackgroundTasks):
+    from fastapi.responses import RedirectResponse
+    from app.shopify.oauth import verify_hmac, exchange_code, is_valid_shop_domain
+    from app.shopify.service import connect_store, sync_products
+
+    frontend_base = os.getenv("NEXT_PUBLIC_SITE_URL", "https://culturix-web.vercel.app")
+    params = dict(request.query_params)
+    shop = params.get("shop", "")
+    code = params.get("code")
+    user_id = params.get("state")
+
+    if not code or not shop or not user_id:
+        return RedirectResponse(f"{frontend_base}/settings?shopify_error=missing_params")
+    if not is_valid_shop_domain(shop):
+        return RedirectResponse(f"{frontend_base}/settings?shopify_error=invalid_shop")
+    if not verify_hmac(params):
+        logging.error("Shopify OAuth callback failed HMAC verification for shop %s", shop)
+        return RedirectResponse(f"{frontend_base}/settings?shopify_error=invalid_signature")
+
+    try:
+        access_token = exchange_code(shop, code)
+        connect_store(user_id, shop, access_token)
     except Exception as e:
-        logging.error("Shopify connect failed: %s", e)
-        raise HTTPException(status_code=400, detail=f"Could not connect to Shopify: {e}")
+        logging.error("Shopify OAuth callback failed: %s", e)
+        return RedirectResponse(f"{frontend_base}/settings?shopify_error=exchange_failed")
 
     background_tasks.add_task(sync_products, user_id=user_id)
-    return result
+    return RedirectResponse(f"{frontend_base}/settings?shopify_connected=1")
 
 
 @app.get("/api/shopify/store")
