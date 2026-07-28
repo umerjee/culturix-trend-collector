@@ -185,6 +185,45 @@ class TestSyncProducts:
         with pytest.raises(ValueError, match="No connected Shopify store"):
             shopify_service.sync_products(uuid.uuid4())
 
+    def test_skips_a_sync_already_marked_running_instead_of_running_concurrently(self, shopify_db, mocker):
+        # Regression test: nothing previously stopped duplicate background
+        # syncs from piling up when triggered repeatedly (OAuth callback's
+        # auto-sync, manual retries) — live-confirmed to cause several
+        # concurrent syncs racing each other on the same upserts.
+        user_id = uuid.uuid4()
+        _connect(shopify_db, mocker, user_id)
+        session = shopify_db()
+        store = session.query(ShopifyStore).filter_by(user_id=user_id).first()
+        store.last_sync_status = "running"
+        session.commit()
+        session.close()
+
+        mock_fetch = mocker.patch("app.shopify.client.fetch_products_page")
+
+        result = shopify_service.sync_products(user_id)
+
+        assert result == {"synced": 0, "deactivated": 0, "skipped": "already running"}
+        mock_fetch.assert_not_called()
+
+    def test_sets_status_to_running_while_in_progress(self, shopify_db, mocker):
+        user_id = uuid.uuid4()
+        _connect(shopify_db, mocker, user_id)
+
+        seen_status_during_fetch = []
+
+        def _capture_status_and_return(*args, **kwargs):
+            session = shopify_db()
+            store = session.query(ShopifyStore).filter_by(user_id=user_id).first()
+            seen_status_during_fetch.append(store.last_sync_status)
+            session.close()
+            return {"products": [], "has_next_page": False, "end_cursor": None}
+
+        mocker.patch("app.shopify.client.fetch_products_page", side_effect=_capture_status_and_return)
+
+        shopify_service.sync_products(user_id)
+
+        assert seen_status_during_fetch == ["running"]
+
     def test_failed_sync_records_error_on_store(self, shopify_db, mocker):
         user_id = uuid.uuid4()
         _connect(shopify_db, mocker, user_id)

@@ -107,6 +107,19 @@ def sync_products(user_id) -> dict:
         if not store:
             raise ValueError("No connected Shopify store for this user")
 
+        # Guard against concurrent duplicate runs — every earlier trigger
+        # (OAuth callback's auto-sync, manual POST /api/shopify/sync retries)
+        # started its own independent background task with nothing stopping
+        # them piling up. Live-confirmed: several of these ended up running
+        # at once against a large catalog, all racing each other on the same
+        # upserts, which was the actual cause of unrelated reads against
+        # these tables hanging — not a stuck/infinite loop in any single run.
+        if store.last_sync_status == "running":
+            logger.info("Shopify sync for user %s already in progress — skipping duplicate trigger", user_id)
+            return {"synced": 0, "deactivated": 0, "skipped": "already running"}
+        store.last_sync_status = "running"
+        session.commit()
+
         access_token = decrypt(store.access_token)
         cutoff = datetime.utcnow() - timedelta(days=_SYNC_LOOKBACK_DAYS)
         seen_ids = set()
