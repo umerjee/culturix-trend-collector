@@ -139,6 +139,15 @@ def sync_products(user_id) -> dict:
                 row.is_active = True
                 row.synced_at = datetime.utcnow()
                 synced += 1
+            # Commit per page rather than once at the end — a large catalog
+            # combined with throttle-retry backoff (see client.py) can make
+            # one sync run for several minutes; holding a single open
+            # session/connection for that whole duration was observed live
+            # to starve the DB connection pool for unrelated requests (e.g.
+            # a simple GET /api/shopify/store hanging while a sync was still
+            # in progress). Committing here also means a mid-run failure
+            # doesn't lose already-fetched pages.
+            session.commit()
             if not page["has_next_page"]:
                 break
             cursor = page["end_cursor"]
