@@ -30,6 +30,8 @@ async def lifespan(_):
     from app.models.content_post_snapshot import ContentPostSnapshot  # noqa: F401
     from app.models.integration_health import IntegrationHealth       # noqa: F401
     from app.models.persona_occurrence import PersonaOccurrence       # noqa: F401
+    from app.models.shopify_store import ShopifyStore                 # noqa: F401
+    from app.models.shopify_product import ShopifyProduct             # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -1256,6 +1258,65 @@ def test_social_connection(platform: str, user_id: str, content_profile_id: Opti
         return test_connection(session, account)
     finally:
         session.close()
+
+
+# ── Shopify (product-catalog ingestion — see app/shopify/service.py) ──
+
+@app.post("/api/shopify/connect")
+def shopify_connect(body: dict, background_tasks: BackgroundTasks):
+    """Validates the token live against Shopify before persisting, then
+    kicks off a first catalog sync in the background so the connect call
+    itself doesn't block on paginating the whole store."""
+    user_id = body.get("user_id")
+    shop_domain = body.get("shop_domain")
+    access_token = body.get("access_token")
+    if not user_id or not shop_domain or not access_token:
+        raise HTTPException(status_code=400, detail="user_id, shop_domain, and access_token are required")
+
+    from app.shopify.service import connect_store, sync_products
+    try:
+        result = connect_store(user_id, shop_domain, access_token)
+    except Exception as e:
+        logging.error("Shopify connect failed: %s", e)
+        raise HTTPException(status_code=400, detail=f"Could not connect to Shopify: {e}")
+
+    background_tasks.add_task(sync_products, user_id=user_id)
+    return result
+
+
+@app.get("/api/shopify/store")
+def shopify_get_store(user_id: str):
+    from app.shopify.service import get_store
+    store = get_store(user_id)
+    if not store:
+        raise HTTPException(status_code=404, detail="No connected Shopify store for this user")
+    return store
+
+
+@app.post("/api/shopify/sync")
+def shopify_sync(body: dict, background_tasks: BackgroundTasks):
+    user_id = body.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    from app.shopify.service import get_store
+    if not get_store(user_id):
+        raise HTTPException(status_code=404, detail="No connected Shopify store for this user")
+    from app.shopify.service import sync_products
+    background_tasks.add_task(sync_products, user_id=user_id)
+    return {"status": "sync_started"}
+
+
+@app.get("/api/shopify/products")
+def shopify_list_products(user_id: str, active_only: bool = True):
+    from app.shopify.service import list_products
+    return list_products(user_id, active_only=active_only)
+
+
+@app.delete("/api/shopify/disconnect")
+def shopify_disconnect(user_id: str):
+    from app.shopify.service import disconnect_store
+    disconnect_store(user_id)
+    return {"status": "disconnected"}
 
 
 @app.post("/api/content-posts")

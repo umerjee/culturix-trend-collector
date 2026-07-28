@@ -1,0 +1,227 @@
+"""Shopify store connection + product catalog sync — the ingestion layer
+for the planned Shopify-linked content feature (daily reels/posts generated
+from a brand's real product catalog).
+
+Auth is a per-store custom-app access token, pasted in by the store owner
+from their own Shopify admin (Settings -> Apps -> Develop apps), not a full
+OAuth flow: no Partner account or app review needed, works immediately for
+a pilot on one store. app/social/'s OAuthProvider ABC doesn't apply here —
+there's no authorize/exchange/refresh cycle, just a static token, so this
+gets its own small module instead of being forced into that shape.
+
+One store per user for now, matching the pilot's single-store scope.
+"""
+import logging
+from datetime import datetime
+from typing import Optional
+import uuid as _uuid
+
+logger = logging.getLogger("culturix.shopify")
+
+
+def _normalize_domain(shop_domain: str) -> str:
+    d = shop_domain.strip().lower()
+    if d.startswith("https://"):
+        d = d[len("https://"):]
+    elif d.startswith("http://"):
+        d = d[len("http://"):]
+    d = d.rstrip("/")
+    if not d.endswith(".myshopify.com") and "." not in d:
+        d = f"{d}.myshopify.com"
+    return d
+
+
+def connect_store(user_id, shop_domain: str, access_token: str):
+    """Validates the token/domain with a live Shopify call before persisting
+    anything — a bad token should fail loudly here, not silently on the
+    first sync."""
+    from app.db import SessionLocal
+    from app.models.shopify_store import ShopifyStore
+    from app.shopify.client import fetch_shop_info
+    from app.social.crypto import encrypt
+
+    domain = _normalize_domain(shop_domain)
+    info = fetch_shop_info(domain, access_token)
+
+    session = SessionLocal()
+    try:
+        uid = _uuid.UUID(str(user_id))
+        store = session.query(ShopifyStore).filter_by(user_id=uid).first()
+        if not store:
+            store = ShopifyStore(user_id=uid)
+            session.add(store)
+        store.shop_domain = info["domain"]
+        store.access_token = encrypt(access_token)
+        store.shop_name = info["name"]
+        store.currency = info["currency"]
+        store.is_active = True
+        store.connected_at = datetime.utcnow()
+        store.last_sync_status = None
+        store.last_sync_error = None
+        session.commit()
+        return {
+            "shop_domain": store.shop_domain,
+            "shop_name": store.shop_name,
+            "currency": store.currency,
+        }
+    finally:
+        session.close()
+
+
+def sync_products(user_id) -> dict:
+    """Fully paginates the store's catalog and upserts into shopify_products.
+    Products no longer returned by Shopify are marked is_active=False rather
+    than deleted, matching this codebase's status-not-delete convention."""
+    from app.db import SessionLocal
+    from app.models.shopify_store import ShopifyStore
+    from app.models.shopify_product import ShopifyProduct
+    from app.shopify.client import fetch_products_page
+    from app.social.crypto import decrypt
+
+    session = SessionLocal()
+    uid = _uuid.UUID(str(user_id))
+    store = None
+    try:
+        store = session.query(ShopifyStore).filter_by(user_id=uid, is_active=True).first()
+        if not store:
+            raise ValueError("No connected Shopify store for this user")
+
+        access_token = decrypt(store.access_token)
+        seen_ids = set()
+        cursor = None
+        synced = 0
+        while True:
+            page = fetch_products_page(store.shop_domain, access_token, cursor=cursor)
+            for p in page["products"]:
+                seen_ids.add(p["shopify_product_id"])
+                row = (
+                    session.query(ShopifyProduct)
+                    .filter_by(store_id=store.id, shopify_product_id=p["shopify_product_id"])
+                    .first()
+                )
+                if not row:
+                    row = ShopifyProduct(store_id=store.id, shopify_product_id=p["shopify_product_id"])
+                    session.add(row)
+                row.title = p["title"]
+                row.description = p["description"]
+                row.product_type = p["product_type"]
+                row.tags = p["tags"]
+                row.price = p["price"]
+                row.currency = p["currency"]
+                row.product_url = p["product_url"]
+                row.image_urls = p["image_urls"]
+                row.is_active = True
+                row.synced_at = datetime.utcnow()
+                synced += 1
+            if not page["has_next_page"]:
+                break
+            cursor = page["end_cursor"]
+
+        stale_query = session.query(ShopifyProduct).filter(
+            ShopifyProduct.store_id == store.id,
+            ShopifyProduct.is_active.is_(True),
+        )
+        if seen_ids:
+            stale_query = stale_query.filter(~ShopifyProduct.shopify_product_id.in_(seen_ids))
+        deactivated = 0
+        for row in stale_query.all():
+            row.is_active = False
+            deactivated += 1
+
+        store.last_synced_at = datetime.utcnow()
+        store.last_sync_status = "ok"
+        store.last_sync_error = None
+        session.commit()
+        logger.info("Shopify sync for user %s: %d synced, %d deactivated", user_id, synced, deactivated)
+        return {"synced": synced, "deactivated": deactivated}
+    except Exception as e:
+        session.rollback()
+        logger.error("Shopify sync failed for user %s: %s", user_id, e)
+        if store is not None:
+            try:
+                store.last_sync_status = "error"
+                store.last_sync_error = str(e)[:2000]
+                session.commit()
+            except Exception:
+                session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def get_store(user_id) -> Optional[dict]:
+    from app.db import SessionLocal
+    from app.models.shopify_store import ShopifyStore
+    from app.models.shopify_product import ShopifyProduct
+
+    session = SessionLocal()
+    try:
+        store = session.query(ShopifyStore).filter_by(
+            user_id=_uuid.UUID(str(user_id)), is_active=True
+        ).first()
+        if not store:
+            return None
+        product_count = (
+            session.query(ShopifyProduct)
+            .filter_by(store_id=store.id, is_active=True)
+            .count()
+        )
+        return {
+            "shop_domain": store.shop_domain,
+            "shop_name": store.shop_name,
+            "currency": store.currency,
+            "connected_at": store.connected_at.isoformat() if store.connected_at else None,
+            "last_synced_at": store.last_synced_at.isoformat() if store.last_synced_at else None,
+            "last_sync_status": store.last_sync_status,
+            "last_sync_error": store.last_sync_error,
+            "product_count": product_count,
+        }
+    finally:
+        session.close()
+
+
+def list_products(user_id, active_only: bool = True) -> list:
+    from app.db import SessionLocal
+    from app.models.shopify_store import ShopifyStore
+    from app.models.shopify_product import ShopifyProduct
+
+    session = SessionLocal()
+    try:
+        store = session.query(ShopifyStore).filter_by(user_id=_uuid.UUID(str(user_id))).first()
+        if not store:
+            return []
+        query = session.query(ShopifyProduct).filter_by(store_id=store.id)
+        if active_only:
+            query = query.filter_by(is_active=True)
+        return [
+            {
+                "id": str(p.id),
+                "shopify_product_id": p.shopify_product_id,
+                "title": p.title,
+                "description": p.description,
+                "product_type": p.product_type,
+                "tags": p.tags,
+                "price": p.price,
+                "currency": p.currency,
+                "product_url": p.product_url,
+                "image_urls": p.image_urls or [],
+                "synced_at": p.synced_at.isoformat() if p.synced_at else None,
+            }
+            for p in query.order_by(ShopifyProduct.title).all()
+        ]
+    finally:
+        session.close()
+
+
+def disconnect_store(user_id) -> None:
+    from app.db import SessionLocal
+    from app.models.shopify_store import ShopifyStore
+
+    session = SessionLocal()
+    try:
+        store = session.query(ShopifyStore).filter_by(user_id=_uuid.UUID(str(user_id))).first()
+        if store:
+            store.is_active = False  # soft — matches ConnectedAccount's status-not-delete convention
+            session.commit()
+    finally:
+        session.close()
