@@ -111,3 +111,65 @@ class TestFetchProductsPage:
         assert product["price"] is None
         assert product["image_urls"] == []
         assert page["has_next_page"] is False
+
+    def test_created_after_builds_search_query_filter(self, mocker):
+        mock_post = mocker.patch(
+            "app.shopify.client.httpx.post",
+            return_value=_resp({
+                "data": {"products": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "edges": []}}
+            }),
+        )
+
+        fetch_products_page("test-store.myshopify.com", "shpat_abc123", created_after="2026-04-30")
+
+        sent_variables = mock_post.call_args.kwargs["json"]["variables"]
+        assert sent_variables["query"] == "created_at:>='2026-04-30'"
+
+    def test_no_created_after_sends_null_query_filter(self, mocker):
+        mock_post = mocker.patch(
+            "app.shopify.client.httpx.post",
+            return_value=_resp({
+                "data": {"products": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "edges": []}}
+            }),
+        )
+
+        fetch_products_page("test-store.myshopify.com", "shpat_abc123")
+
+        sent_variables = mock_post.call_args.kwargs["json"]["variables"]
+        assert sent_variables["query"] is None
+
+
+class TestGraphqlThrottleRetry:
+    def test_retries_on_throttled_error_then_succeeds(self, mocker):
+        throttled = _resp({"errors": [{"message": "Throttled", "extensions": {"code": "THROTTLED"}}]})
+        success = _resp({"data": {"shop": {"name": "Test Store", "currencyCode": "USD", "myshopifyDomain": "test-store.myshopify.com"}}})
+        mocker.patch("app.shopify.client.httpx.post", side_effect=[throttled, throttled, success])
+        mock_sleep = mocker.patch("app.shopify.client.time.sleep")
+
+        info = fetch_shop_info("test-store.myshopify.com", "shpat_abc123")
+
+        assert info["name"] == "Test Store"
+        assert mock_sleep.call_count == 2
+
+    def test_gives_up_after_max_retries(self, mocker):
+        throttled = _resp({"errors": [{"message": "Throttled", "extensions": {"code": "THROTTLED"}}]})
+        mocker.patch("app.shopify.client.httpx.post", return_value=throttled)
+        mocker.patch("app.shopify.client.time.sleep")
+
+        try:
+            fetch_shop_info("test-store.myshopify.com", "shpat_abc123")
+            assert False, "expected RuntimeError"
+        except RuntimeError as e:
+            assert "Throttled" in str(e)
+
+    def test_non_throttled_error_fails_immediately_without_retry(self, mocker):
+        error_resp = _resp({"errors": [{"message": "Invalid API key or access token"}]})
+        mocker.patch("app.shopify.client.httpx.post", return_value=error_resp)
+        mock_sleep = mocker.patch("app.shopify.client.time.sleep")
+
+        try:
+            fetch_shop_info("test-store.myshopify.com", "bad-token")
+            assert False, "expected RuntimeError"
+        except RuntimeError as e:
+            assert "Invalid API key" in str(e)
+        mock_sleep.assert_not_called()

@@ -18,6 +18,11 @@ class ShopifyProduct(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     store_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     shopify_product_id = Column(String(64), nullable=False)  # numeric Shopify GID tail, as a string
+    # Shopify's own creation timestamp for the product — distinct from
+    # synced_at below. Used to scope sync's stale-deactivation logic (see
+    # service.py) to only the products actually within the sync's lookback
+    # window, since sync_products() only fetches recently-created products.
+    product_created_at = Column(DateTime, nullable=True)
     title = Column(String(500), nullable=False)
     description = Column(Text, nullable=True)
     product_type = Column(String(255), nullable=True)

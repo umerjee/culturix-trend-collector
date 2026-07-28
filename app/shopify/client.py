@@ -5,10 +5,13 @@ Built GraphQL-first, not against the REST Admin API: REST has been a
 Shopify's own guidance is that the REST/GraphQL feature gap only grows over
 time — starting on REST in 2026 would mean migrating almost immediately.
 """
+import time
 from typing import Optional
 import httpx
 
 _API_VERSION = "2026-04"  # Shopify ships a new version quarterly — bump periodically
+_MAX_THROTTLE_RETRIES = 5
+_THROTTLE_BACKOFF_SECONDS = 2  # doubles each retry: 2, 4, 8, 16, 32
 
 
 def _url(shop_domain: str) -> str:
@@ -16,17 +19,28 @@ def _url(shop_domain: str) -> str:
 
 
 def _graphql(shop_domain: str, access_token: str, query: str, variables: Optional[dict] = None) -> dict:
-    resp = httpx.post(
-        _url(shop_domain),
-        headers={"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"},
-        json={"query": query, "variables": variables or {}},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    if data.get("errors"):
-        raise RuntimeError(f"Shopify GraphQL error: {data['errors']}")
-    return data["data"]
+    """Shopify's GraphQL Admin API uses cost-based throttling (a leaky
+    bucket, not a simple request-count limit) — a large catalog sync can
+    burn through the bucket well before pagination finishes, live-confirmed
+    against a real store with a large product catalog. Retries with backoff
+    on a THROTTLED error rather than failing the whole sync partway through."""
+    for attempt in range(_MAX_THROTTLE_RETRIES + 1):
+        resp = httpx.post(
+            _url(shop_domain),
+            headers={"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"},
+            json={"query": query, "variables": variables or {}},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        errors = data.get("errors")
+        if not errors:
+            return data["data"]
+        is_throttled = any((e.get("extensions") or {}).get("code") == "THROTTLED" for e in errors)
+        if not is_throttled or attempt == _MAX_THROTTLE_RETRIES:
+            raise RuntimeError(f"Shopify GraphQL error: {errors}")
+        time.sleep(_THROTTLE_BACKOFF_SECONDS * (2 ** attempt))
+    raise RuntimeError("unreachable")  # loop always returns or raises above
 
 
 def fetch_shop_info(shop_domain: str, access_token: str) -> dict:
@@ -38,8 +52,8 @@ def fetch_shop_info(shop_domain: str, access_token: str) -> dict:
 
 
 _PRODUCTS_QUERY = """
-query Products($first: Int!, $after: String) {
-  products(first: $first, after: $after) {
+query Products($first: Int!, $after: String, $query: String) {
+  products(first: $first, after: $after, query: $query) {
     pageInfo { hasNextPage endCursor }
     edges {
       node {
@@ -48,6 +62,7 @@ query Products($first: Int!, $after: String) {
         description
         productType
         tags
+        createdAt
         onlineStoreUrl
         priceRangeV2 { minVariantPrice { amount currencyCode } }
         images(first: 10) { edges { node { url } } }
@@ -64,8 +79,16 @@ def _gid_to_id(gid: str) -> str:
 
 
 def fetch_products_page(shop_domain: str, access_token: str, cursor: Optional[str] = None,
-                         page_size: int = 50) -> dict:
-    data = _graphql(shop_domain, access_token, _PRODUCTS_QUERY, {"first": page_size, "after": cursor})
+                         page_size: int = 50, created_after: Optional[str] = None) -> dict:
+    """`created_after` is an ISO date/datetime string (e.g. "2026-04-30"),
+    passed through as a Shopify search-query filter (`created_at:>=...`) so
+    a large catalog only pages through recently-created products rather
+    than the entire store history — see Shopify's search syntax docs."""
+    search_query = f"created_at:>='{created_after}'" if created_after else None
+    data = _graphql(
+        shop_domain, access_token, _PRODUCTS_QUERY,
+        {"first": page_size, "after": cursor, "query": search_query},
+    )
     connection = data["products"]
 
     products = []
@@ -78,6 +101,7 @@ def fetch_products_page(shop_domain: str, access_token: str, cursor: Optional[st
             "description": node.get("description") or "",
             "product_type": node.get("productType") or "",
             "tags": ", ".join(node.get("tags") or []),
+            "created_at": node.get("createdAt"),
             "price": min_price.get("amount"),
             "currency": min_price.get("currencyCode"),
             "product_url": node.get("onlineStoreUrl"),

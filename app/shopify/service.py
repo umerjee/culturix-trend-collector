@@ -69,15 +69,35 @@ def connect_store(user_id, shop_domain: str, access_token: str):
         session.close()
 
 
+_SYNC_LOOKBACK_DAYS = 90
+
+
+def _parse_shopify_datetime(value: Optional[str]):
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+
+
 def sync_products(user_id) -> dict:
-    """Fully paginates the store's catalog and upserts into shopify_products.
-    Products no longer returned by Shopify are marked is_active=False rather
-    than deleted, matching this codebase's status-not-delete convention."""
+    """Paginates products created in the last _SYNC_LOOKBACK_DAYS and upserts
+    into shopify_products — scoped to recent products rather than the full
+    catalog history, both because only-recently-added products are what
+    matter for content generation, and because a large store's full catalog
+    can burn through Shopify's GraphQL rate limit before pagination finishes
+    (live-confirmed against a real store with a large product count).
+
+    Products within that window no longer returned by Shopify are marked
+    is_active=False rather than deleted (status-not-delete convention).
+    Products outside the window are never touched by this function at all —
+    not being in scope isn't the same as no longer existing, so leaving them
+    alone (rather than deactivating everything not freshly re-seen) avoids
+    incorrectly deactivating a store's entire older catalog on every sync."""
     from app.db import SessionLocal
     from app.models.shopify_store import ShopifyStore
     from app.models.shopify_product import ShopifyProduct
     from app.shopify.client import fetch_products_page
     from app.social.crypto import decrypt
+    from datetime import timedelta
 
     session = SessionLocal()
     uid = _uuid.UUID(str(user_id))
@@ -88,11 +108,15 @@ def sync_products(user_id) -> dict:
             raise ValueError("No connected Shopify store for this user")
 
         access_token = decrypt(store.access_token)
+        cutoff = datetime.utcnow() - timedelta(days=_SYNC_LOOKBACK_DAYS)
         seen_ids = set()
         cursor = None
         synced = 0
         while True:
-            page = fetch_products_page(store.shop_domain, access_token, cursor=cursor)
+            page = fetch_products_page(
+                store.shop_domain, access_token, cursor=cursor,
+                created_after=cutoff.strftime("%Y-%m-%d"),
+            )
             for p in page["products"]:
                 seen_ids.add(p["shopify_product_id"])
                 row = (
@@ -107,6 +131,7 @@ def sync_products(user_id) -> dict:
                 row.description = p["description"]
                 row.product_type = p["product_type"]
                 row.tags = p["tags"]
+                row.product_created_at = _parse_shopify_datetime(p.get("created_at"))
                 row.price = p["price"]
                 row.currency = p["currency"]
                 row.product_url = p["product_url"]
@@ -121,6 +146,7 @@ def sync_products(user_id) -> dict:
         stale_query = session.query(ShopifyProduct).filter(
             ShopifyProduct.store_id == store.id,
             ShopifyProduct.is_active.is_(True),
+            ShopifyProduct.product_created_at >= cutoff,
         )
         if seen_ids:
             stale_query = stale_query.filter(~ShopifyProduct.shopify_product_id.in_(seen_ids))
@@ -206,6 +232,7 @@ def list_products(user_id, active_only: bool = True) -> list:
                 "currency": p.currency,
                 "product_url": p.product_url,
                 "image_urls": p.image_urls or [],
+                "product_created_at": p.product_created_at.isoformat() if p.product_created_at else None,
                 "synced_at": p.synced_at.isoformat() if p.synced_at else None,
             }
             for p in query.order_by(ShopifyProduct.title).all()

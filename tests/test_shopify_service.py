@@ -2,6 +2,7 @@ import os
 os.environ.setdefault("TOKEN_ENCRYPTION_KEY", "zJZ2n2n0vXW5X8mYQKqVYV9YQe3F2Z8h0m3nQeF1nQ8=")
 
 import uuid
+from datetime import datetime, timedelta
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -11,6 +12,10 @@ from app.models.shopify_store import ShopifyStore
 from app.models.shopify_product import ShopifyProduct
 from app.social.crypto import decrypt
 from app.shopify import service as shopify_service
+
+# Within sync_products()'s 90-day lookback window, matching what a real
+# Shopify createdAt timestamp looks like.
+_RECENT = (datetime.utcnow() - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @pytest.fixture
@@ -85,7 +90,7 @@ class TestSyncProducts:
             "products": [
                 {"shopify_product_id": "1", "title": "Kurta", "description": "d", "product_type": "Kurta",
                  "tags": "eid", "price": "45.00", "currency": "USD", "product_url": "https://x/1",
-                 "image_urls": ["https://x/img1.jpg"]},
+                 "image_urls": ["https://x/img1.jpg"], "created_at": _RECENT},
             ],
             "has_next_page": True,
             "end_cursor": "cursor1",
@@ -94,7 +99,7 @@ class TestSyncProducts:
             "products": [
                 {"shopify_product_id": "2", "title": "Shalwar Kameez", "description": "d2", "product_type": "SK",
                  "tags": "new", "price": "60.00", "currency": "USD", "product_url": "https://x/2",
-                 "image_urls": ["https://x/img2.jpg"]},
+                 "image_urls": ["https://x/img2.jpg"], "created_at": _RECENT},
             ],
             "has_next_page": False,
             "end_cursor": None,
@@ -118,7 +123,7 @@ class TestSyncProducts:
             "products": [
                 {"shopify_product_id": "1", "title": "Kurta", "description": "d", "product_type": "Kurta",
                  "tags": "eid", "price": "45.00", "currency": "USD", "product_url": "https://x/1",
-                 "image_urls": ["https://x/img1.jpg"]},
+                 "image_urls": ["https://x/img1.jpg"], "created_at": _RECENT},
             ],
             "has_next_page": False,
             "end_cursor": None,
@@ -149,9 +154,11 @@ class TestSyncProducts:
         first_sync = {
             "products": [
                 {"shopify_product_id": "1", "title": "Kurta", "description": "d", "product_type": "Kurta",
-                 "tags": "", "price": "45.00", "currency": "USD", "product_url": "https://x/1", "image_urls": []},
+                 "tags": "", "price": "45.00", "currency": "USD", "product_url": "https://x/1", "image_urls": [],
+                 "created_at": _RECENT},
                 {"shopify_product_id": "2", "title": "Shalwar", "description": "d", "product_type": "SK",
-                 "tags": "", "price": "60.00", "currency": "USD", "product_url": "https://x/2", "image_urls": []},
+                 "tags": "", "price": "60.00", "currency": "USD", "product_url": "https://x/2", "image_urls": [],
+                 "created_at": _RECENT},
             ],
             "has_next_page": False,
             "end_cursor": None,
@@ -203,7 +210,8 @@ class TestGetStoreAndListProducts:
         page = {
             "products": [
                 {"shopify_product_id": "1", "title": "Kurta", "description": "d", "product_type": "Kurta",
-                 "tags": "", "price": "45.00", "currency": "USD", "product_url": "https://x/1", "image_urls": []},
+                 "tags": "", "price": "45.00", "currency": "USD", "product_url": "https://x/1", "image_urls": [],
+                 "created_at": _RECENT},
             ],
             "has_next_page": False,
             "end_cursor": None,
@@ -221,9 +229,11 @@ class TestGetStoreAndListProducts:
         first_sync = {
             "products": [
                 {"shopify_product_id": "1", "title": "Kurta", "description": "d", "product_type": "Kurta",
-                 "tags": "", "price": "45.00", "currency": "USD", "product_url": "https://x/1", "image_urls": []},
+                 "tags": "", "price": "45.00", "currency": "USD", "product_url": "https://x/1", "image_urls": [],
+                 "created_at": _RECENT},
                 {"shopify_product_id": "2", "title": "Shalwar", "description": "d", "product_type": "SK",
-                 "tags": "", "price": "60.00", "currency": "USD", "product_url": "https://x/2", "image_urls": []},
+                 "tags": "", "price": "60.00", "currency": "USD", "product_url": "https://x/2", "image_urls": [],
+                 "created_at": _RECENT},
             ],
             "has_next_page": False,
             "end_cursor": None,

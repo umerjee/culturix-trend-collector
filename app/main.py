@@ -120,6 +120,10 @@ async def lifespan(_):
             # stuck at the 'pending' default, which would misleadingly imply
             # they're still active candidates awaiting promotion.
             "UPDATE personas SET status = 'dormant' WHERE status = 'pending' AND centroid_embedding IS NULL",
+            # Shopify's own product creation timestamp — scopes sync_products()'s
+            # stale-deactivation logic to only products within its lookback
+            # window; see app/shopify/service.py.
+            "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS product_created_at TIMESTAMP",
         ]:
             try:
                 _conn.execute(_text(_stmt))
