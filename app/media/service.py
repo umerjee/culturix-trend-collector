@@ -9,13 +9,16 @@ _PROVIDERS = {
     "voiceover": ("edge-tts",   "app.media.voice", "EdgeTTSProvider"),
     "music":     ("minimax",    "app.media.music", "MiniMaxMusicProvider"),
     "video":     ("kling",      "app.media.video",  "KlingProvider"),
-    "image":     ("qwen-image-2.0", "app.media.image", "QwenImageProvider"),
+    # Tries Cloudflare Workers AI's free tier (FLUX.1 schnell) first, falls
+    # back to paid Qwen-Image — see image_hybrid.py for why.
+    "image":     ("cloudflare-flux+qwen-image-2.0", "app.media.image_hybrid", "HybridImageProvider"),
 }
 
 _EXT = {
     "audio/mpeg": "mp3",
     "video/mp4":  "mp4",
     "image/png":  "png",
+    "image/jpeg": "jpg",
 }
 
 
