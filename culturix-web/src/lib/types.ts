@@ -346,6 +346,13 @@ export interface ShopifyProductIdea {
   generated_at: string | null;
 }
 
+export interface ShopifyProductReel {
+  status: "processing" | "done" | "failed" | null;
+  video_url: string | null;
+  error: string | null;
+  generated_at: string | null;
+}
+
 export interface ShopifyProduct {
   id: string;
   shopify_product_id: string;
@@ -360,4 +367,5 @@ export interface ShopifyProduct {
   product_created_at: string | null;
   synced_at: string | null;
   idea: ShopifyProductIdea | null;
+  reel: ShopifyProductReel | null;
 }

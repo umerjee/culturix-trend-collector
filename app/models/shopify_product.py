@@ -44,3 +44,11 @@ class ShopifyProduct(Base):
     idea_hashtags = Column(Text, nullable=True)
     idea_platform = Column(String(50), nullable=True)
     idea_generated_at = Column(DateTime, nullable=True)
+
+    # AI-generated reel (Kling image-to-video, grounded in this product's own
+    # photo — see app/shopify/reels.py) — a slow, real-cost operation, so
+    # tracked as its own async status rather than folded into idea_* above.
+    reel_status = Column(String(12), nullable=True)  # processing|done|failed
+    reel_video_url = Column(Text, nullable=True)
+    reel_error = Column(Text, nullable=True)
+    reel_generated_at = Column(DateTime, nullable=True)

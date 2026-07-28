@@ -1,8 +1,17 @@
-"""Kling text-to-video provider.
+"""Kling text-to-video AND image-to-video provider.
 
 Kling uses JWT auth — requires two env vars:
   KLING_ACCESS_KEY   (from kling.ai/dev → API Keys)
   KLING_SECRET_KEY   (same page)
+
+Image-to-video (reference_image_url) is what makes Shopify product reels
+possible: it animates the ACTUAL product photo instead of generating a
+generic AI model wearing something similar — the whole reason this exists
+is the brand doesn't have physical access to film the real garment
+themselves, so the video has to be grounded in the real photo, not a text
+description alone. Endpoint/payload shape confirmed against Kling's public
+API docs (aggregator-mirrored, official docs blocked non-browser fetches at
+time of integration) and live-tested against a real product photo.
 """
 import os
 import time
@@ -56,19 +65,27 @@ class KlingProvider(VideoProvider):
         }
 
     def generate(self, prompt: str, duration_seconds: int = 5,
-                 aspect_ratio: str = "9:16") -> MediaResult:
+                 aspect_ratio: str = "9:16", reference_image_url: Optional[str] = None) -> MediaResult:
+        # image2video has no aspect_ratio param — the output inherits the
+        # source image's own aspect ratio instead.
+        endpoint = "image2video" if reference_image_url else "text2video"
+        body = {
+            "model_name": "kling-v1",
+            "prompt": prompt,
+            "cfg_scale": 0.5,
+            "mode": "std",
+            "duration": str(duration_seconds),
+        }
+        if reference_image_url:
+            body["image"] = reference_image_url
+        else:
+            body["aspect_ratio"] = aspect_ratio
+
         # Step 1 — create task
         resp = _post_with_retry(
-            f"{_BASE}/v1/videos/text2video",
+            f"{_BASE}/v1/videos/{endpoint}",
             headers=self._headers(),
-            json={
-                "model_name": "kling-v1",
-                "prompt": prompt,
-                "cfg_scale": 0.5,
-                "mode": "std",
-                "aspect_ratio": aspect_ratio,
-                "duration": str(duration_seconds),
-            },
+            json=body,
             timeout=30,
         )
         resp.raise_for_status()
@@ -81,7 +98,7 @@ class KlingProvider(VideoProvider):
         for _ in range(_MAX_POLLS):
             time.sleep(_POLL_INTERVAL)
             poll = httpx.get(
-                f"{_BASE}/v1/videos/text2video/{task_id}",
+                f"{_BASE}/v1/videos/{endpoint}/{task_id}",
                 headers=self._headers(),
                 timeout=20,
             )

@@ -132,6 +132,12 @@ async def lifespan(_):
             "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS idea_hashtags TEXT",
             "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS idea_platform VARCHAR(50)",
             "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS idea_generated_at TIMESTAMP",
+            # AI-generated reel (Kling image-to-video) per product — see
+            # app/shopify/reels.py.
+            "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS reel_status VARCHAR(12)",
+            "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS reel_video_url TEXT",
+            "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS reel_error TEXT",
+            "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS reel_generated_at TIMESTAMP",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -1398,6 +1404,23 @@ def shopify_generate_ideas_bulk(body: dict, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=404, detail="No connected Shopify store for this user")
     from app.shopify.service import generate_ideas_bulk
     background_tasks.add_task(generate_ideas_bulk, user_id=user_id, limit=limit)
+    return {"status": "generation_started"}
+
+
+@app.post("/api/shopify/products/{product_id}/generate-reel")
+def shopify_generate_product_reel(product_id: str, body: dict, background_tasks: BackgroundTasks):
+    """Backgrounded — Kling image-to-video can take up to ~6 minutes, so this
+    can't be a synchronous request/response like idea generation is. The
+    digest UI polls GET /api/shopify/products to see reel_status flip from
+    processing to done/failed."""
+    user_id = body.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    from app.shopify.service import get_store
+    if not get_store(user_id):
+        raise HTTPException(status_code=404, detail="No connected Shopify store for this user")
+    from app.shopify.reels import generate_reel_for_product
+    background_tasks.add_task(generate_reel_for_product, user_id=user_id, product_id=product_id)
     return {"status": "generation_started"}
 
 

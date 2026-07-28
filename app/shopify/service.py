@@ -251,6 +251,12 @@ def _serialize_product(p) -> dict:
             "platform": p.idea_platform,
             "generated_at": p.idea_generated_at.isoformat() if p.idea_generated_at else None,
         } if p.idea_generated_at else None,
+        "reel": {
+            "status": p.reel_status,
+            "video_url": p.reel_video_url,
+            "error": p.reel_error,
+            "generated_at": p.reel_generated_at.isoformat() if p.reel_generated_at else None,
+        } if p.reel_status else None,
     }
 
 

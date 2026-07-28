@@ -24,7 +24,7 @@ class MusicProvider(ABC):
 class VideoProvider(ABC):
     @abstractmethod
     def generate(self, prompt: str, duration_seconds: int = 5,
-                 aspect_ratio: str = "9:16") -> MediaResult: ...
+                 aspect_ratio: str = "9:16", reference_image_url: Optional[str] = None) -> MediaResult: ...
 
 
 class ImageProvider(ABC):
