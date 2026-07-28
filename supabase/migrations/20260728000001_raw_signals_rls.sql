@@ -1,0 +1,14 @@
+-- raw_signals was created without RLS ("backend-only, accessed via service
+-- role key" per its original migration comment) -- but that reasoning is
+-- backwards: with RLS disabled, Supabase's PostgREST API exposes a public
+-- table to ANY caller holding just the anon key, for both reads and writes,
+-- since there's no policy restricting anything. Flagged by Supabase's own
+-- security scanner (rls_disabled_in_public) as a critical, publicly
+-- read/write/delete-able table.
+--
+-- The correct way to express "only my backend's service role should touch
+-- this" is RLS enabled with zero policies: that blocks all anon/authenticated
+-- access by default, while the service role key is unaffected either way --
+-- it always bypasses RLS regardless of whether it's enabled, so this closes
+-- the public hole without touching how the backend reads/writes this table.
+ALTER TABLE raw_signals ENABLE ROW LEVEL SECURITY;
