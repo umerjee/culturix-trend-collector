@@ -55,10 +55,17 @@ export default function ToonManager({ brandId, initialToons, scripts, variants, 
     if (!variantId || !scriptId) return;
     setCreating(true);
     try {
+      // A toon defaults to the background its script was generated for —
+      // scripts drive backgrounds, not the reverse — but this stays
+      // overridable per-toon via the background picker below once created.
+      const inheritedBackgroundId = scriptFor(scriptId)?.background_id ?? undefined;
       const res = await fetch("/api/culturetoons/toons", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brand_id: brandId, character_variant_id: variantId, script_id: scriptId, title: title.trim() || undefined }),
+        body: JSON.stringify({
+          brand_id: brandId, character_variant_id: variantId, script_id: scriptId,
+          background_id: inheritedBackgroundId, title: title.trim() || undefined,
+        }),
       });
       if (res.ok) {
         const created = await res.json();

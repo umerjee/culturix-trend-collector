@@ -187,6 +187,11 @@ async def lifespan(_):
             "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS tone VARCHAR(20)",
             "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS shots JSON",
             "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS total_duration_seconds INTEGER",
+            # A script's own scene setting drives its background, not the
+            # other way around — see generate_script_background in
+            # app/routers/culturetoons.py.
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS background_id UUID",
+            "ALTER TABLE toon_backgrounds ADD COLUMN IF NOT EXISTS description TEXT",
             # Kling Omni video pipeline state — see app/services/culturetoon_video.py.
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS raw_video_url TEXT",
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS clip_video_urls TEXT[] DEFAULT '{}'",

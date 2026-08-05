@@ -64,7 +64,12 @@ export default function CultureToonWorkspace({
       )}
       {tab === "backgrounds" && <BackgroundGallery brandId={brand.id} initialBackgrounds={initialBackgrounds} />}
       {tab === "scripts" && (
-        <ScriptManager brandId={brand.id} initialScripts={initialScripts} variants={initialVariants} />
+        <ScriptManager
+          brandId={brand.id}
+          initialScripts={initialScripts}
+          variants={initialVariants}
+          backgrounds={initialBackgrounds}
+        />
       )}
       {tab === "toons" && (
         <ToonManager

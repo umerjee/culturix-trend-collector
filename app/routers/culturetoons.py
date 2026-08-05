@@ -279,7 +279,8 @@ def _serialize_expression(e) -> dict:
 def _serialize_background(bg) -> dict:
     return {
         "id": str(bg.id), "brand_id": str(bg.brand_id), "name": bg.name,
-        "image_url": bg.image_url, "tags": bg.tags, "is_active": bg.is_active,
+        "image_url": bg.image_url, "tags": bg.tags, "description": bg.description,
+        "is_active": bg.is_active,
         "created_at": bg.created_at.isoformat() if bg.created_at else None,
         "updated_at": bg.updated_at.isoformat() if bg.updated_at else None,
     }
@@ -292,10 +293,48 @@ def _serialize_script(s) -> dict:
         "source_type": s.source_type, "source_id": s.source_id,
         "hook_line": s.hook_line, "dialogue": s.dialogue, "scene_direction": s.scene_direction,
         "tone": s.tone, "shots": s.shots, "total_duration_seconds": s.total_duration_seconds,
+        "background_id": str(s.background_id) if s.background_id else None,
         "generation_source": s.generation_source, "status": s.status,
         "created_at": s.created_at.isoformat() if s.created_at else None,
         "updated_at": s.updated_at.isoformat() if s.updated_at else None,
     }
+
+
+def _script_scene_description(script) -> str:
+    """The text a background should be generated from — a script's own
+    scene setting, not something typed independently of it. scene_direction
+    is used verbatim for manual scripts; AI-suggested (shot-structured)
+    scripts have no single scene_direction, so their shots' action lines
+    are concatenated instead (that's where "cut to the kitchen" / "outside
+    on a balcony" style setting descriptions actually live for those)."""
+    if script.scene_direction:
+        return script.scene_direction.strip()
+    if script.shots:
+        actions = [s.get("action", "").strip() for s in script.shots if s.get("action")]
+        if actions:
+            return " ".join(actions)
+    return ""
+
+
+def _build_background_prompt(description: str, art_style_key: str) -> str:
+    """Scene/setting illustration — deliberately NOT the same template as
+    _build_cartoon_prompt: no reference-image identity handling (backgrounds
+    are always generated from text only, never grounded on a photo), and
+    explicitly excludes any character/person from the frame, since Kling
+    composites the character element separately at video-generation time
+    (see generate_video_for_toon) — a background with its own person in it
+    would just be a second, uncontrolled character in the shot. Uses just
+    the style's short label (e.g. "3D Pixar-style cartoon"), not its full
+    character-oriented prompt fragment — that fragment's "character-
+    turnaround" phrasing doesn't apply to a static scene."""
+    style = ART_STYLES.get(art_style_key, ART_STYLES[DEFAULT_ART_STYLE])
+    return (
+        f"A background/setting illustration in the visual style of {style['label']}, wide "
+        "establishing shot, smooth stylized shading and clean linework matching that style. "
+        "This is an empty scene/environment only — no people, no characters, no figures anywhere in "
+        f"the frame. Scene: {description}. Fully stylized illustrated background art, not a "
+        "photorealistic photo. High detail, single continuous scene."
+    )
 
 
 def _serialize_toon(t) -> dict:
@@ -889,7 +928,10 @@ def create_background(body: dict):
     session = SessionLocal()
     try:
         brand = _get_brand_owned(session, brand_id, user_id)
-        background = ToonBackground(brand_id=brand.id, name=body["name"], tags=body.get("tags"))
+        background = ToonBackground(
+            brand_id=brand.id, name=body["name"], tags=body.get("tags"),
+            description=body.get("description"),
+        )
         session.add(background)
         session.commit()
         session.refresh(background)
@@ -923,7 +965,7 @@ def update_background(background_id: str, body: dict):
     session = SessionLocal()
     try:
         background = _get_background_owned(session, background_id, brand_id, user_id)
-        for field in ("name", "tags", "is_active"):
+        for field in ("name", "tags", "description", "is_active"):
             if field in body:
                 setattr(background, field, body[field])
         session.commit()
@@ -1064,6 +1106,66 @@ def suggest_script(body: dict):
         session.close()
 
 
+@router.post("/scripts/suggest-from-idea")
+def suggest_script_from_idea(body: dict):
+    """Same shape as suggest_script, but grounded in the user's own
+    free-text scenario idea instead of a live Persona/Cluster — for anyone
+    who already knows what they want the character to react to and doesn't
+    want to browse/wait for trends. Synchronous, same reasoning as
+    suggest_script: a single LLM call, the caller needs the result to
+    render it immediately."""
+    from app.db import SessionLocal
+    from app.models.toon_script import ToonScript
+    from app.services.culturetoon_script import (
+        generate_toon_script_from_idea, ToonScriptGenerationError, TONE_OPTIONS as _TONES,
+    )
+
+    user_id = body.get("user_id")
+    brand_id = body.get("brand_id")
+    idea = (body.get("idea") or "").strip()
+    character_variant_id = body.get("character_variant_id")
+    tone = body.get("tone", "funny")
+
+    if not user_id or not brand_id or not idea:
+        raise HTTPException(status_code=400, detail="user_id, brand_id and idea are required")
+    if tone not in _TONES:
+        raise HTTPException(status_code=400, detail=f"tone must be one of {_TONES}")
+
+    session = SessionLocal()
+    try:
+        brand = _get_brand_owned(session, brand_id, user_id)
+        variant = None
+        if character_variant_id:
+            variant = _get_variant_owned(session, character_variant_id, brand_id, user_id)
+
+        try:
+            result = generate_toon_script_from_idea(
+                idea, variant, tone=tone,
+                num_shots=body.get("num_shots", 4),
+                target_duration_seconds=body.get("target_duration_seconds", 12),
+            )
+        except ToonScriptGenerationError as exc:
+            raise HTTPException(status_code=502, detail=f"Script generation failed: {exc}")
+
+        script = ToonScript(
+            brand_id=brand.id,
+            character_variant_id=_uuid.UUID(character_variant_id) if character_variant_id else None,
+            source_type="idea",
+            hook_line=result.get("hook_line"),
+            tone=result.get("tone"),
+            shots=result.get("shots"),
+            total_duration_seconds=result.get("total_duration_seconds"),
+            generation_source="ai",
+            status="draft",
+        )
+        session.add(script)
+        session.commit()
+        session.refresh(script)
+        return _serialize_script(script)
+    finally:
+        session.close()
+
+
 @router.get("/scripts")
 def list_scripts(user_id: str, brand_id: str, character_variant_id: Optional[str] = None, status: Optional[str] = None):
     from app.db import SessionLocal
@@ -1112,6 +1214,13 @@ def update_script(script_id: str, body: dict):
                 script.character_variant_id = _uuid.UUID(new_variant_id)
             else:
                 script.character_variant_id = None
+        if "background_id" in body:
+            new_background_id = body["background_id"]
+            if new_background_id:
+                _get_background_owned(session, new_background_id, brand_id, user_id)
+                script.background_id = _uuid.UUID(new_background_id)
+            else:
+                script.background_id = None
         session.commit()
         session.refresh(script)
         return _serialize_script(script)
@@ -1128,6 +1237,66 @@ def delete_script(script_id: str, user_id: str, brand_id: str):
         script.status = "archived"
         session.commit()
         return {"status": "archived"}
+    finally:
+        session.close()
+
+
+@router.post("/scripts/{script_id}/generate-background")
+def generate_script_background(script_id: str, body: dict):
+    """Generates a background FROM this script's own scene setting —
+    scripts drive backgrounds, not the reverse (previously backgrounds were
+    a name-only gallery created with no relationship to any script at all).
+    Creates a new ToonBackground (kept in the brand's reusable pool, same
+    as before — other scripts/toons can still pick it directly) and points
+    this script at it, so a Toon built from this script can default to
+    inheriting it."""
+    from app.db import SessionLocal
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+    session = SessionLocal()
+    try:
+        script = _get_script_owned(session, script_id, brand_id, user_id)
+        scene = _script_scene_description(script)
+        extra_description = (body.get("extra_description") or "").strip()
+        description = " ".join(p for p in [scene, extra_description] if p)
+        if not description:
+            raise HTTPException(
+                status_code=400,
+                detail="This script has no scene direction or shot actions to generate a background from — "
+                       "add one, or pass extra_description.",
+            )
+        art_style = body.get("art_style") or DEFAULT_ART_STYLE
+        if art_style not in ART_STYLES:
+            raise HTTPException(status_code=400, detail=f"Unknown art_style: {art_style}")
+
+        prompt = _build_background_prompt(description, art_style)
+        from app.media.image_hybrid import HybridImageProvider
+        try:
+            result = HybridImageProvider().generate(prompt)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Background generation failed: {exc}")
+
+        from app.models.toon_background import ToonBackground
+        ext = "jpg" if result.content_type == "image/jpeg" else "png"
+        background_id = _uuid.uuid4()
+        path = f"culturetoons/{brand_id}/backgrounds/{background_id}.{ext}"
+        from app.services.culturetoon_media import save_image, ImageUploadError
+        try:
+            url = save_image(result.asset_bytes, result.content_type, path)
+        except ImageUploadError as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to store generated background: {exc}")
+
+        name = (body.get("name") or "").strip() or (script.hook_line or description)[:120]
+        background = ToonBackground(
+            id=background_id, brand_id=_uuid.UUID(brand_id), name=name,
+            image_url=url, description=description,
+        )
+        session.add(background)
+        script.background_id = background_id
+        session.commit()
+        session.refresh(background)
+        return _serialize_background(background)
     finally:
         session.close()
 

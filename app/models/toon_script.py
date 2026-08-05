@@ -42,6 +42,12 @@ class ToonScript(Base):
     shots = Column(JSON, nullable=True)
     total_duration_seconds = Column(Integer, nullable=True)
 
+    # The background generated FOR this script's scene (see
+    # POST /scripts/{id}/generate-background) — a script's setting drives
+    # its background, not the other way around, so a Toon built from this
+    # script defaults to inheriting it rather than picking one blind.
+    background_id = Column(UUID(as_uuid=True), nullable=True)
+
     generation_source = Column(String(10), nullable=False, default="manual")  # manual|ai
     status = Column(String(12), nullable=False, default="draft")  # draft|approved|archived
     created_at = Column(DateTime, default=datetime.utcnow)

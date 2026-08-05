@@ -449,6 +449,7 @@ export interface ToonBackground {
   name: string;
   image_url: string | null;
   tags: string | null;
+  description: string | null;
   is_active: boolean;
   created_at: string | null;
   updated_at: string | null;
@@ -468,7 +469,7 @@ export interface ToonScript {
   id: string;
   brand_id: string;
   character_variant_id: string | null;
-  source_type: "persona" | "cluster" | null;
+  source_type: "persona" | "cluster" | "idea" | null;
   source_id: number | null;
   hook_line: string | null;
   dialogue: string | null;
@@ -476,6 +477,7 @@ export interface ToonScript {
   tone: (typeof TONE_OPTIONS)[number] | null;
   shots: ToonScriptShot[] | null;
   total_duration_seconds: number | null;
+  background_id: string | null;
   generation_source: "manual" | "ai";
   status: "draft" | "approved" | "archived";
   created_at: string | null;

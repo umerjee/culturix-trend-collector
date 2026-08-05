@@ -561,6 +561,164 @@ class TestScripts:
         assert archived["status"] == "archived"
 
 
+class TestSuggestScriptFromIdea:
+    def test_requires_idea(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.suggest_script_from_idea({
+                "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_invalid_tone_400s(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.suggest_script_from_idea({
+                "user_id": user_id, "brand_id": brand["id"], "idea": "Character reacts to a trend", "tone": "nope",
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_generates_shot_structured_script_from_free_text_idea(self, db, user_id, brand_and_character, mocker):
+        brand, _character, variant = brand_and_character
+        fake_shots = [
+            {"shot_number": 1, "duration_seconds": 5, "action": "sees the mess", "expression": "Shocked", "dialogue": "Who did this?!"},
+            {"shot_number": 2, "duration_seconds": 3, "action": "sighs", "expression": "Deadpan", "dialogue": None},
+        ]
+        mock_generate = mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H", "tone": "funny", "shots": fake_shots, "total_duration_seconds": 8},
+        )
+        result = culturetoons.suggest_script_from_idea({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "idea": "The character comes home to find the kitchen destroyed", "tone": "funny",
+        })
+
+        assert result["generation_source"] == "ai"
+        assert result["source_type"] == "idea"
+        assert result["source_id"] is None
+        assert result["shots"] == fake_shots
+        mock_generate.assert_called_once()
+        call_args = mock_generate.call_args
+        assert call_args[0][0] == "The character comes home to find the kitchen destroyed"
+
+    def test_generation_failure_returns_502(self, db, user_id, brand_and_character, mocker):
+        from app.services.culturetoon_script import ToonScriptGenerationError
+        brand, _character, variant = brand_and_character
+        mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            side_effect=ToonScriptGenerationError("provider down"),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.suggest_script_from_idea({
+                "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"], "idea": "Something",
+            })
+        assert exc_info.value.status_code == 502
+
+
+class TestGenerateScriptBackground:
+    def test_requires_scene_information(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        script = culturetoons.create_script({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"], "hook_line": "Hook",
+        })
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_script_background(script["id"], {"user_id": user_id, "brand_id": brand["id"]})
+        assert exc_info.value.status_code == 400
+
+    def test_generates_from_manual_scene_direction(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, _character, variant = brand_and_character
+        script = culturetoons.create_script({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "scene_direction": "A cluttered suburban kitchen at dinnertime.",
+        })
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/bg-gen.png")
+
+        result = culturetoons.generate_script_background(script["id"], {"user_id": user_id, "brand_id": brand["id"]})
+
+        assert result["image_url"] == "https://supabase/bg-gen.png"
+        assert "cluttered suburban kitchen" in result["description"]
+        sent_prompt = mock_generate.call_args[0][0]
+        assert "no people, no characters" in sent_prompt.lower()
+        assert "cluttered suburban kitchen" in sent_prompt
+
+        updated_script = culturetoons.get_script(script["id"], user_id, brand["id"])
+        assert updated_script["background_id"] == result["id"]
+
+    def test_generates_from_shot_actions_when_no_scene_direction(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, _character, variant = brand_and_character
+        session = db()
+        from app.models.toon_script import ToonScript
+        script_row = ToonScript(
+            brand_id=uuid.UUID(brand["id"]), character_variant_id=uuid.UUID(variant["id"]),
+            generation_source="ai",
+            shots=[
+                {"shot_number": 1, "duration_seconds": 4, "action": "She storms into a busy office."},
+                {"shot_number": 2, "duration_seconds": 4, "action": "Cut to a rooftop at sunset."},
+            ],
+        )
+        session.add(script_row)
+        session.commit()
+        script_id = str(script_row.id)
+        session.close()
+
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/bg-gen.png")
+
+        culturetoons.generate_script_background(script_id, {"user_id": user_id, "brand_id": brand["id"]})
+
+        sent_prompt = mock_generate.call_args[0][0]
+        assert "busy office" in sent_prompt
+        assert "rooftop at sunset" in sent_prompt
+
+    def test_extra_description_combines_with_scene(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, _character, variant = brand_and_character
+        script = culturetoons.create_script({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "scene_direction": "A kitchen.",
+        })
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/bg-gen.png")
+
+        culturetoons.generate_script_background(script["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "extra_description": "rainy evening, moody lighting",
+        })
+
+        sent_prompt = mock_generate.call_args[0][0]
+        assert "kitchen" in sent_prompt
+        assert "rainy evening, moody lighting" in sent_prompt
+
+    def test_created_background_is_reusable_in_brands_pool(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, _character, variant = brand_and_character
+        script = culturetoons.create_script({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "scene_direction": "A kitchen.",
+        })
+        mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/bg-gen.png")
+
+        culturetoons.generate_script_background(script["id"], {"user_id": user_id, "brand_id": brand["id"]})
+
+        listed = culturetoons.list_backgrounds(user_id, brand["id"])
+        assert len(listed) == 1
+
+
 class TestToons:
     def test_lifecycle(self, db, user_id, brand_and_character):
         brand, _character, variant = brand_and_character

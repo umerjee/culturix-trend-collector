@@ -72,16 +72,20 @@ def _source_type_and_context(persona_or_cluster) -> tuple[str, str]:
     )
 
 
-def _build_prompt(persona_or_cluster, variant, tone: str, num_shots: int, target_duration_seconds: int) -> str:
-    source_type, context = _source_type_and_context(persona_or_cluster)
-    variant_line = ""
-    if variant is not None:
-        variant_line = (
-            f"\nWrite this specifically for the character '{variant.name}' "
-            f"({variant.description or variant.culture_tag or 'no further description'}). "
-            f"Every shot's action/dialogue must be something THIS character does/says, "
-            f"reacting to the trend below in a way that reflects their cultural humor/perspective.\n"
-        )
+def _variant_line(variant, source_type: str) -> str:
+    if variant is None:
+        return ""
+    return (
+        f"\nWrite this specifically for the character '{variant.name}' "
+        f"({variant.description or variant.culture_tag or 'no further description'}). "
+        f"Every shot's action/dialogue must be something THIS character does/says, "
+        f"reacting to the {source_type} below in a way that reflects their cultural humor/perspective.\n"
+    )
+
+
+def _build_prompt_from_context(source_type: str, context: str, variant, tone: str,
+                                num_shots: int, target_duration_seconds: int) -> str:
+    variant_line = _variant_line(variant, source_type)
 
     return f"""You are a scriptwriter for short character-based comedy skits for
 social video, grounded in the {source_type} below. The tone must be: {tone}.
@@ -109,6 +113,11 @@ Return ONLY valid JSON with exactly these keys:
 Return ONLY the JSON object, no other text."""
 
 
+def _build_prompt(persona_or_cluster, variant, tone: str, num_shots: int, target_duration_seconds: int) -> str:
+    source_type, context = _source_type_and_context(persona_or_cluster)
+    return _build_prompt_from_context(source_type, context, variant, tone, num_shots, target_duration_seconds)
+
+
 def _parse(raw: str) -> dict:
     text = raw.strip()
     if text.startswith("```"):
@@ -118,12 +127,7 @@ def _parse(raw: str) -> dict:
     return json.loads(text.strip())
 
 
-def generate_toon_script(persona_or_cluster, variant: Optional[object] = None, tone: str = "funny",
-                          num_shots: int = 4, target_duration_seconds: int = 12) -> dict:
-    """Returns {"hook_line": str, "tone": str,
-      "shots": [{"shot_number", "duration_seconds", "action", "expression", "dialogue"}, ...],
-      "total_duration_seconds": int}."""
-    prompt = _build_prompt(persona_or_cluster, variant, tone, num_shots, target_duration_seconds)
+def _call_llm_for_script(prompt: str, tone: str) -> dict:
     try:
         if os.getenv("QWEN_API_KEY"):
             qwen = _get_qwen_client()
@@ -155,6 +159,27 @@ def generate_toon_script(persona_or_cluster, variant: Optional[object] = None, t
         "shots": shots,
         "total_duration_seconds": parsed.get("total_duration_seconds") or total,
     }
+
+
+def generate_toon_script(persona_or_cluster, variant: Optional[object] = None, tone: str = "funny",
+                          num_shots: int = 4, target_duration_seconds: int = 12) -> dict:
+    """Returns {"hook_line": str, "tone": str,
+      "shots": [{"shot_number", "duration_seconds", "action", "expression", "dialogue"}, ...],
+      "total_duration_seconds": int}."""
+    prompt = _build_prompt(persona_or_cluster, variant, tone, num_shots, target_duration_seconds)
+    return _call_llm_for_script(prompt, tone)
+
+
+def generate_toon_script_from_idea(idea: str, variant: Optional[object] = None, tone: str = "funny",
+                                    num_shots: int = 4, target_duration_seconds: int = 12) -> dict:
+    """Same shape/contract as generate_toon_script, but grounded in the
+    user's own free-text scenario idea instead of a live trending Persona
+    or Cluster — for when someone already knows what they want the
+    character to react to and doesn't want to wait for/browse trends."""
+    context = f"User's scenario idea: {idea.strip()}"
+    prompt = _build_prompt_from_context("user-provided scenario idea", context, variant, tone,
+                                         num_shots, target_duration_seconds)
+    return _call_llm_for_script(prompt, tone)
 
 
 def build_kling_prompt(shots: list, element_name: str) -> str:

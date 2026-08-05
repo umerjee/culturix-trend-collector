@@ -16,6 +16,10 @@ class ToonBackground(Base):
     name = Column(String(120), nullable=False)
     image_url = Column(Text, nullable=True)
     tags = Column(Text, nullable=True)  # comma-separated, matches ShopifyProduct.tags
+    # The scene description this background was generated from (usually a
+    # script's scene_direction/shots — see generate_script_background in
+    # app/routers/culturetoons.py). NULL for manually-uploaded backgrounds.
+    description = Column(Text, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
