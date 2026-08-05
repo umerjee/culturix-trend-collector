@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db import Base
 from app.models.trend import Trend
 from app.models.cluster import Cluster
-from app.clustering_service import _fingerprint, _jaccard, _compute_momentum, _ai_label_cluster, run_clustering
+from app.clustering_service import _fingerprint, _jaccard, _compute_momentum, _ai_label_clusters_batch, run_clustering
 
 
 def _trend(id):
@@ -97,7 +97,12 @@ class TestComputeMomentum:
         assert previous_size == 0
 
 
-class TestAiLabelCluster:
+class TestAiLabelClustersBatch:
+    def test_empty_list_returns_empty_dict_without_calling_the_api(self, mocker):
+        mock_create = mocker.patch("app.clustering_service._anthropic.messages.create")
+        assert _ai_label_clusters_batch([]) == {}
+        mock_create.assert_not_called()
+
     def test_empty_content_raises_diagnosable_error_not_json_decode_error(self, mocker):
         # Regression test: response.content[0].text == "" used to hit
         # json.loads("") -> "Expecting value: line 1 column 1 (char 0)",
@@ -108,7 +113,7 @@ class TestAiLabelCluster:
         post = SimpleNamespace(platform="tiktok", title="t", content="c")
 
         with pytest.raises(ValueError, match="empty content"):
-            _ai_label_cluster([post])
+            _ai_label_clusters_batch([(0, [post])])
 
     def test_empty_content_list_also_raises_diagnosable_error(self, mocker):
         mock_response = SimpleNamespace(content=[])
@@ -116,7 +121,36 @@ class TestAiLabelCluster:
         post = SimpleNamespace(platform="tiktok", title="t", content="c")
 
         with pytest.raises(ValueError, match="empty content"):
-            _ai_label_cluster([post])
+            _ai_label_clusters_batch([(0, [post])])
+
+    def test_single_call_labels_every_cluster(self, mocker):
+        mock_response = SimpleNamespace(content=[SimpleNamespace(text=(
+            '{"0": {"theme": "Theme A", "summary": "Summary A"}, '
+            '"1": {"theme": "Theme B", "summary": "Summary B"}}'
+        ))])
+        mock_create = mocker.patch("app.clustering_service._anthropic.messages.create", return_value=mock_response)
+        post = SimpleNamespace(platform="tiktok", title="t", content="c")
+
+        result = _ai_label_clusters_batch([(0, [post]), (1, [post])])
+
+        mock_create.assert_called_once()  # one call, not one per cluster
+        assert result[0]["theme"] == "Theme A"
+        assert result[1]["theme"] == "Theme B"
+
+    def test_cluster_missing_from_response_is_simply_absent_not_a_crash(self, mocker):
+        # Model only returned label "0" -- label "1" should just be missing
+        # from the result dict, letting the caller treat it as failed
+        # without the whole batch raising.
+        mock_response = SimpleNamespace(content=[SimpleNamespace(text=(
+            '{"0": {"theme": "Theme A", "summary": "Summary A"}}'
+        ))])
+        mocker.patch("app.clustering_service._anthropic.messages.create", return_value=mock_response)
+        post = SimpleNamespace(platform="tiktok", title="t", content="c")
+
+        result = _ai_label_clusters_batch([(0, [post]), (1, [post])])
+
+        assert 0 in result
+        assert 1 not in result
 
 
 @pytest.fixture
@@ -136,6 +170,19 @@ def _real_trend(session, **overrides):
     return t
 
 
+def _stub_advisory_lock(mocker):
+    # Postgres-only advisory lock functions don't exist in SQLite — stub
+    # session.execute to report "lock acquired" without hitting the DB for
+    # that specific call, real queries pass through.
+    from sqlalchemy.orm import Session as _Session
+    orig_execute = _Session.execute
+    def fake_execute(self, stmt, *a, **kw):
+        if "advisory_lock" in str(stmt):
+            return SimpleNamespace(scalar=lambda: True)
+        return orig_execute(self, stmt, *a, **kw)
+    mocker.patch.object(_Session, "execute", fake_execute)
+
+
 class TestRunClusteringPartialFailure:
     def test_one_clusters_ai_labeling_failure_does_not_roll_back_others(self, mocker, clustering_db):
         session = clustering_db()
@@ -147,24 +194,15 @@ class TestRunClusteringPartialFailure:
         # Two labels -> two clusters of 3 trends each. HDBSCAN itself is
         # mocked; only run_clustering's own persistence logic is under test.
         mocker.patch("app.clustering_service.cluster_embeddings_hdbscan", return_value=[0, 0, 0, 1, 1, 1])
-        # Postgres-only advisory lock functions don't exist in SQLite —
-        # stub session.execute to report "lock acquired" without hitting
-        # the DB for that specific call, real queries pass through.
-        from sqlalchemy.orm import Session as _Session
-        orig_execute = _Session.execute
-        def fake_execute(self, stmt, *a, **kw):
-            if "advisory_lock" in str(stmt):
-                return SimpleNamespace(scalar=lambda: True)
-            return orig_execute(self, stmt, *a, **kw)
-        mocker.patch.object(_Session, "execute", fake_execute)
+        _stub_advisory_lock(mocker)
 
-        call_count = {"n": 0}
-        def flaky_label(trends):
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                raise ValueError("Claude returned empty content for cluster labeling")
-            return {"theme": "Real theme", "summary": "Real summary"}
-        mocker.patch("app.clustering_service._ai_label_cluster", side_effect=flaky_label)
+        # The batched call succeeds overall but only returns a label for
+        # cluster 1 -- cluster 0 is simply missing from the response, same
+        # as a real malformed/incomplete model reply.
+        mocker.patch(
+            "app.clustering_service._ai_label_clusters_batch",
+            return_value={1: {"theme": "Real theme", "summary": "Real summary"}},
+        )
 
         result = run_clustering(limit=10, min_cluster_size=2)
 
@@ -178,6 +216,42 @@ class TestRunClusteringPartialFailure:
             # single cluster in the batch failed.
             assert session.query(Cluster).count() == 1
             assert session.query(Cluster).first().theme == "Real theme"
+        finally:
+            session.close()
+
+
+class TestRunClusteringTotalLabelingFailurePreservesExisting:
+    def test_total_failure_does_not_wipe_existing_clusters(self, mocker, clustering_db):
+        # Regression test for the exact incident that lost all historic
+        # clusters live: an Anthropic billing lapse meant EVERY candidate
+        # cluster failed labeling in one run, which used to delete every
+        # existing Cluster row as "stale" since none of them got
+        # reused/recreated. Seed one existing cluster, then run a batch
+        # where every trend forms new (non-matching-fingerprint) groups and
+        # the whole batch labeling call fails.
+        session = clustering_db()
+        existing = Cluster(label=0, theme="Old theme", summary="Old summary", size=3, fingerprint="old-fp")
+        session.add(existing)
+        for i in range(6):
+            _real_trend(session, embedding=[float(i), 0.0])
+        session.commit()
+        session.close()
+
+        mocker.patch("app.clustering_service.cluster_embeddings_hdbscan", return_value=[0, 0, 0, 1, 1, 1])
+        _stub_advisory_lock(mocker)
+        mocker.patch("app.clustering_service._ai_label_clusters_batch", side_effect=RuntimeError("provider down"))
+
+        result = run_clustering(limit=10, min_cluster_size=2)
+
+        assert result["clusters_created"] == 0
+        assert result["clusters_removed"] == 0
+        assert "warning" in result
+
+        session = clustering_db()
+        try:
+            # The pre-existing cluster must still be there, untouched.
+            assert session.query(Cluster).count() == 1
+            assert session.query(Cluster).first().theme == "Old theme"
         finally:
             session.close()
 

@@ -92,40 +92,63 @@ def _compute_momentum(new_ids: set, old_cluster_members: dict, existing_by_id: d
     return momentum, previous_size
 
 
-def _ai_label_cluster(trends: list) -> dict:
-    sample = "\n".join(
-        f"- [{t.platform}] {t.title or t.content[:80]}"
-        for t in trends[:15]
-    )
-    prompt = f"""You are a trend analyst. Given these trending social media posts grouped together by semantic similarity, identify the common theme.
+def _ai_label_clusters_batch(clusters: list) -> dict:
+    """clusters: [(label, trends), ...]. Returns {label: {"theme", "summary"}}
+    for whichever clusters the model successfully labeled.
 
-Posts:
-{sample}
+    One Anthropic call labels every cluster needing a fresh label this run,
+    instead of one call per cluster — confirmed live that a run with ~66
+    candidate clusters made 66 separate Haiku calls, which is both
+    needlessly expensive for a non-interactive batch job and a much bigger
+    blast radius when the account runs out of credit (one failed call used
+    to mean one skipped cluster; now it's the same one call for everyone,
+    same failure mode as before but 66x cheaper on a normal run). A cluster
+    missing from the parsed response (model skipped it, malformed entry) is
+    the caller's job to treat as failed — this still isolates one bad
+    cluster from the rest of the batch's results, just at the parsing level
+    instead of the API-call level."""
+    if not clusters:
+        return {}
 
-Return ONLY valid JSON with:
-- theme (string — 3-6 words, e.g. "AI in everyday life")
-- summary (string — 1-2 sentences explaining what this cluster is about)"""
+    sections = []
+    for label, trends in clusters:
+        sample = "\n".join(f"- [{t.platform}] {t.title or t.content[:80]}" for t in trends[:8])
+        sections.append(f'Cluster "{label}":\n{sample}')
 
+    prompt = f"""You are a trend analyst. For EACH cluster of trending social media posts below (grouped by semantic similarity), identify the common theme.
+
+{chr(10).join(sections)}
+
+Return ONLY valid JSON: an object mapping each cluster's number (as a string key) to {{"theme": "3-6 words", "summary": "1-2 sentences"}}. Include an entry for every cluster listed above. Example shape:
+{{"0": {{"theme": "AI in everyday life", "summary": "..."}}, "1": {{"theme": "...", "summary": "..."}}}}"""
+
+    # Bounded by cluster count so a bigger batch doesn't get silently
+    # truncated mid-JSON — ~120 tokens/cluster covers theme+summary+overhead.
     response = _anthropic.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=200,
+        max_tokens=min(120 * len(clusters) + 200, 8192),
         messages=[{"role": "user", "content": prompt}],
     )
     raw = response.content[0].text.strip() if response.content else ""
     if not raw:
-        # Seen in practice: Haiku occasionally returns empty content for a
-        # cluster (borderline/sensitive source posts groupbed together) with
-        # no explicit refusal message — json.loads("") raises the unhelpful
-        # "Expecting value: line 1 column 1 (char 0)". Raise something
-        # diagnosable instead of letting that generic message be the only
-        # trace, since the caller now catches this per-cluster (see
-        # run_clustering) rather than aborting the whole batch.
-        raise ValueError("Claude returned empty content for cluster labeling")
+        # Seen in practice (previously per-cluster, same failure mode can
+        # still happen for the whole batch): Haiku occasionally returns
+        # empty content with no explicit refusal message — json.loads("")
+        # raises the unhelpful "Expecting value: line 1 column 1 (char 0)".
+        # Raise something diagnosable instead.
+        raise ValueError("Claude returned empty content for batch cluster labeling")
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
     except json.JSONDecodeError:
         cleaned = raw.strip("```json").strip("```").strip()
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
+
+    result = {}
+    for label, _trends in clusters:
+        entry = parsed.get(str(label))
+        if isinstance(entry, dict) and entry.get("theme"):
+            result[label] = entry
+    return result
 
 
 def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
@@ -212,8 +235,11 @@ def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
 
         surviving_ids = set()
         reused = 0
-        created = 0
-        failed = 0
+        # (label, cluster_trends, fingerprint, momentum, previous_size) for
+        # clusters that don't have an exact-membership match and need a
+        # fresh AI label — collected here, labeled in one batched call
+        # below, rather than one API call per cluster inline in this loop.
+        to_label = []
         for label, cluster_trends in sorted(label_map.items()):
             fp = _fingerprint(cluster_trends)
             new_ids = {t.id for t in cluster_trends}
@@ -237,22 +263,27 @@ def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
                 reused += 1
                 continue
 
-            # Isolated per-cluster — one bad AI label call (seen in practice:
-            # Claude Haiku returning empty content for a borderline cluster)
-            # used to raise out of this whole loop, rolling back the entire
-            # batch via the except block below and leaving every OTHER
-            # cluster's real update silently discarded too. That's what left
-            # /admin/clusters showing stale data for days: any single failure
-            # anywhere in a run meant nothing from that run ever persisted.
-            # Now a failed cluster is just skipped — its trends stay
-            # unclustered (cluster_id already None from the reset above) and
-            # get picked up again on the next run instead of blocking
-            # everything else that succeeded.
-            try:
-                ai_label = _ai_label_cluster(cluster_trends)
-            except Exception as e:
-                logger.warning("AI labeling failed for a cluster (label=%s, size=%d) — skipping: %s",
-                                label, len(cluster_trends), e)
+            to_label.append((label, cluster_trends, fp, momentum, previous_size))
+
+        # One batched Anthropic call for every cluster needing a label,
+        # instead of one call per cluster — see _ai_label_clusters_batch.
+        # Isolated at the batch level: one bad/empty response fails every
+        # cluster in this run's to_label set, same as before (one bad call
+        # used to fail one cluster; now it's one call for all of them), not
+        # a regression in isolation, just a different unit of failure.
+        try:
+            labels_by_id = _ai_label_clusters_batch([(label, t) for label, t, _, _, _ in to_label])
+        except Exception as e:
+            logger.warning("Batch AI labeling failed for %d clusters: %s", len(to_label), e)
+            labels_by_id = {}
+
+        created = 0
+        failed = 0
+        for label, cluster_trends, fp, momentum, previous_size in to_label:
+            ai_label = labels_by_id.get(label)
+            if not ai_label:
+                logger.warning("AI labeling failed for a cluster (label=%s, size=%d) — skipping",
+                                label, len(cluster_trends))
                 failed += 1
                 continue
 
@@ -274,6 +305,35 @@ def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
                 trend.cluster_id = cluster.id
             surviving_ids.add(cluster.id)
             created += 1
+
+        # Data-loss safety net, confirmed live: a total provider outage
+        # (Anthropic credits exhausted) meant EVERY candidate cluster failed
+        # labeling in one run, surviving_ids ended up empty, and the "delete
+        # anything not reused/created this run" step below wiped every
+        # existing cluster — the entire live Cluster table gone in one bad
+        # run, with no grace period. If this run had clusters that needed
+        # labeling but got zero successes out of them (and nothing was
+        # reused either), that's a systemic failure, not genuine trend
+        # turnover — preserve what already existed instead of deleting it.
+        # A normal run, even a partially-failing one, still has created>0
+        # or reused>0 and prunes stale clusters exactly as before.
+        if to_label and created == 0 and reused == 0:
+            logger.error(
+                "Clustering run produced zero successful clusters out of %d candidates "
+                "(all labeling failed) — preserving %d existing cluster(s) instead of "
+                "wiping them.", len(to_label), len(all_existing_clusters),
+            )
+            session.commit()
+            return {
+                "clusters": len(all_existing_clusters),
+                "clusters_created": 0,
+                "clusters_reused": 0,
+                "clusters_removed": 0,
+                "clusters_failed": failed,
+                "noise": noise_count,
+                "total_trends": len(trends),
+                "warning": "All cluster labeling failed this run — existing clusters preserved, not refreshed.",
+            }
 
         # Anything not reused or freshly created this run is stale — including
         # clusters from before this fingerprint feature existed (no fingerprint
