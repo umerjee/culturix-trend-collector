@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   Zap, ArrowRight, CheckCircle, TrendingUp, Sparkles, Video,
   Clock, Target, Megaphone, Music, Film, History, RefreshCw,
+  Lightbulb, ShoppingBag, Drama,
 } from "lucide-react";
 
 const MOCK_IDEAS = [
@@ -41,6 +42,42 @@ const PLATFORMS = [
   { name: "Reddit", color: "bg-orange-500" },
   { name: "X / Twitter", color: "bg-sky-500" },
   { name: "Xiaohongshu", color: "bg-rose-500" },
+];
+
+const PRODUCTS = [
+  {
+    icon: Lightbulb,
+    name: "Posting Ideation",
+    status: "Live",
+    statusColor: "bg-emerald-50 text-emerald-600 border-emerald-200",
+    desc: "The engine on this page — trend-driven content ideas, personalized to your brand, delivered every morning.",
+    href: "#how-it-works",
+    cta: "See how it works",
+    accent: "text-indigo-500",
+    bg: "bg-indigo-50",
+  },
+  {
+    icon: ShoppingBag,
+    name: "Shopify Reel Building",
+    status: "Now piloting",
+    statusColor: "bg-amber-50 text-amber-600 border-amber-200",
+    desc: "Connect your Shopify store and get AI post ideas and short-form reels built from your real product photos.",
+    href: "/products/shopify",
+    cta: "Explore Shopify Reel Building",
+    accent: "text-emerald-500",
+    bg: "bg-emerald-50",
+  },
+  {
+    icon: Drama,
+    name: "Character-Based Posting",
+    status: "Beta",
+    statusColor: "bg-purple-50 text-purple-600 border-purple-200",
+    desc: "Build original cartoon characters and let AI animate them into short videos that riff on what's trending.",
+    href: "/products/culturetoons",
+    cta: "Explore Character-Based Posting",
+    accent: "text-purple-500",
+    bg: "bg-purple-50",
+  },
 ];
 
 const FEATURES = [
@@ -203,6 +240,9 @@ export default function LandingPage() {
             <span className="font-bold text-lg tracking-tight text-white">Culturix</span>
           </div>
           <div className="flex items-center gap-3">
+            <Link href="#products" className="hidden sm:inline text-sm text-gray-400 hover:text-white px-3 py-1.5 transition-colors">
+              Products
+            </Link>
             <Link href="/signup" className="text-sm text-gray-400 hover:text-white px-3 py-1.5 transition-colors">
               Sign in
             </Link>
@@ -300,10 +340,47 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* Products */}
+      <section id="products" className="py-20 px-4 sm:px-6 bg-gray-50">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-14">
+            <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-4">
+              Three ways to turn culture into content
+            </h2>
+            <p className="text-gray-500 max-w-xl mx-auto">
+              One account, one dashboard, three engines — pick whichever fits how your brand actually shows up online.
+            </p>
+          </div>
+          <div className="grid sm:grid-cols-3 gap-6">
+            {PRODUCTS.map((p) => (
+              <div key={p.name} className="rounded-2xl border border-gray-100 bg-white p-6 flex flex-col">
+                <div className="flex items-center justify-between mb-4">
+                  <div className={`h-10 w-10 rounded-xl ${p.bg} flex items-center justify-center`}>
+                    <p.icon className={`h-5 w-5 ${p.accent}`} />
+                  </div>
+                  <span className={`text-xs font-medium rounded-full border px-2.5 py-1 ${p.statusColor}`}>
+                    {p.status}
+                  </span>
+                </div>
+                <h3 className="font-semibold text-gray-900 mb-2">{p.name}</h3>
+                <p className="text-sm text-gray-500 leading-relaxed mb-5 flex-1">{p.desc}</p>
+                <Link
+                  href={p.href}
+                  className="inline-flex items-center gap-1.5 text-sm font-semibold text-indigo-600 hover:text-indigo-700 transition-colors"
+                >
+                  {p.cta} <ArrowRight className="h-3.5 w-3.5" />
+                </Link>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* Features */}
       <section className="py-20 px-4 sm:px-6">
         <div className="max-w-5xl mx-auto">
           <div className="text-center mb-14">
+            <p className="text-xs font-semibold text-indigo-500 uppercase tracking-wide mb-3">Posting Ideation</p>
             <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-4">
               Intelligence that works while you sleep
             </h2>
@@ -444,7 +521,9 @@ export default function LandingPage() {
             <Zap className="h-4 w-4 text-indigo-400" />
             <span className="font-semibold text-gray-300">Culturix</span>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center justify-center gap-4">
+            <Link href="/products/shopify" className="text-gray-500 hover:text-gray-300 transition-colors">Shopify Reel Building</Link>
+            <Link href="/products/culturetoons" className="text-gray-500 hover:text-gray-300 transition-colors">Character-Based Posting</Link>
             <Link href="/how-it-works" className="text-gray-500 hover:text-gray-300 transition-colors">How Publishing Works</Link>
             <Link href="/privacy" className="text-gray-500 hover:text-gray-300 transition-colors">Privacy Policy</Link>
             <Link href="/terms" className="text-gray-500 hover:text-gray-300 transition-colors">Terms of Service</Link>
