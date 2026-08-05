@@ -12,6 +12,7 @@ from app.services.culturetoon_script import (
     generate_toon_script,
     build_kling_prompt,
     ToonScriptGenerationError,
+    _assign_speakers,
 )
 
 
@@ -119,11 +120,76 @@ class TestGenerateToonScript:
         variant.culture_tag = "indian"
 
         fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
-        generate_toon_script(cluster, variant=variant, tone="satiric")
+        generate_toon_script(cluster, variants=[variant], tone="satiric")
 
         sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
         assert "Indian Mom" in sent_prompt
         assert "satiric" in sent_prompt
+
+    def test_multiple_variants_names_real_cast_and_forbids_inventing_others(self, mocker):
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        kumar = mocker.Mock(); kumar.name = "Kumar"; kumar.description = "middle class man"; kumar.culture_tag = None
+        wife = mocker.Mock(); wife.name = "Wife"; wife.description = "elegant"; wife.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(cluster, variants=[kumar, wife], tone="funny")
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "Kumar" in sent_prompt
+        assert "Wife" in sent_prompt
+        assert "do not invent any other" in sent_prompt.lower()
+        assert "speaker_name" in sent_prompt
+
+    def test_multiple_variants_maps_speaker_name_to_speaker_variant_id(self, mocker):
+        from app.models.cluster import Cluster
+        import uuid as _uuid
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        kumar = mocker.Mock(); kumar.id = _uuid.uuid4(); kumar.name = "Kumar"; kumar.description = None; kumar.culture_tag = None
+        wife = mocker.Mock(); wife.id = _uuid.uuid4(); wife.name = "Wife"; wife.description = None; wife.culture_tag = None
+
+        shots_with_speakers = [
+            {"shot_number": 1, "duration_seconds": 4, "action": "storms in", "expression": "Annoyed",
+             "dialogue": "Where were you?!", "speaker_name": "Wife"},
+            {"shot_number": 2, "duration_seconds": 4, "action": "shrugs", "expression": "Deadpan",
+             "dialogue": "Traffic.", "speaker_name": "Kumar"},
+        ]
+        _mock_qwen_response(mocker, {"hook_line": "H", "shots": shots_with_speakers})
+        result = generate_toon_script(cluster, variants=[kumar, wife], tone="funny")
+
+        assert result["shots"][0]["speaker_variant_id"] == str(wife.id)
+        assert result["shots"][1]["speaker_variant_id"] == str(kumar.id)
+        assert "speaker_name" not in result["shots"][0]
+
+    def test_single_variant_no_speaker_field_in_prompt(self, mocker):
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        kumar = mocker.Mock(); kumar.name = "Kumar"; kumar.description = None; kumar.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(cluster, variants=[kumar], tone="funny")
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "speaker_name" not in sent_prompt
+
+
+class TestAssignSpeakers:
+    def test_no_variants_returns_shots_unchanged(self):
+        shots = [{"shot_number": 1, "speaker_name": "Kumar"}]
+        assert _assign_speakers(shots, []) == shots
+
+    def test_unmatched_speaker_name_leaves_no_speaker_variant_id(self, mocker):
+        v = mocker.Mock(); v.id = "abc"; v.name = "Kumar"
+        shots = [{"shot_number": 1, "speaker_name": "Someone Else"}]
+        result = _assign_speakers(shots, [v])
+        assert "speaker_variant_id" not in result[0]
+        assert "speaker_name" not in result[0]
+
+    def test_matches_case_insensitively(self, mocker):
+        v = mocker.Mock(); v.id = "abc"; v.name = "Kumar"
+        shots = [{"shot_number": 1, "speaker_name": "kumar"}]
+        result = _assign_speakers(shots, [v])
+        assert result[0]["speaker_variant_id"] == "abc"
 
 
 class TestBuildKlingPrompt:
@@ -162,3 +228,23 @@ class TestBuildKlingPrompt:
         shots = [{"shot_number": 1, "duration_seconds": 5, "action": "waves", "expression": None, "dialogue": None}]
         prompt = build_kling_prompt(shots, "Mom")
         assert prompt == "shot 1, 5, @Mom, waves.;"
+
+    def test_multi_character_dict_picks_element_per_shot_speaker(self):
+        shots = [
+            {"shot_number": 1, "duration_seconds": 4, "action": "storms in", "expression": "Annoyed",
+             "dialogue": "Where were you?!", "speaker_variant_id": "wife-id"},
+            {"shot_number": 2, "duration_seconds": 4, "action": "shrugs", "expression": "Deadpan",
+             "dialogue": "Traffic.", "speaker_variant_id": "kumar-id"},
+        ]
+        prompt = build_kling_prompt(shots, {"kumar-id": "Kumar", "wife-id": "Wife"})
+        assert "shot 1, 4, @Wife," in prompt
+        assert "shot 2, 4, @Kumar," in prompt
+
+    def test_multi_character_dict_shot_without_speaker_uses_first_as_default(self):
+        shots = [{"shot_number": 1, "duration_seconds": 5, "action": "waves", "expression": None, "dialogue": None}]
+        prompt = build_kling_prompt(shots, {"kumar-id": "Kumar", "wife-id": "Wife"})
+        assert prompt == "shot 1, 5, @Kumar, waves.;"
+
+    def test_empty_element_map_raises(self):
+        with pytest.raises(ToonScriptGenerationError, match="at least one element name"):
+            build_kling_prompt(_VALID_SHOTS, {})

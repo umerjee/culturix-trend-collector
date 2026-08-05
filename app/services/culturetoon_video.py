@@ -15,6 +15,17 @@ import uuid as _uuid
 
 logger = logging.getLogger("culturix.services.culturetoon_video")
 
+# Kling Omni's actual per-call cap on distinct character elements is NOT
+# confirmed anywhere in this codebase or a live call — the only source is
+# an earlier planning doc built from pasted docs, the same kind of
+# unverified assumption that turned out wrong for the auth mechanism
+# earlier in this product's build (corrected only after a live dashboard
+# screenshot). Capped defensively at 3 here so a script with more distinct
+# speakers than Kling can actually accept fails with a clear error instead
+# of an unpredictable API response — re-verify against Kling's real
+# docs/dashboard and adjust this constant if it turns out to be wrong.
+MAX_CHARACTERS_PER_VIDEO = 3
+
 
 def _dub_dialogue(tmp_dir: str, video_path: str, shots: list, api_key: str, voice_id: str) -> str:
     """Synthesizes each shot's dialogue via ElevenLabs, concatenates them
@@ -91,29 +102,64 @@ def generate_video_for_toon(user_id, toon_id) -> None:
             return
 
         script = session.query(ToonScript).filter_by(id=toon.script_id).first()
-        variant = session.query(CharacterVariant).filter_by(id=toon.character_variant_id).first()
-        if not script or not variant:
-            raise ValueError("Toon's script or character variant is missing")
+        if not script:
+            raise ValueError("Toon's script is missing")
         if not script.shots:
             raise ValueError("Script has no shot data — regenerate it via the shot-structured generator")
-        if variant.element_status != "ready":
-            raise ValueError(f"Character variant is not a ready Kling element (status={variant.element_status})")
+
+        # Full cast for this script: character_variant_ids when set (a
+        # multi-character script), else fall back to the script's own
+        # primary variant, else the toon's own variant (scripts predating
+        # multi-character support always have character_variant_id set, so
+        # this last fallback is just extra safety, not the common path).
+        # Normalized to strings throughout — character_variant_ids is
+        # stored as TEXT[] (see ToonScript's docstring for why), so mixing
+        # in a raw UUID object from the fallback branches would make
+        # otherwise-identical ids compare unequal as dict keys below.
+        cast_ids = [str(v) for v in (script.character_variant_ids or [])]
+        if not cast_ids and script.character_variant_id:
+            cast_ids = [str(script.character_variant_id)]
+        if not cast_ids:
+            cast_ids = [str(toon.character_variant_id)]
+        if len(cast_ids) > MAX_CHARACTERS_PER_VIDEO:
+            raise ValueError(
+                f"Script has {len(cast_ids)} distinct characters, but Kling supports at most "
+                f"{MAX_CHARACTERS_PER_VIDEO} per video"
+            )
+
+        variants = session.query(CharacterVariant).filter(
+            CharacterVariant.id.in_([_uuid.UUID(v) for v in cast_ids])
+        ).all()
+        variants_by_id = {str(v.id): v for v in variants}
+        missing = [vid for vid in cast_ids if vid not in variants_by_id]
+        if missing:
+            raise ValueError(f"Character variant(s) not found: {missing}")
+        not_ready = [v.name for v in variants if v.element_status != "ready"]
+        if not_ready:
+            raise ValueError(f"Character(s) not registered as a ready Kling element: {', '.join(not_ready)}")
+
+        # Primary variant drives voice_provider for the whole video — mixed
+        # per-character voice sourcing (e.g. one character on Kling native,
+        # another on ElevenLabs, within the same video) isn't supported;
+        # known simplification, same spirit as _dub_dialogue's own
+        # sequential-not-time-aligned simplification below.
+        primary_variant = variants_by_id.get(str(cast_ids[0]), variants[0])
 
         toon.status = "animating"
         toon.generation_error = None
         session.commit()
 
-        prompt_text = build_kling_prompt(script.shots, variant.kling_element_name)
-        contents = [
-            {"type": "prompt", "text": prompt_text},
-            {"type": "element", "element_id": variant.kling_element_id, "id": "char_1"},
-        ]
+        element_names = {str(v.id): v.kling_element_name for v in variants}
+        prompt_text = build_kling_prompt(script.shots, element_names)
+        contents = [{"type": "prompt", "text": prompt_text}]
+        for i, v in enumerate(variants, start=1):
+            contents.append({"type": "element", "element_id": v.kling_element_id, "id": f"char_{i}"})
         if toon.background_id:
             background = session.query(ToonBackground).filter_by(id=toon.background_id).first()
             if background and background.image_url:
                 contents.append({"type": "refer_image", "url": background.image_url, "id": "bg_1"})
 
-        use_elevenlabs = variant.voice_provider == "elevenlabs"
+        use_elevenlabs = primary_variant.voice_provider == "elevenlabs"
         elevenlabs_key = None
         if use_elevenlabs:
             brand = session.query(CharacterBrand).filter_by(id=toon.brand_id).first()
@@ -144,7 +190,7 @@ def generate_video_for_toon(user_id, toon_id) -> None:
 
             final_path = raw_path
             if use_elevenlabs:
-                final_path = _dub_dialogue(tmp_dir, raw_path, script.shots, elevenlabs_key, variant.elevenlabs_voice_id)
+                final_path = _dub_dialogue(tmp_dir, raw_path, script.shots, elevenlabs_key, primary_variant.elevenlabs_voice_id)
 
             with open(final_path, "rb") as f:
                 raw_url = storage.upload(f.read(), f"culturetoons/{toon.brand_id}/toons/{toon.id}/raw.mp4", "video/mp4")

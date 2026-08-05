@@ -290,6 +290,7 @@ def _serialize_script(s) -> dict:
     return {
         "id": str(s.id), "brand_id": str(s.brand_id),
         "character_variant_id": str(s.character_variant_id) if s.character_variant_id else None,
+        "character_variant_ids": list(s.character_variant_ids) if s.character_variant_ids else [],
         "source_type": s.source_type, "source_id": s.source_id,
         "hook_line": s.hook_line, "dialogue": s.dialogue, "scene_direction": s.scene_direction,
         "tone": s.tone, "shots": s.shots, "total_duration_seconds": s.total_duration_seconds,
@@ -1068,6 +1069,40 @@ def _validate_script_generation_params(body: dict) -> tuple:
     return num_shots, target_duration_seconds
 
 
+def _extract_cast_ids(body: dict) -> list:
+    """Cheap, no-DB extraction of the requested cast id list from either
+    character_variant_ids (the multi-character path) or the older single
+    character_variant_id, so existing callers keep working. Split out from
+    _resolve_cast so callers can fail fast on a missing cast before opening
+    a session or doing any other lookup — an empty/missing cast used to
+    silently produce a script about no one in particular, leaving the LLM
+    free to invent a fictional character instead (confirmed live: a
+    "Marvel purist" that isn't a real roster character)."""
+    raw_ids = body.get("character_variant_ids")
+    if not raw_ids:
+        single = body.get("character_variant_id")
+        raw_ids = [single] if single else []
+    return [v for v in raw_ids if v]
+
+
+def _resolve_cast(session, body: dict, brand_id: str, user_id: str) -> list:
+    """The DB-touching half of cast resolution: caps at
+    MAX_CHARACTERS_PER_VIDEO (the same limit generate_video_for_toon
+    enforces, so a script that can never actually generate a video isn't
+    created in the first place) and resolves+validates ownership of each
+    id. Callers should already have checked _extract_cast_ids(body) is
+    non-empty before opening a session."""
+    from app.services.culturetoon_video import MAX_CHARACTERS_PER_VIDEO
+
+    raw_ids = _extract_cast_ids(body)
+    if len(raw_ids) > MAX_CHARACTERS_PER_VIDEO:
+        raise HTTPException(
+            status_code=400,
+            detail=f"At most {MAX_CHARACTERS_PER_VIDEO} characters are supported per script",
+        )
+    return [_get_variant_owned(session, vid, brand_id, user_id) for vid in raw_ids]
+
+
 @router.post("/scripts/suggest")
 def suggest_script(body: dict):
     """Synchronous — a single LLM call, matching shopify_generate_product_idea's
@@ -1080,16 +1115,15 @@ def suggest_script(body: dict):
     brand_id = body.get("brand_id")
     source_type = body.get("source_type")
     source_id = body.get("source_id")
-    character_variant_id = body.get("character_variant_id")
     tone = body.get("tone", "funny")
 
     if not user_id or not brand_id or source_type not in ("persona", "cluster") or source_id is None:
         raise HTTPException(status_code=400, detail="user_id, brand_id, source_type ('persona'|'cluster') and source_id are required")
-    # Required, not optional: an unset variant used to silently produce a
-    # script about no one in particular, which left the LLM free to invent
-    # a fictional character to write about instead — confirmed live.
-    if not character_variant_id:
-        raise HTTPException(status_code=400, detail="character_variant_id is required — pick a real character for this script")
+    if not _extract_cast_ids(body):
+        raise HTTPException(
+            status_code=400,
+            detail="character_variant_ids (or character_variant_id) is required — pick at least one real character",
+        )
     if tone not in _TONES:
         raise HTTPException(status_code=400, detail=f"tone must be one of {_TONES}")
     try:
@@ -1101,15 +1135,18 @@ def suggest_script(body: dict):
     session = SessionLocal()
     try:
         brand = _get_brand_owned(session, brand_id, user_id)
+        # Resolve cast (cap + ownership check) before the trend-source lookup
+        # so a too-large or unowned cast fails with its own 400/404 rather
+        # than being masked by an unrelated 404 when source_id also happens
+        # not to exist (caught by test_suggest_exceeds_max_characters_400s).
+        variants = _resolve_cast(session, body, brand_id, user_id)
         source = _fetch_trend_source(session, source_type, source_id)
         if not source:
             raise HTTPException(status_code=404, detail=f"{source_type} {source_id} not found")
 
-        variant = _get_variant_owned(session, character_variant_id, brand_id, user_id)
-
         try:
             idea = generate_toon_script(
-                source, variant, tone=tone,
+                source, variants, tone=tone,
                 num_shots=num_shots,
                 target_duration_seconds=target_duration_seconds,
             )
@@ -1118,7 +1155,8 @@ def suggest_script(body: dict):
 
         script = ToonScript(
             brand_id=brand.id,
-            character_variant_id=_uuid.UUID(character_variant_id) if character_variant_id else None,
+            character_variant_id=variants[0].id,
+            character_variant_ids=[str(v.id) for v in variants],
             source_type=source_type,
             source_id=source_id,
             hook_line=idea.get("hook_line"),
@@ -1153,14 +1191,15 @@ def suggest_script_from_idea(body: dict):
     user_id = body.get("user_id")
     brand_id = body.get("brand_id")
     idea = (body.get("idea") or "").strip()
-    character_variant_id = body.get("character_variant_id")
     tone = body.get("tone", "funny")
 
     if not user_id or not brand_id or not idea:
         raise HTTPException(status_code=400, detail="user_id, brand_id and idea are required")
-    # Required, not optional — see the matching check in suggest_script for why.
-    if not character_variant_id:
-        raise HTTPException(status_code=400, detail="character_variant_id is required — pick a real character for this script")
+    if not _extract_cast_ids(body):
+        raise HTTPException(
+            status_code=400,
+            detail="character_variant_ids (or character_variant_id) is required — pick at least one real character",
+        )
     if tone not in _TONES:
         raise HTTPException(status_code=400, detail=f"tone must be one of {_TONES}")
     num_shots, target_duration_seconds = _validate_script_generation_params(body)
@@ -1168,11 +1207,11 @@ def suggest_script_from_idea(body: dict):
     session = SessionLocal()
     try:
         brand = _get_brand_owned(session, brand_id, user_id)
-        variant = _get_variant_owned(session, character_variant_id, brand_id, user_id)
+        variants = _resolve_cast(session, body, brand_id, user_id)
 
         try:
             result = generate_toon_script_from_idea(
-                idea, variant, tone=tone,
+                idea, variants, tone=tone,
                 num_shots=num_shots,
                 target_duration_seconds=target_duration_seconds,
             )
@@ -1181,7 +1220,8 @@ def suggest_script_from_idea(body: dict):
 
         script = ToonScript(
             brand_id=brand.id,
-            character_variant_id=_uuid.UUID(character_variant_id),
+            character_variant_id=variants[0].id,
+            character_variant_ids=[str(v.id) for v in variants],
             source_type="idea",
             hook_line=result.get("hook_line"),
             tone=result.get("tone"),

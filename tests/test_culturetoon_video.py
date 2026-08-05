@@ -71,6 +71,54 @@ def seeded(db):
     return ids
 
 
+@pytest.fixture
+def seeded_two_variants(db):
+    session = db()
+    user_id = uuid.uuid4()
+    brand = CharacterBrand(user_id=user_id, name="Test Brand")
+    session.add(brand)
+    session.commit()
+
+    character = Character(brand_id=brand.id, name="Base")
+    session.add(character)
+    session.commit()
+
+    kumar = CharacterVariant(
+        character_id=character.id, name="Kumar", image_url="https://img/kumar.png",
+        kling_element_id="elem-kumar", kling_element_name="Kumar", element_status="ready",
+    )
+    wife = CharacterVariant(
+        character_id=character.id, name="Wife", image_url="https://img/wife.png",
+        kling_element_id="elem-wife", kling_element_name="Wife", element_status="ready",
+    )
+    session.add_all([kumar, wife])
+    session.commit()
+
+    multi_shots = [
+        {"shot_number": 1, "duration_seconds": 4, "action": "storms in", "expression": "Annoyed",
+         "dialogue": "Where were you?!", "speaker_variant_id": str(wife.id)},
+        {"shot_number": 2, "duration_seconds": 4, "action": "shrugs", "expression": "Deadpan",
+         "dialogue": "Traffic.", "speaker_variant_id": str(kumar.id)},
+    ]
+    script = ToonScript(
+        brand_id=brand.id, character_variant_id=kumar.id, character_variant_ids=[str(kumar.id), str(wife.id)],
+        shots=multi_shots, total_duration_seconds=8,
+    )
+    session.add(script)
+    session.commit()
+
+    toon = Toon(brand_id=brand.id, character_variant_id=kumar.id, script_id=script.id, status="animating")
+    session.add(toon)
+    session.commit()
+
+    ids = {
+        "user_id": str(user_id), "brand_id": str(brand.id), "toon_id": str(toon.id),
+        "kumar_id": str(kumar.id), "wife_id": str(wife.id),
+    }
+    session.close()
+    return ids
+
+
 def _mock_kling_success(mocker):
     mock_provider = mocker.patch("app.media.kling_omni.KlingOmniProvider")
     mock_provider.return_value.generate_omni_video.return_value = {
@@ -185,6 +233,62 @@ class TestGenerateVideoForToonFailures:
         # The raw video should still have been uploaded before the clip-cut
         # step failed — partial progress is preserved, not lost.
         assert toon.raw_video_url == "https://supabase/video.mp4"
+        session.close()
+
+
+class TestMultiCharacterGeneration:
+    def test_sends_one_element_per_cast_member_and_alternates_dsl_speaker(self, db, seeded_two_variants, mocker, tmp_path):
+        mock_provider = _mock_kling_success(mocker)
+        _mock_cut_clips(mocker, tmp_path)
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
+
+        generate_video_for_toon(seeded_two_variants["user_id"], seeded_two_variants["toon_id"])
+
+        call = mock_provider.return_value.generate_omni_video.call_args
+        contents, _settings = call.args
+        element_ids = {c["element_id"] for c in contents if c["type"] == "element"}
+        assert element_ids == {"elem-kumar", "elem-wife"}
+
+        prompt_item = next(c for c in contents if c["type"] == "prompt")
+        assert "shot 1, 4, @Wife," in prompt_item["text"]
+        assert "shot 2, 4, @Kumar," in prompt_item["text"]
+
+        session = db()
+        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded_two_variants["toon_id"])).first()
+        assert toon.status == "ready"
+        session.close()
+
+    def test_one_unregistered_character_marks_failed(self, db, seeded_two_variants, mocker):
+        session = db()
+        wife = session.query(CharacterVariant).filter_by(id=uuid.UUID(seeded_two_variants["wife_id"])).first()
+        wife.element_status = "unregistered"
+        session.commit()
+        session.close()
+
+        generate_video_for_toon(seeded_two_variants["user_id"], seeded_two_variants["toon_id"])
+
+        session = db()
+        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded_two_variants["toon_id"])).first()
+        assert toon.status == "failed"
+        assert "Wife" in toon.generation_error
+        session.close()
+
+    def test_too_many_characters_marks_failed(self, db, seeded_two_variants, mocker):
+        session = db()
+        script = session.query(ToonScript).filter_by(brand_id=uuid.UUID(seeded_two_variants["brand_id"])).first()
+        # Pad past MAX_CHARACTERS_PER_VIDEO with duplicate-looking ids -- the
+        # count check happens before any DB lookup, so these don't need to
+        # resolve to real rows.
+        script.character_variant_ids = [str(uuid.uuid4()) for _ in range(5)]
+        session.commit()
+        session.close()
+
+        generate_video_for_toon(seeded_two_variants["user_id"], seeded_two_variants["toon_id"])
+
+        session = db()
+        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded_two_variants["toon_id"])).first()
+        assert toon.status == "failed"
+        assert "Kling supports at most" in toon.generation_error
         session.close()
 
 

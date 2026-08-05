@@ -590,6 +590,76 @@ class TestScripts:
             })
         assert exc_info.value.status_code == 400
 
+    def test_suggest_with_multiple_character_variant_ids(self, db, user_id, brand_and_character, mocker):
+        brand, character, variant = brand_and_character
+        variant2 = culturetoons.create_variant({
+            "user_id": user_id, "brand_id": brand["id"], "character_id": character["id"], "name": "Wife",
+        })
+        session = db()
+        persona = Persona(name="Reality TV Stan", description="loves drama", motivations="gossip", interests="tv")
+        session.add(persona)
+        session.commit()
+        persona_id = persona.id
+        session.close()
+
+        fake_shots = [
+            {"shot_number": 1, "duration_seconds": 4, "action": "a", "expression": None, "dialogue": None, "speaker_variant_id": variant["id"]},
+        ]
+        # Captures names at call time rather than holding onto the ORM
+        # objects themselves — suggest_script's own later session.commit()
+        # expires them (expire_on_commit=True), and the session is closed
+        # by the time this test would otherwise touch .name, raising
+        # DetachedInstanceError.
+        captured_names = []
+
+        def _capture(*args, **kwargs):
+            captured_names.extend(v.name for v in args[1])
+            return {"hook_line": "H", "tone": "funny", "shots": fake_shots, "total_duration_seconds": 4}
+
+        mock_generate = mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script",
+            side_effect=_capture,
+        )
+        result = culturetoons.suggest_script({
+            "user_id": user_id, "brand_id": brand["id"], "source_type": "persona", "source_id": persona_id,
+            "character_variant_ids": [variant["id"], variant2["id"]], "tone": "funny",
+        })
+
+        assert result["character_variant_id"] == variant["id"]
+        assert set(result["character_variant_ids"]) == {variant["id"], variant2["id"]}
+        assert mock_generate.called
+        assert set(captured_names) == {"Indian Mom", "Wife"}
+
+    def test_suggest_exceeds_max_characters_400s(self, db, user_id, brand_and_character):
+        brand, character, variant = brand_and_character
+        extra_ids = [variant["id"]]
+        for i in range(4):
+            v = culturetoons.create_variant({
+                "user_id": user_id, "brand_id": brand["id"], "character_id": character["id"], "name": f"Extra {i}",
+            })
+            extra_ids.append(v["id"])
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.suggest_script({
+                "user_id": user_id, "brand_id": brand["id"], "source_type": "persona", "source_id": 1,
+                "character_variant_ids": extra_ids,
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_suggest_unowned_variant_in_cast_404s(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        other_user = str(uuid.uuid4())
+        other_brand = culturetoons.create_brand({"user_id": other_user})
+        other_character = culturetoons.create_character({"user_id": other_user, "brand_id": other_brand["id"], "name": "Other"})
+        other_variant = culturetoons.create_variant({
+            "user_id": other_user, "brand_id": other_brand["id"], "character_id": other_character["id"], "name": "Stranger",
+        })
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.suggest_script({
+                "user_id": user_id, "brand_id": brand["id"], "source_type": "persona", "source_id": 1,
+                "character_variant_ids": [variant["id"], other_variant["id"]],
+            })
+        assert exc_info.value.status_code == 404
+
     def test_delete_archives_not_deletes(self, db, user_id, brand_and_character):
         brand, _character, variant = brand_and_character
         script = culturetoons.create_script({"user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"]})

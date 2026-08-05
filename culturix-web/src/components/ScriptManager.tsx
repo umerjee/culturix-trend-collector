@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Wand2, Plus, Loader2, Sparkles, ImageIcon } from "lucide-react";
+import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check } from "lucide-react";
 import type { ToonScript, CharacterVariant, ToonBackground } from "@/lib/types";
-import { TONE_OPTIONS } from "@/lib/types";
+import { TONE_OPTIONS, MAX_CHARACTERS_PER_VIDEO } from "@/lib/types";
 
 interface TrendSource {
   id: number;
@@ -28,6 +28,27 @@ interface Props {
   backgrounds: ToonBackground[];
 }
 
+// Toggleable chip for picking a scene's cast — same visual pattern as
+// CultureToonBrandForm.tsx's PlatformChip, capped at
+// MAX_CHARACTERS_PER_VIDEO so a scene can't be built that Kling can never
+// actually generate (see MAX_CHARACTERS_PER_VIDEO in
+// app/services/culturetoon_video.py).
+function CastChip({ label, selected, disabled, onClick }: { label: string; selected: boolean; disabled: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+        selected ? "bg-blue-600 border-blue-600 text-white" : "bg-white border-gray-200 text-gray-600 hover:border-blue-300"
+      }`}
+    >
+      {selected && <Check className="h-3 w-3" />}
+      {label}
+    </button>
+  );
+}
+
 function scriptHasScene(s: ToonScript): boolean {
   if (s.scene_direction && s.scene_direction.trim()) return true;
   return !!s.shots?.some((shot) => shot.action?.trim());
@@ -41,7 +62,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
     personas: [], clusters: [],
   });
   const [sourceId, setSourceId] = useState<string>("");
-  const [variantId, setVariantId] = useState<string>(variants[0]?.id ?? "");
+  const [variantIds, setVariantIds] = useState<string[]>(variants[0] ? [variants[0].id] : []);
   const [tone, setTone] = useState<(typeof TONE_OPTIONS)[number]>("funny");
   const [lengthKey, setLengthKey] = useState<(typeof DURATION_PRESETS)[number]["key"]>("standard");
   const [suggesting, setSuggesting] = useState(false);
@@ -58,7 +79,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
   const [bgErrors, setBgErrors] = useState<Record<string, string>>({});
 
   const [idea, setIdea] = useState("");
-  const [ideaVariantId, setIdeaVariantId] = useState<string>(variants[0]?.id ?? "");
+  const [ideaVariantIds, setIdeaVariantIds] = useState<string[]>(variants[0] ? [variants[0].id] : []);
   const [ideaTone, setIdeaTone] = useState<(typeof TONE_OPTIONS)[number]>("funny");
   const [ideaLengthKey, setIdeaLengthKey] = useState<(typeof DURATION_PRESETS)[number]["key"]>("standard");
   const [suggestingFromIdea, setSuggestingFromIdea] = useState(false);
@@ -72,8 +93,16 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
 
   const sourceOptions = sourceType === "persona" ? trendSources.personas : trendSources.clusters;
 
+  function toggleCast(setIds: React.Dispatch<React.SetStateAction<string[]>>, id: string) {
+    setIds((prev) => {
+      if (prev.includes(id)) return prev.filter((v) => v !== id);
+      if (prev.length >= MAX_CHARACTERS_PER_VIDEO) return prev;
+      return [...prev, id];
+    });
+  }
+
   async function suggest() {
-    if (!sourceId || !variantId) return;
+    if (!sourceId || variantIds.length === 0) return;
     const preset = DURATION_PRESETS.find((p) => p.key === lengthKey) ?? DURATION_PRESETS[1];
     setSuggesting(true);
     setError(null);
@@ -85,7 +114,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
           brand_id: brandId,
           source_type: sourceType,
           source_id: Number(sourceId),
-          character_variant_id: variantId,
+          character_variant_ids: variantIds,
           tone,
           num_shots: preset.numShots,
           target_duration_seconds: preset.duration,
@@ -103,7 +132,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
   }
 
   async function suggestFromIdea() {
-    if (!idea.trim() || !ideaVariantId) return;
+    if (!idea.trim() || ideaVariantIds.length === 0) return;
     const preset = DURATION_PRESETS.find((p) => p.key === ideaLengthKey) ?? DURATION_PRESETS[1];
     setSuggestingFromIdea(true);
     setIdeaError(null);
@@ -114,7 +143,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
         body: JSON.stringify({
           brand_id: brandId,
           idea: idea.trim(),
-          character_variant_id: ideaVariantId,
+          character_variant_ids: ideaVariantIds,
           tone: ideaTone,
           num_shots: preset.numShots,
           target_duration_seconds: preset.duration,
@@ -134,6 +163,12 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
 
   function variantName(id: string | null) {
     return variants.find((v) => v.id === id)?.name ?? "—";
+  }
+
+  function castNames(s: ToonScript) {
+    const ids = s.character_variant_ids?.length ? s.character_variant_ids : s.character_variant_id ? [s.character_variant_id] : [];
+    if (ids.length === 0) return "—";
+    return ids.map((id) => variantName(id)).join(" & ");
   }
 
   function backgroundFor(id: string | null) {
@@ -243,17 +278,22 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
             rows={2}
             className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs resize-none focus:outline-none focus:ring-2 focus:ring-blue-200"
           />
-          <div className="flex flex-wrap gap-2 items-center">
-            <select
-              value={ideaVariantId}
-              onChange={(e) => setIdeaVariantId(e.target.value)}
-              className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs min-w-[10rem]"
-            >
-              {variants.length === 0 && <option value="">Add a character first</option>}
+          {variants.length === 0 ? (
+            <p className="text-xs text-gray-400">Add a character first.</p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
               {variants.map((v) => (
-                <option key={v.id} value={v.id}>{v.name}</option>
+                <CastChip
+                  key={v.id}
+                  label={v.name}
+                  selected={ideaVariantIds.includes(v.id)}
+                  disabled={!ideaVariantIds.includes(v.id) && ideaVariantIds.length >= MAX_CHARACTERS_PER_VIDEO}
+                  onClick={() => toggleCast(setIdeaVariantIds, v.id)}
+                />
               ))}
-            </select>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2 items-center">
             <select
               value={ideaTone}
               onChange={(e) => setIdeaTone(e.target.value as (typeof TONE_OPTIONS)[number])}
@@ -274,7 +314,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
             </select>
             <button
               onClick={suggestFromIdea}
-              disabled={suggestingFromIdea || !idea.trim() || !ideaVariantId}
+              disabled={suggestingFromIdea || !idea.trim() || ideaVariantIds.length === 0}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium px-3 py-1.5 hover:bg-blue-700 transition-colors disabled:opacity-60"
             >
               {suggestingFromIdea ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
@@ -289,6 +329,21 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
         <h3 className="text-sm font-semibold text-gray-900 mb-3 flex items-center gap-1.5">
           <Sparkles className="h-4 w-4 text-blue-500" /> Suggest a script from a trend
         </h3>
+        {variants.length === 0 ? (
+          <p className="text-xs text-gray-400 mb-3">Add a character first.</p>
+        ) : (
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {variants.map((v) => (
+              <CastChip
+                key={v.id}
+                label={v.name}
+                selected={variantIds.includes(v.id)}
+                disabled={!variantIds.includes(v.id) && variantIds.length >= MAX_CHARACTERS_PER_VIDEO}
+                onClick={() => toggleCast(setVariantIds, v.id)}
+              />
+            ))}
+          </div>
+        )}
         <div className="flex flex-wrap gap-2 items-center">
           <select
             value={sourceType}
@@ -306,16 +361,6 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
             <option value="">Select a trending {sourceType}…</option>
             {sourceOptions.map((s) => (
               <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
-          </select>
-          <select
-            value={variantId}
-            onChange={(e) => setVariantId(e.target.value)}
-            className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs min-w-[10rem]"
-          >
-            {variants.length === 0 && <option value="">Add a character first</option>}
-            {variants.map((v) => (
-              <option key={v.id} value={v.id}>{v.name}</option>
             ))}
           </select>
           <select
@@ -338,7 +383,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
           </select>
           <button
             onClick={suggest}
-            disabled={suggesting || !sourceId || !variantId}
+            disabled={suggesting || !sourceId || variantIds.length === 0}
             className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium px-3 py-1.5 hover:bg-blue-700 transition-colors disabled:opacity-60"
           >
             {suggesting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
@@ -360,7 +405,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
             <div key={s.id} className="rounded-2xl bg-white border border-gray-100 p-4">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-medium text-gray-400">
-                  {variantName(s.character_variant_id)}
+                  {castNames(s)}
                   {s.generation_source === "ai" && (
                     <span className="ml-2 inline-flex items-center gap-1 text-blue-500 bg-blue-50 rounded-full px-2 py-0.5">
                       <Sparkles className="h-3 w-3" />
@@ -383,6 +428,9 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
                   {s.shots.map((shot) => (
                     <li key={shot.shot_number} className="text-xs text-gray-600">
                       <span className="text-gray-400">Shot {shot.shot_number} ({shot.duration_seconds}s):</span>{" "}
+                      {(s.character_variant_ids?.length ?? 0) > 1 && shot.speaker_variant_id && (
+                        <span className="font-medium text-gray-700">{variantName(shot.speaker_variant_id)}: </span>
+                      )}
                       {shot.action}
                       {shot.expression && <span className="text-gray-400"> · {shot.expression}</span>}
                       {shot.dialogue && <span> — &quot;{shot.dialogue}&quot;</span>}

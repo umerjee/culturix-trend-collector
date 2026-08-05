@@ -463,12 +463,20 @@ export interface ToonScriptShot {
   action: string;
   expression: (typeof EXPRESSION_NAMES)[number] | null;
   dialogue: string | null;
+  speaker_variant_id?: string | null;
 }
+
+// Kling Omni's real per-call cap on distinct character elements — mirrors
+// MAX_CHARACTERS_PER_VIDEO in app/services/culturetoon_video.py. Keep in
+// sync; that constant's own comment flags it as an unverified assumption
+// pending a real check against Kling's docs/dashboard.
+export const MAX_CHARACTERS_PER_VIDEO = 3;
 
 export interface ToonScript {
   id: string;
   brand_id: string;
   character_variant_id: string | null;
+  character_variant_ids: string[];
   source_type: "persona" | "cluster" | "idea" | null;
   source_id: number | null;
   hook_line: string | null;

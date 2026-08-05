@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, Text, JSON
+from sqlalchemy import Column, String, Integer, DateTime, Text, JSON, ARRAY
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -24,7 +24,23 @@ class ToonScript(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     brand_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    # "Primary" speaker — kept as the single source of truth for the
+    # single-character case and for backward compat. For multi-character
+    # scenes, character_variant_ids below is the authoritative full cast;
+    # this stays equal to character_variant_ids[0].
     character_variant_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # Full cast for this script, additive alongside character_variant_id
+    # rather than replacing it (this product is still beta/pilot with no
+    # real customer data at stake, but an additive column is still lower
+    # migration risk than a destructive rename). NULL/empty for scripts
+    # created before multi-character support — callers should fall back to
+    # [character_variant_id] when this is unset. Stored as TEXT[] (UUID
+    # strings), not an array of the UUID type itself — matches
+    # Toon.clip_video_urls' existing ARRAY(Text) convention and keeps this
+    # column exercisable against SQLite in tests (conftest.py's ARRAY
+    # SQLite shim round-trips via json.dumps/loads, which can't serialize
+    # raw UUID objects).
+    character_variant_ids = Column(ARRAY(Text), nullable=True)
     source_type = Column(String(10), nullable=True, index=True)  # persona|cluster|NULL
     source_id = Column(Integer, nullable=True, index=True)
     hook_line = Column(Text, nullable=True)
@@ -35,10 +51,14 @@ class ToonScript(Base):
     tone = Column(String(20), nullable=True)  # funny|dramatic|satiric|sad|wholesome|chaotic|deadpan
     # [{"shot_number": int, "duration_seconds": int, "action": str,
     #   "expression": Optional[str] (one of EXPRESSION_NAMES, free-text guidance
-    #   not an FK), "dialogue": Optional[str]}, ...]. Stored structured rather
-    # than as a pre-baked "@Name ..." DSL string because the element name a
-    # variant is registered under doesn't exist yet at script-creation time
-    # and can change if re-registered — the DSL is rebuilt on demand from this.
+    #   not an FK), "dialogue": Optional[str],
+    #   "speaker_variant_id": Optional[str] (which of character_variant_ids is
+    #   acting/speaking in this shot — NULL defaults to the primary/first
+    #   variant, so single-character scripts never need to set this)}, ...].
+    # Stored structured rather than as a pre-baked "@Name ..." DSL string
+    # because the element name a variant is registered under doesn't exist
+    # yet at script-creation time and can change if re-registered — the DSL
+    # is rebuilt on demand from this (see build_kling_prompt).
     shots = Column(JSON, nullable=True)
     total_duration_seconds = Column(Integer, nullable=True)
 
