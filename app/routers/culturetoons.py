@@ -13,6 +13,7 @@ Kling 3.0 Omni (app/services/culturetoon_video.py) into one multi-shot video
 plus 3-4 candidate clips.
 """
 import logging
+import os
 import uuid as _uuid
 from datetime import datetime
 from typing import Optional
@@ -60,7 +61,10 @@ ART_STYLES = {
 DEFAULT_ART_STYLE = "cartoon_3d"
 
 
-def _build_cartoon_prompt(description: str, art_style_key: str, has_reference_image: bool, extra: str = "") -> str:
+def _build_cartoon_prompt(
+    description: str, art_style_key: str, has_reference_image: bool,
+    preserve_identity: bool = True, extra: str = "",
+) -> str:
     """Confirmed live against Qwen-Image (see conversation notes, not
     committed to the repo): with a reference photo, the naive version of
     this prompt ("re-render in this style, don't just retouch the photo")
@@ -71,9 +75,27 @@ def _build_cartoon_prompt(description: str, art_style_key: str, has_reference_im
     input's composition — asking for the "same" framing let it take a
     shortcut of lightly retouching the original pixels instead of properly
     re-illustrating them. The text-only path (no reference image) needs no
-    such trick; a plain style instruction already produces a clean cartoon."""
+    such trick; a plain style instruction already produces a clean cartoon.
+
+    preserve_identity=True (character's own photo, or a variant's own
+    photo): ground on the reference's actual face/gender/skin tone — this
+    IS that person.
+
+    preserve_identity=False (a variant with no photo of its own, grounded
+    on the base character's portrait purely for shared art style/roster
+    consistency): a bare "ignore the reference's identity" instruction was
+    tested live and reliably FAILED — Qwen-Image kept reproducing the same
+    face/gender/body regardless of how explicitly the prompt said not to.
+    What actually works, confirmed live: (1) frame it as "recasting the
+    same role with a different actor" rather than "ignore identity", which
+    keeps the model anchored on style/palette while still swapping the
+    person, and (2) feed in a CONCRETE visual description (gender, age,
+    ethnicity, face shape, hair — see _expand_variant_visual_description)
+    rather than a vague relational one like "she is the wife of X", which
+    on its own wasn't a strong enough visual anchor to consistently
+    override the reference face."""
     style = ART_STYLES.get(art_style_key, ART_STYLES[DEFAULT_ART_STYLE])
-    if has_reference_image:
+    if has_reference_image and preserve_identity:
         grounding = (
             f"Redraw the person in the reference photo as {style['prompt']}, waist-up studio "
             "character portrait (a different framing and setting than the reference photo — do "
@@ -82,6 +104,16 @@ def _build_cartoon_prompt(description: str, art_style_key: str, has_reference_im
             "clothing and shading, as illustrated cartoon art rather than photographic texture. "
             "This must read as cartoon art, not a photograph."
         )
+    elif has_reference_image:
+        grounding = (
+            f"Waist-up studio character portrait, {style['prompt']}, a different framing and "
+            "setting than the reference image. Keep ONLY the reference image's art style, "
+            "rendering technique, and color palette — as if this is a different character in the "
+            "exact same animated show. Do NOT reuse the reference's face shape, eyes, nose, "
+            "gender, ethnicity, or body — those must come entirely from the description below, "
+            "even if that means a completely different-looking character. Think of this as "
+            "recasting the same role with a different actor."
+        )
     else:
         grounding = (
             f"Character portrait, {style['prompt']}. This must be a fully stylized, illustrated "
@@ -89,6 +121,47 @@ def _build_cartoon_prompt(description: str, art_style_key: str, has_reference_im
         )
     parts = [grounding, extra, description, "Centered, front-facing, single character, high detail illustration."]
     return " ".join(p for p in parts if p)
+
+
+def _expand_variant_visual_description(character, variant, raw_description: str) -> str:
+    """A variant's own description is often relational/vague ("she is the
+    wife of Kumar, high society") rather than visually concrete — fine for
+    a human reader, but confirmed live to be too weak an anchor to reliably
+    override a grounding reference image's face/gender/ethnicity (the
+    image model needs an explicit visual description to latch onto, not a
+    relationship). Expands it into a concrete paragraph (gender, age,
+    ethnicity/skin tone, face shape, hair, attire) via the same Qwen-max
+    primary / Claude Haiku fallback pattern as culturetoon_script.py, used
+    only to build the image prompt — the user's own raw_description is
+    what's actually persisted/shown, this is never stored. Falls back to
+    the raw description unchanged if the expansion call fails, so a
+    provider outage degrades generation quality rather than blocking it."""
+    prompt = f"""You are a character designer writing a concrete VISUAL description for an illustrator, based on a brief, possibly relational description of a character.
+
+Base character: {character.name} - {character.description or "no description"}
+This variant's name: {variant.name}
+{"This variant's ethnicity/cultural background: " + variant.culture_tag if variant.culture_tag else ""}
+User's brief description of this variant: "{raw_description}"
+
+Write a single concrete paragraph (3-5 sentences) describing exactly what THIS VARIANT should look like: gender, approximate age, ethnicity/skin tone, face shape, hair color and style, and appropriate modest attire (invent reasonable attire if none is implied — never leave the character without clothing). Do not mention the base character, their name, or their relationship — describe ONLY this variant's own appearance, as if for an illustrator who will draw it without ever seeing the base character. Output plain text only, one paragraph, no headers, no meta-commentary."""
+    try:
+        if os.getenv("QWEN_API_KEY"):
+            from openai import OpenAI
+            qwen = OpenAI(api_key=os.environ["QWEN_API_KEY"], base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+            response = qwen.chat.completions.create(
+                model="qwen-max", messages=[{"role": "user", "content": prompt}], temperature=0.7,
+            )
+            return response.choices[0].message.content.strip()
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=300,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return message.content[0].text.strip()
+    except Exception:
+        logger.warning("Variant visual-description expansion failed, using raw description", exc_info=True)
+        return raw_description
 
 
 # ── ownership / lookup helpers ───────────────────────────────────────────
@@ -619,15 +692,22 @@ async def upload_variant_reference_image(variant_id: str, user_id: str = Form(..
 def generate_variant_image(variant_id: str, body: dict):
     """Builds/iterates this variant's portrait — same idea as
     generate_character_image, but scoped to one cultural/relational variant
-    of the base character (e.g. "Wife of Kumar", "Asian look"). Grounding
-    image priority: the variant's own reference_image_url if the user
-    uploaded one, otherwise the parent Character's base_image_url, so a
-    variant with no photo of its own still inherits the character's
-    already-established illustrated look and family resemblance rather than
-    generating from text alone. Always uses the parent character's
-    art_style — a roster stays visually consistent by design; if that turns
-    out to be too rigid for a specific brand, it's a one-line change to
-    accept a per-variant override instead."""
+    of the base character (e.g. "Wife of Kumar", "Chinese version").
+
+    Grounding image priority: the variant's own reference_image_url if
+    present (preserve_identity=True — that photo IS this variant), else the
+    parent Character's base_image_url (preserve_identity=False — grounds
+    only the art style/roster consistency, not the face) so the roster
+    still visibly belongs together, which matters for this product's video
+    scenarios (a "family" of characters that look like they're from the
+    same show). Getting that override to actually work reliably required
+    two things, both confirmed live: (1) the "recasting" prompt framing in
+    _build_cartoon_prompt rather than a bare "ignore identity" instruction,
+    and (2) feeding the image model a CONCRETE visual description rather
+    than the user's raw, often relational text ("she is the wife of Kumar,
+    high society") — that alone wasn't a strong enough visual anchor to
+    reliably override the reference face, hence
+    _expand_variant_visual_description below."""
     from app.db import SessionLocal
     user_id, brand_id = body.get("user_id"), body.get("brand_id")
     if not user_id or not brand_id:
@@ -639,13 +719,34 @@ def generate_variant_image(variant_id: str, body: dict):
         character = session.query(Character).filter_by(id=variant.character_id).first()
         if "description" in body:
             variant.description = (body.get("description") or "").strip() or None
+        if "culture_tag" in body:
+            variant.culture_tag = (body.get("culture_tag") or "").strip() or None
         session.commit()
-        description = (variant.description or "").strip()
-        if not description:
+        raw_description = (variant.description or "").strip()
+        if not raw_description:
             raise HTTPException(status_code=400, detail="A description is required to generate an image")
-        extra = f"This is a variant of the base character '{character.name}', specifically: {variant.name}."
+
+        has_own_reference = bool(variant.reference_image_url)
         reference_image_url = variant.reference_image_url or character.base_image_url
-        prompt = _build_cartoon_prompt(description, character.art_style, bool(reference_image_url), extra=extra)
+        extra = f"This is a variant of the base character '{character.name}', called '{variant.name}'."
+
+        if has_own_reference:
+            description = raw_description
+            if variant.culture_tag:
+                extra += f" Ethnicity / cultural appearance: {variant.culture_tag}."
+        elif reference_image_url:
+            # Falling back to the base character's portrait — needs a
+            # concrete visual description to actually override the face.
+            description = _expand_variant_visual_description(character, variant, raw_description)
+        else:
+            description = raw_description
+            if variant.culture_tag:
+                extra += f" Ethnicity / cultural appearance: {variant.culture_tag}."
+
+        prompt = _build_cartoon_prompt(
+            description, character.art_style, bool(reference_image_url),
+            preserve_identity=has_own_reference, extra=extra,
+        )
 
         from app.media.image_hybrid import HybridImageProvider
         try:

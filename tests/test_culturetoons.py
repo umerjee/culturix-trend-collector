@@ -271,7 +271,14 @@ class TestVariantImageGeneration:
             culturetoons.generate_variant_image(variant["id"], {"user_id": user_id, "brand_id": brand["id"]})
         assert exc_info.value.status_code == 400
 
-    def test_generate_image_falls_back_to_character_base_image(self, db, user_id, brand_and_character, mocker):
+    def test_generate_image_falls_back_to_character_portrait_with_expansion(self, db, user_id, brand_and_character, mocker):
+        # Confirmed live, repeatedly: a variant with no photo of its own
+        # DOES need to ground on the base character's portrait for roster
+        # consistency (the product's video scenarios depend on the family
+        # visibly belonging together) -- but only works with (1) the
+        # "recasting" prompt framing (preserve_identity=False), not a bare
+        # "ignore identity" instruction, and (2) an LLM-expanded concrete
+        # visual description, not the user's raw relational text.
         from app.media.base import MediaResult
         brand, character, variant = brand_and_character
         session = db()
@@ -280,6 +287,10 @@ class TestVariantImageGeneration:
         session.commit()
         session.close()
 
+        mock_expand = mocker.patch(
+            "app.routers.culturetoons._expand_variant_visual_description",
+            return_value="A woman in her 30s with warm skin tone, oval face, long dark wavy hair, elegant attire.",
+        )
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
             return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
@@ -291,13 +302,14 @@ class TestVariantImageGeneration:
         })
 
         assert result["image_url"] == "https://supabase/variant-gen.png"
+        mock_expand.assert_called_once()
         _, kwargs = mock_generate.call_args
         assert kwargs["reference_image_url"] == "https://supabase/char-portrait.png"
         sent_prompt = mock_generate.call_args[0][0]
-        assert variant["name"] in sent_prompt
-        assert character["name"] in sent_prompt
+        assert "recasting" in sent_prompt.lower()
+        assert "warm skin tone, oval face" in sent_prompt
 
-    def test_generate_image_prefers_own_reference_over_character_portrait(self, db, user_id, brand_and_character, mocker):
+    def test_generate_image_uses_own_reference_when_present(self, db, user_id, brand_and_character, mocker):
         from app.media.base import MediaResult
         brand, character, variant = brand_and_character
         session = db()
@@ -308,6 +320,7 @@ class TestVariantImageGeneration:
         session.commit()
         session.close()
 
+        mock_expand = mocker.patch("app.routers.culturetoons._expand_variant_visual_description")
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
             return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
@@ -318,8 +331,44 @@ class TestVariantImageGeneration:
             "user_id": user_id, "brand_id": brand["id"], "description": "Kumar's wife",
         })
 
+        # A variant's own photo means it IS that person — no need to
+        # expand/override, and identity should be preserved, not recast.
+        mock_expand.assert_not_called()
         _, kwargs = mock_generate.call_args
         assert kwargs["reference_image_url"] == "https://supabase/variant-own-ref.png"
+        sent_prompt = mock_generate.call_args[0][0]
+        assert "match facial identity" in sent_prompt.lower()
+
+    def test_expand_variant_visual_description_falls_back_on_provider_failure(self, db, user_id, brand_and_character, mocker):
+        brand, character, variant = brand_and_character
+        mocker.patch.dict("os.environ", {"QWEN_API_KEY": "fake-key"})
+        mocker.patch("openai.OpenAI").return_value.chat.completions.create.side_effect = RuntimeError("provider down")
+
+        session = db()
+        char_row = session.query(Character).filter_by(id=uuid.UUID(character["id"])).first()
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+
+        result = culturetoons._expand_variant_visual_description(char_row, variant_row, "she is the wife")
+        assert result == "she is the wife"
+        session.close()
+
+    def test_generate_image_includes_culture_tag_in_prompt(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, _character, variant = brand_and_character
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/variant-gen.png")
+
+        result = culturetoons.generate_variant_image(variant["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+            "description": "A relative of the main character", "culture_tag": "chinese",
+        })
+
+        assert result["culture_tag"] == "chinese"
+        sent_prompt = mock_generate.call_args[0][0]
+        assert "chinese" in sent_prompt.lower()
 
     def test_upload_variant_reference_image_does_not_touch_image_url(self, db, user_id, brand_and_character, mocker):
         brand, _character, variant = brand_and_character
