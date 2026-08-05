@@ -52,7 +52,7 @@ export default async function PerformancePage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <AppNav active="performance" isSuperAdmin={isSuperAdmin} />
+      <AppNav active="performance" isSuperAdmin={isSuperAdmin} product="posting-ideation" />
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         <div className="mb-6">

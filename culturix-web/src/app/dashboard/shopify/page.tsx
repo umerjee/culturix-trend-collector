@@ -39,7 +39,7 @@ export default async function ShopifyPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <AppNav active="shopify" isSuperAdmin={isSuperAdmin} />
+      <AppNav active="shopify" isSuperAdmin={isSuperAdmin} product="shopify" />
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         <div className="mb-6">

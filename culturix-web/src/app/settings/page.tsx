@@ -32,7 +32,7 @@ export default async function SettingsPage({
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <AppNav active="settings" isSuperAdmin={isSuperAdmin} />
+      <AppNav active="settings" isSuperAdmin={isSuperAdmin} product="posting-ideation" />
       <SettingsForm userId={user.id} initialPlan={plan} initialProfileId={searchParams.profile} />
     </div>
   );

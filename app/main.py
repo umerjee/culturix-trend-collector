@@ -32,6 +32,14 @@ async def lifespan(_):
     from app.models.persona_occurrence import PersonaOccurrence       # noqa: F401
     from app.models.shopify_store import ShopifyStore                 # noqa: F401
     from app.models.shopify_product import ShopifyProduct             # noqa: F401
+    from app.models.clip import Clip                                  # noqa: F401
+    from app.models.character_brand import CharacterBrand             # noqa: F401
+    from app.models.character import Character                       # noqa: F401
+    from app.models.character_variant import CharacterVariant         # noqa: F401
+    from app.models.expression import Expression                     # noqa: F401
+    from app.models.toon_background import ToonBackground             # noqa: F401
+    from app.models.toon_script import ToonScript                     # noqa: F401
+    from app.models.toon import Toon                                  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -221,6 +229,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from app.routers.clips import router as clips_router
+app.include_router(clips_router)
+
+from app.routers.culturetoons import router as culturetoons_router
+app.include_router(culturetoons_router)
 
 
 @app.get("/health")

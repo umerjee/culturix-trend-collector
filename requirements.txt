@@ -28,3 +28,28 @@ PyJWT
 edge-tts
 stripe
 cryptography
+# Phase 7 — Clip generation (persona/cluster -> short-form vertical video)
+# NOTE: PyPI's "TTS" package (original Coqui TTS) has no release supporting
+# Python >=3.12 and fails to install outright on this project's Python 3.14
+# venv. "coqui-tts" is the actively-maintained fork (same `import TTS` API,
+# same model zoo, e.g. tts_models/multilingual/multi-dataset/xtts_v2) and is
+# the only way to get Coqui TTS running here — confirmed via pip install
+# --dry-run before adding. The [cpu] extra is required to pull in torch/
+# torchaudio at all (they're optional extras, not a base dependency).
+coqui-tts[cpu,codec]
+# coqui-tts 0.27.5 declares "transformers>=4.57" with no upper bound, but its
+# XTTS implementation actually breaks against transformers 5.x (confirmed
+# live: "cannot import name 'isin_mps_friendly' from
+# transformers.pytorch_utils" — that symbol was removed in the 5.x line).
+# Pinned to the latest working 4.x release; don't let this float to 5.x.
+transformers==4.57.6
+# The [cpu] extra alone isn't enough — PyTorch >=2.9's audio backend needs the
+# separate torchcodec library (confirmed live: coqui-tts's TTS.load_tts()
+# raises "torchcodec library is required for audio IO" without it), hence
+# also requesting the [codec] extra above.
+faster-whisper
+ffmpeg-python
+pillow
+# CultureToons image uploads (POST .../image routes use FastAPI's UploadFile,
+# which needs python-multipart to parse multipart/form-data)
+python-multipart

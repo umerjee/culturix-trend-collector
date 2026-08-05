@@ -1,0 +1,7 @@
+# Railway builds this repo with nixpacks (see railway.toml). ffmpeg is a
+# runtime dependency of app/services/clip_render.py (Phase 7 clip generation)
+# and is not part of nixpacks' default Python build image, so it has to be
+# added explicitly here or every /generate/clip call fails with "ffmpeg not
+# found" in production.
+[phases.setup]
+nixPkgs = ["ffmpeg"]

@@ -184,7 +184,7 @@ export default async function DashboardPage({
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <AppNav active="dashboard" isSuperAdmin={isSuperAdmin} />
+      <AppNav active="dashboard" isSuperAdmin={isSuperAdmin} product="posting-ideation" />
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         {/* Header */}

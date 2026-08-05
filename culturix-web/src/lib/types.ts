@@ -369,3 +369,92 @@ export interface ShopifyProduct {
   idea: ShopifyProductIdea | null;
   reel: ShopifyProductReel | null;
 }
+
+export interface CharacterBrand {
+  id: string;
+  user_id: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface Character {
+  id: string;
+  brand_id: string;
+  name: string;
+  description: string | null;
+  base_image_url: string | null;
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface CharacterVariant {
+  id: string;
+  character_id: string;
+  name: string;
+  culture_tag: string | null;
+  description: string | null;
+  image_url: string | null;
+  persona_id: number | null;
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export const EXPRESSION_NAMES = [
+  "Angry", "Confused", "Happy", "Shocked", "Laughing",
+  "Side-eye", "Crying", "Annoyed", "Smiling", "Deadpan",
+] as const;
+
+export interface Expression {
+  id: string;
+  character_variant_id: string;
+  name: (typeof EXPRESSION_NAMES)[number];
+  image_url: string | null;
+  created_at: string | null;
+}
+
+export interface ToonBackground {
+  id: string;
+  brand_id: string;
+  name: string;
+  image_url: string | null;
+  tags: string | null;
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ToonScript {
+  id: string;
+  brand_id: string;
+  character_variant_id: string | null;
+  source_type: "persona" | "cluster" | null;
+  source_id: number | null;
+  hook_line: string | null;
+  dialogue: string | null;
+  scene_direction: string | null;
+  generation_source: "manual" | "ai";
+  status: "draft" | "approved" | "archived";
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface Toon {
+  id: string;
+  brand_id: string;
+  character_variant_id: string;
+  script_id: string;
+  background_id: string | null;
+  title: string | null;
+  final_video_url: string | null;
+  status: "idea" | "animating" | "ready" | "posted" | "archived";
+  platform: string | null;
+  posted_at: string | null;
+  notes: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}

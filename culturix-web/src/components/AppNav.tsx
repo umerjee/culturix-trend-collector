@@ -1,28 +1,57 @@
 import Link from "next/link";
-import { Zap, LayoutDashboard, TrendingUp, Settings, ShieldCheck, LogOut, HelpCircle, ShoppingBag } from "lucide-react";
+import { Zap, LayoutDashboard, TrendingUp, Settings, ShieldCheck, LogOut, HelpCircle, ShoppingBag, Drama } from "lucide-react";
+import ProductSwitcher, { ProductKey } from "./ProductSwitcher";
 
-type NavKey = "dashboard" | "performance" | "shopify" | "settings";
+type NavKey = "dashboard" | "performance" | "shopify" | "culturetoons" | "settings";
 
 interface Props {
   active: NavKey;
   isSuperAdmin: boolean;
+  // Which of the 3 Culturix products this page belongs to — renders the
+  // ProductSwitcher so the 3 products (Posting Ideation / Shopify Reel
+  // Building / Character-Based Posting) read as clearly separate paths
+  // rather than being blended into this same flat item list, which is
+  // otherwise scoped to navigation *within* the current product.
+  product: ProductKey;
 }
 
-const ITEMS: { key: NavKey; href: string; icon: React.ReactNode; label: string }[] = [
-  { key: "dashboard", href: "/dashboard", icon: <LayoutDashboard className="h-3.5 w-3.5" />, label: "Dashboard" },
-  { key: "performance", href: "/dashboard/performance", icon: <TrendingUp className="h-3.5 w-3.5" />, label: "Performance" },
-  { key: "shopify", href: "/dashboard/shopify", icon: <ShoppingBag className="h-3.5 w-3.5" />, label: "Shopify" },
-  { key: "settings", href: "/settings", icon: <Settings className="h-3.5 w-3.5" />, label: "Settings" },
-];
+type NavItem = { key: NavKey; href: string; icon: React.ReactNode; label: string };
 
-export default function AppNav({ active, isSuperAdmin }: Props) {
+// Scoped per product — the bar only ever shows the CURRENT product's own
+// sub-navigation, not every product's pages flattened together (that
+// flattening was the original complaint: Shopify used to sit here as just
+// one item among Dashboard/Performance/Settings). Switching products
+// happens via ProductSwitcher above, not this bar.
+const PRODUCT_ITEMS: Record<ProductKey, NavItem[]> = {
+  "posting-ideation": [
+    { key: "dashboard", href: "/dashboard", icon: <LayoutDashboard className="h-3.5 w-3.5" />, label: "Dashboard" },
+    { key: "performance", href: "/dashboard/performance", icon: <TrendingUp className="h-3.5 w-3.5" />, label: "Performance" },
+  ],
+  shopify: [
+    { key: "shopify", href: "/dashboard/shopify", icon: <ShoppingBag className="h-3.5 w-3.5" />, label: "Shopify" },
+  ],
+  culturetoons: [
+    { key: "culturetoons", href: "/dashboard/culturetoons", icon: <Drama className="h-3.5 w-3.5" />, label: "CultureToons" },
+  ],
+};
+
+// Not product-scoped — a global utility available regardless of which
+// product you're currently in.
+const SETTINGS_ITEM: NavItem = {
+  key: "settings", href: "/settings", icon: <Settings className="h-3.5 w-3.5" />, label: "Settings",
+};
+
+export default function AppNav({ active, isSuperAdmin, product }: Props) {
+  const items = [...PRODUCT_ITEMS[product], SETTINGS_ITEM];
   return (
     <header className="bg-white border-b border-gray-100 sticky top-0 z-10">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-2">
         <Link href="/dashboard" className="flex items-center gap-2 shrink-0">
           <Zap className="h-5 w-5 text-blue-600" />
-          <span className="font-bold text-lg tracking-tight">Culturix</span>
+          <span className="font-bold text-lg tracking-tight hidden sm:inline">Culturix</span>
         </Link>
+
+        <ProductSwitcher product={product} />
 
         {/* overflow-x-auto is a safety net, not the primary fix — the tighter
             mobile padding below (px-2 vs px-3) is what keeps everything,
@@ -30,7 +59,7 @@ export default function AppNav({ active, isSuperAdmin }: Props) {
             (iPhone SE) even for superadmins with the full item set. Without
             it, Sign out was pushed fully off-screen and unreachable. */}
         <nav className="flex items-center gap-0.5 sm:gap-1 overflow-x-auto">
-          {ITEMS.map(({ key, href, icon, label }) => (
+          {items.map(({ key, href, icon, label }) => (
             <Link
               key={key}
               href={href}
