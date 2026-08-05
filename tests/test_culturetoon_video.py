@@ -1,0 +1,241 @@
+"""Tests for app/services/culturetoon_video.py — the Kling Omni generation
+orchestration. Mirrors tests/test_shopify_reels.py's
+TestGenerateReelForProduct shape: in-memory SQLite, every external call
+(Kling, storage, clip cutting) mocked, no real network/ffmpeg needed.
+"""
+import os
+os.environ.setdefault("TOKEN_ENCRYPTION_KEY", "zJZ2n2n0vXW5X8mYQKqVYV9YQe3F2Z8h0m3nQeF1nQ8=")
+
+import uuid
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.db import Base
+from app.models.character_brand import CharacterBrand
+from app.models.character import Character
+from app.models.character_variant import CharacterVariant
+from app.models.toon_background import ToonBackground
+from app.models.toon_script import ToonScript
+from app.models.toon import Toon
+from app.services.culturetoon_video import generate_video_for_toon
+
+_SHOTS = [
+    {"shot_number": 1, "duration_seconds": 4, "action": "storms in", "expression": "Annoyed", "dialogue": "You didn't eat?!"},
+    {"shot_number": 2, "duration_seconds": 4, "action": "softens", "expression": "Smiling", "dialogue": None},
+]
+
+
+@pytest.fixture
+def db(mocker):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine, tables=[
+        CharacterBrand.__table__, Character.__table__, CharacterVariant.__table__,
+        ToonBackground.__table__, ToonScript.__table__, Toon.__table__,
+    ])
+    TestSessionLocal = sessionmaker(bind=engine)
+    mocker.patch("app.db.SessionLocal", TestSessionLocal)
+    return TestSessionLocal
+
+
+@pytest.fixture
+def seeded(db):
+    session = db()
+    user_id = uuid.uuid4()
+    brand = CharacterBrand(user_id=user_id, name="Test Brand")
+    session.add(brand)
+    session.commit()
+
+    character = Character(brand_id=brand.id, name="Base")
+    session.add(character)
+    session.commit()
+
+    variant = CharacterVariant(
+        character_id=character.id, name="Mom", image_url="https://img/mom.png",
+        kling_element_id="elem-1", kling_element_name="Mom", element_status="ready",
+    )
+    session.add(variant)
+    session.commit()
+
+    script = ToonScript(brand_id=brand.id, character_variant_id=variant.id, shots=_SHOTS, total_duration_seconds=8)
+    session.add(script)
+    session.commit()
+
+    toon = Toon(brand_id=brand.id, character_variant_id=variant.id, script_id=script.id, status="animating")
+    session.add(toon)
+    session.commit()
+
+    ids = {"user_id": str(user_id), "brand_id": str(brand.id), "toon_id": str(toon.id), "variant_id": str(variant.id)}
+    session.close()
+    return ids
+
+
+def _mock_kling_success(mocker):
+    mock_provider = mocker.patch("app.media.kling_omni.KlingOmniProvider")
+    mock_provider.return_value.generate_omni_video.return_value = {
+        "video_bytes": b"fake-mp4-bytes", "duration_seconds": 8.0, "task_id": "task-123",
+    }
+    return mock_provider
+
+
+def _mock_cut_clips(mocker, tmp_path, n=4):
+    def _fake_cut(source_video_path, output_dir, **kwargs):
+        results = []
+        for i in range(n):
+            p = tmp_path / f"clip_{i}.mp4"
+            p.write_bytes(b"fake-clip-bytes")
+            results.append({"path": str(p), "start": float(i), "end": float(i + 6)})
+        return results
+    return mocker.patch("app.services.culturetoon_clip_cutter.cut_clips", side_effect=_fake_cut)
+
+
+class TestGenerateVideoForToonSuccess:
+    def test_native_kling_audio_path(self, db, seeded, mocker, tmp_path):
+        _mock_kling_success(mocker)
+        _mock_cut_clips(mocker, tmp_path)
+        mock_upload = mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
+
+        generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
+
+        session = db()
+        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
+        assert toon.status == "ready"
+        assert toon.raw_video_url == "https://supabase/video.mp4"
+        assert toon.clip_video_urls == ["https://supabase/video.mp4"] * 4
+        assert toon.kling_task_id == "task-123"
+        assert toon.generation_error is None
+        session.close()
+
+        mock_upload.assert_called()
+
+    def test_generate_omni_video_called_with_native_audio_and_element(self, db, seeded, mocker, tmp_path):
+        mock_provider = _mock_kling_success(mocker)
+        _mock_cut_clips(mocker, tmp_path)
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
+
+        generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
+
+        call = mock_provider.return_value.generate_omni_video.call_args
+        contents, settings = call.args
+        assert settings["audio"] == "native"
+        assert settings["multi_shot"] is True
+        assert any(c["type"] == "element" and c["element_id"] == "elem-1" for c in contents)
+        prompt_item = next(c for c in contents if c["type"] == "prompt")
+        assert "@Mom" in prompt_item["text"]
+        assert "shot 1," in prompt_item["text"]
+
+
+class TestGenerateVideoForToonFailures:
+    def test_missing_shots_marks_failed(self, db, seeded, mocker):
+        session = db()
+        script = session.query(ToonScript).filter_by(character_variant_id=uuid.UUID(seeded["variant_id"])).first()
+        script.shots = None
+        session.commit()
+        session.close()
+
+        generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
+
+        session = db()
+        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
+        assert toon.status == "failed"
+        assert "shot data" in toon.generation_error
+        session.close()
+
+    def test_element_not_ready_marks_failed(self, db, seeded, mocker):
+        session = db()
+        variant = session.query(CharacterVariant).filter_by(id=uuid.UUID(seeded["variant_id"])).first()
+        variant.element_status = "unregistered"
+        session.commit()
+        session.close()
+
+        generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
+
+        session = db()
+        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
+        assert toon.status == "failed"
+        assert "Kling element" in toon.generation_error
+        session.close()
+
+    def test_kling_error_marks_failed_with_message(self, db, seeded, mocker):
+        from app.media.kling_omni import KlingOmniError
+        mock_provider = mocker.patch("app.media.kling_omni.KlingOmniProvider")
+        mock_provider.return_value.generate_omni_video.side_effect = KlingOmniError("content risk control triggered")
+
+        generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
+
+        session = db()
+        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
+        assert toon.status == "failed"
+        assert "content risk control triggered" in toon.generation_error
+        session.close()
+
+    def test_clip_cut_error_marks_failed(self, db, seeded, mocker):
+        from app.services.culturetoon_clip_cutter import ClipCutError
+        _mock_kling_success(mocker)
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
+        mocker.patch("app.services.culturetoon_clip_cutter.cut_clips", side_effect=ClipCutError("ffmpeg not found"))
+
+        generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
+
+        session = db()
+        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
+        assert toon.status == "failed"
+        assert "ffmpeg not found" in toon.generation_error
+        # The raw video should still have been uploaded before the clip-cut
+        # step failed — partial progress is preserved, not lost.
+        assert toon.raw_video_url == "https://supabase/video.mp4"
+        session.close()
+
+
+class TestElevenLabsOptIn:
+    def test_no_key_configured_falls_back_to_kling_native(self, db, seeded, mocker, tmp_path):
+        session = db()
+        variant = session.query(CharacterVariant).filter_by(id=uuid.UUID(seeded["variant_id"])).first()
+        variant.voice_provider = "elevenlabs"
+        variant.elevenlabs_voice_id = "voice-1"
+        session.commit()
+        session.close()
+
+        mock_provider = _mock_kling_success(mocker)
+        _mock_cut_clips(mocker, tmp_path)
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
+
+        generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
+
+        # Brand has no elevenlabs_api_key_encrypted set -> fails open to Kling native.
+        settings = mock_provider.return_value.generate_omni_video.call_args.args[1]
+        assert settings["audio"] == "native"
+
+        session = db()
+        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
+        assert toon.status == "ready"
+        session.close()
+
+    def test_key_configured_uses_off_audio_and_dubs(self, db, seeded, mocker, tmp_path):
+        from app.social.crypto import encrypt
+
+        session = db()
+        brand = session.query(CharacterBrand).filter_by(id=uuid.UUID(seeded["brand_id"])).first()
+        brand.elevenlabs_api_key_encrypted = encrypt("sk-real-key")
+        variant = session.query(CharacterVariant).filter_by(id=uuid.UUID(seeded["variant_id"])).first()
+        variant.voice_provider = "elevenlabs"
+        variant.elevenlabs_voice_id = "voice-1"
+        session.commit()
+        session.close()
+
+        mock_provider = _mock_kling_success(mocker)
+        _mock_cut_clips(mocker, tmp_path)
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
+        mock_dub = mocker.patch(
+            "app.services.culturetoon_video._dub_dialogue",
+            side_effect=lambda tmp_dir, video_path, shots, api_key, voice_id: video_path,
+        )
+
+        generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
+
+        settings = mock_provider.return_value.generate_omni_video.call_args.args[1]
+        assert settings["audio"] == "off"
+        mock_dub.assert_called_once()
+        assert mock_dub.call_args.args[3] == "sk-real-key"  # decrypted correctly
+        assert mock_dub.call_args.args[4] == "voice-1"

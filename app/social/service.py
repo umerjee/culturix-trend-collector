@@ -25,15 +25,18 @@ def _get_provider(platform: str):
     return getattr(mod, class_name)()
 
 
-def resolve_active_account(session, user_id, platform: str, content_profile_id=None):
+def resolve_active_account(session, user_id, platform: str, content_profile_id=None, character_brand_id=None):
     """Resolves which ConnectedAccount a post/publish/fetch should use for a
     given user+platform. Prefers the account dedicated to content_profile_id
     (a user's own "avatar account" for that niche, see ConnectedAccount's
-    content_profile_id) and falls back to the legacy user-wide account
-    (content_profile_id IS NULL) so any existing single-account user sees
-    zero behavior change. Used by both the /api/content-posts* route
-    pre-flight checks and the actual background fetch/publish tasks below,
-    so the two never disagree about which account is in play."""
+    content_profile_id) or character_brand_id (a CultureToons "toon account",
+    same shape) and falls back to the legacy user-wide account (both scope
+    columns NULL) so any existing single-account user sees zero behavior
+    change. Callers pass at most one of content_profile_id/character_brand_id
+    in practice — the two branches are independent, not combined. Used by
+    both the /api/content-posts* route pre-flight checks and the actual
+    background fetch/publish tasks below, so the two never disagree about
+    which account is in play."""
     from app.models.connected_account import ConnectedAccount
 
     if content_profile_id is not None:
@@ -43,8 +46,15 @@ def resolve_active_account(session, user_id, platform: str, content_profile_id=N
         if account:
             return account
 
+    if character_brand_id is not None:
+        account = session.query(ConnectedAccount).filter_by(
+            character_brand_id=character_brand_id, platform=platform, status="active"
+        ).first()
+        if account:
+            return account
+
     return session.query(ConnectedAccount).filter_by(
-        user_id=user_id, platform=platform, content_profile_id=None, status="active"
+        user_id=user_id, platform=platform, content_profile_id=None, character_brand_id=None, status="active"
     ).first()
 
 

@@ -10,7 +10,14 @@ class ConnectedAccount(Base):
     # NULL content_profile_id = legacy/unbound, user-wide account (Postgres treats
     # NULL as distinct under a unique constraint, so these never collide with
     # profile-bound rows below — no backfill needed when this column was added).
-    __table_args__ = (UniqueConstraint("content_profile_id", "platform", name="uq_connected_accounts_profile_platform"),)
+    __table_args__ = (
+        UniqueConstraint("content_profile_id", "platform", name="uq_connected_accounts_profile_platform"),
+        # Second, independent scope dimension for CultureToons "toon accounts"
+        # — additive alongside content_profile_id, not a replacement. Same
+        # NULL-is-distinct reasoning: existing profile-scoped rows have
+        # character_brand_id NULL and never collide with brand-scoped rows.
+        UniqueConstraint("character_brand_id", "platform", name="uq_connected_accounts_brand_platform"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
@@ -18,6 +25,12 @@ class ConnectedAccount(Base):
     # user's own "avatar account" for that niche. NULL means legacy/shared
     # across all of the user's profiles (see app/social/service.py's fallback).
     content_profile_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # Which CharacterBrand (toon account) this connected account is dedicated
+    # to. Mutually exclusive with content_profile_id in practice — CultureToons
+    # callers always pass this and never content_profile_id, and vice versa —
+    # but nothing at the DB layer enforces that; see
+    # app/social/service.py::resolve_active_account's scope-priority logic.
+    character_brand_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     platform = Column(String(20), nullable=False)  # youtube|twitter|tiktok|instagram
     platform_account_id = Column(String(255), nullable=True)
     platform_username = Column(String(255), nullable=True)

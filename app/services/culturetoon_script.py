@@ -1,9 +1,15 @@
 """Trend-tied script generation for CultureToons — combines
 clip_script.py's Persona/Cluster context-branching with
-shopify/content_ideas.py's structured-JSON-output pattern (three distinct
-fields are needed here — hook/dialogue/scene direction — not one plain-text
-voiceover blob). Same Qwen-max primary / Claude Haiku fallback provider
-pattern as every other content generator in this codebase.
+shopify/content_ideas.py's structured-JSON-output pattern. Same Qwen-max
+primary / Claude Haiku fallback provider pattern as every other content
+generator in this codebase.
+
+Scripts are shot-structured (a list of {shot_number, duration_seconds,
+action, expression, dialogue}), not a single flat hook/dialogue/scene blob —
+this is what lets build_kling_prompt() assemble Kling Omni's multi-shot DSL
+("shot n,m,words; shot n,m,words;") directly from a stored script, once a
+CharacterVariant has been registered as a Kling Element (see
+app/media/kling_omni.py / app/services/culturetoon_element.py).
 """
 import json
 import logging
@@ -13,6 +19,24 @@ from typing import Optional
 from app.models.persona import Persona
 
 logger = logging.getLogger("culturix.services.culturetoon_script")
+
+# Duplicated from app/routers/culturetoons.py's EXPRESSION_NAMES rather than
+# imported — a service importing from a router would run the dependency
+# direction backwards, and this codebase already has precedent for small
+# duplicated constants/helpers over that kind of coupling (e.g.
+# clips.py::_fetch_source / culturetoons.py::_fetch_trend_source).
+EXPRESSION_NAMES = [
+    "Angry", "Confused", "Happy", "Shocked", "Laughing",
+    "Side-eye", "Crying", "Annoyed", "Smiling", "Deadpan",
+]
+
+TONE_OPTIONS = ["funny", "dramatic", "satiric", "sad", "wholesome", "chaotic", "deadpan"]
+
+_MIN_SHOTS = 2
+_MAX_SHOTS = 6
+_MIN_TOTAL_SECONDS = 3
+_MAX_TOTAL_SECONDS = 15
+_MAX_SHOT_PROMPT_CHARS = 512
 
 
 class ToonScriptGenerationError(Exception):
@@ -48,37 +72,39 @@ def _source_type_and_context(persona_or_cluster) -> tuple[str, str]:
     )
 
 
-def _build_prompt(persona_or_cluster, variant=None) -> str:
+def _build_prompt(persona_or_cluster, variant, tone: str, num_shots: int, target_duration_seconds: int) -> str:
     source_type, context = _source_type_and_context(persona_or_cluster)
     variant_line = ""
     if variant is not None:
         variant_line = (
             f"\nWrite this specifically for the character '{variant.name}' "
             f"({variant.description or variant.culture_tag or 'no further description'}). "
-            f"The dialogue must be voiced as this character reacting to the trend below, "
-            f"in a way that reflects their cultural humor/perspective.\n"
+            f"Every shot's action/dialogue must be something THIS character does/says, "
+            f"reacting to the trend below in a way that reflects their cultural humor/perspective.\n"
         )
 
-    return f"""You are a scriptwriter for short (10-15 second) character-based comedy
-skits for social video, grounded in the {source_type} below.
+    return f"""You are a scriptwriter for short character-based comedy skits for
+social video, grounded in the {source_type} below. The tone must be: {tone}.
 
 {context}
 {variant_line}
-Format example (for tone/shape only, don't reuse the content):
-Hook: "Indian moms when you say you're not hungry."
-Dialogue: Mom: "Okay… I'll make something small."
-Scene direction: Cut to: 12 dishes.
+Aim for around {num_shots} shots totaling about {target_duration_seconds} seconds, though you
+may adjust within the hard limits below if it better serves the joke.
 
 Requirements:
-- Short, punchy, visual — this is a 10-15 second skit, not a monologue.
-- The hook must work as a stand-alone opening line/on-screen text.
-- The dialogue is what the character actually says out loud.
-- The scene direction is the punchline visual beat (a "cut to" or similar).
+- Between {_MIN_SHOTS} and {_MAX_SHOTS} shots. shot_number must be 1, 2, 3... with no gaps.
+- Each shot's duration_seconds is a whole number >= 1. The SUM of all shots'
+  duration_seconds must be between {_MIN_TOTAL_SECONDS} and {_MAX_TOTAL_SECONDS} (hard limits).
+- "action" describes what the character visually does in that shot (max ~20 words).
+- "expression" is one of exactly these values, or null if not relevant: {EXPRESSION_NAMES}.
+- "dialogue" is what the character says out loud in that shot, or null for a
+  silent/reaction-only beat.
+- hook_line is a punchy, stand-alone opening line/on-screen text summarizing the skit (max 15 words).
 
 Return ONLY valid JSON with exactly these keys:
-- hook_line: the punchy opening line (max 15 words)
-- dialogue: the spoken line(s), attributed to the character (e.g. `Mom: "..."`)
-- scene_direction: a short stage/scene direction for the punchline beat (max 15 words)
+- hook_line: string
+- shots: array of objects, each with exactly: shot_number (int), duration_seconds (int),
+  action (string), expression (string or null), dialogue (string or null)
 
 Return ONLY the JSON object, no other text."""
 
@@ -92,9 +118,12 @@ def _parse(raw: str) -> dict:
     return json.loads(text.strip())
 
 
-def generate_toon_script(persona_or_cluster, variant: Optional[object] = None) -> dict:
-    """Returns {"hook_line": str, "dialogue": str, "scene_direction": str}."""
-    prompt = _build_prompt(persona_or_cluster, variant)
+def generate_toon_script(persona_or_cluster, variant: Optional[object] = None, tone: str = "funny",
+                          num_shots: int = 4, target_duration_seconds: int = 12) -> dict:
+    """Returns {"hook_line": str, "tone": str,
+      "shots": [{"shot_number", "duration_seconds", "action", "expression", "dialogue"}, ...],
+      "total_duration_seconds": int}."""
+    prompt = _build_prompt(persona_or_cluster, variant, tone, num_shots, target_duration_seconds)
     try:
         if os.getenv("QWEN_API_KEY"):
             qwen = _get_qwen_client()
@@ -108,12 +137,80 @@ def generate_toon_script(persona_or_cluster, variant: Optional[object] = None) -
             client = _get_claude_client()
             message = client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=500,
+                max_tokens=900,
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = message.content[0].text
-        return _parse(raw)
+        parsed = _parse(raw)
     except json.JSONDecodeError as exc:
         raise ToonScriptGenerationError(f"Model returned invalid JSON: {exc}") from exc
     except Exception as exc:
         raise ToonScriptGenerationError(str(exc)) from exc
+
+    shots = parsed.get("shots") or []
+    total = sum(s.get("duration_seconds", 0) for s in shots) if shots else 0
+    return {
+        "hook_line": parsed.get("hook_line"),
+        "tone": tone,
+        "shots": shots,
+        "total_duration_seconds": parsed.get("total_duration_seconds") or total,
+    }
+
+
+def build_kling_prompt(shots: list, element_name: str) -> str:
+    """Assembles Kling Omni's multi-shot DSL string ("shot n, m, words; ...")
+    from stored shots + a registered element_name. Raises
+    ToonScriptGenerationError on any structural problem — empty/too-many
+    shots, non-contiguous shot_number values, an out-of-bounds total
+    duration, or a per-shot built prompt exceeding Kling's 512-char cap.
+
+    @{element_name} is referenced in every shot segment (not just the
+    first) — the safer explicit-over-implicit default; cheap to change here
+    alone if a live test shows Kling tracks the character across shots
+    without repeating the reference."""
+    if not shots:
+        raise ToonScriptGenerationError("Cannot build a Kling prompt from an empty shots list")
+    if len(shots) > _MAX_SHOTS:
+        raise ToonScriptGenerationError(f"Kling supports at most {_MAX_SHOTS} shots, got {len(shots)}")
+
+    expected_numbers = list(range(1, len(shots) + 1))
+    actual_numbers = [s.get("shot_number") for s in shots]
+    if actual_numbers != expected_numbers:
+        raise ToonScriptGenerationError(
+            f"shot_number values must be a contiguous 1..N sequence, got {actual_numbers}"
+        )
+
+    total_seconds = sum(s.get("duration_seconds", 0) for s in shots)
+    if not (_MIN_TOTAL_SECONDS <= total_seconds <= _MAX_TOTAL_SECONDS):
+        raise ToonScriptGenerationError(
+            f"Total shot duration must be between {_MIN_TOTAL_SECONDS} and {_MAX_TOTAL_SECONDS}s, got {total_seconds}s"
+        )
+
+    segments = []
+    for shot in shots:
+        duration = shot.get("duration_seconds")
+        if not isinstance(duration, int) or duration < 1:
+            raise ToonScriptGenerationError(
+                f"Shot {shot.get('shot_number')} has an invalid duration_seconds: {duration}"
+            )
+
+        parts = [f"@{element_name}"]
+        action = (shot.get("action") or "").strip()
+        if action:
+            parts.append(action)
+        expression = shot.get("expression")
+        if expression:
+            parts.append(f"{expression.lower()} expression")
+        dialogue = shot.get("dialogue")
+        if dialogue:
+            parts.append(f'saying "{dialogue}"')
+
+        text = ", ".join(parts) + "."
+        if len(text) > _MAX_SHOT_PROMPT_CHARS:
+            raise ToonScriptGenerationError(
+                f"Shot {shot['shot_number']}'s built prompt text exceeds Kling's "
+                f"{_MAX_SHOT_PROMPT_CHARS}-char limit ({len(text)} chars)"
+            )
+        segments.append(f"shot {shot['shot_number']}, {duration}, {text}")
+
+    return "; ".join(segments) + ";"

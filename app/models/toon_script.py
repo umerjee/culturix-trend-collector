@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, Text
+from sqlalchemy import Column, String, Integer, DateTime, Text, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -6,13 +6,20 @@ from app.db import Base
 
 
 class ToonScript(Base):
-    """A short (10-15s) punchy skit script for a CultureToons brand:
-    hook_line + dialogue + scene_direction (e.g. "Cut to: 12 dishes.").
-    Optionally FK'd to a CharacterVariant it was written for, and optionally
-    grounded in a trending Persona or Cluster via source_type/source_id —
-    mirrors Clip's exact source_type/source_id pattern (app/models/clip.py):
-    source_id is Integer since Persona.id/Cluster.id are Integer, not UUID.
-    Both source fields are NULL for a hand-authored script."""
+    """A short punchy skit script for a CultureToons brand. Optionally FK'd
+    to a CharacterVariant it was written for, and optionally grounded in a
+    trending Persona or Cluster via source_type/source_id — mirrors Clip's
+    exact source_type/source_id pattern (app/models/clip.py): source_id is
+    Integer since Persona.id/Cluster.id are Integer, not UUID. Both source
+    fields are NULL for a hand-authored script.
+
+    hook_line/dialogue/scene_direction are the original flat shape, still
+    used verbatim by the manual-authoring path (POST /scripts). AI-suggested
+    scripts (POST /scripts/suggest) instead populate hook_line (as a
+    human-readable summary) plus tone/shots/total_duration_seconds — the
+    shot-structured shape needed to drive Kling's multi-shot video
+    generation (see app/services/culturetoon_script.py's build_kling_prompt).
+    dialogue/scene_direction are left NULL for AI-suggested scripts."""
     __tablename__ = "toon_scripts"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -23,6 +30,18 @@ class ToonScript(Base):
     hook_line = Column(Text, nullable=True)
     dialogue = Column(Text, nullable=True)
     scene_direction = Column(Text, nullable=True)
+
+    # Shot-structured script for AI-suggested/video-ready scripts.
+    tone = Column(String(20), nullable=True)  # funny|dramatic|satiric|sad|wholesome|chaotic|deadpan
+    # [{"shot_number": int, "duration_seconds": int, "action": str,
+    #   "expression": Optional[str] (one of EXPRESSION_NAMES, free-text guidance
+    #   not an FK), "dialogue": Optional[str]}, ...]. Stored structured rather
+    # than as a pre-baked "@Name ..." DSL string because the element name a
+    # variant is registered under doesn't exist yet at script-creation time
+    # and can change if re-registered — the DSL is rebuilt on demand from this.
+    shots = Column(JSON, nullable=True)
+    total_duration_seconds = Column(Integer, nullable=True)
+
     generation_source = Column(String(10), nullable=False, default="manual")  # manual|ai
     status = Column(String(12), nullable=False, default="draft")  # draft|approved|archived
     created_at = Column(DateTime, default=datetime.utcnow)

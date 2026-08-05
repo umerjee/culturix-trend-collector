@@ -146,6 +146,45 @@ async def lifespan(_):
             "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS reel_video_url TEXT",
             "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS reel_error TEXT",
             "ALTER TABLE shopify_products ADD COLUMN IF NOT EXISTS reel_generated_at TIMESTAMP",
+            # CultureToons: CharacterBrand goes from one-per-user to many-per-user
+            # ("toon accounts" like Funny Clips / Baby Videos / Tech Updates,
+            # managed centrally) — the unique index on user_id has to become a
+            # plain index. Confirmed via compiled DDL that unique=True rendered
+            # as a unique INDEX (ix_character_brands_user_id), not a named
+            # constraint, hence DROP INDEX rather than DROP CONSTRAINT.
+            "DROP INDEX IF EXISTS ix_character_brands_user_id",
+            "CREATE INDEX IF NOT EXISTS ix_character_brands_user_id ON character_brands (user_id)",
+            "ALTER TABLE character_brands ADD COLUMN IF NOT EXISTS target_platforms TEXT[] DEFAULT '{}'",
+            "ALTER TABLE character_brands ADD COLUMN IF NOT EXISTS delivery_freq VARCHAR(10) NOT NULL DEFAULT 'daily'",
+            "ALTER TABLE character_brands ADD COLUMN IF NOT EXISTS delivery_time TEXT NOT NULL DEFAULT '07:00'",
+            "ALTER TABLE character_brands ADD COLUMN IF NOT EXISTS delivery_day_of_week INTEGER NOT NULL DEFAULT 0",
+            # Optional per-brand ElevenLabs credential — see app/media/elevenlabs_voice.py.
+            "ALTER TABLE character_brands ADD COLUMN IF NOT EXISTS elevenlabs_api_key_encrypted TEXT",
+            # Kling Element/voice registration per character variant — see
+            # app/media/kling_omni.py / app/services/culturetoon_element.py.
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS kling_element_id VARCHAR(64)",
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS kling_element_name VARCHAR(20)",
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS kling_voice_id VARCHAR(64)",
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS element_status VARCHAR(12) NOT NULL DEFAULT 'unregistered'",
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS element_error TEXT",
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS element_task_id VARCHAR(64)",
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS voice_task_id VARCHAR(64)",
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS voice_provider VARCHAR(12) NOT NULL DEFAULT 'kling'",
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS elevenlabs_voice_id VARCHAR(64)",
+            # Shot-structured, tone-aware AI scripts, driving Kling's multi-shot
+            # DSL — see app/services/culturetoon_script.py::build_kling_prompt.
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS tone VARCHAR(20)",
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS shots JSON",
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS total_duration_seconds INTEGER",
+            # Kling Omni video pipeline state — see app/services/culturetoon_video.py.
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS raw_video_url TEXT",
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS clip_video_urls TEXT[] DEFAULT '{}'",
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS kling_task_id VARCHAR(64)",
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS generation_error TEXT",
+            # Second, independent scope dimension on ConnectedAccount for
+            # CultureToons "toon accounts" — additive alongside content_profile_id.
+            "ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS character_brand_id UUID",
+            "ALTER TABLE connected_accounts ADD CONSTRAINT uq_connected_accounts_brand_platform UNIQUE (character_brand_id, platform)",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -1133,19 +1172,21 @@ def _get_social_provider(platform: str):
 
 
 @app.get("/api/social/{platform}/connect")
-def social_connect(platform: str, user_id: str, content_profile_id: Optional[str] = None):
+def social_connect(platform: str, user_id: str, content_profile_id: Optional[str] = None,
+                    character_brand_id: Optional[str] = None):
     """Redirects to the platform's OAuth consent screen. `state` carries the
     user_id (and, when connecting a niche's own dedicated "avatar account",
-    the content_profile_id to bind it to) through the round trip so the
-    callback knows who's connecting and to which profile — this app has no
-    server-side session of its own (auth lives in the frontend's Supabase
-    session), so, consistent with every other endpoint here trusting a
-    passed-in user_id (e.g. GET /users/{user_id}/content-profiles), it isn't
-    cryptographically signed. Worst case of tampering is a connection landing
-    on the wrong user_id/profile, not a security bypass of anything sensitive."""
+    the content_profile_id or character_brand_id to bind it to) through the
+    round trip so the callback knows who's connecting and to which scope —
+    this app has no server-side session of its own (auth lives in the
+    frontend's Supabase session), so, consistent with every other endpoint
+    here trusting a passed-in user_id (e.g. GET /users/{user_id}/content-profiles),
+    it isn't cryptographically signed. Worst case of tampering is a connection
+    landing on the wrong user_id/scope, not a security bypass of anything
+    sensitive. Callers pass at most one of content_profile_id/character_brand_id."""
     from fastapi.responses import RedirectResponse
     provider = _get_social_provider(platform)
-    state = f"{user_id}:{content_profile_id or ''}"
+    state = f"{user_id}:{content_profile_id or ''}:{character_brand_id or ''}"
     return RedirectResponse(provider.get_authorize_url(state=state))
 
 
@@ -1173,27 +1214,36 @@ def social_callback(platform: str, code: Optional[str] = None, state: Optional[s
     session = SessionLocal()
     try:
         try:
-            # state = "{user_id}:{content_profile_id}" (content_profile_id may be
-            # empty — a legacy/user-wide connect not bound to any one niche).
-            # Split on the last ":" isn't needed since UUIDs never contain ":".
-            raw_user_id, _, raw_profile_id = state.partition(":")
+            # state = "{user_id}:{content_profile_id}:{character_brand_id}" (the
+            # latter two may be empty — a legacy/user-wide connect not bound to
+            # any one niche/toon-account). UUIDs never contain ":", so a simple
+            # partition is safe.
+            raw_user_id, _, rest = state.partition(":")
             user_id = _uuid.UUID(raw_user_id)
+            raw_profile_id, _, raw_brand_id = rest.partition(":")
             content_profile_id = _uuid.UUID(raw_profile_id) if raw_profile_id else None
+            character_brand_id = _uuid.UUID(raw_brand_id) if raw_brand_id else None
 
-            # content_profile_id alone is enough to identify a profile-bound row
-            # (it's globally unique per profile+platform, and a profile belongs
-            # to exactly one user already); a legacy/unbound connect (None) isn't
-            # unique on its own, so that case must also match on user_id — Postgres
-            # doesn't dedupe multiple NULLs under the unique constraint, so without
-            # this a lookup could otherwise land on a different user's legacy row.
+            # A scoped id alone is enough to identify its row (globally unique
+            # per scope+platform, and a profile/brand belongs to exactly one
+            # user already); a legacy/unbound connect (both None) isn't unique
+            # on its own, so that case must also match on user_id (and both
+            # scope columns NULL) — Postgres doesn't dedupe multiple NULLs
+            # under a unique constraint, so without this a lookup could
+            # otherwise land on a different user's legacy row.
             query = session.query(ConnectedAccount).filter_by(platform=platform)
             if content_profile_id is not None:
                 query = query.filter_by(content_profile_id=content_profile_id)
+            elif character_brand_id is not None:
+                query = query.filter_by(character_brand_id=character_brand_id)
             else:
-                query = query.filter_by(user_id=user_id, content_profile_id=None)
+                query = query.filter_by(user_id=user_id, content_profile_id=None, character_brand_id=None)
             account = query.first()
             if not account:
-                account = ConnectedAccount(user_id=user_id, platform=platform, content_profile_id=content_profile_id)
+                account = ConnectedAccount(
+                    user_id=user_id, platform=platform,
+                    content_profile_id=content_profile_id, character_brand_id=character_brand_id,
+                )
                 session.add(account)
             account.access_token = encrypt(result.access_token)
             if result.refresh_token:
@@ -1222,7 +1272,8 @@ def social_callback(platform: str, code: Optional[str] = None, state: Optional[s
 
 
 @app.delete("/api/social/{platform}/disconnect")
-def social_disconnect(platform: str, user_id: str, content_profile_id: Optional[str] = None):
+def social_disconnect(platform: str, user_id: str, content_profile_id: Optional[str] = None,
+                       character_brand_id: Optional[str] = None):
     from app.db import SessionLocal
     from app.models.connected_account import ConnectedAccount
     import uuid as _uuid
@@ -1230,7 +1281,13 @@ def social_disconnect(platform: str, user_id: str, content_profile_id: Optional[
     session = SessionLocal()
     try:
         query = session.query(ConnectedAccount).filter_by(user_id=_uuid.UUID(user_id), platform=platform)
-        query = query.filter_by(content_profile_id=_uuid.UUID(content_profile_id) if content_profile_id else None)
+        if character_brand_id is not None:
+            query = query.filter_by(character_brand_id=_uuid.UUID(character_brand_id))
+        else:
+            query = query.filter_by(
+                content_profile_id=_uuid.UUID(content_profile_id) if content_profile_id else None,
+                character_brand_id=None,
+            )
         account = query.first()
         if account:
             account.status = "revoked"  # soft — kept for audit, matches this codebase's status-not-delete pattern
@@ -1241,7 +1298,8 @@ def social_disconnect(platform: str, user_id: str, content_profile_id: Optional[
 
 
 @app.get("/api/social/accounts")
-def list_connected_accounts(user_id: str, content_profile_id: Optional[str] = None):
+def list_connected_accounts(user_id: str, content_profile_id: Optional[str] = None,
+                             character_brand_id: Optional[str] = None):
     from app.db import SessionLocal
     from app.models.connected_account import ConnectedAccount
     import uuid as _uuid
@@ -1249,7 +1307,9 @@ def list_connected_accounts(user_id: str, content_profile_id: Optional[str] = No
     session = SessionLocal()
     try:
         query = session.query(ConnectedAccount).filter_by(user_id=_uuid.UUID(user_id))
-        if content_profile_id is not None:
+        if character_brand_id is not None:
+            query = query.filter_by(character_brand_id=_uuid.UUID(character_brand_id))
+        elif content_profile_id is not None:
             query = query.filter_by(content_profile_id=_uuid.UUID(content_profile_id))
         rows = query.all()
         return [
@@ -1259,6 +1319,7 @@ def list_connected_accounts(user_id: str, content_profile_id: Optional[str] = No
                 "status": r.status,
                 "connected_at": r.connected_at.isoformat() if r.connected_at else None,
                 "content_profile_id": str(r.content_profile_id) if r.content_profile_id else None,
+                "character_brand_id": str(r.character_brand_id) if r.character_brand_id else None,
                 "last_tested_at": r.last_tested_at.isoformat() if r.last_tested_at else None,
                 "last_test_status": r.last_test_status,
             }

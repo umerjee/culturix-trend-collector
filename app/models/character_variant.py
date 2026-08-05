@@ -21,5 +21,24 @@ class CharacterVariant(Base):
     image_url = Column(Text, nullable=True)
     persona_id = Column(Integer, nullable=True, index=True)
     is_active = Column(Boolean, nullable=False, default=True)
+
+    # Kling Element registration — created once from image_url, then reused
+    # cheaply across every future video generation via @kling_element_name
+    # instead of re-establishing the character's identity each time. See
+    # app/media/kling_omni.py / app/services/culturetoon_element.py.
+    kling_element_id = Column(String(64), nullable=True)
+    kling_element_name = Column(String(20), nullable=True)  # Kling's own 20-char cap; sanitized/deduped copy of `name`
+    kling_voice_id = Column(String(64), nullable=True)       # Kling-cloned or preset voice bound to the element
+    element_status = Column(String(12), nullable=False, default="unregistered")  # unregistered|pending|ready|failed
+    element_error = Column(Text, nullable=True)
+    element_task_id = Column(String(64), nullable=True)      # Kling's async create-element task_id, kept for debugging/retry
+    voice_task_id = Column(String(64), nullable=True)
+
+    # Optional per-character override: use the brand's ElevenLabs credential
+    # (CharacterBrand.elevenlabs_api_key_encrypted) instead of Kling's native
+    # voice for this specific character's dialogue.
+    voice_provider = Column(String(12), nullable=False, default="kling")  # kling|elevenlabs
+    elevenlabs_voice_id = Column(String(64), nullable=True)  # only meaningful when voice_provider="elevenlabs"
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

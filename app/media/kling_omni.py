@@ -1,0 +1,184 @@
+"""Kling 3.0 Omni provider — character-consistent, multi-shot, voice-bound
+video generation for CultureToons. This is a DIFFERENT API surface from the
+existing `KlingProvider` in app/media/video.py (used by Shopify's product
+reels): different base URL, different auth scheme, different endpoints
+entirely. Deliberately NOT reusing or modifying that class — Shopify's
+working reel generation stays untouched; this is a standalone provider.
+
+Endpoint/parameter shapes below are transcribed directly from Kling's own
+API documentation (Element Management, Voice Management, Omni Video
+Generation pages), not inferred or guessed.
+"""
+import logging
+import os
+import time
+from typing import Optional
+
+import httpx
+
+logger = logging.getLogger("culturix.media.kling_omni")
+
+_BASE = "https://api-singapore.klingai.com"
+_ELEMENT_POLL_INTERVAL = 5
+_ELEMENT_MAX_POLLS = 24        # ~2 min — element/voice registration is a lighter async task than video generation
+_OMNI_POLL_INTERVAL = 10
+_OMNI_MAX_POLLS = 60           # ~10 min — multi-shot generation up to 15s is heavier than a single 5s clip
+_MAX_RATE_LIMIT_RETRIES = 4
+_RATE_LIMIT_BACKOFF_SECONDS = 15  # doubles each retry: 15, 30, 60, 120
+
+
+class KlingOmniError(Exception):
+    pass
+
+
+def _request_with_retry(method: str, url: str, **kwargs) -> httpx.Response:
+    """Duplicated from video.py's _post_with_retry (not imported) — see this
+    module's docstring for why the two Kling providers are kept independent.
+    Handles Kling's account-level rate limit (429) with backoff."""
+    for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+        resp = httpx.request(method, url, **kwargs)
+        if resp.status_code != 429 or attempt == _MAX_RATE_LIMIT_RETRIES:
+            return resp
+        wait = int(resp.headers.get("Retry-After", _RATE_LIMIT_BACKOFF_SECONDS * (2 ** attempt)))
+        time.sleep(wait)
+    return resp
+
+
+class KlingOmniProvider:
+    def __init__(self) -> None:
+        # A plain bearer API key, NOT the JWT access-key/secret-key pair
+        # video.py's KlingProvider uses — Kling's v3 API uses a different
+        # auth scheme entirely.
+        self._api_key = os.getenv("KLING_OMNI_API_KEY", "")
+        if not self._api_key:
+            raise RuntimeError("KLING_OMNI_API_KEY must be set")
+
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
+
+    def _check(self, resp: httpx.Response, context: str) -> dict:
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code", 0) != 0:
+            raise KlingOmniError(f"{context}: {data.get('message', data)}")
+        return data
+
+    # ── Element registration ────────────────────────────────────────────
+
+    def create_element(self, element_name: str, element_description: str, frontal_image_url: str,
+                        refer_image_urls: Optional[list] = None, voice_id: Optional[str] = None,
+                        tag_id: str = "o_102") -> str:
+        """POST /v1/general/advanced-custom-elements (image_refer), poll
+        GET .../{task_id}. Returns element_id."""
+        body = {
+            "element_name": element_name[:20],
+            "element_description": element_description[:100],
+            "reference_type": "image_refer",
+            "element_image_list": {
+                "frontal_image": frontal_image_url,
+                "refer_images": [{"image_url": u} for u in (refer_image_urls or [])],
+            },
+            "tag_list": [{"tag_id": tag_id}],
+        }
+        if voice_id:
+            body["element_voice_id"] = voice_id
+
+        resp = _request_with_retry("POST", f"{_BASE}/v1/general/advanced-custom-elements",
+                                    headers=self._headers(), json=body, timeout=30)
+        data = self._check(resp, "Kling create_element")
+        task_id = data["data"]["task_id"]
+
+        for _ in range(_ELEMENT_MAX_POLLS):
+            time.sleep(_ELEMENT_POLL_INTERVAL)
+            poll = httpx.get(f"{_BASE}/v1/general/advanced-custom-elements/{task_id}",
+                              headers=self._headers(), timeout=20)
+            pdata = self._check(poll, "Kling create_element poll")["data"]
+            status = pdata.get("task_status", "")
+            if status == "succeed":
+                elements = pdata.get("task_result", {}).get("elements") or []
+                if not elements:
+                    raise KlingOmniError(f"Kling create_element succeeded but returned no elements: {pdata}")
+                return str(elements[0]["element_id"])
+            if status == "failed":
+                raise KlingOmniError(f"Kling create_element task failed: {pdata.get('task_status_msg')}")
+
+        raise KlingOmniError(f"Kling create_element task {task_id} did not complete in time")
+
+    # ── Voice ────────────────────────────────────────────────────────────
+
+    def create_voice(self, voice_name: str, voice_url: str) -> str:
+        """POST /v1/general/custom-voices, poll GET .../{task_id}. Returns voice_id."""
+        body = {"voice_name": voice_name[:20], "voice_url": voice_url}
+        resp = _request_with_retry("POST", f"{_BASE}/v1/general/custom-voices",
+                                    headers=self._headers(), json=body, timeout=30)
+        data = self._check(resp, "Kling create_voice")
+        task_id = data["data"]["task_id"]
+
+        for _ in range(_ELEMENT_MAX_POLLS):
+            time.sleep(_ELEMENT_POLL_INTERVAL)
+            poll = httpx.get(f"{_BASE}/v1/general/custom-voices/{task_id}",
+                              headers=self._headers(), timeout=20)
+            pdata = self._check(poll, "Kling create_voice poll")["data"]
+            status = pdata.get("task_status", "")
+            if status == "succeed":
+                voices = pdata.get("task_result", {}).get("voices") or []
+                if not voices:
+                    raise KlingOmniError(f"Kling create_voice succeeded but returned no voices: {pdata}")
+                return str(voices[0]["voice_id"])
+            if status == "failed":
+                raise KlingOmniError(f"Kling create_voice task failed: {pdata.get('task_status_msg')}")
+
+        raise KlingOmniError(f"Kling create_voice task {task_id} did not complete in time")
+
+    def list_preset_voices(self) -> list:
+        """GET /v1/general/presets-voices — stock voices, for a character
+        that doesn't need a cloned voice."""
+        resp = httpx.get(f"{_BASE}/v1/general/presets-voices", headers=self._headers(),
+                          params={"pageNum": 1, "pageSize": 100}, timeout=20)
+        data = self._check(resp, "Kling list_preset_voices")
+        voices = []
+        for task in data.get("data") or []:
+            voices.extend(task.get("task_result", {}).get("voices") or [])
+        return voices
+
+    # ── Omni video generation ────────────────────────────────────────────
+
+    def generate_omni_video(self, contents: list, settings: dict, options: Optional[dict] = None) -> dict:
+        """POST /omni-video/kling-3.0-omni, poll GET /tasks?task_ids={id}.
+        `contents` is the full typed list (prompt/element/refer_image/etc, per
+        Kling's Omni contract) — callers build this, not this method. Returns
+        {"video_bytes": bytes, "duration_seconds": float, "task_id": str}."""
+        body = {"contents": contents, "settings": settings}
+        if options:
+            body["options"] = options
+
+        resp = _request_with_retry("POST", f"{_BASE}/omni-video/kling-3.0-omni",
+                                    headers=self._headers(), json=body, timeout=30)
+        data = self._check(resp, "Kling generate_omni_video")
+        task_id = data["data"]["id"]
+
+        for _ in range(_OMNI_MAX_POLLS):
+            time.sleep(_OMNI_POLL_INTERVAL)
+            poll = httpx.get(f"{_BASE}/tasks", headers=self._headers(),
+                              params={"task_ids": task_id}, timeout=20)
+            pdata_list = self._check(poll, "Kling generate_omni_video poll")["data"]
+            if not pdata_list:
+                continue
+            pdata = pdata_list[0]
+            status = pdata.get("status", "")
+            if status == "succeeded":
+                outputs = pdata.get("outputs") or []
+                video_output = next((o for o in outputs if o.get("type") == "video"), None)
+                if not video_output or not video_output.get("url"):
+                    raise KlingOmniError(f"Kling omni task succeeded but no video output: {pdata}")
+                video_resp = httpx.get(video_output["url"], timeout=120)
+                video_resp.raise_for_status()
+                return {
+                    "video_bytes": video_resp.content,
+                    "duration_seconds": float(video_output.get("duration") or settings.get("duration", 0)),
+                    "task_id": task_id,
+                }
+            if status == "failed":
+                raise KlingOmniError(f"Kling omni task failed: {pdata.get('message')}")
+
+        raise KlingOmniError(f"Kling omni task {task_id} did not complete in time")
