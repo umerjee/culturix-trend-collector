@@ -1,7 +1,15 @@
 # Railway builds this repo with nixpacks (see railway.toml). ffmpeg is a
 # runtime dependency of app/services/clip_render.py (Phase 7 clip generation)
-# and is not part of nixpacks' default Python build image, so it has to be
-# added explicitly here or every /generate/clip call fails with "ffmpeg not
-# found" in production.
+# and app/services/culturetoon_clip_cutter.py (CultureToons), and is not part
+# of nixpacks' default Python build image, so it has to be added explicitly
+# here or every video-generation call fails with "ffmpeg not found" in
+# production.
+#
+# The "..." entry is load-bearing, not decorative — nixpacks splices the
+# auto-detected provider's own nixPkgs (which includes Python itself) in at
+# that position. Without it, this array REPLACES the auto-detected list
+# entirely instead of extending it, which silently deletes Python from the
+# build image (confirmed live: this exact mistake broke deployment with
+# "python: command not found" during `pip install`).
 [phases.setup]
-nixPkgs = ["ffmpeg"]
+nixPkgs = ["...", "ffmpeg"]
