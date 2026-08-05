@@ -227,6 +227,11 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
 
   return (
     <div className="space-y-6">
+      <div>
+        <h3 className="text-sm font-semibold text-gray-900">Step 1 · Create a script</h3>
+        <p className="text-xs text-gray-400 mt-0.5">Pick any one of the three ways below.</p>
+      </div>
+
       <div className="rounded-2xl bg-white border border-gray-100 p-4">
         <h3 className="text-sm font-semibold text-gray-900 mb-3">Write a script manually</h3>
         <form onSubmit={createManual} className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -394,6 +399,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
       </div>
 
       <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-gray-900">Step 2 · Your scripts</h3>
         {scripts.length === 0 && (
           <p className="text-xs text-gray-400">No scripts yet — suggest one from a trend above, or write one manually.</p>
         )}

@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Loader2, ExternalLink, Clapperboard, Link2, Send, ShieldCheck, ShieldAlert } from "lucide-react";
+import { Plus, Loader2, ExternalLink, Clapperboard, Send, ShieldCheck, ShieldAlert } from "lucide-react";
 import type { Toon, ToonScript, CharacterVariant, ToonBackground, ConnectedAccount, ToonPost } from "@/lib/types";
 import { CONNECTABLE_PLATFORMS } from "@/lib/types";
-import CultureToonPublishPanel from "@/components/CultureToonPublishPanel";
+import ConnectedAccountsPanel from "@/components/ConnectedAccountsPanel";
 
 interface Props {
   brandId: string;
@@ -26,22 +26,11 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
   const [generatingId, setGeneratingId] = useState<string | null>(null);
 
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccount[]>([]);
-  const [connectPanelPlatform, setConnectPanelPlatform] = useState<ConnectedAccount["platform"] | null>(null);
   const [postsByToon, setPostsByToon] = useState<Record<string, ToonPost[]>>({});
   const [publishPlatformByToon, setPublishPlatformByToon] = useState<Record<string, string>>({});
   const [publishingId, setPublishingId] = useState<string | null>(null);
 
   const connectablePlatforms = connectedAccounts.filter((a) => a.status === "active");
-
-  async function loadConnectedAccounts() {
-    const res = await fetch(`/api/culturetoons/social/accounts?brand_id=${brandId}`, { cache: "no-store" });
-    if (res.ok) setConnectedAccounts(await res.json());
-  }
-
-  useEffect(() => {
-    loadConnectedAccounts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [brandId]);
 
   async function loadPosts(toonId: string) {
     const res = await fetch(`/api/culturetoons/toons/${toonId}/posts?brand_id=${brandId}`, { cache: "no-store" });
@@ -203,42 +192,17 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
   return (
     <div className="space-y-6">
       <div className="rounded-2xl bg-white border border-gray-100 p-4">
-        <h3 className="text-sm font-semibold text-gray-900 mb-1">Connected accounts</h3>
+        <h3 className="text-sm font-semibold text-gray-900 mb-1">Step 1 · Connect accounts</h3>
         <p className="text-xs text-gray-400 mb-3">Where this brand's finished toons actually get published.</p>
-        <div className="flex flex-wrap gap-1.5">
-          {CONNECTABLE_PLATFORMS.map((p) => {
-            const acct = connectedAccounts.find((a) => a.platform === p.key && a.status === "active");
-            return (
-              <button
-                key={p.key}
-                onClick={() => setConnectPanelPlatform(p.key as ConnectedAccount["platform"])}
-                className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
-                  acct ? "bg-green-50 border-green-200 text-green-700" : "bg-white border-gray-200 text-gray-500 hover:border-blue-300"
-                }`}
-              >
-                {acct ? <ShieldCheck className="h-3 w-3" /> : <Link2 className="h-3 w-3" />}
-                {p.display}
-                {acct?.platform_username && <span className="text-green-500">@{acct.platform_username}</span>}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {connectPanelPlatform && (
-        <CultureToonPublishPanel
+        <ConnectedAccountsPanel
           brandId={brandId}
           brandName={brandName}
-          platform={connectPanelPlatform}
-          platformLabel={CONNECTABLE_PLATFORMS.find((p) => p.key === connectPanelPlatform)?.display ?? connectPanelPlatform}
-          connectedAccounts={connectedAccounts}
-          onAccountsChanged={loadConnectedAccounts}
-          onClose={() => setConnectPanelPlatform(null)}
+          onAccountsLoaded={setConnectedAccounts}
         />
-      )}
+      </div>
 
       <div className="rounded-2xl bg-white border border-gray-100 p-4">
-        <h3 className="text-sm font-semibold text-gray-900 mb-3">Plan a new toon</h3>
+        <h3 className="text-sm font-semibold text-gray-900 mb-3">Step 2 · Plan a new toon</h3>
         <form onSubmit={createToon} className="flex flex-wrap gap-2 items-center">
           <select value={variantId} onChange={(e) => setVariantId(e.target.value)} className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs">
             {variants.length === 0 && <option value="">No characters yet</option>}
@@ -265,6 +229,7 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
       </div>
 
       <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-gray-900">Step 3 · Your toons</h3>
         {toons.length === 0 && <p className="text-xs text-gray-400">No toons planned yet.</p>}
         {toons.map((t) => {
           const script = scriptFor(t.script_id);

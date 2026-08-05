@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Loader2 } from "lucide-react";
+import { Plus, Loader2, ArrowRight } from "lucide-react";
 import type { CharacterBrand, Character, CharacterVariant, ToonBackground, ToonScript, Toon } from "@/lib/types";
 import CultureToonBrandForm from "@/components/CultureToonBrandForm";
 import CultureToonWorkspace from "@/components/CultureToonWorkspace";
+import ConnectedAccountsPanel from "@/components/ConnectedAccountsPanel";
 
 interface Props {
   initialBrands: CharacterBrand[];
@@ -34,6 +35,10 @@ export default function CultureToonApp({ initialBrands }: Props) {
   const [data, setData] = useState<BrandData | null>(null);
   const [loading, setLoading] = useState(false);
   const [showNewBrandForm, setShowNewBrandForm] = useState(false);
+  // A freshly-created brand with at least one target platform picked lands
+  // here instead of straight into the workspace — one guided pass through
+  // roster + platforms + connections, per harmonic-mixing-flame.md's Phase 4.
+  const [pendingConnectBrand, setPendingConnectBrand] = useState<CharacterBrand | null>(null);
 
   useEffect(() => {
     if (!selectedBrandId) return;
@@ -66,10 +71,37 @@ export default function CultureToonApp({ initialBrands }: Props) {
         <CultureToonBrandForm
           onCreated={(brand) => {
             setBrands((prev) => [...prev, brand]);
-            setSelectedBrandId(brand.id);
             setShowNewBrandForm(false);
+            if (brand.target_platforms && brand.target_platforms.length > 0) {
+              setPendingConnectBrand(brand);
+            } else {
+              setSelectedBrandId(brand.id);
+            }
           }}
         />
+      </div>
+    );
+  }
+
+  if (pendingConnectBrand) {
+    return (
+      <div className="rounded-2xl border border-gray-100 bg-white p-6 max-w-lg mx-auto">
+        <h3 className="text-sm font-semibold text-gray-900 mb-1">Almost done — connect &ldquo;{pendingConnectBrand.name}&rdquo;&apos;s accounts</h3>
+        <p className="text-xs text-gray-400 mb-4">
+          Connect the accounts you picked so finished toons can publish directly. Optional — you
+          can always do this later from the Toons tab.
+        </p>
+        <ConnectedAccountsPanel
+          brandId={pendingConnectBrand.id}
+          brandName={pendingConnectBrand.name}
+          platforms={pendingConnectBrand.target_platforms}
+        />
+        <button
+          onClick={() => { setSelectedBrandId(pendingConnectBrand.id); setPendingConnectBrand(null); }}
+          className="mt-5 w-full inline-flex items-center justify-center gap-1.5 rounded-xl bg-blue-600 text-white font-semibold py-3 hover:bg-blue-700 transition"
+        >
+          Continue to {pendingConnectBrand.name} <ArrowRight className="h-4 w-4" />
+        </button>
       </div>
     );
   }
