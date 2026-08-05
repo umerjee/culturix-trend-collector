@@ -9,9 +9,10 @@ interface Props {
   onUploaded: (data: Record<string, unknown>) => void;
   label?: string;
   size?: "sm" | "md";
+  extraFields?: Record<string, string>;
 }
 
-export default function ImageUploadButton({ uploadUrl, currentImageUrl, onUploaded, label, size = "md" }: Props) {
+export default function ImageUploadButton({ uploadUrl, currentImageUrl, onUploaded, label, size = "md", extraFields }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,6 +25,9 @@ export default function ImageUploadButton({ uploadUrl, currentImageUrl, onUpload
     setError(null);
     try {
       const formData = new FormData();
+      for (const [key, value] of Object.entries(extraFields ?? {})) {
+        formData.set(key, value);
+      }
       formData.set("file", file);
       const res = await fetch(uploadUrl, { method: "POST", body: formData });
       const data = await res.json().catch(() => ({}));

@@ -5,26 +5,13 @@ const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
   "https://culturix-trend-collector-production.up.railway.app";
 
-export async function GET() {
-  const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  const res = await fetch(`${RAILWAY}/api/culturetoons/brand?user_id=${user.id}`, {
-    cache: "no-store",
-    signal: AbortSignal.timeout(15000),
-  });
-  const data = await res.json().catch(() => ({}));
-  return NextResponse.json(data, { status: res.status });
-}
-
-export async function POST(req: Request) {
+export async function POST(req: Request, { params }: { params: { id: string } }) {
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => ({}));
-  const res = await fetch(`${RAILWAY}/api/culturetoons/brand`, {
+  const res = await fetch(`${RAILWAY}/api/culturetoons/toons/${params.id}/generate-video`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...body, user_id: user.id }),

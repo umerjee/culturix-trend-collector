@@ -21,12 +21,16 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   return NextResponse.json(data, { status: res.status });
 }
 
-export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(req: Request, { params }: { params: { id: string } }) {
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const res = await fetch(`${RAILWAY}/api/culturetoons/backgrounds/${params.id}?user_id=${user.id}`, {
+  const { searchParams } = new URL(req.url);
+  const brandId = searchParams.get("brand_id");
+  if (!brandId) return NextResponse.json({ detail: "brand_id is required" }, { status: 400 });
+
+  const res = await fetch(`${RAILWAY}/api/culturetoons/backgrounds/${params.id}?user_id=${user.id}&brand_id=${brandId}`, {
     method: "DELETE",
     signal: AbortSignal.timeout(15000),
   });

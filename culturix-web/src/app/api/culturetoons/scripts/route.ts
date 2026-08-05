@@ -11,7 +11,9 @@ export async function GET(req: Request) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
-  const qs = new URLSearchParams({ user_id: user.id });
+  const brandId = searchParams.get("brand_id");
+  if (!brandId) return NextResponse.json({ detail: "brand_id is required" }, { status: 400 });
+  const qs = new URLSearchParams({ user_id: user.id, brand_id: brandId });
   const characterVariantId = searchParams.get("character_variant_id");
   const status = searchParams.get("status");
   if (characterVariantId) qs.set("character_variant_id", characterVariantId);

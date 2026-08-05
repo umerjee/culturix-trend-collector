@@ -55,12 +55,20 @@ export default function CultureToonWorkspace({
       </div>
 
       {tab === "characters" && (
-        <CharacterVariantManager initialCharacters={initialCharacters} initialVariants={initialVariants} />
+        <CharacterVariantManager
+          brandId={brand.id}
+          hasElevenLabsKey={brand.has_elevenlabs_key}
+          initialCharacters={initialCharacters}
+          initialVariants={initialVariants}
+        />
       )}
-      {tab === "backgrounds" && <BackgroundGallery initialBackgrounds={initialBackgrounds} />}
-      {tab === "scripts" && <ScriptManager initialScripts={initialScripts} variants={initialVariants} />}
+      {tab === "backgrounds" && <BackgroundGallery brandId={brand.id} initialBackgrounds={initialBackgrounds} />}
+      {tab === "scripts" && (
+        <ScriptManager brandId={brand.id} initialScripts={initialScripts} variants={initialVariants} />
+      )}
       {tab === "toons" && (
         <ToonManager
+          brandId={brand.id}
           initialToons={initialToons}
           scripts={initialScripts}
           variants={initialVariants}

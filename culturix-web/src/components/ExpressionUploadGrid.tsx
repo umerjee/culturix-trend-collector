@@ -6,20 +6,21 @@ import { EXPRESSION_NAMES, type Expression } from "@/lib/types";
 import ImageUploadButton from "@/components/ImageUploadButton";
 
 interface Props {
+  brandId: string;
   variantId: string;
 }
 
-export default function ExpressionUploadGrid({ variantId }: Props) {
+export default function ExpressionUploadGrid({ brandId, variantId }: Props) {
   const [expressions, setExpressions] = useState<Expression[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setExpressions(null);
-    fetch(`/api/culturetoons/variants/${variantId}/expressions`, { cache: "no-store" })
+    fetch(`/api/culturetoons/variants/${variantId}/expressions?brand_id=${brandId}`, { cache: "no-store" })
       .then((res) => (res.ok ? res.json() : []))
       .then((data) => { if (!cancelled) setExpressions(Array.isArray(data) ? data : []); });
     return () => { cancelled = true; };
-  }, [variantId]);
+  }, [variantId, brandId]);
 
   if (expressions === null) {
     return (
@@ -44,6 +45,7 @@ export default function ExpressionUploadGrid({ variantId }: Props) {
             label={name}
             uploadUrl={`/api/culturetoons/variants/${variantId}/expressions/${encodeURIComponent(name)}/image`}
             currentImageUrl={existing?.image_url ?? null}
+            extraFields={{ brand_id: brandId }}
             onUploaded={(data) => {
               setExpressions((prev) => {
                 const row = data as unknown as Expression;

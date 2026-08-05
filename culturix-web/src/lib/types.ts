@@ -376,6 +376,11 @@ export interface CharacterBrand {
   name: string;
   description: string | null;
   is_active: boolean;
+  target_platforms: string[];
+  delivery_freq: string;
+  delivery_time: string;
+  delivery_day_of_week: number;
+  has_elevenlabs_key: boolean;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -391,6 +396,9 @@ export interface Character {
   updated_at: string | null;
 }
 
+export type ElementStatus = "unregistered" | "pending" | "ready" | "failed";
+export type VoiceProvider = "kling" | "elevenlabs";
+
 export interface CharacterVariant {
   id: string;
   character_id: string;
@@ -400,6 +408,13 @@ export interface CharacterVariant {
   image_url: string | null;
   persona_id: number | null;
   is_active: boolean;
+  kling_element_id: string | null;
+  kling_element_name: string | null;
+  kling_voice_id: string | null;
+  element_status: ElementStatus;
+  element_error: string | null;
+  voice_provider: VoiceProvider;
+  elevenlabs_voice_id: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -428,6 +443,16 @@ export interface ToonBackground {
   updated_at: string | null;
 }
 
+export const TONE_OPTIONS = ["funny", "dramatic", "satiric", "sad", "wholesome", "chaotic", "deadpan"] as const;
+
+export interface ToonScriptShot {
+  shot_number: number;
+  duration_seconds: number;
+  action: string;
+  expression: (typeof EXPRESSION_NAMES)[number] | null;
+  dialogue: string | null;
+}
+
 export interface ToonScript {
   id: string;
   brand_id: string;
@@ -437,6 +462,9 @@ export interface ToonScript {
   hook_line: string | null;
   dialogue: string | null;
   scene_direction: string | null;
+  tone: (typeof TONE_OPTIONS)[number] | null;
+  shots: ToonScriptShot[] | null;
+  total_duration_seconds: number | null;
   generation_source: "manual" | "ai";
   status: "draft" | "approved" | "archived";
   created_at: string | null;
@@ -451,10 +479,14 @@ export interface Toon {
   background_id: string | null;
   title: string | null;
   final_video_url: string | null;
-  status: "idea" | "animating" | "ready" | "posted" | "archived";
+  status: "idea" | "animating" | "ready" | "posted" | "archived" | "failed";
   platform: string | null;
   posted_at: string | null;
   notes: string | null;
+  raw_video_url: string | null;
+  clip_video_urls: string[];
+  kling_task_id: string | null;
+  generation_error: string | null;
   created_at: string | null;
   updated_at: string | null;
 }

@@ -11,9 +11,11 @@ export async function GET(req: Request) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
+  const brandId = searchParams.get("brand_id");
+  if (!brandId) return NextResponse.json({ detail: "brand_id is required" }, { status: 400 });
   const activeOnly = searchParams.get("active_only") ?? "true";
   const res = await fetch(
-    `${RAILWAY}/api/culturetoons/backgrounds?user_id=${user.id}&active_only=${activeOnly}`,
+    `${RAILWAY}/api/culturetoons/backgrounds?user_id=${user.id}&brand_id=${brandId}&active_only=${activeOnly}`,
     { cache: "no-store", signal: AbortSignal.timeout(15000) }
   );
   const data = await res.json().catch(() => ({}));

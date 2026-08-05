@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Wand2, Plus, Loader2, Sparkles } from "lucide-react";
 import type { ToonScript, CharacterVariant } from "@/lib/types";
+import { TONE_OPTIONS } from "@/lib/types";
 
 interface TrendSource {
   id: number;
@@ -11,11 +12,12 @@ interface TrendSource {
 }
 
 interface Props {
+  brandId: string;
   initialScripts: ToonScript[];
   variants: CharacterVariant[];
 }
 
-export default function ScriptManager({ initialScripts, variants }: Props) {
+export default function ScriptManager({ brandId, initialScripts, variants }: Props) {
   const [scripts, setScripts] = useState(initialScripts);
   const [sourceType, setSourceType] = useState<"persona" | "cluster">("persona");
   const [trendSources, setTrendSources] = useState<{ personas: TrendSource[]; clusters: TrendSource[] }>({
@@ -23,6 +25,7 @@ export default function ScriptManager({ initialScripts, variants }: Props) {
   });
   const [sourceId, setSourceId] = useState<string>("");
   const [variantId, setVariantId] = useState<string>(variants[0]?.id ?? "");
+  const [tone, setTone] = useState<(typeof TONE_OPTIONS)[number]>("funny");
   const [suggesting, setSuggesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,9 +52,11 @@ export default function ScriptManager({ initialScripts, variants }: Props) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          brand_id: brandId,
           source_type: sourceType,
           source_id: Number(sourceId),
           character_variant_id: variantId || undefined,
+          tone,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -78,6 +83,7 @@ export default function ScriptManager({ initialScripts, variants }: Props) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          brand_id: brandId,
           character_variant_id: manualVariantId || undefined,
           hook_line: manualHook.trim() || undefined,
           dialogue: manualDialogue.trim() || undefined,
@@ -165,6 +171,15 @@ export default function ScriptManager({ initialScripts, variants }: Props) {
               <option key={v.id} value={v.id}>{v.name}</option>
             ))}
           </select>
+          <select
+            value={tone}
+            onChange={(e) => setTone(e.target.value as (typeof TONE_OPTIONS)[number])}
+            className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs capitalize"
+          >
+            {TONE_OPTIONS.map((t) => (
+              <option key={t} value={t} className="capitalize">{t}</option>
+            ))}
+          </select>
           <button
             onClick={suggest}
             disabled={suggesting || !sourceId}
@@ -191,12 +206,29 @@ export default function ScriptManager({ initialScripts, variants }: Props) {
                     <Sparkles className="h-3 w-3" /> AI-suggested
                   </span>
                 )}
+                {s.tone && (
+                  <span className="ml-2 inline-flex items-center capitalize text-gray-400 bg-gray-50 rounded-full px-2 py-0.5">
+                    {s.tone}
+                  </span>
+                )}
               </span>
               <span className="text-[10px] uppercase tracking-wide text-gray-400">{s.status}</span>
             </div>
             {s.hook_line && <p className="text-sm font-medium text-gray-900">&quot;{s.hook_line}&quot;</p>}
             {s.dialogue && <p className="text-sm text-gray-600 mt-1">{s.dialogue}</p>}
             {s.scene_direction && <p className="text-xs text-gray-400 mt-1 italic">{s.scene_direction}</p>}
+            {s.shots && s.shots.length > 0 && (
+              <ol className="mt-2 space-y-1">
+                {s.shots.map((shot) => (
+                  <li key={shot.shot_number} className="text-xs text-gray-600">
+                    <span className="text-gray-400">Shot {shot.shot_number} ({shot.duration_seconds}s):</span>{" "}
+                    {shot.action}
+                    {shot.expression && <span className="text-gray-400"> · {shot.expression}</span>}
+                    {shot.dialogue && <span> — &quot;{shot.dialogue}&quot;</span>}
+                  </li>
+                ))}
+              </ol>
+            )}
           </div>
         ))}
       </div>

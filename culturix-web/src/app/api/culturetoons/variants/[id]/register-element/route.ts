@@ -10,21 +10,12 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const incoming = await req.formData();
-  const file = incoming.get("file");
-  const brandId = incoming.get("brand_id");
-  if (!file) return NextResponse.json({ detail: "file is required" }, { status: 400 });
-  if (!brandId) return NextResponse.json({ detail: "brand_id is required" }, { status: 400 });
-
-  const forward = new FormData();
-  forward.set("user_id", user.id);
-  forward.set("brand_id", brandId);
-  forward.set("file", file);
-
-  const res = await fetch(`${RAILWAY}/api/culturetoons/backgrounds/${params.id}/image`, {
+  const body = await req.json().catch(() => ({}));
+  const res = await fetch(`${RAILWAY}/api/culturetoons/variants/${params.id}/register-element`, {
     method: "POST",
-    body: forward,
-    signal: AbortSignal.timeout(30000),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...body, user_id: user.id }),
+    signal: AbortSignal.timeout(15000),
   });
   const data = await res.json().catch(() => ({}));
   return NextResponse.json(data, { status: res.status });

@@ -1,17 +1,19 @@
 "use client";
 
-import { useState } from "react";
-import { Plus, Loader2 } from "lucide-react";
-import type { Character, CharacterVariant } from "@/lib/types";
+import { useEffect, useState } from "react";
+import { Plus, Loader2, CheckCircle2, XCircle, Sparkles } from "lucide-react";
+import type { Character, CharacterVariant, VoiceProvider } from "@/lib/types";
 import ImageUploadButton from "@/components/ImageUploadButton";
 import ExpressionUploadGrid from "@/components/ExpressionUploadGrid";
 
 interface Props {
+  brandId: string;
+  hasElevenLabsKey: boolean;
   initialCharacters: Character[];
   initialVariants: CharacterVariant[];
 }
 
-export default function CharacterVariantManager({ initialCharacters, initialVariants }: Props) {
+export default function CharacterVariantManager({ brandId, hasElevenLabsKey, initialCharacters, initialVariants }: Props) {
   const [characters, setCharacters] = useState(initialCharacters);
   const [variants, setVariants] = useState(initialVariants);
   const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(characters[0]?.id ?? null);
@@ -22,10 +24,25 @@ export default function CharacterVariantManager({ initialCharacters, initialVari
   const [newVariantName, setNewVariantName] = useState("");
   const [newVariantCulture, setNewVariantCulture] = useState("");
   const [creatingVariant, setCreatingVariant] = useState(false);
+  const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>("kling");
+  const [registering, setRegistering] = useState(false);
 
   const selectedCharacter = characters.find((c) => c.id === selectedCharacterId) ?? null;
   const characterVariants = variants.filter((v) => v.character_id === selectedCharacterId);
   const selectedVariant = variants.find((v) => v.id === selectedVariantId) ?? null;
+
+  // Poll while a variant's element registration is in flight.
+  useEffect(() => {
+    if (!selectedVariant || selectedVariant.element_status !== "pending") return;
+    const interval = setInterval(async () => {
+      const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}?brand_id=${brandId}`, { cache: "no-store" });
+      if (res.ok) {
+        const updated = await res.json();
+        setVariants((prev) => prev.map((v) => (v.id === updated.id ? updated : v)));
+      }
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [selectedVariant, brandId]);
 
   async function addCharacter(e: React.FormEvent) {
     e.preventDefault();
@@ -35,7 +52,7 @@ export default function CharacterVariantManager({ initialCharacters, initialVari
       const res = await fetch("/api/culturetoons/characters", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newCharacterName.trim() }),
+        body: JSON.stringify({ brand_id: brandId, name: newCharacterName.trim() }),
       });
       if (res.ok) {
         const character = await res.json();
@@ -57,6 +74,7 @@ export default function CharacterVariantManager({ initialCharacters, initialVari
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          brand_id: brandId,
           character_id: selectedCharacterId,
           name: newVariantName.trim(),
           culture_tag: newVariantCulture.trim() || undefined,
@@ -71,6 +89,21 @@ export default function CharacterVariantManager({ initialCharacters, initialVari
       }
     } finally {
       setCreatingVariant(false);
+    }
+  }
+
+  async function registerElement() {
+    if (!selectedVariant) return;
+    setRegistering(true);
+    try {
+      await fetch(`/api/culturetoons/variants/${selectedVariant.id}/register-element`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, voice_provider: voiceProvider }),
+      });
+      setVariants((prev) => prev.map((v) => (v.id === selectedVariant.id ? { ...v, element_status: "pending" } : v)));
+    } finally {
+      setRegistering(false);
     }
   }
 
@@ -125,6 +158,7 @@ export default function CharacterVariantManager({ initialCharacters, initialVari
                 uploadUrl={`/api/culturetoons/characters/${selectedCharacter.id}/image`}
                 currentImageUrl={selectedCharacter.base_image_url}
                 label="Base image"
+                extraFields={{ brand_id: brandId }}
                 onUploaded={(data) => {
                   setCharacters((prev) => prev.map((c) => (c.id === selectedCharacter.id ? { ...c, ...data } as Character : c)));
                 }}
@@ -138,12 +172,17 @@ export default function CharacterVariantManager({ initialCharacters, initialVari
                 <button
                   key={v.id}
                   onClick={() => setSelectedVariantId(v.id)}
-                  className={`w-full text-left rounded-lg px-3 py-2 text-sm transition-colors ${
+                  className={`w-full text-left rounded-lg px-3 py-2 text-sm transition-colors flex items-center justify-between gap-2 ${
                     v.id === selectedVariantId ? "bg-blue-50 text-blue-600 font-medium" : "text-gray-600 hover:bg-gray-50"
                   }`}
                 >
-                  {v.name}
-                  {v.culture_tag && <span className="text-gray-400 font-normal"> · {v.culture_tag}</span>}
+                  <span>
+                    {v.name}
+                    {v.culture_tag && <span className="text-gray-400 font-normal"> · {v.culture_tag}</span>}
+                  </span>
+                  {v.element_status === "ready" && <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />}
+                  {v.element_status === "pending" && <Loader2 className="h-3.5 w-3.5 text-amber-500 animate-spin shrink-0" />}
+                  {v.element_status === "failed" && <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />}
                 </button>
               ))}
             </div>
@@ -176,11 +215,11 @@ export default function CharacterVariantManager({ initialCharacters, initialVari
         )}
       </div>
 
-      {/* Expressions column */}
+      {/* Expressions + Kling registration column */}
       <div className="rounded-2xl bg-white border border-gray-100 p-4">
-        <h3 className="text-sm font-semibold text-gray-900 mb-3">Expressions</h3>
+        <h3 className="text-sm font-semibold text-gray-900 mb-3">Expressions &amp; animation setup</h3>
         {!selectedVariant ? (
-          <p className="text-xs text-gray-400">Select a variant to upload its 10 reusable expressions.</p>
+          <p className="text-xs text-gray-400">Select a variant to upload its image, expressions, and register it for video generation.</p>
         ) : (
           <>
             <div className="flex justify-center mb-4">
@@ -188,12 +227,59 @@ export default function CharacterVariantManager({ initialCharacters, initialVari
                 uploadUrl={`/api/culturetoons/variants/${selectedVariant.id}/image`}
                 currentImageUrl={selectedVariant.image_url}
                 label="Variant image"
+                extraFields={{ brand_id: brandId }}
                 onUploaded={(data) => {
                   setVariants((prev) => prev.map((v) => (v.id === selectedVariant.id ? { ...v, ...data } as CharacterVariant : v)));
                 }}
               />
             </div>
-            <ExpressionUploadGrid key={selectedVariant.id} variantId={selectedVariant.id} />
+
+            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 mb-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-gray-700">Kling character registration</span>
+                {selectedVariant.element_status === "ready" && (
+                  <span className="inline-flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> Ready</span>
+                )}
+                {selectedVariant.element_status === "pending" && (
+                  <span className="inline-flex items-center gap-1 text-xs text-amber-600"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Registering…</span>
+                )}
+                {selectedVariant.element_status === "failed" && (
+                  <span className="inline-flex items-center gap-1 text-xs text-red-600"><XCircle className="h-3.5 w-3.5" /> Failed</span>
+                )}
+              </div>
+              <p className="text-[11px] text-gray-500 mb-2">
+                Registers this variant&apos;s image as a reusable Kling character so it stays visually
+                consistent across every video generated for it. Required before generating any video.
+              </p>
+              {selectedVariant.element_error && (
+                <p className="text-[11px] text-red-500 mb-2">{selectedVariant.element_error}</p>
+              )}
+              <div className="flex items-center gap-2">
+                <select
+                  value={voiceProvider}
+                  onChange={(e) => setVoiceProvider(e.target.value as VoiceProvider)}
+                  className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                >
+                  <option value="kling">Kling native voice</option>
+                  <option value="elevenlabs" disabled={!hasElevenLabsKey}>
+                    ElevenLabs {!hasElevenLabsKey && "(add API key in brand settings)"}
+                  </option>
+                </select>
+                <button
+                  onClick={registerElement}
+                  disabled={registering || !selectedVariant.image_url || selectedVariant.element_status === "pending"}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 text-white text-xs font-medium px-3 py-1.5 hover:bg-gray-800 transition-colors disabled:opacity-60"
+                >
+                  {registering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  {selectedVariant.element_status === "ready" ? "Re-register" : "Register"}
+                </button>
+              </div>
+              {!selectedVariant.image_url && (
+                <p className="text-[11px] text-gray-400 mt-1.5">Upload a variant image above first.</p>
+              )}
+            </div>
+
+            <ExpressionUploadGrid key={selectedVariant.id} brandId={brandId} variantId={selectedVariant.id} />
           </>
         )}
       </div>

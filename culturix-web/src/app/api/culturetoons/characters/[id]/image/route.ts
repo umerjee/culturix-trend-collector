@@ -12,10 +12,13 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
   const incoming = await req.formData();
   const file = incoming.get("file");
+  const brandId = incoming.get("brand_id");
   if (!file) return NextResponse.json({ detail: "file is required" }, { status: 400 });
+  if (!brandId) return NextResponse.json({ detail: "brand_id is required" }, { status: 400 });
 
   const forward = new FormData();
   forward.set("user_id", user.id);
+  forward.set("brand_id", brandId);
   forward.set("file", file);
 
   const res = await fetch(`${RAILWAY}/api/culturetoons/characters/${params.id}/image`, {

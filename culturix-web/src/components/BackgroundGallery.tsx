@@ -6,10 +6,11 @@ import type { ToonBackground } from "@/lib/types";
 import ImageUploadButton from "@/components/ImageUploadButton";
 
 interface Props {
+  brandId: string;
   initialBackgrounds: ToonBackground[];
 }
 
-export default function BackgroundGallery({ initialBackgrounds }: Props) {
+export default function BackgroundGallery({ brandId, initialBackgrounds }: Props) {
   const [backgrounds, setBackgrounds] = useState(initialBackgrounds);
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
@@ -22,7 +23,7 @@ export default function BackgroundGallery({ initialBackgrounds }: Props) {
       const res = await fetch("/api/culturetoons/backgrounds", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newName.trim() }),
+        body: JSON.stringify({ brand_id: brandId, name: newName.trim() }),
       });
       if (res.ok) {
         const created = await res.json();
@@ -36,7 +37,7 @@ export default function BackgroundGallery({ initialBackgrounds }: Props) {
 
   async function removeBackground(id: string) {
     setBackgrounds((prev) => prev.filter((b) => b.id !== id));
-    await fetch(`/api/culturetoons/backgrounds/${id}`, { method: "DELETE" });
+    await fetch(`/api/culturetoons/backgrounds/${id}?brand_id=${brandId}`, { method: "DELETE" });
   }
 
   return (
@@ -51,6 +52,7 @@ export default function BackgroundGallery({ initialBackgrounds }: Props) {
               <ImageUploadButton
                 uploadUrl={`/api/culturetoons/backgrounds/${bg.id}/image`}
                 currentImageUrl={bg.image_url}
+                extraFields={{ brand_id: brandId }}
                 onUploaded={(data) => {
                   setBackgrounds((prev) => prev.map((b) => (b.id === bg.id ? { ...b, ...data } as ToonBackground : b)));
                 }}
