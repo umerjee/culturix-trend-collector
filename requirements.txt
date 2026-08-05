@@ -36,6 +36,20 @@ cryptography
 # the only way to get Coqui TTS running here — confirmed via pip install
 # --dry-run before adding. The [cpu] extra is required to pull in torch/
 # torchaudio at all (they're optional extras, not a base dependency).
+#
+# coqui-tts's own package metadata declares the exact same "torch>=2.2" for
+# both its [cpu] and [cuda] extras — the "cpu" name is purely conventional,
+# it does NOT actually select a CPU-only torch build. Without this
+# --extra-index-url, plain PyPI resolves torch's default Linux wheel, which
+# pulls a full CUDA runtime as separate nvidia-*-cu12 dependencies (often an
+# extra 1.5-2.5GB of downloads) even though every TTS call in this app runs
+# on CPU (WhisperModel(..., device="cpu", ...) in clip_transcribe.py) — this
+# was a major, unnecessary contributor to slow Railway builds. PyTorch's own
+# CPU wheels use a "+cpu" local version suffix (e.g. 2.5.1+cpu), which PEP
+# 440 sorts *higher* than the bare "2.5.1" on PyPI, so pip's normal
+# highest-version-wins resolution picks the CPU build automatically once
+# this extra index is available — no exact version pin needed.
+--extra-index-url https://download.pytorch.org/whl/cpu
 coqui-tts[cpu,codec]
 # coqui-tts 0.27.5 declares "transformers>=4.57" with no upper bound, but its
 # XTTS implementation actually breaks against transformers 5.x (confirmed
