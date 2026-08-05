@@ -1,18 +1,39 @@
 "use client";
 
 import { useState } from "react";
-import { Drama, Loader2 } from "lucide-react";
+import { Drama, Loader2, Check } from "lucide-react";
 import type { CharacterBrand } from "@/lib/types";
+import { CONNECTABLE_PLATFORMS } from "@/lib/types";
 
 interface Props {
   onCreated: (brand: CharacterBrand) => void;
 }
 
+function PlatformChip({ label, selected, onClick }: { label: string; selected: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+        selected ? "bg-blue-600 border-blue-600 text-white" : "bg-white border-gray-200 text-gray-600 hover:border-blue-300"
+      }`}
+    >
+      {selected && <Check className="h-3 w-3" />}
+      {label}
+    </button>
+  );
+}
+
 export default function CultureToonBrandForm({ onCreated }: Props) {
   const [name, setName] = useState("My CultureToons Brand");
   const [description, setDescription] = useState("");
+  const [targetPlatforms, setTargetPlatforms] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function togglePlatform(key: string) {
+    setTargetPlatforms((prev) => (prev.includes(key) ? prev.filter((p) => p !== key) : [...prev, key]));
+  }
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -23,7 +44,7 @@ export default function CultureToonBrandForm({ onCreated }: Props) {
       const res = await fetch("/api/culturetoons/brands", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, description }),
+        body: JSON.stringify({ name, description, target_platforms: targetPlatforms }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -60,6 +81,18 @@ export default function CultureToonBrandForm({ onCreated }: Props) {
           rows={2}
           className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
         />
+        <label className="text-xs font-medium text-gray-500 mt-2">Where will this account post?</label>
+        <div className="flex flex-wrap gap-1.5">
+          {CONNECTABLE_PLATFORMS.map((p) => (
+            <PlatformChip
+              key={p.key}
+              label={p.display}
+              selected={targetPlatforms.includes(p.key)}
+              onClick={() => togglePlatform(p.key)}
+            />
+          ))}
+        </div>
+        <p className="text-[11px] text-gray-400">Optional for now — you can connect the actual accounts later.</p>
         {error && <p className="text-xs text-red-500">{error}</p>}
         <button
           type="submit"

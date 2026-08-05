@@ -82,6 +82,16 @@ class TestBrand:
         assert len(listed) == 1
         assert listed[0]["id"] == created["id"]
 
+    def test_create_with_target_platforms(self, db, user_id):
+        created = culturetoons.create_brand({
+            "user_id": user_id, "name": "Funny Clips", "target_platforms": ["tiktok", "instagram"],
+        })
+        assert created["target_platforms"] == ["tiktok", "instagram"]
+
+    def test_create_without_target_platforms_defaults_empty(self, db, user_id):
+        created = culturetoons.create_brand({"user_id": user_id, "name": "Funny Clips"})
+        assert created["target_platforms"] == []
+
     def test_multiple_brands_per_user(self, db, user_id):
         b1 = culturetoons.create_brand({"user_id": user_id, "name": "Funny Clips"})
         b2 = culturetoons.create_brand({"user_id": user_id, "name": "Baby Videos"})
@@ -545,13 +555,40 @@ class TestScripts:
             culturetoons.suggest_script({"user_id": user_id, "brand_id": brand["id"], "source_type": "trend", "source_id": 1})
         assert exc_info.value.status_code == 400
 
-    def test_suggest_unknown_source_404s(self, db, user_id):
-        brand = culturetoons.create_brand({"user_id": user_id})
+    def test_suggest_unknown_source_404s(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
         with pytest.raises(HTTPException) as exc_info:
             culturetoons.suggest_script({
                 "user_id": user_id, "brand_id": brand["id"], "source_type": "persona", "source_id": 999999,
+                "character_variant_id": variant["id"],
             })
         assert exc_info.value.status_code == 404
+
+    def test_suggest_requires_character_variant(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.suggest_script({
+                "user_id": user_id, "brand_id": brand["id"], "source_type": "persona", "source_id": 1,
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_suggest_out_of_range_duration_400s(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.suggest_script({
+                "user_id": user_id, "brand_id": brand["id"], "source_type": "persona", "source_id": 1,
+                "character_variant_id": variant["id"], "target_duration_seconds": 999,
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_suggest_out_of_range_num_shots_400s(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.suggest_script({
+                "user_id": user_id, "brand_id": brand["id"], "source_type": "persona", "source_id": 1,
+                "character_variant_id": variant["id"], "num_shots": 99,
+            })
+        assert exc_info.value.status_code == 400
 
     def test_delete_archives_not_deletes(self, db, user_id, brand_and_character):
         brand, _character, variant = brand_and_character
@@ -613,6 +650,21 @@ class TestSuggestScriptFromIdea:
                 "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"], "idea": "Something",
             })
         assert exc_info.value.status_code == 502
+
+    def test_requires_character_variant(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.suggest_script_from_idea({"user_id": user_id, "brand_id": brand["id"], "idea": "Something"})
+        assert exc_info.value.status_code == 400
+
+    def test_out_of_range_duration_400s(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.suggest_script_from_idea({
+                "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+                "idea": "Something", "target_duration_seconds": 1,
+            })
+        assert exc_info.value.status_code == 400
 
 
 class TestGenerateScriptBackground:

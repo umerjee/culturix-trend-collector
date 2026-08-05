@@ -11,6 +11,16 @@ interface TrendSource {
   description: string | null;
 }
 
+// Bundles num_shots + target_duration_seconds into one intuitive control —
+// Kling Omni's real hard limits are 2-6 shots / 3-15s total (enforced
+// server-side too, see MIN_SHOTS/MAX_SHOTS/MIN_TOTAL_SECONDS/
+// MAX_TOTAL_SECONDS in app/services/culturetoon_script.py).
+const DURATION_PRESETS = [
+  { key: "quick", label: "Quick (~5s)", numShots: 2, duration: 5 },
+  { key: "standard", label: "Standard (~10s)", numShots: 4, duration: 10 },
+  { key: "extended", label: "Extended (~15s)", numShots: 6, duration: 15 },
+] as const;
+
 interface Props {
   brandId: string;
   initialScripts: ToonScript[];
@@ -33,6 +43,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
   const [sourceId, setSourceId] = useState<string>("");
   const [variantId, setVariantId] = useState<string>(variants[0]?.id ?? "");
   const [tone, setTone] = useState<(typeof TONE_OPTIONS)[number]>("funny");
+  const [lengthKey, setLengthKey] = useState<(typeof DURATION_PRESETS)[number]["key"]>("standard");
   const [suggesting, setSuggesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,6 +60,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
   const [idea, setIdea] = useState("");
   const [ideaVariantId, setIdeaVariantId] = useState<string>(variants[0]?.id ?? "");
   const [ideaTone, setIdeaTone] = useState<(typeof TONE_OPTIONS)[number]>("funny");
+  const [ideaLengthKey, setIdeaLengthKey] = useState<(typeof DURATION_PRESETS)[number]["key"]>("standard");
   const [suggestingFromIdea, setSuggestingFromIdea] = useState(false);
   const [ideaError, setIdeaError] = useState<string | null>(null);
 
@@ -61,7 +73,8 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
   const sourceOptions = sourceType === "persona" ? trendSources.personas : trendSources.clusters;
 
   async function suggest() {
-    if (!sourceId) return;
+    if (!sourceId || !variantId) return;
+    const preset = DURATION_PRESETS.find((p) => p.key === lengthKey) ?? DURATION_PRESETS[1];
     setSuggesting(true);
     setError(null);
     try {
@@ -72,8 +85,10 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
           brand_id: brandId,
           source_type: sourceType,
           source_id: Number(sourceId),
-          character_variant_id: variantId || undefined,
+          character_variant_id: variantId,
           tone,
+          num_shots: preset.numShots,
+          target_duration_seconds: preset.duration,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -88,7 +103,8 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
   }
 
   async function suggestFromIdea() {
-    if (!idea.trim()) return;
+    if (!idea.trim() || !ideaVariantId) return;
+    const preset = DURATION_PRESETS.find((p) => p.key === ideaLengthKey) ?? DURATION_PRESETS[1];
     setSuggestingFromIdea(true);
     setIdeaError(null);
     try {
@@ -98,8 +114,10 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
         body: JSON.stringify({
           brand_id: brandId,
           idea: idea.trim(),
-          character_variant_id: ideaVariantId || undefined,
+          character_variant_id: ideaVariantId,
           tone: ideaTone,
+          num_shots: preset.numShots,
+          target_duration_seconds: preset.duration,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -231,7 +249,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
               onChange={(e) => setIdeaVariantId(e.target.value)}
               className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs min-w-[10rem]"
             >
-              <option value="">No specific character</option>
+              {variants.length === 0 && <option value="">Add a character first</option>}
               {variants.map((v) => (
                 <option key={v.id} value={v.id}>{v.name}</option>
               ))}
@@ -245,9 +263,18 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
                 <option key={t} value={t} className="capitalize">{t}</option>
               ))}
             </select>
+            <select
+              value={ideaLengthKey}
+              onChange={(e) => setIdeaLengthKey(e.target.value as (typeof DURATION_PRESETS)[number]["key"])}
+              className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs"
+            >
+              {DURATION_PRESETS.map((p) => (
+                <option key={p.key} value={p.key}>{p.label}</option>
+              ))}
+            </select>
             <button
               onClick={suggestFromIdea}
-              disabled={suggestingFromIdea || !idea.trim()}
+              disabled={suggestingFromIdea || !idea.trim() || !ideaVariantId}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium px-3 py-1.5 hover:bg-blue-700 transition-colors disabled:opacity-60"
             >
               {suggestingFromIdea ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
@@ -286,7 +313,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
             onChange={(e) => setVariantId(e.target.value)}
             className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs min-w-[10rem]"
           >
-            <option value="">No specific character</option>
+            {variants.length === 0 && <option value="">Add a character first</option>}
             {variants.map((v) => (
               <option key={v.id} value={v.id}>{v.name}</option>
             ))}
@@ -300,9 +327,18 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
               <option key={t} value={t} className="capitalize">{t}</option>
             ))}
           </select>
+          <select
+            value={lengthKey}
+            onChange={(e) => setLengthKey(e.target.value as (typeof DURATION_PRESETS)[number]["key"])}
+            className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs"
+          >
+            {DURATION_PRESETS.map((p) => (
+              <option key={p.key} value={p.key}>{p.label}</option>
+            ))}
+          </select>
           <button
             onClick={suggest}
-            disabled={suggesting || !sourceId}
+            disabled={suggesting || !sourceId || !variantId}
             className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium px-3 py-1.5 hover:bg-blue-700 transition-colors disabled:opacity-60"
           >
             {suggesting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}

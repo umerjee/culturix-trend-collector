@@ -32,10 +32,14 @@ EXPRESSION_NAMES = [
 
 TONE_OPTIONS = ["funny", "dramatic", "satiric", "sad", "wholesome", "chaotic", "deadpan"]
 
-_MIN_SHOTS = 2
-_MAX_SHOTS = 6
-_MIN_TOTAL_SECONDS = 3
-_MAX_TOTAL_SECONDS = 15
+# Public (no leading underscore) — app/routers/culturetoons.py validates
+# user-supplied num_shots/target_duration_seconds against these before
+# calling the LLM, so an out-of-range request 400s immediately instead of
+# failing later inside build_kling_prompt after already spending a call.
+MIN_SHOTS = 2
+MAX_SHOTS = 6
+MIN_TOTAL_SECONDS = 3
+MAX_TOTAL_SECONDS = 15
 _MAX_SHOT_PROMPT_CHARS = 512
 
 
@@ -96,9 +100,9 @@ Aim for around {num_shots} shots totaling about {target_duration_seconds} second
 may adjust within the hard limits below if it better serves the joke.
 
 Requirements:
-- Between {_MIN_SHOTS} and {_MAX_SHOTS} shots. shot_number must be 1, 2, 3... with no gaps.
+- Between {MIN_SHOTS} and {MAX_SHOTS} shots. shot_number must be 1, 2, 3... with no gaps.
 - Each shot's duration_seconds is a whole number >= 1. The SUM of all shots'
-  duration_seconds must be between {_MIN_TOTAL_SECONDS} and {_MAX_TOTAL_SECONDS} (hard limits).
+  duration_seconds must be between {MIN_TOTAL_SECONDS} and {MAX_TOTAL_SECONDS} (hard limits).
 - "action" describes what the character visually does in that shot (max ~20 words).
 - "expression" is one of exactly these values, or null if not relevant: {EXPRESSION_NAMES}.
 - "dialogue" is what the character says out loud in that shot, or null for a
@@ -195,8 +199,8 @@ def build_kling_prompt(shots: list, element_name: str) -> str:
     without repeating the reference."""
     if not shots:
         raise ToonScriptGenerationError("Cannot build a Kling prompt from an empty shots list")
-    if len(shots) > _MAX_SHOTS:
-        raise ToonScriptGenerationError(f"Kling supports at most {_MAX_SHOTS} shots, got {len(shots)}")
+    if len(shots) > MAX_SHOTS:
+        raise ToonScriptGenerationError(f"Kling supports at most {MAX_SHOTS} shots, got {len(shots)}")
 
     expected_numbers = list(range(1, len(shots) + 1))
     actual_numbers = [s.get("shot_number") for s in shots]
@@ -206,9 +210,9 @@ def build_kling_prompt(shots: list, element_name: str) -> str:
         )
 
     total_seconds = sum(s.get("duration_seconds", 0) for s in shots)
-    if not (_MIN_TOTAL_SECONDS <= total_seconds <= _MAX_TOTAL_SECONDS):
+    if not (MIN_TOTAL_SECONDS <= total_seconds <= MAX_TOTAL_SECONDS):
         raise ToonScriptGenerationError(
-            f"Total shot duration must be between {_MIN_TOTAL_SECONDS} and {_MAX_TOTAL_SECONDS}s, got {total_seconds}s"
+            f"Total shot duration must be between {MIN_TOTAL_SECONDS} and {MAX_TOTAL_SECONDS}s, got {total_seconds}s"
         )
 
     segments = []

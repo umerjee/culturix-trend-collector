@@ -369,6 +369,7 @@ def create_brand(body: dict):
             user_id=_uuid.UUID(user_id),
             name=body.get("name", "My CultureToons Brand"),
             description=body.get("description"),
+            target_platforms=body.get("target_platforms") or [],
         )
         session.add(brand)
         session.commit()
@@ -1042,6 +1043,31 @@ def create_script(body: dict):
         session.close()
 
 
+def _validate_script_generation_params(body: dict) -> tuple:
+    """Shared by suggest_script and suggest_script_from_idea. Bounds-checks
+    num_shots/target_duration_seconds against Kling Omni's real limits
+    (MIN_SHOTS/MAX_SHOTS/MIN_TOTAL_SECONDS/MAX_TOTAL_SECONDS in
+    culturetoon_script.py) before spending an LLM call — previously an
+    out-of-range value only failed later, inside build_kling_prompt, after
+    the script was already generated and persisted."""
+    from app.services.culturetoon_script import MIN_SHOTS, MAX_SHOTS, MIN_TOTAL_SECONDS, MAX_TOTAL_SECONDS
+    num_shots = body.get("num_shots", 4)
+    target_duration_seconds = body.get("target_duration_seconds", 12)
+    try:
+        num_shots = int(num_shots)
+        target_duration_seconds = int(target_duration_seconds)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="num_shots and target_duration_seconds must be integers")
+    if not (MIN_SHOTS <= num_shots <= MAX_SHOTS):
+        raise HTTPException(status_code=400, detail=f"num_shots must be between {MIN_SHOTS} and {MAX_SHOTS}")
+    if not (MIN_TOTAL_SECONDS <= target_duration_seconds <= MAX_TOTAL_SECONDS):
+        raise HTTPException(
+            status_code=400,
+            detail=f"target_duration_seconds must be between {MIN_TOTAL_SECONDS} and {MAX_TOTAL_SECONDS}",
+        )
+    return num_shots, target_duration_seconds
+
+
 @router.post("/scripts/suggest")
 def suggest_script(body: dict):
     """Synchronous — a single LLM call, matching shopify_generate_product_idea's
@@ -1059,12 +1085,18 @@ def suggest_script(body: dict):
 
     if not user_id or not brand_id or source_type not in ("persona", "cluster") or source_id is None:
         raise HTTPException(status_code=400, detail="user_id, brand_id, source_type ('persona'|'cluster') and source_id are required")
+    # Required, not optional: an unset variant used to silently produce a
+    # script about no one in particular, which left the LLM free to invent
+    # a fictional character to write about instead — confirmed live.
+    if not character_variant_id:
+        raise HTTPException(status_code=400, detail="character_variant_id is required — pick a real character for this script")
     if tone not in _TONES:
         raise HTTPException(status_code=400, detail=f"tone must be one of {_TONES}")
     try:
         source_id = int(source_id)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="source_id must be an integer")
+    num_shots, target_duration_seconds = _validate_script_generation_params(body)
 
     session = SessionLocal()
     try:
@@ -1073,15 +1105,13 @@ def suggest_script(body: dict):
         if not source:
             raise HTTPException(status_code=404, detail=f"{source_type} {source_id} not found")
 
-        variant = None
-        if character_variant_id:
-            variant = _get_variant_owned(session, character_variant_id, brand_id, user_id)
+        variant = _get_variant_owned(session, character_variant_id, brand_id, user_id)
 
         try:
             idea = generate_toon_script(
                 source, variant, tone=tone,
-                num_shots=body.get("num_shots", 4),
-                target_duration_seconds=body.get("target_duration_seconds", 12),
+                num_shots=num_shots,
+                target_duration_seconds=target_duration_seconds,
             )
         except ToonScriptGenerationError as exc:
             raise HTTPException(status_code=502, detail=f"Script generation failed: {exc}")
@@ -1128,28 +1158,30 @@ def suggest_script_from_idea(body: dict):
 
     if not user_id or not brand_id or not idea:
         raise HTTPException(status_code=400, detail="user_id, brand_id and idea are required")
+    # Required, not optional — see the matching check in suggest_script for why.
+    if not character_variant_id:
+        raise HTTPException(status_code=400, detail="character_variant_id is required — pick a real character for this script")
     if tone not in _TONES:
         raise HTTPException(status_code=400, detail=f"tone must be one of {_TONES}")
+    num_shots, target_duration_seconds = _validate_script_generation_params(body)
 
     session = SessionLocal()
     try:
         brand = _get_brand_owned(session, brand_id, user_id)
-        variant = None
-        if character_variant_id:
-            variant = _get_variant_owned(session, character_variant_id, brand_id, user_id)
+        variant = _get_variant_owned(session, character_variant_id, brand_id, user_id)
 
         try:
             result = generate_toon_script_from_idea(
                 idea, variant, tone=tone,
-                num_shots=body.get("num_shots", 4),
-                target_duration_seconds=body.get("target_duration_seconds", 12),
+                num_shots=num_shots,
+                target_duration_seconds=target_duration_seconds,
             )
         except ToonScriptGenerationError as exc:
             raise HTTPException(status_code=502, detail=f"Script generation failed: {exc}")
 
         script = ToonScript(
             brand_id=brand.id,
-            character_variant_id=_uuid.UUID(character_variant_id) if character_variant_id else None,
+            character_variant_id=_uuid.UUID(character_variant_id),
             source_type="idea",
             hook_line=result.get("hook_line"),
             tone=result.get("tone"),
