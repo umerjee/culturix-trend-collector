@@ -149,6 +149,82 @@ class TestCharactersRequireBrand:
         assert updated["description"] == "desc"
 
 
+class TestCharacterImageGeneration:
+    def test_generate_image_requires_description(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_character_image(character["id"], {"user_id": user_id, "brand_id": brand["id"]})
+        assert exc_info.value.status_code == 400
+
+    def test_generate_image_persists_description_and_sets_base_image(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, character, _variant = brand_and_character
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-jpeg", content_type="image/jpeg"),
+        )
+        mock_upload = mocker.patch("app.media.storage.upload", return_value="https://supabase/char-gen.jpg")
+
+        result = culturetoons.generate_character_image(character["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+            "description": "A tall Indian mother in a bright green saree, warm smile, cartoon style",
+        })
+
+        assert result["description"].startswith("A tall Indian mother")
+        assert result["base_image_url"] == "https://supabase/char-gen.jpg"
+        mock_generate.assert_called_once()
+        _, kwargs = mock_generate.call_args
+        assert kwargs["reference_image_url"] is None
+        mock_upload.assert_called_once()
+        # jpeg content type from Cloudflare's provider must not be rejected
+        # (save_image()'s PNG/WebP-only allowlist doesn't apply here).
+        assert mock_upload.call_args[0][2] == "image/jpeg"
+
+    def test_generate_image_passes_reference_image_url(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, character, _variant = brand_and_character
+        session = db()
+        row = session.query(Character).filter_by(id=uuid.UUID(character["id"])).first()
+        row.reference_image_url = "https://supabase/char-ref.png"
+        row.description = "Existing description"
+        session.commit()
+        session.close()
+
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/char-gen.png")
+
+        culturetoons.generate_character_image(character["id"], {"user_id": user_id, "brand_id": brand["id"]})
+
+        _, kwargs = mock_generate.call_args
+        assert kwargs["reference_image_url"] == "https://supabase/char-ref.png"
+
+    def test_generate_image_failure_returns_502(self, db, user_id, brand_and_character, mocker):
+        brand, character, _variant = brand_and_character
+        mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            side_effect=RuntimeError("provider down"),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_character_image(character["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "description": "A character",
+            })
+        assert exc_info.value.status_code == 502
+
+    def test_upload_reference_image_does_not_touch_base_image(self, db, user_id, brand_and_character, mocker):
+        brand, character, _variant = brand_and_character
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/char-ref.png")
+
+        result = _run(culturetoons.upload_character_reference_image(
+            character["id"], user_id=user_id, brand_id=brand["id"],
+            file=_FakeUploadFile(b"fake-png", "image/png"),
+        ))
+        assert result["reference_image_url"] == "https://supabase/char-ref.png"
+        assert result["base_image_url"] is None
+
+
 class TestVariantsAndExpressions:
     def test_create_variant_and_upload_expression_image(self, db, user_id, brand_and_character, mocker):
         brand, _character, variant = brand_and_character

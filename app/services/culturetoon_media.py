@@ -1,11 +1,11 @@
 """Shared image-upload helper for CultureToons — characters, variants,
-expressions, and backgrounds all upload a reference PNG/WebP through this
-one path rather than each hand-rolling validation. Reuses
+expressions, and backgrounds all upload a reference PNG/WebP/JPEG through
+this one path rather than each hand-rolling validation. Reuses
 app/media/storage.py's existing Supabase Storage upload() unchanged (it
 already handles the 409-conflict upsert-via-PUT case, so re-uploading to
 replace an image just works).
 """
-_ALLOWED_CONTENT_TYPES = {"image/png", "image/webp"}
+_ALLOWED_CONTENT_TYPES = {"image/png", "image/webp", "image/jpeg"}
 _MAX_BYTES = 10 * 1024 * 1024
 
 

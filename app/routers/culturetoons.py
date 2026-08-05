@@ -111,6 +111,7 @@ def _serialize_character(c) -> dict:
     return {
         "id": str(c.id), "brand_id": str(c.brand_id), "name": c.name,
         "description": c.description, "base_image_url": c.base_image_url,
+        "reference_image_url": c.reference_image_url,
         "is_active": c.is_active,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
@@ -322,6 +323,77 @@ async def upload_character_image(character_id: str, user_id: str = Form(...), br
             url = save_image(data, file.content_type, path)
         except ImageUploadError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        character.base_image_url = url
+        session.commit()
+        session.refresh(character)
+        return _serialize_character(character)
+    finally:
+        session.close()
+
+
+@router.post("/characters/{character_id}/reference-image")
+async def upload_character_reference_image(character_id: str, user_id: str = Form(...), brand_id: str = Form(...),
+                                             file: UploadFile = File(...)):
+    """A raw source photo (or hand-drawn reference) to ground AI image
+    generation on — kept separate from base_image_url, which holds the
+    current generated/curated portrait. See generate_character_image."""
+    from app.db import SessionLocal
+    from app.services.culturetoon_media import save_image, ImageUploadError
+    session = SessionLocal()
+    try:
+        character = _get_character_owned(session, character_id, brand_id, user_id)
+        data = await file.read()
+        path = f"culturetoons/{character.brand_id}/characters/{character.id}-reference.png"
+        try:
+            url = save_image(data, file.content_type, path)
+        except ImageUploadError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        character.reference_image_url = url
+        session.commit()
+        session.refresh(character)
+        return _serialize_character(character)
+    finally:
+        session.close()
+
+
+@router.post("/characters/{character_id}/generate-image")
+def generate_character_image(character_id: str, body: dict):
+    """Builds/iterates the character's portrait from a text description
+    (optionally grounded on reference_image_url via image-to-image) using
+    the same hybrid provider (free Cloudflare Flux, paid Qwen-Image fallback
+    — Qwen is used automatically whenever a reference image is supplied,
+    since Flux schnell has no image-to-image input) already wired up for
+    digest media generation. Synchronous: Flux is a few seconds, the Qwen
+    fallback is comparable to an LLM call, both well within the frontend's
+    30s AI-generation timeout convention — no need to background this the
+    way slower Kling video generation is."""
+    from app.db import SessionLocal
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+    session = SessionLocal()
+    try:
+        character = _get_character_owned(session, character_id, brand_id, user_id)
+        if "description" in body:
+            character.description = (body.get("description") or "").strip() or None
+            session.commit()
+        prompt = (character.description or "").strip()
+        if not prompt:
+            raise HTTPException(status_code=400, detail="A description is required to generate an image")
+
+        from app.media.image_hybrid import HybridImageProvider
+        try:
+            result = HybridImageProvider().generate(prompt, reference_image_url=character.reference_image_url)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}")
+
+        ext = "jpg" if result.content_type == "image/jpeg" else "png"
+        path = f"culturetoons/{character.brand_id}/characters/{character.id}-{_uuid.uuid4().hex[:8]}.{ext}"
+        from app.services.culturetoon_media import save_image, ImageUploadError
+        try:
+            url = save_image(result.asset_bytes, result.content_type, path)
+        except ImageUploadError as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to store generated image: {exc}")
         character.base_image_url = url
         session.commit()
         session.refresh(character)

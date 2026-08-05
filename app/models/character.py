@@ -16,6 +16,11 @@ class Character(Base):
     name = Column(String(120), nullable=False)
     description = Column(Text, nullable=True)
     base_image_url = Column(Text, nullable=True)
+    # The user's raw uploaded photo (if any), kept distinct from
+    # base_image_url so repeated AI-generation iterations always ground on
+    # the same source photo instead of compounding drift by re-generating
+    # from the previous generation's own output.
+    reference_image_url = Column(Text, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

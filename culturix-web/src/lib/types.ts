@@ -391,6 +391,7 @@ export interface Character {
   name: string;
   description: string | null;
   base_image_url: string | null;
+  reference_image_url: string | null;
   is_active: boolean;
   created_at: string | null;
   updated_at: string | null;

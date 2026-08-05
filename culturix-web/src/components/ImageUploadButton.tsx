@@ -66,7 +66,7 @@ export default function ImageUploadButton({ uploadUrl, currentImageUrl, onUpload
       </button>
       {label && <span className="text-[10px] text-gray-500 text-center leading-tight max-w-[4.5rem]">{label}</span>}
       {error && <span className="text-[10px] text-red-500 text-center max-w-[4.5rem]">{error}</span>}
-      <input ref={inputRef} type="file" accept="image/png,image/webp" onChange={handleFile} className="hidden" />
+      <input ref={inputRef} type="file" accept="image/png,image/webp,image/jpeg" onChange={handleFile} className="hidden" />
     </div>
   );
 }

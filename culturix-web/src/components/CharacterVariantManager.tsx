@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Loader2, CheckCircle2, XCircle, Sparkles } from "lucide-react";
+import { Plus, Loader2, CheckCircle2, XCircle, Sparkles, Wand2 } from "lucide-react";
 import type { Character, CharacterVariant, VoiceProvider } from "@/lib/types";
 import ImageUploadButton from "@/components/ImageUploadButton";
 import ExpressionUploadGrid from "@/components/ExpressionUploadGrid";
@@ -21,6 +21,9 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
 
   const [newCharacterName, setNewCharacterName] = useState("");
   const [creatingCharacter, setCreatingCharacter] = useState(false);
+  const [descriptionDraft, setDescriptionDraft] = useState("");
+  const [generatingImage, setGeneratingImage] = useState(false);
+  const [imageGenError, setImageGenError] = useState<string | null>(null);
   const [newVariantName, setNewVariantName] = useState("");
   const [newVariantCulture, setNewVariantCulture] = useState("");
   const [creatingVariant, setCreatingVariant] = useState(false);
@@ -43,6 +46,11 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     }, 4000);
     return () => clearInterval(interval);
   }, [selectedVariant, brandId]);
+
+  useEffect(() => {
+    setDescriptionDraft(selectedCharacter?.description ?? "");
+    setImageGenError(null);
+  }, [selectedCharacterId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function addCharacter(e: React.FormEvent) {
     e.preventDefault();
@@ -107,6 +115,31 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     }
   }
 
+  async function generateCharacterImage() {
+    if (!selectedCharacter) return;
+    if (!descriptionDraft.trim()) {
+      setImageGenError("Add a description first.");
+      return;
+    }
+    setGeneratingImage(true);
+    setImageGenError(null);
+    try {
+      const res = await fetch(`/api/culturetoons/characters/${selectedCharacter.id}/generate-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, description: descriptionDraft.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setImageGenError(typeof data.detail === "string" ? data.detail : "Image generation failed");
+        return;
+      }
+      setCharacters((prev) => prev.map((c) => (c.id === selectedCharacter.id ? (data as Character) : c)));
+    } finally {
+      setGeneratingImage(false);
+    }
+  }
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       {/* Characters column */}
@@ -153,16 +186,52 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
           <p className="text-xs text-gray-400">Select a base character to see its variants.</p>
         ) : (
           <>
-            <div className="flex justify-center mb-3">
-              <ImageUploadButton
-                uploadUrl={`/api/culturetoons/characters/${selectedCharacter.id}/image`}
-                currentImageUrl={selectedCharacter.base_image_url}
-                label="Base image"
-                extraFields={{ brand_id: brandId }}
-                onUploaded={(data) => {
-                  setCharacters((prev) => prev.map((c) => (c.id === selectedCharacter.id ? { ...c, ...data } as Character : c)));
-                }}
+            <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 mb-4">
+              <span className="text-xs font-semibold text-gray-700 block mb-2">Build character image</span>
+              <textarea
+                value={descriptionDraft}
+                onChange={(e) => setDescriptionDraft(e.target.value)}
+                placeholder="Describe the character — appearance, age, culture, personality, style. E.g. &quot;A cheerful Nigerian uncle in his 50s, round glasses, colorful agbada, warm expressive face, Pixar-style 3D cartoon.&quot;"
+                rows={3}
+                className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs mb-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-200"
               />
+              <div className="flex items-center gap-3 mb-2">
+                <ImageUploadButton
+                  uploadUrl={`/api/culturetoons/characters/${selectedCharacter.id}/reference-image`}
+                  currentImageUrl={selectedCharacter.reference_image_url}
+                  label="Reference photo"
+                  size="sm"
+                  extraFields={{ brand_id: brandId }}
+                  onUploaded={(data) => {
+                    setCharacters((prev) => prev.map((c) => (c.id === selectedCharacter.id ? { ...c, ...data } as Character : c)));
+                  }}
+                />
+                <button
+                  onClick={generateCharacterImage}
+                  disabled={generatingImage || !descriptionDraft.trim()}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 text-white text-xs font-medium px-3 py-1.5 hover:bg-gray-800 transition-colors disabled:opacity-60 shrink-0"
+                >
+                  {generatingImage ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
+                  {selectedCharacter.base_image_url ? "Regenerate image" : "Generate image"}
+                </button>
+              </div>
+              {imageGenError && <p className="text-[11px] text-red-500 mb-2">{imageGenError}</p>}
+              <p className="text-[11px] text-gray-400 mb-3">
+                A reference photo is optional — with one, generation stays grounded on it; without one,
+                the character is built from the description alone. Regenerate as many times as you like,
+                each run replaces the current portrait.
+              </p>
+              <div className="flex justify-center">
+                <ImageUploadButton
+                  uploadUrl={`/api/culturetoons/characters/${selectedCharacter.id}/image`}
+                  currentImageUrl={selectedCharacter.base_image_url}
+                  label="Character portrait"
+                  extraFields={{ brand_id: brandId }}
+                  onUploaded={(data) => {
+                    setCharacters((prev) => prev.map((c) => (c.id === selectedCharacter.id ? { ...c, ...data } as Character : c)));
+                  }}
+                />
+              </div>
             </div>
             <div className="space-y-1 mb-3">
               {characterVariants.length === 0 && (

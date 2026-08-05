@@ -160,6 +160,10 @@ async def lifespan(_):
             "ALTER TABLE character_brands ADD COLUMN IF NOT EXISTS delivery_day_of_week INTEGER NOT NULL DEFAULT 0",
             # Optional per-brand ElevenLabs credential — see app/media/elevenlabs_voice.py.
             "ALTER TABLE character_brands ADD COLUMN IF NOT EXISTS elevenlabs_api_key_encrypted TEXT",
+            # Raw reference photo a user uploads for a base character, kept
+            # separate from base_image_url (the current AI-generated/curated
+            # portrait) — see POST /characters/{id}/generate-image below.
+            "ALTER TABLE characters ADD COLUMN IF NOT EXISTS reference_image_url TEXT",
             # Kling Element/voice registration per character variant — see
             # app/media/kling_omni.py / app/services/culturetoon_element.py.
             "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS kling_element_id VARCHAR(64)",
