@@ -224,6 +224,114 @@ class TestCharacterImageGeneration:
         assert result["reference_image_url"] == "https://supabase/char-ref.png"
         assert result["base_image_url"] is None
 
+    def test_new_character_defaults_to_cartoon_3d_art_style(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        character = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "X"})
+        assert character["art_style"] == culturetoons.DEFAULT_ART_STYLE
+
+    def test_create_character_rejects_unknown_art_style(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_character({
+                "user_id": user_id, "brand_id": brand["id"], "name": "X", "art_style": "oil_painting",
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_generate_image_prompt_forces_cartoon_style_and_forbids_photorealism(
+        self, db, user_id, brand_and_character, mocker,
+    ):
+        from app.media.base import MediaResult
+        brand, character, _variant = brand_and_character
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/char-gen.png")
+
+        culturetoons.generate_character_image(character["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+            "description": "A middle class man, modern look and well groomed",
+            "art_style": "anime",
+        })
+
+        sent_prompt = mock_generate.call_args[0][0]
+        assert "anime" in sent_prompt.lower()
+        assert "not a photorealistic photo" in sent_prompt.lower()
+        assert "A middle class man" in sent_prompt
+
+        listed = culturetoons.list_characters(user_id, brand["id"], active_only=False)
+        updated = next(c for c in listed if c["id"] == character["id"])
+        assert updated["art_style"] == "anime"
+
+
+class TestVariantImageGeneration:
+    def test_generate_image_requires_description(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_variant_image(variant["id"], {"user_id": user_id, "brand_id": brand["id"]})
+        assert exc_info.value.status_code == 400
+
+    def test_generate_image_falls_back_to_character_base_image(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, character, variant = brand_and_character
+        session = db()
+        row = session.query(Character).filter_by(id=uuid.UUID(character["id"])).first()
+        row.base_image_url = "https://supabase/char-portrait.png"
+        session.commit()
+        session.close()
+
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/variant-gen.png")
+
+        result = culturetoons.generate_variant_image(variant["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "description": "Kumar's wife, warm and stylish",
+        })
+
+        assert result["image_url"] == "https://supabase/variant-gen.png"
+        _, kwargs = mock_generate.call_args
+        assert kwargs["reference_image_url"] == "https://supabase/char-portrait.png"
+        sent_prompt = mock_generate.call_args[0][0]
+        assert variant["name"] in sent_prompt
+        assert character["name"] in sent_prompt
+
+    def test_generate_image_prefers_own_reference_over_character_portrait(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, character, variant = brand_and_character
+        session = db()
+        char_row = session.query(Character).filter_by(id=uuid.UUID(character["id"])).first()
+        char_row.base_image_url = "https://supabase/char-portrait.png"
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        variant_row.reference_image_url = "https://supabase/variant-own-ref.png"
+        session.commit()
+        session.close()
+
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/variant-gen.png")
+
+        culturetoons.generate_variant_image(variant["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "description": "Kumar's wife",
+        })
+
+        _, kwargs = mock_generate.call_args
+        assert kwargs["reference_image_url"] == "https://supabase/variant-own-ref.png"
+
+    def test_upload_variant_reference_image_does_not_touch_image_url(self, db, user_id, brand_and_character, mocker):
+        brand, _character, variant = brand_and_character
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/variant-ref.png")
+
+        result = _run(culturetoons.upload_variant_reference_image(
+            variant["id"], user_id=user_id, brand_id=brand["id"],
+            file=_FakeUploadFile(b"fake-png", "image/png"),
+        ))
+        assert result["reference_image_url"] == "https://supabase/variant-ref.png"
+        assert result["image_url"] is None
+
 
 class TestVariantsAndExpressions:
     def test_create_variant_and_upload_expression_image(self, db, user_id, brand_and_character, mocker):

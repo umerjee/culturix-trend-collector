@@ -385,6 +385,14 @@ export interface CharacterBrand {
   updated_at: string | null;
 }
 
+// Keep in sync with ART_STYLES in app/routers/culturetoons.py.
+export const ART_STYLES = [
+  { key: "cartoon_3d", label: "3D Pixar-style cartoon" },
+  { key: "anime", label: "2D anime style" },
+  { key: "flat_vector", label: "Flat vector illustration" },
+  { key: "claymation", label: "Claymation style" },
+] as const;
+
 export interface Character {
   id: string;
   brand_id: string;
@@ -392,6 +400,7 @@ export interface Character {
   description: string | null;
   base_image_url: string | null;
   reference_image_url: string | null;
+  art_style: (typeof ART_STYLES)[number]["key"];
   is_active: boolean;
   created_at: string | null;
   updated_at: string | null;
@@ -407,6 +416,7 @@ export interface CharacterVariant {
   culture_tag: string | null;
   description: string | null;
   image_url: string | null;
+  reference_image_url: string | null;
   persona_id: number | null;
   is_active: boolean;
   kling_element_id: string | null;

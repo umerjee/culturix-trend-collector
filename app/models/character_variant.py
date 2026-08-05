@@ -19,6 +19,12 @@ class CharacterVariant(Base):
     culture_tag = Column(String(60), nullable=True)
     description = Column(Text, nullable=True)
     image_url = Column(Text, nullable=True)
+    # A variant-specific raw reference photo, if the user has one (e.g. a
+    # real photo for the "Wife" variant). Optional — when absent, AI image
+    # generation for this variant grounds on the base Character's own
+    # base_image_url instead, so a variant with no photo of its own still
+    # inherits the character's already-established illustrated look.
+    reference_image_url = Column(Text, nullable=True)
     persona_id = Column(Integer, nullable=True, index=True)
     is_active = Column(Boolean, nullable=False, default=True)
 

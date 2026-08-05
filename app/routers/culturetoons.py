@@ -28,6 +28,68 @@ EXPRESSION_NAMES = [
 ]
 TONE_OPTIONS = ["funny", "dramatic", "satiric", "sad", "wholesome", "chaotic", "deadpan"]
 
+# Every character (and, by default, its variants) is illustrated in one of
+# these styles. This exists because AI image generation with no explicit
+# style instruction — even in this cartoon-focused product — tends to just
+# lightly retouch a supplied reference photo instead of actually
+# re-illustrating it (confirmed live: a real photo in, a near-identical
+# photo out). _build_cartoon_prompt below is what forces the stylization.
+ART_STYLES = {
+    "cartoon_3d": {
+        "label": "3D Pixar-style cartoon",
+        "prompt": "a vibrant 3D Pixar/DreamWorks-style animated cartoon character, "
+                  "exaggerated friendly proportions, smooth stylized shading, clean "
+                  "character-turnaround studio lighting",
+    },
+    "anime": {
+        "label": "2D anime style",
+        "prompt": "a 2D anime-style character illustration, clean cel-shaded line art, "
+                  "expressive anime facial features",
+    },
+    "flat_vector": {
+        "label": "Flat vector illustration",
+        "prompt": "a flat vector illustration character design, bold clean outlines, "
+                  "simplified geometric shapes, solid flat colors, modern mascot-style design",
+    },
+    "claymation": {
+        "label": "Claymation style",
+        "prompt": "a claymation-style stop-motion character, sculpted clay texture, soft "
+                  "rounded forms, subtle visible tool/fingerprint marks",
+    },
+}
+DEFAULT_ART_STYLE = "cartoon_3d"
+
+
+def _build_cartoon_prompt(description: str, art_style_key: str, has_reference_image: bool, extra: str = "") -> str:
+    """Confirmed live against Qwen-Image (see conversation notes, not
+    committed to the repo): with a reference photo, the naive version of
+    this prompt ("re-render in this style, don't just retouch the photo")
+    only cartoonified the face and left the body/clothing/background
+    photorealistic. Explicitly demanding a *different framing* than the
+    reference photo (waist-up vs. whatever pose the photo has) is what
+    actually breaks the image-to-image model's bias toward preserving the
+    input's composition — asking for the "same" framing let it take a
+    shortcut of lightly retouching the original pixels instead of properly
+    re-illustrating them. The text-only path (no reference image) needs no
+    such trick; a plain style instruction already produces a clean cartoon."""
+    style = ART_STYLES.get(art_style_key, ART_STYLES[DEFAULT_ART_STYLE])
+    if has_reference_image:
+        grounding = (
+            f"Redraw the person in the reference photo as {style['prompt']}, waist-up studio "
+            "character portrait (a different framing and setting than the reference photo — do "
+            "not copy its pose, background, or composition). Use the reference photo only to "
+            "match facial identity, hairstyle, and skin tone — redraw everything else, including "
+            "clothing and shading, as illustrated cartoon art rather than photographic texture. "
+            "This must read as cartoon art, not a photograph."
+        )
+    else:
+        grounding = (
+            f"Character portrait, {style['prompt']}. This must be a fully stylized, illustrated "
+            "cartoon character, not a photorealistic photo."
+        )
+    parts = [grounding, extra, description, "Centered, front-facing, single character, high detail illustration."]
+    return " ".join(p for p in parts if p)
+
 
 # ── ownership / lookup helpers ───────────────────────────────────────────
 
@@ -111,7 +173,7 @@ def _serialize_character(c) -> dict:
     return {
         "id": str(c.id), "brand_id": str(c.brand_id), "name": c.name,
         "description": c.description, "base_image_url": c.base_image_url,
-        "reference_image_url": c.reference_image_url,
+        "reference_image_url": c.reference_image_url, "art_style": c.art_style,
         "is_active": c.is_active,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
@@ -122,7 +184,8 @@ def _serialize_variant(v) -> dict:
     return {
         "id": str(v.id), "character_id": str(v.character_id), "name": v.name,
         "culture_tag": v.culture_tag, "description": v.description,
-        "image_url": v.image_url, "persona_id": v.persona_id, "is_active": v.is_active,
+        "image_url": v.image_url, "reference_image_url": v.reference_image_url,
+        "persona_id": v.persona_id, "is_active": v.is_active,
         "kling_element_id": v.kling_element_id, "kling_element_name": v.kling_element_name,
         "kling_voice_id": v.kling_voice_id, "element_status": v.element_status,
         "element_error": v.element_error,
@@ -265,7 +328,13 @@ def create_character(body: dict):
     session = SessionLocal()
     try:
         brand = _get_brand_owned(session, brand_id, user_id)
-        character = Character(brand_id=brand.id, name=body["name"], description=body.get("description"))
+        art_style = body.get("art_style") or DEFAULT_ART_STYLE
+        if art_style not in ART_STYLES:
+            raise HTTPException(status_code=400, detail=f"Unknown art_style: {art_style}")
+        character = Character(
+            brand_id=brand.id, name=body["name"], description=body.get("description"),
+            art_style=art_style,
+        )
         session.add(character)
         session.commit()
         session.refresh(character)
@@ -299,7 +368,9 @@ def update_character(character_id: str, body: dict):
     session = SessionLocal()
     try:
         character = _get_character_owned(session, character_id, brand_id, user_id)
-        for field in ("name", "description", "is_active"):
+        if "art_style" in body and body["art_style"] not in ART_STYLES:
+            raise HTTPException(status_code=400, detail=f"Unknown art_style: {body['art_style']}")
+        for field in ("name", "description", "is_active", "art_style"):
             if field in body:
                 setattr(character, field, body[field])
         session.commit()
@@ -363,10 +434,13 @@ def generate_character_image(character_id: str, body: dict):
     the same hybrid provider (free Cloudflare Flux, paid Qwen-Image fallback
     — Qwen is used automatically whenever a reference image is supplied,
     since Flux schnell has no image-to-image input) already wired up for
-    digest media generation. Synchronous: Flux is a few seconds, the Qwen
-    fallback is comparable to an LLM call, both well within the frontend's
-    30s AI-generation timeout convention — no need to background this the
-    way slower Kling video generation is."""
+    digest media generation. The raw description is NOT sent as-is — see
+    _build_cartoon_prompt, which wraps it with an explicit art-style
+    instruction, otherwise a supplied reference photo just gets lightly
+    retouched instead of actually re-illustrated. Synchronous: Flux is a
+    few seconds, the Qwen fallback is comparable to an LLM call, both well
+    within the frontend's 30s AI-generation timeout convention — no need to
+    background this the way slower Kling video generation is."""
     from app.db import SessionLocal
     user_id, brand_id = body.get("user_id"), body.get("brand_id")
     if not user_id or not brand_id:
@@ -376,10 +450,15 @@ def generate_character_image(character_id: str, body: dict):
         character = _get_character_owned(session, character_id, brand_id, user_id)
         if "description" in body:
             character.description = (body.get("description") or "").strip() or None
-            session.commit()
-        prompt = (character.description or "").strip()
-        if not prompt:
+        if "art_style" in body:
+            if body["art_style"] not in ART_STYLES:
+                raise HTTPException(status_code=400, detail=f"Unknown art_style: {body['art_style']}")
+            character.art_style = body["art_style"]
+        session.commit()
+        description = (character.description or "").strip()
+        if not description:
             raise HTTPException(status_code=400, detail="A description is required to generate an image")
+        prompt = _build_cartoon_prompt(description, character.art_style, bool(character.reference_image_url))
 
         from app.media.image_hybrid import HybridImageProvider
         try:
@@ -498,6 +577,89 @@ async def upload_variant_image(variant_id: str, user_id: str = Form(...), brand_
             url = save_image(data, file.content_type, path)
         except ImageUploadError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        variant.image_url = url
+        session.commit()
+        session.refresh(variant)
+        return _serialize_variant(variant)
+    finally:
+        session.close()
+
+
+@router.post("/variants/{variant_id}/reference-image")
+async def upload_variant_reference_image(variant_id: str, user_id: str = Form(...), brand_id: str = Form(...),
+                                          file: UploadFile = File(...)):
+    """A variant-specific raw source photo, if the user has one (e.g. a real
+    photo for the "Wife" variant) — kept separate from image_url, which
+    holds the current generated/curated portrait. See generate_variant_image,
+    which falls back to the parent Character's own portrait when this is
+    absent, so a variant with no photo of its own still resembles the rest
+    of the roster."""
+    from app.db import SessionLocal
+    from app.services.culturetoon_media import save_image, ImageUploadError
+    session = SessionLocal()
+    try:
+        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
+        from app.models.character import Character
+        character = session.query(Character).filter_by(id=variant.character_id).first()
+        data = await file.read()
+        path = f"culturetoons/{character.brand_id}/variants/{variant.id}-reference.png"
+        try:
+            url = save_image(data, file.content_type, path)
+        except ImageUploadError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        variant.reference_image_url = url
+        session.commit()
+        session.refresh(variant)
+        return _serialize_variant(variant)
+    finally:
+        session.close()
+
+
+@router.post("/variants/{variant_id}/generate-image")
+def generate_variant_image(variant_id: str, body: dict):
+    """Builds/iterates this variant's portrait — same idea as
+    generate_character_image, but scoped to one cultural/relational variant
+    of the base character (e.g. "Wife of Kumar", "Asian look"). Grounding
+    image priority: the variant's own reference_image_url if the user
+    uploaded one, otherwise the parent Character's base_image_url, so a
+    variant with no photo of its own still inherits the character's
+    already-established illustrated look and family resemblance rather than
+    generating from text alone. Always uses the parent character's
+    art_style — a roster stays visually consistent by design; if that turns
+    out to be too rigid for a specific brand, it's a one-line change to
+    accept a per-variant override instead."""
+    from app.db import SessionLocal
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+    session = SessionLocal()
+    try:
+        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
+        from app.models.character import Character
+        character = session.query(Character).filter_by(id=variant.character_id).first()
+        if "description" in body:
+            variant.description = (body.get("description") or "").strip() or None
+        session.commit()
+        description = (variant.description or "").strip()
+        if not description:
+            raise HTTPException(status_code=400, detail="A description is required to generate an image")
+        extra = f"This is a variant of the base character '{character.name}', specifically: {variant.name}."
+        reference_image_url = variant.reference_image_url or character.base_image_url
+        prompt = _build_cartoon_prompt(description, character.art_style, bool(reference_image_url), extra=extra)
+
+        from app.media.image_hybrid import HybridImageProvider
+        try:
+            result = HybridImageProvider().generate(prompt, reference_image_url=reference_image_url)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}")
+
+        ext = "jpg" if result.content_type == "image/jpeg" else "png"
+        path = f"culturetoons/{character.brand_id}/variants/{variant.id}-{_uuid.uuid4().hex[:8]}.{ext}"
+        from app.services.culturetoon_media import save_image, ImageUploadError
+        try:
+            url = save_image(result.asset_bytes, result.content_type, path)
+        except ImageUploadError as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to store generated image: {exc}")
         variant.image_url = url
         session.commit()
         session.refresh(variant)

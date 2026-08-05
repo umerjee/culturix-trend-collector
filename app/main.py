@@ -164,6 +164,13 @@ async def lifespan(_):
             # separate from base_image_url (the current AI-generated/curated
             # portrait) — see POST /characters/{id}/generate-image below.
             "ALTER TABLE characters ADD COLUMN IF NOT EXISTS reference_image_url TEXT",
+            # Which illustrated art style this character's AI image
+            # generation uses — see ART_STYLES in app/routers/culturetoons.py.
+            "ALTER TABLE characters ADD COLUMN IF NOT EXISTS art_style VARCHAR(30) NOT NULL DEFAULT 'cartoon_3d'",
+            # Variant-specific reference photo, falls back to the parent
+            # Character's base_image_url when absent — see
+            # generate_variant_image in app/routers/culturetoons.py.
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS reference_image_url TEXT",
             # Kling Element/voice registration per character variant — see
             # app/media/kling_omni.py / app/services/culturetoon_element.py.
             "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS kling_element_id VARCHAR(64)",

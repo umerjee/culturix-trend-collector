@@ -21,6 +21,12 @@ class Character(Base):
     # the same source photo instead of compounding drift by re-generating
     # from the previous generation's own output.
     reference_image_url = Column(Text, nullable=True)
+    # Which illustrated art style AI image generation renders this character
+    # (and, by default, its variants) into — see ART_STYLES in
+    # app/routers/culturetoons.py. Without an explicit style instruction in
+    # the prompt, a supplied reference photo tends to just get lightly
+    # re-touched rather than actually re-illustrated as a cartoon.
+    art_style = Column(String(30), nullable=False, default="cartoon_3d")
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
