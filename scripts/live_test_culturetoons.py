@@ -4,12 +4,12 @@ Supabase Storage for image upload). Not a pytest test — run by hand:
     python scripts/live_test_culturetoons.py
 
 Deliberately does NOT exercise register-element or generate-video — those
-need real KLING_OMNI_API_KEY credentials, which aren't provisioned yet (see
-the plan's flagged open question: one live Kling Omni call is needed to
-confirm the native-audio-speaks-dialogue hypothesis before relying on it).
-This script covers everything that doesn't depend on that: multi-brand
-creation, character/variant CRUD, image upload, and shot-structured/
-tone-aware script generation from a real trending persona.
+need real KLING_ACCESS_KEY/KLING_SECRET_KEY credentials available in this
+local environment (see the plan's flagged open question: one live Kling
+Omni call is needed to confirm the native-audio-speaks-dialogue hypothesis
+before relying on it). This script covers everything that doesn't depend on
+that: multi-brand creation, character/variant CRUD, image upload, and
+shot-structured/tone-aware script generation from a real trending persona.
 """
 import asyncio
 import logging
@@ -106,7 +106,7 @@ def main():
     assert posted["status"] == "posted"
     assert posted["posted_at"] is not None
     assert posted["final_video_url"] == "https://example.com/smoke-test.mp4"
-    logger.info("SMOKE TEST PASSED (register-element / generate-video NOT covered — need real KLING_OMNI_API_KEY)")
+    logger.info("SMOKE TEST PASSED (register-element / generate-video NOT covered — need real KLING_ACCESS_KEY/KLING_SECRET_KEY)")
 
 
 if __name__ == "__main__":

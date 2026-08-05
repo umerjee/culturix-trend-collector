@@ -4,7 +4,8 @@ this codebase's established test doctrine. time.sleep is mocked so polling
 loops run instantly regardless of the real poll-interval constants.
 """
 import os
-os.environ.setdefault("KLING_OMNI_API_KEY", "test-key")
+os.environ.setdefault("KLING_ACCESS_KEY", "test-access-key")
+os.environ.setdefault("KLING_SECRET_KEY", "test-secret-key")
 
 import pytest
 
@@ -121,8 +122,13 @@ class TestGenerateOmniVideo:
             KlingOmniProvider().generate_omni_video(contents=[], settings={})
 
 
-class TestMissingApiKey:
-    def test_raises_without_key(self, mocker):
-        mocker.patch.dict(os.environ, {"KLING_OMNI_API_KEY": ""})
-        with pytest.raises(RuntimeError, match="KLING_OMNI_API_KEY"):
+class TestMissingCredentials:
+    def test_raises_without_access_key(self, mocker):
+        mocker.patch.dict(os.environ, {"KLING_ACCESS_KEY": ""})
+        with pytest.raises(RuntimeError, match="KLING_ACCESS_KEY"):
+            KlingOmniProvider()
+
+    def test_raises_without_secret_key(self, mocker):
+        mocker.patch.dict(os.environ, {"KLING_SECRET_KEY": ""})
+        with pytest.raises(RuntimeError, match="KLING_ACCESS_KEY"):
             KlingOmniProvider()

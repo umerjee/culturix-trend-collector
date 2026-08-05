@@ -1,9 +1,21 @@
 """Kling 3.0 Omni provider — character-consistent, multi-shot, voice-bound
 video generation for CultureToons. This is a DIFFERENT API surface from the
 existing `KlingProvider` in app/media/video.py (used by Shopify's product
-reels): different base URL, different auth scheme, different endpoints
-entirely. Deliberately NOT reusing or modifying that class — Shopify's
-working reel generation stays untouched; this is a standalone provider.
+reels): different base URL, different endpoints entirely. Deliberately NOT
+reusing or modifying that class — Shopify's working reel generation stays
+untouched; this is a standalone provider.
+
+Auth: initially assumed the v3 docs' "Authorization: Bearer {apikey}" meant
+a distinct, separately-issued static API key. Confirmed otherwise by
+checking Kling's actual developer dashboard live — it only ever issues one
+credential type (an Access Key + Secret Key pair, the same one video.py's
+KlingProvider already uses, with a "JWT Verification" tool right next to
+it), no separate key-issuance flow for a different credential type exists
+anywhere on that page. So this uses the exact same JWT-Bearer mechanism as
+the old provider (HS256, iss/exp/nbf claims), built from the SAME
+KLING_ACCESS_KEY/KLING_SECRET_KEY already configured for Shopify reels — no
+new credential needed. _make_jwt is duplicated from video.py (not imported),
+matching this module's existing "keep the two providers independent" design.
 
 Endpoint/parameter shapes below are transcribed directly from Kling's own
 API documentation (Element Management, Voice Management, Omni Video
@@ -44,17 +56,31 @@ def _request_with_retry(method: str, url: str, **kwargs) -> httpx.Response:
     return resp
 
 
+def _make_jwt(access_key: str, secret_key: str) -> str:
+    """Duplicated from video.py's _make_jwt — see this module's docstring."""
+    try:
+        import jwt as pyjwt
+    except ImportError:
+        raise RuntimeError("PyJWT not installed — add 'PyJWT' to requirements.txt")
+    now = int(time.time())
+    payload = {"iss": access_key, "exp": now + 1800, "nbf": now - 5}
+    return pyjwt.encode(payload, secret_key, algorithm="HS256")
+
+
 class KlingOmniProvider:
     def __init__(self) -> None:
-        # A plain bearer API key, NOT the JWT access-key/secret-key pair
-        # video.py's KlingProvider uses — Kling's v3 API uses a different
-        # auth scheme entirely.
-        self._api_key = os.getenv("KLING_OMNI_API_KEY", "")
-        if not self._api_key:
-            raise RuntimeError("KLING_OMNI_API_KEY must be set")
+        self._access_key = os.getenv("KLING_ACCESS_KEY", "")
+        self._secret_key = os.getenv("KLING_SECRET_KEY", "")
+        if not self._access_key or not self._secret_key:
+            raise RuntimeError("KLING_ACCESS_KEY and KLING_SECRET_KEY must be set")
 
     def _headers(self) -> dict:
-        return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
+        # Generated fresh per call (cheap, local — no network round trip)
+        # rather than cached, since a single generation can involve several
+        # slow polling loops that could plausibly outlive one token's 30-min
+        # expiry if it were reused across the whole request lifecycle.
+        token = _make_jwt(self._access_key, self._secret_key)
+        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
     def _check(self, resp: httpx.Response, context: str) -> dict:
         resp.raise_for_status()
