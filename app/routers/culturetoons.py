@@ -355,6 +355,29 @@ def _serialize_toon(t) -> dict:
     }
 
 
+def _get_toon_post_owned(session, toon_post_id: str, brand_id: str, user_id: str):
+    from app.models.toon_post import ToonPost
+    brand = _get_brand_owned(session, brand_id, user_id)
+    post = session.query(ToonPost).filter_by(id=_uuid.UUID(toon_post_id)).first()
+    if not post or post.brand_id != brand.id:
+        raise HTTPException(status_code=404, detail="Toon post not found")
+    return post
+
+
+def _serialize_toon_post(p) -> dict:
+    return {
+        "id": str(p.id), "toon_id": str(p.toon_id), "brand_id": str(p.brand_id),
+        "platform": p.platform, "post_url": p.post_url,
+        "platform_post_id": p.platform_post_id, "status": p.status,
+        "latest_views": p.latest_views, "latest_likes": p.latest_likes,
+        "latest_comments": p.latest_comments, "latest_shares": p.latest_shares,
+        "last_fetched_at": p.last_fetched_at.isoformat() if p.last_fetched_at else None,
+        "error": p.error,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "posted_at": p.posted_at.isoformat() if p.posted_at else None,
+    }
+
+
 # ── brands ────────────────────────────────────────────────────────────────
 
 @router.post("/brands")
@@ -1514,3 +1537,86 @@ def generate_toon_video(toon_id: str, body: dict, background_tasks: BackgroundTa
 
     background_tasks.add_task(generate_video_for_toon, user_id=user_id, toon_id=toon_id)
     return {"status": "generation_started"}
+
+
+@router.post("/toons/{toon_id}/publish")
+def publish_toon(toon_id: str, body: dict, background_tasks: BackgroundTasks):
+    """Publishes a ready Toon to a connected social account for this
+    brand — the real "where it's posted" flow this product was missing
+    (see harmonic-mixing-flame.md's Phase 3), wired onto the same
+    ConnectedAccount/OAuth infra the main trend-driven product already
+    uses (app/social/service.py's resolve_active_account, already
+    character_brand_id-aware). Backgrounded like publish_content_post:
+    the actual publish call downloads+re-uploads the finished video, which
+    can run past a typical HTTP gateway timeout."""
+    from app.db import SessionLocal
+    from app.models.toon_post import ToonPost
+    from app.social.service import resolve_active_account, publish_toon_and_record
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    platform = body.get("platform")
+    if not user_id or not brand_id or not platform:
+        raise HTTPException(status_code=400, detail="user_id, brand_id and platform are required")
+
+    session = SessionLocal()
+    try:
+        toon = _get_toon_owned(session, toon_id, brand_id, user_id)
+        if not toon.final_video_url:
+            raise HTTPException(status_code=400, detail="This toon has no final video selected yet")
+
+        account = resolve_active_account(session, _uuid.UUID(user_id), platform, character_brand_id=_uuid.UUID(brand_id))
+        if not account:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No {platform} account connected for this brand — connect one first",
+            )
+
+        post = ToonPost(
+            toon_id=toon.id, brand_id=toon.brand_id, user_id=_uuid.UUID(user_id),
+            platform=platform, status="pending",
+        )
+        session.add(post)
+        session.commit()
+        session.refresh(post)
+        post_id = str(post.id)
+        result = _serialize_toon_post(post)
+    finally:
+        session.close()
+
+    background_tasks.add_task(publish_toon_and_record, toon_post_id=post_id)
+    return result
+
+
+@router.get("/toons/{toon_id}/posts")
+def list_toon_posts(toon_id: str, user_id: str, brand_id: str):
+    from app.db import SessionLocal
+    from app.models.toon_post import ToonPost
+
+    session = SessionLocal()
+    try:
+        toon = _get_toon_owned(session, toon_id, brand_id, user_id)
+        posts = session.query(ToonPost).filter_by(toon_id=toon.id).order_by(ToonPost.created_at.desc()).all()
+        return [_serialize_toon_post(p) for p in posts]
+    finally:
+        session.close()
+
+
+@router.post("/toon-posts/{toon_post_id}/refresh")
+def refresh_toon_post(toon_post_id: str, body: dict, background_tasks: BackgroundTasks):
+    """Re-fetches performance metrics for an already-published ToonPost —
+    the CultureToons analogue of POST /api/content-posts/{id}/refresh."""
+    from app.db import SessionLocal
+    from app.social.service import fetch_toon_and_record
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+
+    session = SessionLocal()
+    try:
+        _get_toon_post_owned(session, toon_post_id, brand_id, user_id)
+    finally:
+        session.close()
+
+    background_tasks.add_task(fetch_toon_and_record, toon_post_id=toon_post_id)
+    return {"status": "refresh_started"}

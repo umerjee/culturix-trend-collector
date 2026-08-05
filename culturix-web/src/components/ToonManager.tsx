@@ -1,11 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Loader2, ExternalLink, Clapperboard } from "lucide-react";
-import type { Toon, ToonScript, CharacterVariant, ToonBackground } from "@/lib/types";
+import { Plus, Loader2, ExternalLink, Clapperboard, Link2, Send, ShieldCheck, ShieldAlert } from "lucide-react";
+import type { Toon, ToonScript, CharacterVariant, ToonBackground, ConnectedAccount, ToonPost } from "@/lib/types";
+import { CONNECTABLE_PLATFORMS } from "@/lib/types";
+import CultureToonPublishPanel from "@/components/CultureToonPublishPanel";
 
 interface Props {
   brandId: string;
+  brandName: string;
   initialToons: Toon[];
   scripts: ToonScript[];
   variants: CharacterVariant[];
@@ -14,13 +17,96 @@ interface Props {
 
 const STATUSES: Toon["status"][] = ["idea", "animating", "ready", "posted", "archived"];
 
-export default function ToonManager({ brandId, initialToons, scripts, variants, backgrounds }: Props) {
+export default function ToonManager({ brandId, brandName, initialToons, scripts, variants, backgrounds }: Props) {
   const [toons, setToons] = useState(initialToons.filter((t) => t.status !== "archived"));
   const [variantId, setVariantId] = useState(variants[0]?.id ?? "");
   const [scriptId, setScriptId] = useState(scripts[0]?.id ?? "");
   const [title, setTitle] = useState("");
   const [creating, setCreating] = useState(false);
   const [generatingId, setGeneratingId] = useState<string | null>(null);
+
+  const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccount[]>([]);
+  const [connectPanelPlatform, setConnectPanelPlatform] = useState<ConnectedAccount["platform"] | null>(null);
+  const [postsByToon, setPostsByToon] = useState<Record<string, ToonPost[]>>({});
+  const [publishPlatformByToon, setPublishPlatformByToon] = useState<Record<string, string>>({});
+  const [publishingId, setPublishingId] = useState<string | null>(null);
+
+  const connectablePlatforms = connectedAccounts.filter((a) => a.status === "active");
+
+  async function loadConnectedAccounts() {
+    const res = await fetch(`/api/culturetoons/social/accounts?brand_id=${brandId}`, { cache: "no-store" });
+    if (res.ok) setConnectedAccounts(await res.json());
+  }
+
+  useEffect(() => {
+    loadConnectedAccounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brandId]);
+
+  async function loadPosts(toonId: string) {
+    const res = await fetch(`/api/culturetoons/toons/${toonId}/posts?brand_id=${brandId}`, { cache: "no-store" });
+    if (!res.ok) return;
+    const posts: ToonPost[] = await res.json();
+    const wasPending = (postsByToon[toonId] ?? []).some((p) => p.status === "pending");
+    setPostsByToon((prev) => ({ ...prev, [toonId]: posts }));
+    // publish_toon_and_record syncs Toon.status/platform on success — re-sync
+    // this component's local toon once a publish leaves "pending" so the
+    // status dropdown above stops showing a stale "ready".
+    if (wasPending && posts.length > 0 && posts[0].status !== "pending") {
+      const toonRes = await fetch(`/api/culturetoons/toons/${toonId}?brand_id=${brandId}`, { cache: "no-store" });
+      if (toonRes.ok) {
+        const updated = await toonRes.json();
+        setToons((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+      }
+    }
+  }
+
+  useEffect(() => {
+    for (const t of toons) {
+      if (t.status === "ready" || t.status === "posted") loadPosts(t.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brandId, toons.length]);
+
+  // Poll toon posts still mid-publish.
+  useEffect(() => {
+    const pendingToonIds = Object.entries(postsByToon)
+      .filter(([, posts]) => posts.some((p) => p.status === "pending"))
+      .map(([id]) => id);
+    if (pendingToonIds.length === 0) return;
+    const interval = setInterval(() => {
+      for (const id of pendingToonIds) loadPosts(id);
+    }, 4000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [postsByToon]);
+
+  async function publishToon(toonId: string) {
+    const platform = publishPlatformByToon[toonId];
+    if (!platform) return;
+    setPublishingId(toonId);
+    try {
+      const res = await fetch(`/api/culturetoons/toons/${toonId}/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, platform }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setPostsByToon((prev) => ({ ...prev, [toonId]: [data, ...(prev[toonId] ?? [])] }));
+      } else {
+        setPostsByToon((prev) => ({
+          ...prev,
+          [toonId]: [{ id: `error-${Date.now()}`, toon_id: toonId, brand_id: brandId, platform, post_url: null,
+            platform_post_id: null, status: "failed", latest_views: null, latest_likes: null, latest_comments: null,
+            latest_shares: null, last_fetched_at: null, error: typeof data.detail === "string" ? data.detail : "Publish failed",
+            created_at: new Date().toISOString(), posted_at: null }, ...(prev[toonId] ?? [])],
+        }));
+      }
+    } finally {
+      setPublishingId(null);
+    }
+  }
 
   function variantName(id: string) {
     return variants.find((v) => v.id === id)?.name ?? "—";
@@ -117,6 +203,41 @@ export default function ToonManager({ brandId, initialToons, scripts, variants, 
   return (
     <div className="space-y-6">
       <div className="rounded-2xl bg-white border border-gray-100 p-4">
+        <h3 className="text-sm font-semibold text-gray-900 mb-1">Connected accounts</h3>
+        <p className="text-xs text-gray-400 mb-3">Where this brand's finished toons actually get published.</p>
+        <div className="flex flex-wrap gap-1.5">
+          {CONNECTABLE_PLATFORMS.map((p) => {
+            const acct = connectedAccounts.find((a) => a.platform === p.key && a.status === "active");
+            return (
+              <button
+                key={p.key}
+                onClick={() => setConnectPanelPlatform(p.key as ConnectedAccount["platform"])}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+                  acct ? "bg-green-50 border-green-200 text-green-700" : "bg-white border-gray-200 text-gray-500 hover:border-blue-300"
+                }`}
+              >
+                {acct ? <ShieldCheck className="h-3 w-3" /> : <Link2 className="h-3 w-3" />}
+                {p.display}
+                {acct?.platform_username && <span className="text-green-500">@{acct.platform_username}</span>}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {connectPanelPlatform && (
+        <CultureToonPublishPanel
+          brandId={brandId}
+          brandName={brandName}
+          platform={connectPanelPlatform}
+          platformLabel={CONNECTABLE_PLATFORMS.find((p) => p.key === connectPanelPlatform)?.display ?? connectPanelPlatform}
+          connectedAccounts={connectedAccounts}
+          onAccountsChanged={loadConnectedAccounts}
+          onClose={() => setConnectPanelPlatform(null)}
+        />
+      )}
+
+      <div className="rounded-2xl bg-white border border-gray-100 p-4">
         <h3 className="text-sm font-semibold text-gray-900 mb-3">Plan a new toon</h3>
         <form onSubmit={createToon} className="flex flex-wrap gap-2 items-center">
           <select value={variantId} onChange={(e) => setVariantId(e.target.value)} className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs">
@@ -186,7 +307,7 @@ export default function ToonManager({ brandId, initialToons, scripts, variants, 
                   type="text"
                   defaultValue={t.platform ?? ""}
                   onBlur={(e) => { if (e.target.value !== (t.platform ?? "")) updateToon(t.id, { platform: e.target.value || null }); }}
-                  placeholder="Platform, e.g. tiktok"
+                  placeholder="Platform (manual — posted outside Culturix)"
                   className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
                 />
               </div>
@@ -228,6 +349,61 @@ export default function ToonManager({ brandId, initialToons, scripts, variants, 
                   </div>
                 )}
               </div>
+
+              {t.final_video_url && (
+                <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 mt-3">
+                  <span className="text-xs font-semibold text-gray-700">Publish</span>
+                  <div className="flex flex-wrap gap-2 items-center mt-1.5">
+                    <select
+                      value={publishPlatformByToon[t.id] ?? connectablePlatforms[0]?.platform ?? ""}
+                      onChange={(e) => setPublishPlatformByToon((prev) => ({ ...prev, [t.id]: e.target.value }))}
+                      className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                    >
+                      {connectablePlatforms.length === 0 && <option value="">No connected accounts yet</option>}
+                      {connectablePlatforms.map((a) => (
+                        <option key={a.platform} value={a.platform}>
+                          {CONNECTABLE_PLATFORMS.find((p) => p.key === a.platform)?.display ?? a.platform}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() => publishToon(t.id)}
+                      disabled={connectablePlatforms.length === 0 || publishingId === t.id}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium px-3 py-1.5 hover:bg-blue-700 transition-colors disabled:opacity-60"
+                    >
+                      {publishingId === t.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                      Publish
+                    </button>
+                  </div>
+                  {connectablePlatforms.length === 0 && (
+                    <p className="text-[11px] text-gray-400 mt-1.5">Connect an account above to publish directly from here.</p>
+                  )}
+                  {(postsByToon[t.id] ?? []).length > 0 && (
+                    <div className="space-y-1.5 mt-2">
+                      {(postsByToon[t.id] ?? []).map((p) => (
+                        <div key={p.id} className="flex items-center gap-1.5 text-[11px]">
+                          {p.status === "pending" && <Loader2 className="h-3 w-3 animate-spin text-amber-500 shrink-0" />}
+                          {p.status === "tracked" && <ShieldCheck className="h-3 w-3 text-green-600 shrink-0" />}
+                          {(p.status === "failed" || p.status === "needs_reconnect") && <ShieldAlert className="h-3 w-3 text-red-500 shrink-0" />}
+                          <span className="text-gray-500 capitalize">{p.platform}</span>
+                          {p.status === "pending" && <span className="text-amber-600">publishing…</span>}
+                          {p.status === "tracked" && p.post_url && (
+                            <a href={p.post_url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
+                              view post
+                            </a>
+                          )}
+                          {p.status === "tracked" && typeof p.latest_views === "number" && (
+                            <span className="text-gray-400">{p.latest_views} views</span>
+                          )}
+                          {(p.status === "failed" || p.status === "needs_reconnect") && (
+                            <span className="text-red-500">{p.error || "Publish failed"}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="flex items-center justify-between mt-2">
                 {t.final_video_url ? (

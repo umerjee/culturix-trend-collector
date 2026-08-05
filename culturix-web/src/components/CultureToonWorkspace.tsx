@@ -74,6 +74,7 @@ export default function CultureToonWorkspace({
       {tab === "toons" && (
         <ToonManager
           brandId={brand.id}
+          brandName={brand.name}
           initialToons={initialToons}
           scripts={initialScripts}
           variants={initialVariants}

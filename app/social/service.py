@@ -282,6 +282,136 @@ def publish_and_record(content_post_id: str) -> None:
         session.close()
 
 
+def fetch_toon_and_record(toon_post_id: str) -> None:
+    """Background task for CultureToons post-performance tracking — the
+    ToonPost analogue of fetch_and_record. Sources the account via
+    character_brand_id (resolve_active_account's other real branch,
+    previously unused by anything in this file — ContentPost has no
+    character_brand_id to pass) instead of content_profile_id."""
+    from app.db import SessionLocal
+    from app.models.toon_post import ToonPost
+    import uuid as _uuid
+
+    session = SessionLocal()
+    try:
+        post = session.query(ToonPost).filter_by(id=_uuid.UUID(toon_post_id)).first()
+        if not post:
+            return
+
+        account = resolve_active_account(session, post.user_id, post.platform, character_brand_id=post.brand_id)
+        if not account:
+            post.status = "needs_reconnect"
+            post.error = f"No active {post.platform} connection"
+            session.commit()
+            return
+
+        access_token = _get_valid_access_token(session, account)
+        provider = _get_provider(post.platform)
+        metrics = provider.fetch_post_metrics(access_token, post.post_url)
+
+        post.platform_post_id = metrics.platform_post_id
+        post.latest_views = metrics.views
+        post.latest_likes = metrics.likes
+        post.latest_comments = metrics.comments
+        post.latest_shares = metrics.shares
+        post.last_fetched_at = datetime.utcnow()
+        post.status = "tracked"
+        post.error = None
+        session.commit()
+
+    except Exception as exc:
+        logger.error("fetch_toon_and_record failed for %s: %s", toon_post_id, exc)
+        try:
+            post = session.query(ToonPost).filter_by(id=_uuid.UUID(toon_post_id)).first()
+            if post:
+                post.status = "failed"
+                post.error = str(exc)
+                session.commit()
+        except Exception:
+            pass
+    finally:
+        session.close()
+
+
+def publish_toon_and_record(toon_post_id: str) -> None:
+    """Background task for CultureToons direct publish — the ToonPost
+    analogue of publish_and_record. Loads an already-created (status=
+    'pending') ToonPost row, publishes the Toon's final_video_url via the
+    platform's API, and fills in the row from the result. No GeneratedMedia
+    lookup here (unlike publish_and_record) — a Toon's finished video is
+    already a plain URL (Toon.final_video_url, the user's pick among
+    Kling's cut candidate clips), not a row keyed by idea_index. Also syncs
+    the parent Toon's own status/platform/posted_at fields on success so
+    the pre-Phase-3 manual "mark as posted" UI still reflects reality."""
+    from app.db import SessionLocal
+    from app.models.toon_post import ToonPost
+    from app.models.toon import Toon
+    from app.models.toon_script import ToonScript
+    import uuid as _uuid
+
+    session = SessionLocal()
+    try:
+        post = session.query(ToonPost).filter_by(id=_uuid.UUID(toon_post_id)).first()
+        if not post:
+            return
+
+        toon = session.query(Toon).filter_by(id=post.toon_id).first()
+        if not toon or not toon.final_video_url:
+            post.status = "failed"
+            post.error = "Toon has no final video selected"
+            session.commit()
+            return
+
+        account = resolve_active_account(session, post.user_id, post.platform, character_brand_id=post.brand_id)
+        if not account:
+            post.status = "needs_reconnect"
+            post.error = f"No active {post.platform} connection"
+            session.commit()
+            return
+
+        script = session.query(ToonScript).filter_by(id=toon.script_id).first()
+        title = (toon.title or (script.hook_line if script else None) or "Culturix toon")[:100]
+        description = (script.hook_line or "") if script else ""
+
+        video_resp = httpx.get(toon.final_video_url, timeout=120)
+        video_resp.raise_for_status()
+
+        access_token = _get_valid_access_token(session, account)
+        provider = _get_provider(post.platform)
+        metrics = provider.publish(access_token, video_resp.content, title, description)
+
+        post.platform_post_id = metrics.platform_post_id
+        post.post_url = _post_url(post.platform, metrics.platform_post_id)
+        post.latest_views = metrics.views or 0
+        post.latest_likes = metrics.likes or 0
+        post.latest_comments = metrics.comments or 0
+        post.latest_shares = metrics.shares
+        post.last_fetched_at = datetime.utcnow()
+        post.posted_at = datetime.utcnow()
+        post.tracking_until = datetime.utcnow() + timedelta(days=14)
+        post.status = "tracked"
+        post.error = None
+        session.commit()
+
+        toon.status = "posted"
+        toon.platform = post.platform
+        toon.posted_at = post.posted_at
+        session.commit()
+
+    except Exception as exc:
+        logger.error("publish_toon_and_record failed for %s: %s", toon_post_id, exc)
+        try:
+            post = session.query(ToonPost).filter_by(id=_uuid.UUID(toon_post_id)).first()
+            if post:
+                post.status = "failed"
+                post.error = str(exc)
+                session.commit()
+        except Exception:
+            pass
+    finally:
+        session.close()
+
+
 def compile_caption_text(idea: dict) -> str:
     """Builds the caption+hashtags text persisted to ContentPost.caption_text
     for the notify-to-publish flow — shared by the on-demand /api/content-posts/stage

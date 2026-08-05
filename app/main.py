@@ -40,6 +40,7 @@ async def lifespan(_):
     from app.models.toon_background import ToonBackground             # noqa: F401
     from app.models.toon_script import ToonScript                     # noqa: F401
     from app.models.toon import Toon                                  # noqa: F401
+    from app.models.toon_post import ToonPost                         # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -1350,11 +1351,15 @@ def list_connected_accounts(user_id: str, content_profile_id: Optional[str] = No
 
 
 @app.post("/api/social/{platform}/test")
-def test_social_connection(platform: str, user_id: str, content_profile_id: Optional[str] = None):
+def test_social_connection(platform: str, user_id: str, content_profile_id: Optional[str] = None,
+                            character_brand_id: Optional[str] = None):
     """Live 'does this connection actually work' probe — a single cheap
     identity call via the provider's verify(), not a full re-auth. Always
     200s with {"ok": ...} since this is a diagnostic read, not a mutation
-    that can meaningfully fail at the HTTP layer."""
+    that can meaningfully fail at the HTTP layer. character_brand_id added
+    for CultureToons' connect flow (see PublishingWizard.tsx's equivalent
+    content_profile_id usage) — the other social endpoints already accepted
+    it, this one was the one remaining hardcoded call site."""
     from app.db import SessionLocal
     from app.social.service import resolve_active_account, test_connection
     import uuid as _uuid
@@ -1365,6 +1370,7 @@ def test_social_connection(platform: str, user_id: str, content_profile_id: Opti
         account = resolve_active_account(
             session, _uuid.UUID(user_id), platform,
             content_profile_id=_uuid.UUID(content_profile_id) if content_profile_id else None,
+            character_brand_id=_uuid.UUID(character_brand_id) if character_brand_id else None,
         )
         if not account:
             raise HTTPException(status_code=400, detail=f"No {platform} account connected for this profile yet.")

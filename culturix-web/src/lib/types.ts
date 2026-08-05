@@ -82,10 +82,32 @@ export interface ConnectedAccount {
   // Which Trend profile (niche) this account is dedicated to — the user's own
   // "avatar account" for that niche. null = legacy/shared across all profiles.
   content_profile_id: string | null;
+  // Which CultureToons brand ("toon account") this account is dedicated to —
+  // the CultureToons analogue of content_profile_id above. Mutually
+  // exclusive with it in practice.
+  character_brand_id: string | null;
   // Whether a live "does this connection actually work" probe has been run —
   // distinct from `status`, which only reflects OAuth token lifecycle.
   last_tested_at: string | null;
   last_test_status: "ok" | "error" | null;
+}
+
+export interface ToonPost {
+  id: string;
+  toon_id: string;
+  brand_id: string;
+  platform: string;
+  post_url: string | null;
+  platform_post_id: string | null;
+  status: "pending" | "tracked" | "failed" | "needs_reconnect";
+  latest_views: number | null;
+  latest_likes: number | null;
+  latest_comments: number | null;
+  latest_shares: number | null;
+  last_fetched_at: string | null;
+  error: string | null;
+  created_at: string | null;
+  posted_at: string | null;
 }
 
 export interface NextAutoPublish {

@@ -13,7 +13,7 @@ os.environ.setdefault("TOKEN_ENCRYPTION_KEY", "zJZ2n2n0vXW5X8mYQKqVYV9YQe3F2Z8h0
 
 import uuid
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -25,6 +25,8 @@ from app.models.expression import Expression
 from app.models.toon_background import ToonBackground
 from app.models.toon_script import ToonScript
 from app.models.toon import Toon
+from app.models.toon_post import ToonPost
+from app.models.connected_account import ConnectedAccount
 from app.models.persona import Persona
 from app.models.cluster import Cluster
 from app.routers import culturetoons
@@ -49,7 +51,8 @@ def db(mocker):
     Base.metadata.create_all(bind=engine, tables=[
         CharacterBrand.__table__, Character.__table__, CharacterVariant.__table__,
         Expression.__table__, ToonBackground.__table__, ToonScript.__table__,
-        Toon.__table__, Persona.__table__, Cluster.__table__,
+        Toon.__table__, ToonPost.__table__, ConnectedAccount.__table__,
+        Persona.__table__, Cluster.__table__,
     ])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)
@@ -916,3 +919,103 @@ class TestToons:
                 toon["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=_FakeBackgroundTasks(),
             )
         assert exc_info.value.status_code == 400
+
+
+class TestPublishToon:
+    def _make_ready_toon(self, user_id, brand_id, variant_id):
+        script = culturetoons.create_script({"user_id": user_id, "brand_id": brand_id, "character_variant_id": variant_id})
+        toon = culturetoons.create_toon({
+            "user_id": user_id, "brand_id": brand_id,
+            "character_variant_id": variant_id, "script_id": script["id"],
+        })
+        return culturetoons.update_toon(toon["id"], {
+            "user_id": user_id, "brand_id": brand_id,
+            "final_video_url": "https://example.com/v.mp4", "status": "ready",
+        })
+
+    def _connect_account(self, db, user_id, brand_id, platform="tiktok"):
+        from app.social.crypto import encrypt
+        session = db()
+        account = ConnectedAccount(
+            user_id=uuid.UUID(user_id), character_brand_id=uuid.UUID(brand_id),
+            platform=platform, access_token=encrypt("plain-token"), status="active",
+        )
+        session.add(account)
+        session.commit()
+        session.close()
+
+    def test_publish_requires_final_video(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        script = culturetoons.create_script({"user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"]})
+        toon = culturetoons.create_toon({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_variant_id": variant["id"], "script_id": script["id"],
+        })
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.publish_toon(
+                toon["id"], {"user_id": user_id, "brand_id": brand["id"], "platform": "tiktok"},
+                background_tasks=BackgroundTasks(),
+            )
+        assert exc_info.value.status_code == 400
+
+    def test_publish_requires_connected_account(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        toon = self._make_ready_toon(user_id, brand["id"], variant["id"])
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.publish_toon(
+                toon["id"], {"user_id": user_id, "brand_id": brand["id"], "platform": "tiktok"},
+                background_tasks=BackgroundTasks(),
+            )
+        assert exc_info.value.status_code == 400
+        assert "connect" in exc_info.value.detail.lower()
+
+    def test_publish_creates_pending_post_and_queues_background_task(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        toon = self._make_ready_toon(user_id, brand["id"], variant["id"])
+        self._connect_account(db, user_id, brand["id"], platform="tiktok")
+
+        bg = BackgroundTasks()
+        result = culturetoons.publish_toon(
+            toon["id"], {"user_id": user_id, "brand_id": brand["id"], "platform": "tiktok"},
+            background_tasks=bg,
+        )
+        assert result["status"] == "pending"
+        assert result["toon_id"] == toon["id"]
+        assert result["platform"] == "tiktok"
+        assert len(bg.tasks) == 1
+
+        posts = culturetoons.list_toon_posts(toon["id"], user_id, brand["id"])
+        assert len(posts) == 1
+        assert posts[0]["id"] == result["id"]
+
+    def test_refresh_requires_ownership(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        toon = self._make_ready_toon(user_id, brand["id"], variant["id"])
+        self._connect_account(db, user_id, brand["id"], platform="tiktok")
+        post = culturetoons.publish_toon(
+            toon["id"], {"user_id": user_id, "brand_id": brand["id"], "platform": "tiktok"},
+            background_tasks=BackgroundTasks(),
+        )
+
+        other_user = str(uuid.uuid4())
+        other_brand = culturetoons.create_brand({"user_id": other_user})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.refresh_toon_post(
+                post["id"], {"user_id": other_user, "brand_id": other_brand["id"]},
+                background_tasks=BackgroundTasks(),
+            )
+        assert exc_info.value.status_code == 404
+
+    def test_refresh_queues_background_task(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        toon = self._make_ready_toon(user_id, brand["id"], variant["id"])
+        self._connect_account(db, user_id, brand["id"], platform="tiktok")
+        post = culturetoons.publish_toon(
+            toon["id"], {"user_id": user_id, "brand_id": brand["id"], "platform": "tiktok"},
+            background_tasks=BackgroundTasks(),
+        )
+
+        bg = BackgroundTasks()
+        result = culturetoons.refresh_toon_post(post["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=bg)
+        assert result["status"] == "refresh_started"
+        assert len(bg.tasks) == 1
