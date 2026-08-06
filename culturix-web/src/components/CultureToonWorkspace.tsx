@@ -30,6 +30,16 @@ export default function CultureToonWorkspace({
   brand, initialCharacters, initialVariants, initialBackgrounds, initialScripts, initialToons,
 }: Props) {
   const [tab, setTab] = useState<Tab>("characters");
+  // Set when a blocker elsewhere (e.g. ToonManager's "this character isn't
+  // registered yet" warning) wants to land the user directly on the
+  // specific character/variant that needs attention, instead of just
+  // naming the Characters tab and leaving them to find it themselves.
+  const [focusVariantId, setFocusVariantId] = useState<string | null>(null);
+
+  function jumpToVariant(variantId: string) {
+    setFocusVariantId(variantId);
+    setTab("characters");
+  }
 
   return (
     <div className="space-y-6">
@@ -60,6 +70,7 @@ export default function CultureToonWorkspace({
           hasElevenLabsKey={brand.has_elevenlabs_key}
           initialCharacters={initialCharacters}
           initialVariants={initialVariants}
+          focusVariantId={focusVariantId}
         />
       )}
       {tab === "backgrounds" && <BackgroundGallery brandId={brand.id} initialBackgrounds={initialBackgrounds} />}
@@ -79,6 +90,7 @@ export default function CultureToonWorkspace({
           scripts={initialScripts}
           variants={initialVariants}
           backgrounds={initialBackgrounds}
+          onJumpToVariant={jumpToVariant}
         />
       )}
     </div>

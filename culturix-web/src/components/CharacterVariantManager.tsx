@@ -11,6 +11,10 @@ interface Props {
   hasElevenLabsKey: boolean;
   initialCharacters: Character[];
   initialVariants: CharacterVariant[];
+  // When set (by a blocker elsewhere, e.g. ToonManager's "register this
+  // character" prompt), selects this exact variant — and its parent
+  // character — on arrival instead of defaulting to the first character.
+  focusVariantId?: string | null;
 }
 
 function ElementStatusIcon({ status }: { status: CharacterVariant["element_status"] }) {
@@ -20,11 +24,23 @@ function ElementStatusIcon({ status }: { status: CharacterVariant["element_statu
   return null;
 }
 
-export default function CharacterVariantManager({ brandId, hasElevenLabsKey, initialCharacters, initialVariants }: Props) {
+export default function CharacterVariantManager({ brandId, hasElevenLabsKey, initialCharacters, initialVariants, focusVariantId }: Props) {
   const [characters, setCharacters] = useState(initialCharacters);
   const [variants, setVariants] = useState(initialVariants);
-  const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(characters[0]?.id ?? null);
-  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
+  const focusedVariant = focusVariantId ? initialVariants.find((v) => v.id === focusVariantId) : null;
+  const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(
+    focusedVariant?.character_id ?? characters[0]?.id ?? null
+  );
+  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(focusedVariant?.id ?? null);
+
+  useEffect(() => {
+    if (!focusVariantId) return;
+    const variant = variants.find((v) => v.id === focusVariantId);
+    if (!variant) return;
+    setSelectedCharacterId(variant.character_id);
+    setSelectedVariantId(variant.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusVariantId]);
 
   const [newCharacterName, setNewCharacterName] = useState("");
   const [creatingCharacter, setCreatingCharacter] = useState(false);

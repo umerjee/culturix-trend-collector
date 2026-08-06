@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Loader2, ExternalLink, Clapperboard, Send, ShieldCheck, ShieldAlert } from "lucide-react";
+import { Plus, Loader2, ExternalLink, Clapperboard, Send, ShieldCheck, ShieldAlert, AlertTriangle, ArrowRight } from "lucide-react";
 import type { Toon, ToonScript, CharacterVariant, ToonBackground, ConnectedAccount, ToonPost } from "@/lib/types";
 import { CONNECTABLE_PLATFORMS } from "@/lib/types";
 import ConnectedAccountsPanel from "@/components/ConnectedAccountsPanel";
@@ -13,6 +13,10 @@ interface Props {
   scripts: ToonScript[];
   variants: CharacterVariant[];
   backgrounds: ToonBackground[];
+  // Jumps the parent workspace to the Characters tab with this variant
+  // pre-selected — lets the "not registered yet" blocker below take the
+  // user straight to the fix instead of just naming where to find it.
+  onJumpToVariant: (variantId: string) => void;
 }
 
 const STATUSES: Toon["status"][] = ["idea", "animating", "ready", "posted", "archived"];
@@ -27,7 +31,7 @@ const STATUSES: Toon["status"][] = ["idea", "animating", "ready", "posted", "arc
 // flight, but disabled so it can't be freely (re-)selected.
 const MANUALLY_UNSELECTABLE_STATUSES: Toon["status"][] = ["animating"];
 
-export default function ToonManager({ brandId, brandName, initialToons, scripts, variants, backgrounds }: Props) {
+export default function ToonManager({ brandId, brandName, initialToons, scripts, variants, backgrounds, onJumpToVariant }: Props) {
   const [toons, setToons] = useState(initialToons.filter((t) => t.status !== "archived"));
   const [variantId, setVariantId] = useState(variants[0]?.id ?? "");
   const [scriptId, setScriptId] = useState(scripts[0]?.id ?? "");
@@ -216,7 +220,11 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
         <form onSubmit={createToon} className="flex flex-wrap gap-2 items-center">
           <select value={variantId} onChange={(e) => setVariantId(e.target.value)} className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs">
             {variants.length === 0 && <option value="">No characters yet</option>}
-            {variants.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+            {variants.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}{v.element_status !== "ready" ? " — not registered yet" : ""}
+              </option>
+            ))}
           </select>
           <select value={scriptId} onChange={(e) => setScriptId(e.target.value)} className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs min-w-[10rem]">
             {scripts.length === 0 && <option value="">No scripts yet</option>}
@@ -303,11 +311,28 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
                   </button>
                 </div>
                 {!canGenerate && !generating && (
-                  <p className="text-[11px] text-gray-400">
-                    {!script?.shots?.length
-                      ? "This script has no AI-generated shots yet — suggest one from a trend to enable video generation."
-                      : "This character isn't registered with Kling yet — register it in the Characters tab first."}
-                  </p>
+                  <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-100 px-2.5 py-2 mt-1">
+                    <AlertTriangle className="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" />
+                    {!script?.shots?.length ? (
+                      <p className="text-xs text-amber-700">
+                        This script has no AI-generated shots yet. Go to the Scripts tab and suggest one
+                        from a trend or your own idea — a manually-written script can&apos;t drive video generation.
+                      </p>
+                    ) : (
+                      <div className="flex-1">
+                        <p className="text-xs text-amber-700">
+                          {variantName(t.character_variant_id)} isn&apos;t registered with Kling yet — that&apos;s a
+                          required one-time step before any video can be generated for this character.
+                        </p>
+                        <button
+                          onClick={() => onJumpToVariant(t.character_variant_id)}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 hover:text-amber-900 mt-1"
+                        >
+                          Register {variantName(t.character_variant_id)} now <ArrowRight className="h-3 w-3" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 )}
                 {generating && <p className="text-[11px] text-amber-600">Generating — this can take a few minutes.</p>}
                 {t.generation_error && <p className="text-[11px] text-red-500 mt-1">{t.generation_error}</p>}
