@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Loader2, ExternalLink, Clapperboard, Send, ShieldCheck, ShieldAlert, AlertTriangle, ArrowRight } from "lucide-react";
+import {
+  Plus, Loader2, ExternalLink, Clapperboard, Send, ShieldCheck, ShieldAlert, AlertTriangle,
+  ArrowRight, ChevronDown, ChevronRight, CheckCircle2,
+} from "lucide-react";
 import type { Toon, ToonScript, CharacterVariant, ToonBackground, ConnectedAccount, ToonPost } from "@/lib/types";
 import { CONNECTABLE_PLATFORMS } from "@/lib/types";
 import ConnectedAccountsPanel from "@/components/ConnectedAccountsPanel";
@@ -19,7 +22,7 @@ interface Props {
   onJumpToVariant: (variantId: string) => void;
 }
 
-const STATUSES: Toon["status"][] = ["idea", "animating", "ready", "posted", "archived"];
+const STATUSES: Toon["status"][] = ["idea", "animating", "ready", "posted", "archived", "failed"];
 // "animating" is system-managed — only the real Generate video flow (which
 // also launches the actual background Kling call) should ever set it.
 // Picking it manually from this dropdown used to set the status flag with
@@ -30,6 +33,15 @@ const STATUSES: Toon["status"][] = ["idea", "animating", "ready", "posted", "arc
 // can display it as the current value while a real generation is in
 // flight, but disabled so it can't be freely (re-)selected.
 const MANUALLY_UNSELECTABLE_STATUSES: Toon["status"][] = ["animating"];
+
+const STATUS_BADGE_STYLES: Record<Toon["status"], string> = {
+  idea: "bg-gray-100 text-gray-500",
+  animating: "bg-amber-50 text-amber-700",
+  ready: "bg-blue-50 text-blue-700",
+  posted: "bg-green-50 text-green-700",
+  archived: "bg-gray-50 text-gray-400",
+  failed: "bg-red-50 text-red-600",
+};
 
 export default function ToonManager({ brandId, brandName, initialToons, scripts, variants, backgrounds, onJumpToVariant }: Props) {
   const [toons, setToons] = useState(initialToons.filter((t) => t.status !== "archived"));
@@ -111,6 +123,8 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
     }
   }
 
+  const [advancedOpenId, setAdvancedOpenId] = useState<string | null>(null);
+
   function variantName(id: string) {
     return variants.find((v) => v.id === id)?.name ?? "—";
   }
@@ -121,6 +135,20 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
 
   function variantFor(id: string) {
     return variants.find((v) => v.id === id) ?? null;
+  }
+
+  // A custom title always wins; absent one, the script's hook line is far
+  // more useful for telling apart several toons of the same character than
+  // repeating the character's name twice (confirmed live: three toon cards
+  // all rendered as "John John" with nothing else to tell them apart).
+  function toonHeadline(t: Toon) {
+    if (t.title) return t.title;
+    const script = scriptFor(t.script_id);
+    return script?.hook_line || script?.dialogue || "Untitled toon";
+  }
+
+  function pickClip(toonId: string, url: string) {
+    updateToon(toonId, { final_video_url: url });
   }
 
   // Poll toons that are mid-generation.
@@ -194,7 +222,19 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        setToons((prev) => prev.map((t) => (t.id === id ? { ...t, ...data } as Toon : t)));
+        // The endpoint returns {"status": "generation_started"} — a note
+        // about the REQUEST, not a Toon field — after backgrounding the
+        // real work. Spreading that response onto the toon used to
+        // overwrite toon.status with that literal string, which matched
+        // neither "animating" nor anything the status dropdown recognizes.
+        // That silently broke the mid-generation polling effect below (it
+        // only watches for status === "animating") and the "Generating…"
+        // banner (same condition), leaving the user with zero feedback and
+        // no way to ever see completion — confirmed live: "I have no
+        // status it just left me in the open". The backend already flips
+        // status to "animating" server-side before returning; mirror that
+        // here instead of trusting the response shape.
+        setToons((prev) => prev.map((t) => (t.id === id ? { ...t, status: "animating", generation_error: null } : t)));
       } else {
         setToons((prev) => prev.map((t) => (t.id === id ? { ...t, generation_error: typeof data.detail === "string" ? data.detail : "Failed to start generation" } : t)));
       }
@@ -254,51 +294,36 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
           const variant = variantFor(t.character_variant_id);
           const canGenerate = !!script?.shots?.length && variant?.element_status === "ready";
           const generating = generatingId === t.id || t.status === "animating";
+          const advancedOpen = advancedOpenId === t.id;
           return (
             <div key={t.id} className="rounded-2xl bg-white border border-gray-100 p-4">
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
                 <div>
-                  <span className="text-sm font-medium text-gray-900">{t.title || variantName(t.character_variant_id)}</span>
-                  <span className="text-xs text-gray-400 ml-2">{variantName(t.character_variant_id)}</span>
+                  <span className="text-sm font-medium text-gray-900">{toonHeadline(t)}</span>
+                  <div className="text-xs text-gray-400 mt-0.5">
+                    {variantName(t.character_variant_id)}
+                    {t.background_id && backgrounds.find((bg) => bg.id === t.background_id) && (
+                      <> · {backgrounds.find((bg) => bg.id === t.background_id)?.name}</>
+                    )}
+                  </div>
                 </div>
-                <select
-                  value={t.status}
-                  onChange={(e) => updateToon(t.id, { status: e.target.value })}
-                  disabled={t.status === "animating"}
-                  className="rounded-lg border border-gray-200 px-2 py-1 text-xs disabled:opacity-60"
-                >
-                  {STATUSES.map((s) => (
-                    <option key={s} value={s} disabled={MANUALLY_UNSELECTABLE_STATUSES.includes(s)}>{s}</option>
-                  ))}
-                </select>
+                <span className={`text-[10px] uppercase tracking-wide font-medium rounded-full px-2 py-1 shrink-0 ${STATUS_BADGE_STYLES[t.status]}`}>
+                  {t.status}
+                </span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-center">
+              {!t.background_id && (
                 <select
-                  value={t.background_id ?? ""}
+                  value=""
                   onChange={(e) => updateToon(t.id, { background_id: e.target.value || null })}
-                  className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                  className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs mb-2"
                 >
-                  <option value="">No background chosen</option>
+                  <option value="">No background chosen (optional)</option>
                   {backgrounds.map((bg) => <option key={bg.id} value={bg.id}>{bg.name}</option>)}
                 </select>
-                <input
-                  type="text"
-                  defaultValue={t.final_video_url ?? ""}
-                  onBlur={(e) => { if (e.target.value !== (t.final_video_url ?? "")) updateToon(t.id, { final_video_url: e.target.value || null }); }}
-                  placeholder="Final video URL"
-                  className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
-                />
-                <input
-                  type="text"
-                  defaultValue={t.platform ?? ""}
-                  onBlur={(e) => { if (e.target.value !== (t.platform ?? "")) updateToon(t.id, { platform: e.target.value || null }); }}
-                  placeholder="Platform (manual — posted outside Culturix)"
-                  className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
-                />
-              </div>
+              )}
 
-              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 mt-3">
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 mt-1">
                 <div className="flex items-center justify-between mb-1.5">
                   <span className="text-xs font-semibold text-gray-700">AI video generation</span>
                   <button
@@ -334,21 +359,39 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
                     )}
                   </div>
                 )}
-                {generating && <p className="text-[11px] text-amber-600">Generating — this can take a few minutes.</p>}
+                {generating && (
+                  <p className="flex items-center gap-1.5 text-[11px] text-amber-600 mt-1">
+                    <Loader2 className="h-3 w-3 animate-spin" /> Generating — this can take a few minutes. Feel free to
+                    switch tabs; it&apos;ll still be running when you come back.
+                  </p>
+                )}
                 {t.generation_error && <p className="text-[11px] text-red-500 mt-1">{t.generation_error}</p>}
                 {t.clip_video_urls && t.clip_video_urls.length > 0 && (
-                  <div className="flex flex-wrap gap-2 mt-2">
-                    {t.clip_video_urls.map((url, i) => (
-                      <a
-                        key={url}
-                        href={url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-xs text-blue-500 hover:underline"
-                      >
-                        <ExternalLink className="h-3 w-3" /> Clip {i + 1}
-                      </a>
-                    ))}
+                  <div className="mt-2">
+                    <p className="text-[11px] text-gray-500 mb-1.5">
+                      {t.final_video_url ? "Pick a different candidate clip, or keep the one selected below:" : "Pick which candidate clip to use:"}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {t.clip_video_urls.map((url, i) => {
+                        const selected = t.final_video_url === url;
+                        return (
+                          <div key={url} className={`flex items-center gap-1.5 rounded-lg border px-2 py-1.5 ${selected ? "border-blue-300 bg-blue-50" : "border-gray-200 bg-white"}`}>
+                            <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-500 hover:underline">
+                              <ExternalLink className="h-3 w-3" /> Clip {i + 1}
+                            </a>
+                            {selected ? (
+                              <span className="inline-flex items-center gap-1 text-xs text-blue-600 font-medium">
+                                <CheckCircle2 className="h-3 w-3" /> Selected
+                              </span>
+                            ) : (
+                              <button onClick={() => pickClip(t.id, url)} className="text-xs text-gray-500 hover:text-gray-800">
+                                Use this
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
               </div>
@@ -417,6 +460,44 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
                 <button onClick={() => archiveToon(t.id)} className="text-xs text-gray-400 hover:text-red-500">
                   Archive
                 </button>
+              </div>
+
+              <div className="mt-2 pt-2 border-t border-gray-50">
+                <button
+                  onClick={() => setAdvancedOpenId(advancedOpen ? null : t.id)}
+                  className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-gray-600"
+                >
+                  {advancedOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                  Advanced — manual entry
+                </button>
+                {advancedOpen && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
+                    <input
+                      type="text"
+                      defaultValue={t.final_video_url ?? ""}
+                      onBlur={(e) => { if (e.target.value !== (t.final_video_url ?? "")) updateToon(t.id, { final_video_url: e.target.value || null }); }}
+                      placeholder="Final video URL (override)"
+                      className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                    />
+                    <input
+                      type="text"
+                      defaultValue={t.platform ?? ""}
+                      onBlur={(e) => { if (e.target.value !== (t.platform ?? "")) updateToon(t.id, { platform: e.target.value || null }); }}
+                      placeholder="Platform, if posted outside Culturix"
+                      className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                    />
+                    <select
+                      value={t.status}
+                      onChange={(e) => updateToon(t.id, { status: e.target.value })}
+                      disabled={t.status === "animating"}
+                      className="rounded-lg border border-gray-200 px-2 py-1 text-xs disabled:opacity-60"
+                    >
+                      {STATUSES.map((s) => (
+                        <option key={s} value={s} disabled={MANUALLY_UNSELECTABLE_STATUSES.includes(s)}>{s}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
             </div>
           );
