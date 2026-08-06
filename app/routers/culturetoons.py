@@ -759,19 +759,19 @@ def generate_variant_image(variant_id: str, body: dict):
     of the base character (e.g. "Wife of Kumar", "Chinese version").
 
     Grounding image priority: the variant's own reference_image_url if
-    present (preserve_identity=True — that photo IS this variant), else the
-    parent Character's base_image_url (preserve_identity=False — grounds
-    only the art style/roster consistency, not the face) so the roster
-    still visibly belongs together, which matters for this product's video
-    scenarios (a "family" of characters that look like they're from the
-    same show). Getting that override to actually work reliably required
-    two things, both confirmed live: (1) the "recasting" prompt framing in
-    _build_cartoon_prompt rather than a bare "ignore identity" instruction,
-    and (2) feeding the image model a CONCRETE visual description rather
-    than the user's raw, often relational text ("she is the wife of Kumar,
-    high society") — that alone wasn't a strong enough visual anchor to
-    reliably override the reference face, hence
-    _expand_variant_visual_description below."""
+    present (preserve_identity=True — that photo IS this variant); else,
+    if the variant has an explicit culture_tag (an intentional
+    ethnicity/cultural-look change, e.g. "Chinese version" of an Indian
+    character), NO reference image at all — confirmed LIVE that grounding
+    an ethnicity change on the base character's own photo reliably fails:
+    Qwen-Image's image-to-image keeps the reference face/ethnicity
+    regardless of "recast this as a different actor" prompt instructions,
+    no matter how explicit. Dropping the reference image and generating
+    from a concrete text description only (_expand_variant_visual_description
+    below) is what actually produces the requested ethnicity. Only when
+    there's no photo of its own AND no culture_tag (e.g. "grumpier version
+    of the same guy", same ethnicity intended) does this still ground on
+    the base character's photo for family resemblance."""
     from app.db import SessionLocal
     user_id, brand_id = body.get("user_id"), body.get("brand_id")
     if not user_id or not brand_id:
@@ -791,18 +791,35 @@ def generate_variant_image(variant_id: str, body: dict):
             raise HTTPException(status_code=400, detail="A description is required to generate an image")
 
         has_own_reference = bool(variant.reference_image_url)
-        reference_image_url = variant.reference_image_url or character.base_image_url
         extra = f"This is a variant of the base character '{character.name}', called '{variant.name}'."
 
         if has_own_reference:
+            reference_image_url = variant.reference_image_url
             description = raw_description
             if variant.culture_tag:
                 extra += f" Ethnicity / cultural appearance: {variant.culture_tag}."
-        elif reference_image_url:
-            # Falling back to the base character's portrait — needs a
-            # concrete visual description to actually override the face.
+        elif character.base_image_url and variant.culture_tag:
+            # No photo of its own, but an explicit ethnicity/cultural-look
+            # signal — confirmed LIVE (real Qwen-Image calls, side by side)
+            # that grounding this case on the base character's photo
+            # reliably fails to actually change ethnicity: Qwen-Image's
+            # image-to-image keeps the reference face/features regardless
+            # of "recast this as a different actor" prompt instructions.
+            # Dropping the reference image and generating from text only is
+            # what actually produces the requested ethnicity — verified by
+            # generating both versions of the exact same "Chinese variant of
+            # an Indian character" case and comparing the output images.
+            reference_image_url = None
+            description = _expand_variant_visual_description(character, variant, raw_description)
+            extra += f" Ethnicity / cultural appearance: {variant.culture_tag}."
+        elif character.base_image_url:
+            # No explicit ethnicity signal — assume family resemblance to
+            # the base character is actually wanted (e.g. "grumpier version
+            # of the same guy"), keep grounding on their photo.
+            reference_image_url = character.base_image_url
             description = _expand_variant_visual_description(character, variant, raw_description)
         else:
+            reference_image_url = None
             description = raw_description
             if variant.culture_tag:
                 extra += f" Ethnicity / cultural appearance: {variant.culture_tag}."

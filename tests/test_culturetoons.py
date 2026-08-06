@@ -285,18 +285,27 @@ class TestVariantImageGeneration:
         assert exc_info.value.status_code == 400
 
     def test_generate_image_falls_back_to_character_portrait_with_expansion(self, db, user_id, brand_and_character, mocker):
-        # Confirmed live, repeatedly: a variant with no photo of its own
-        # DOES need to ground on the base character's portrait for roster
-        # consistency (the product's video scenarios depend on the family
-        # visibly belonging together) -- but only works with (1) the
-        # "recasting" prompt framing (preserve_identity=False), not a bare
-        # "ignore identity" instruction, and (2) an LLM-expanded concrete
-        # visual description, not the user's raw relational text.
+        # Confirmed live, repeatedly: a variant with no photo of its own AND
+        # no explicit culture_tag (no signal that ethnicity should differ
+        # from the base character) DOES need to ground on the base
+        # character's portrait for roster consistency (the product's video
+        # scenarios depend on the family visibly belonging together) -- but
+        # only works with (1) the "recasting" prompt framing
+        # (preserve_identity=False), not a bare "ignore identity"
+        # instruction, and (2) an LLM-expanded concrete visual description,
+        # not the user's raw relational text. See
+        # test_culture_tag_drops_reference_image_for_correct_ethnicity for
+        # the culture_tag-set case, which behaves differently.
         from app.media.base import MediaResult
         brand, character, variant = brand_and_character
         session = db()
         row = session.query(Character).filter_by(id=uuid.UUID(character["id"])).first()
         row.base_image_url = "https://supabase/char-portrait.png"
+        # The fixture variant defaults to culture_tag="indian" — clear it so
+        # this test exercises the "no explicit ethnicity signal" path, not
+        # the culture_tag-set path covered separately below.
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        variant_row.culture_tag = None
         session.commit()
         session.close()
 
@@ -381,6 +390,45 @@ class TestVariantImageGeneration:
 
         assert result["culture_tag"] == "chinese"
         sent_prompt = mock_generate.call_args[0][0]
+        assert "chinese" in sent_prompt.lower()
+
+    def test_culture_tag_drops_reference_image_for_correct_ethnicity(self, db, user_id, brand_and_character, mocker):
+        # Confirmed live (real Qwen-Image calls, side by side): a variant
+        # with no photo of its own but an explicit culture_tag signaling a
+        # different ethnicity than the base character reliably renders with
+        # the REFERENCE character's ethnicity, not the requested one, when
+        # grounded on the base character's photo — no prompt wording fixed
+        # it. Dropping the reference image entirely (text-only generation)
+        # is what actually produces the requested ethnicity.
+        from app.media.base import MediaResult
+        brand, character, variant = brand_and_character
+        session = db()
+        row = session.query(Character).filter_by(id=uuid.UUID(character["id"])).first()
+        row.base_image_url = "https://supabase/char-portrait.png"
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        variant_row.culture_tag = "chinese"
+        session.commit()
+        session.close()
+
+        mock_expand = mocker.patch(
+            "app.routers.culturetoons._expand_variant_visual_description",
+            return_value="A Chinese man in his 30s with black hair, oval face, modern attire.",
+        )
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/variant-gen.png")
+
+        culturetoons.generate_variant_image(variant["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "description": "Chinese version of the character",
+        })
+
+        mock_expand.assert_called_once()
+        _, kwargs = mock_generate.call_args
+        assert kwargs["reference_image_url"] is None
+        sent_prompt = mock_generate.call_args[0][0]
+        assert "recasting" not in sent_prompt.lower()
         assert "chinese" in sent_prompt.lower()
 
     def test_upload_variant_reference_image_does_not_touch_image_url(self, db, user_id, brand_and_character, mocker):
