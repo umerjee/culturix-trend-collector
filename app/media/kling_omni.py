@@ -5,17 +5,21 @@ reels): different base URL, different endpoints entirely. Deliberately NOT
 reusing or modifying that class — Shopify's working reel generation stays
 untouched; this is a standalone provider.
 
-Auth: initially assumed the v3 docs' "Authorization: Bearer {apikey}" meant
-a distinct, separately-issued static API key. Confirmed otherwise by
-checking Kling's actual developer dashboard live — it only ever issues one
-credential type (an Access Key + Secret Key pair, the same one video.py's
-KlingProvider already uses, with a "JWT Verification" tool right next to
-it), no separate key-issuance flow for a different credential type exists
-anywhere on that page. So this uses the exact same JWT-Bearer mechanism as
-the old provider (HS256, iss/exp/nbf claims), built from the SAME
-KLING_ACCESS_KEY/KLING_SECRET_KEY already configured for Shopify reels — no
-new credential needed. _make_jwt is duplicated from video.py (not imported),
-matching this module's existing "keep the two providers independent" design.
+Auth: this module previously built an HS256 JWT from an Access Key +
+Secret Key pair (KLING_ACCESS_KEY/KLING_SECRET_KEY, shared with video.py's
+KlingProvider) — confirmed correct against Kling's dashboard when this was
+first built. Confirmed live it's now WRONG: a real call returned HTTP 401
+"Authentication error. The current API does not support AK/SK; please...
+create API key" (code 1002). Kling's dashboard now has a genuinely separate
+"API Key" system ("API based on the new design standards requires the use
+of API Key" per its own UI) alongside the still-present legacy AK/SK pair —
+this isn't a case of an earlier assumption being wrong, Kling's platform
+changed after the original check. This endpoint (Kling 3.0 Omni) requires
+the new key; auth is now a single static bearer token
+(KLING_API_KEY, "Authorization: Bearer {key}"), no JWT signing needed.
+video.py's KlingProvider (Shopify reels) still uses the old AK/SK JWT path
+and has NOT been changed here — untested whether it also needs migrating,
+don't assume either way without checking it live.
 
 Endpoint/parameter shapes below are transcribed directly from Kling's own
 API documentation (Element Management, Voice Management, Omni Video
@@ -56,31 +60,18 @@ def _request_with_retry(method: str, url: str, **kwargs) -> httpx.Response:
     return resp
 
 
-def _make_jwt(access_key: str, secret_key: str) -> str:
-    """Duplicated from video.py's _make_jwt — see this module's docstring."""
-    try:
-        import jwt as pyjwt
-    except ImportError:
-        raise RuntimeError("PyJWT not installed — add 'PyJWT' to requirements.txt")
-    now = int(time.time())
-    payload = {"iss": access_key, "exp": now + 1800, "nbf": now - 5}
-    return pyjwt.encode(payload, secret_key, algorithm="HS256")
-
-
 class KlingOmniProvider:
     def __init__(self) -> None:
-        self._access_key = os.getenv("KLING_ACCESS_KEY", "")
-        self._secret_key = os.getenv("KLING_SECRET_KEY", "")
-        if not self._access_key or not self._secret_key:
-            raise RuntimeError("KLING_ACCESS_KEY and KLING_SECRET_KEY must be set")
+        self._api_key = os.getenv("KLING_API_KEY", "")
+        if not self._api_key:
+            raise RuntimeError(
+                "KLING_API_KEY must be set — generate one at https://kling.ai/dev/api-key "
+                "(this is Kling's newer API Key system, NOT the older Access Key/Secret Key pair "
+                "video.py's KlingProvider uses)"
+            )
 
     def _headers(self) -> dict:
-        # Generated fresh per call (cheap, local — no network round trip)
-        # rather than cached, since a single generation can involve several
-        # slow polling loops that could plausibly outlive one token's 30-min
-        # expiry if it were reused across the whole request lifecycle.
-        token = _make_jwt(self._access_key, self._secret_key)
-        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
 
     def _check(self, resp: httpx.Response, context: str) -> dict:
         # A bare resp.raise_for_status() discards Kling's actual response
