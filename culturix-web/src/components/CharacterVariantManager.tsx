@@ -62,6 +62,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   const [variantCultureTagDraft, setVariantCultureTagDraft] = useState("");
   const [generatingVariantImage, setGeneratingVariantImage] = useState(false);
   const [variantImageGenError, setVariantImageGenError] = useState<string | null>(null);
+  const [variantImageGenWarning, setVariantImageGenWarning] = useState<string | null>(null);
   const [variantNameDraft, setVariantNameDraft] = useState("");
   const [savingVariantName, setSavingVariantName] = useState(false);
   const [archivingVariant, setArchivingVariant] = useState(false);
@@ -94,6 +95,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     setVariantDescriptionDraft(selectedVariant?.description ?? "");
     setVariantCultureTagDraft(selectedVariant?.culture_tag ?? "");
     setVariantImageGenError(null);
+    setVariantImageGenWarning(null);
     setAdvancedOpen(!!selectedVariant?.image_url);
     setVariantNameDraft(selectedVariant?.name ?? "");
   }, [selectedVariantId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -196,6 +198,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     }
     setGeneratingVariantImage(true);
     setVariantImageGenError(null);
+    setVariantImageGenWarning(null);
     try {
       const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}/generate-image`, {
         method: "POST",
@@ -211,6 +214,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
         setVariantImageGenError(typeof data.detail === "string" ? data.detail : "Image generation failed");
         return;
       }
+      if (typeof data.generation_warning === "string") setVariantImageGenWarning(data.generation_warning);
       setVariants((prev) => prev.map((v) => (v.id === selectedVariant.id ? (data as CharacterVariant) : v)));
     } finally {
       setGeneratingVariantImage(false);
@@ -446,6 +450,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                 onGenerate={generateVariantImage}
                 generating={generatingVariantImage}
                 error={variantImageGenError}
+                warning={variantImageGenWarning}
                 helperText={
                   selectedVariant.reference_image_url
                     ? "Grounded on this variant's own reference photo."

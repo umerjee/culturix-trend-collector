@@ -193,7 +193,23 @@ def generate_video_for_toon(user_id, toon_id) -> None:
                 final_path = _dub_dialogue(tmp_dir, raw_path, script.shots, elevenlabs_key, primary_variant.elevenlabs_voice_id)
 
             with open(final_path, "rb") as f:
-                raw_url = storage.upload(f.read(), f"culturetoons/{toon.brand_id}/toons/{toon.id}/raw.mp4", "video/mp4")
+                # Unique suffix per generation, not a fixed "raw.mp4" path —
+                # storage.upload upserts on conflict, so a fixed path would
+                # let a regeneration silently overwrite the previous take's
+                # own file underneath it, making previous_video_urls below
+                # point at content that no longer exists.
+                raw_url = storage.upload(
+                    f.read(), f"culturetoons/{toon.brand_id}/toons/{toon.id}/raw-{_uuid.uuid4().hex[:8]}.mp4", "video/mp4"
+                )
+            # Regenerating used to silently discard whatever was there
+            # before — confirmed live: a user regenerated to fix one issue
+            # and lost an otherwise-good previous take with no way back.
+            # Archive it (not raw_video_url specifically — final_video_url,
+            # since that's what the user was actually looking at, which can
+            # differ from raw_video_url on toons predating this behavior).
+            previous_url = toon.final_video_url or toon.raw_video_url
+            if previous_url:
+                toon.previous_video_urls = (toon.previous_video_urls or []) + [previous_url]
             toon.raw_video_url = raw_url
             toon.final_video_url = raw_url
             session.commit()

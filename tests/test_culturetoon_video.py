@@ -145,6 +145,31 @@ class TestGenerateVideoForToonSuccess:
 
         mock_upload.assert_called()
 
+    def test_regeneration_archives_previous_video_instead_of_discarding_it(self, db, seeded, mocker):
+        # Confirmed live: regenerating used to silently overwrite
+        # raw_video_url/final_video_url with no way back to a previous,
+        # otherwise-good take. Also locks in that each generation gets its
+        # own unique storage path — storage.upload upserts on conflict, so
+        # a fixed path would let the second generation overwrite the first
+        # take's own file underneath the URL now sitting in history.
+        _mock_kling_success(mocker)
+        mock_upload = mocker.patch("app.media.storage.upload", side_effect=[
+            "https://supabase/video-v1.mp4", "https://supabase/video-v2.mp4",
+        ])
+
+        generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
+        generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
+
+        session = db()
+        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
+        assert toon.raw_video_url == "https://supabase/video-v2.mp4"
+        assert toon.final_video_url == "https://supabase/video-v2.mp4"
+        assert toon.previous_video_urls == ["https://supabase/video-v1.mp4"]
+        session.close()
+
+        paths_used = {call.args[1] for call in mock_upload.call_args_list}
+        assert len(paths_used) == 2, "each generation must upload to its own unique path"
+
     def test_generate_omni_video_called_with_native_audio_and_element(self, db, seeded, mocker):
         mock_provider = _mock_kling_success(mocker)
         mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")

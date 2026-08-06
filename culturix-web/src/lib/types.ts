@@ -529,6 +529,10 @@ export interface Toon {
   notes: string | null;
   raw_video_url: string | null;
   clip_video_urls: string[];
+  // Videos this toon had before its most recent regeneration, oldest
+  // first — set by generate_video_for_toon so a regeneration never
+  // silently discards a previous take.
+  previous_video_urls: string[];
   kling_task_id: string | null;
   generation_error: string | null;
   // Set when this Toon is one ordered "part" of a ToonEpisode (a longer

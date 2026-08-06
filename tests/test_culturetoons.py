@@ -339,7 +339,7 @@ class TestVariantImageGeneration:
 
         mock_expand = mocker.patch(
             "app.routers.culturetoons._expand_variant_visual_description",
-            return_value="A woman in her 30s with warm skin tone, oval face, long dark wavy hair, elegant attire.",
+            return_value=("A woman in her 30s with warm skin tone, oval face, long dark wavy hair, elegant attire.", False),
         )
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
@@ -399,8 +399,42 @@ class TestVariantImageGeneration:
         variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
 
         result = culturetoons._expand_variant_visual_description(char_row, variant_row, "she is the wife")
-        assert result == "she is the wife"
+        assert result == ("she is the wife", True)
         session.close()
+
+    def test_generate_image_surfaces_warning_when_expansion_degrades(self, db, user_id, brand_and_character, mocker):
+        # Confirmed live: when the expansion LLM call fails, generation
+        # silently falls back to the user's raw (often vague/relational)
+        # description with no ethnicity/attire anchor, producing a visibly
+        # worse portrait with no indication anything went wrong. The caller
+        # must see a warning even though the request itself still succeeds.
+        from app.media.base import MediaResult
+        brand, character, variant = brand_and_character
+        session = db()
+        row = session.query(Character).filter_by(id=uuid.UUID(character["id"])).first()
+        row.base_image_url = "https://supabase/char-portrait.png"
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        variant_row.culture_tag = "chinese"
+        session.commit()
+        session.close()
+
+        mocker.patch(
+            "app.routers.culturetoons._expand_variant_visual_description",
+            return_value=("Chinese version of the character", True),
+        )
+        mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/variant-gen.png")
+
+        result = culturetoons.generate_variant_image(variant["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "description": "Chinese version of the character",
+        })
+
+        assert result["image_url"] == "https://supabase/variant-gen.png"
+        assert "generation_warning" in result
+        assert "expansion" in result["generation_warning"].lower()
 
     def test_generate_image_includes_culture_tag_in_prompt(self, db, user_id, brand_and_character, mocker):
         from app.media.base import MediaResult
@@ -440,7 +474,7 @@ class TestVariantImageGeneration:
 
         mock_expand = mocker.patch(
             "app.routers.culturetoons._expand_variant_visual_description",
-            return_value="A Chinese man in his 30s with black hair, oval face, modern attire.",
+            return_value=("A Chinese man in his 30s with black hair, oval face, modern attire.", False),
         )
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
@@ -984,6 +1018,52 @@ class TestGenerateScriptBackground:
 
         listed = culturetoons.list_backgrounds(user_id, brand["id"])
         assert len(listed) == 1
+
+
+class TestGenerateBackground:
+    """The standalone, no-script generator behind the Backgrounds tab's
+    reusable pool — previously that tab was upload-only with zero AI
+    assist, even though generate_script_background's exact same prompt/
+    generate/save logic (_generate_background_asset) already existed."""
+
+    def test_requires_description(self, db, user_id, brand_and_character):
+        brand, _character, _variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_background({"user_id": user_id, "brand_id": brand["id"]})
+        assert exc_info.value.status_code == 400
+
+    def test_generates_without_a_script(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, _character, _variant = brand_and_character
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/bg-gen.png")
+
+        result = culturetoons.generate_background({
+            "user_id": user_id, "brand_id": brand["id"],
+            "description": "An Indian wedding mandap decorated with marigold garlands and string lights",
+            "name": "Indian Wedding", "art_style": "cinematic_cultural",
+        })
+
+        assert result["image_url"] == "https://supabase/bg-gen.png"
+        assert result["name"] == "Indian Wedding"
+        sent_prompt = mock_generate.call_args[0][0]
+        assert "no people, no characters" in sent_prompt.lower()
+        assert "marigold garlands" in sent_prompt
+
+        listed = culturetoons.list_backgrounds(user_id, brand["id"])
+        assert len(listed) == 1
+
+    def test_unknown_art_style_400s(self, db, user_id, brand_and_character):
+        brand, _character, _variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_background({
+                "user_id": user_id, "brand_id": brand["id"],
+                "description": "A scene", "art_style": "not_a_real_style",
+            })
+        assert exc_info.value.status_code == 400
 
 
 class TestToons:

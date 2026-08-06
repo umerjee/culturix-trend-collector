@@ -22,13 +22,14 @@ interface Props {
   onGenerate: () => void;
   generating: boolean;
   error: string | null;
+  warning?: string | null;
   helperText: string;
 }
 
 export default function CharacterImageBuilder({
   description, onDescriptionChange, descriptionPlaceholder, artStyle, cultureTag,
   referencePhotoUrl, referenceUploadUrl, portraitUrl, portraitUploadUrl, extraFields,
-  onReferenceUploaded, onPortraitUploaded, onGenerate, generating, error, helperText,
+  onReferenceUploaded, onPortraitUploaded, onGenerate, generating, error, warning, helperText,
 }: Props) {
   return (
     <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">
@@ -89,6 +90,7 @@ export default function CharacterImageBuilder({
         </button>
       </div>
       {error && <p className="text-[11px] text-red-500 mb-2">{error}</p>}
+      {warning && <p className="text-[11px] text-amber-600 mb-2">{warning}</p>}
       <p className="text-[11px] text-gray-400 mb-3">{helperText}</p>
 
       <div className="flex justify-center">

@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, Loader2, Trash2 } from "lucide-react";
+import { Plus, Loader2, Trash2, Wand2 } from "lucide-react";
 import type { ToonBackground } from "@/lib/types";
+import { ART_STYLES } from "@/lib/types";
 import ImageUploadButton from "@/components/ImageUploadButton";
 
 interface Props {
@@ -10,10 +11,18 @@ interface Props {
   initialBackgrounds: ToonBackground[];
 }
 
+const DEFAULT_BACKGROUND_STYLE = "cinematic_cultural";
+
 export default function BackgroundGallery({ brandId, initialBackgrounds }: Props) {
   const [backgrounds, setBackgrounds] = useState(initialBackgrounds);
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
+
+  const [genName, setGenName] = useState("");
+  const [genDescription, setGenDescription] = useState("");
+  const [genStyle, setGenStyle] = useState<string>(DEFAULT_BACKGROUND_STYLE);
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
 
   async function addBackground(e: React.FormEvent) {
     e.preventDefault();
@@ -32,6 +41,35 @@ export default function BackgroundGallery({ brandId, initialBackgrounds }: Props
       }
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function generateBackground(e: React.FormEvent) {
+    e.preventDefault();
+    if (!genDescription.trim()) return;
+    setGenerating(true);
+    setGenError(null);
+    try {
+      const res = await fetch("/api/culturetoons/backgrounds/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          brand_id: brandId,
+          description: genDescription.trim(),
+          name: genName.trim() || undefined,
+          art_style: genStyle,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setGenError(typeof data.detail === "string" ? data.detail : "Background generation failed");
+        return;
+      }
+      setBackgrounds((prev) => [...prev, data as ToonBackground]);
+      setGenName("");
+      setGenDescription("");
+    } finally {
+      setGenerating(false);
     }
   }
 
@@ -70,12 +108,54 @@ export default function BackgroundGallery({ brandId, initialBackgrounds }: Props
           </div>
         ))}
       </div>
+      <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 max-w-xl">
+        <p className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1.5">
+          <Wand2 className="h-3.5 w-3.5 text-blue-500" /> Generate a background
+        </p>
+        <form onSubmit={generateBackground} className="flex flex-col gap-2">
+          <textarea
+            value={genDescription}
+            onChange={(e) => setGenDescription(e.target.value)}
+            placeholder={`Describe the scene, e.g. "An Indian wedding mandap decorated with marigold garlands and string lights, festive but empty of people"`}
+            rows={2}
+            className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs resize-none focus:outline-none focus:ring-2 focus:ring-blue-200"
+          />
+          <div className="flex flex-wrap gap-2 items-center">
+            <input
+              type="text"
+              value={genName}
+              onChange={(e) => setGenName(e.target.value)}
+              placeholder="Name (optional)"
+              className="flex-1 min-w-[8rem] rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
+            />
+            <select
+              value={genStyle}
+              onChange={(e) => setGenStyle(e.target.value)}
+              className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+            >
+              {ART_STYLES.map((style) => (
+                <option key={style.key} value={style.key}>{style.label}</option>
+              ))}
+            </select>
+            <button
+              type="submit"
+              disabled={generating || !genDescription.trim()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 text-white text-xs font-medium px-3 py-1.5 hover:bg-gray-800 transition-colors disabled:opacity-60 shrink-0"
+            >
+              {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
+              Generate
+            </button>
+          </div>
+          {genError && <p className="text-[11px] text-red-500">{genError}</p>}
+        </form>
+      </div>
+
       <form onSubmit={addBackground} className="flex gap-2 max-w-xs">
         <input
           type="text"
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
-          placeholder="New background name"
+          placeholder="Or add a name and upload your own image"
           className="flex-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
         />
         <button

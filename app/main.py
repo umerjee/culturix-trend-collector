@@ -211,6 +211,9 @@ async def lifespan(_):
             # and app/services/culturetoon_episode.py.
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS episode_id UUID",
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS part_order INTEGER",
+            # Regeneration history — see Toon model's docstring on
+            # previous_video_urls.
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS previous_video_urls TEXT[] DEFAULT '{}'",
         ]:
             try:
                 _conn.execute(_text(_stmt))

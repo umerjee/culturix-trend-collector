@@ -124,6 +124,7 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
   }
 
   const [advancedOpenId, setAdvancedOpenId] = useState<string | null>(null);
+  const [historyOpenId, setHistoryOpenId] = useState<string | null>(null);
 
   function variantName(id: string) {
     return variants.find((v) => v.id === id)?.name ?? "—";
@@ -491,6 +492,30 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
                   Archive
                 </button>
               </div>
+
+              {t.previous_video_urls.length > 0 && (
+                <div className="mt-1.5">
+                  <button
+                    onClick={() => setHistoryOpenId(historyOpenId === t.id ? null : t.id)}
+                    className="flex items-center gap-1 text-[11px] text-gray-400 hover:text-gray-600"
+                  >
+                    {historyOpenId === t.id ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                    {t.previous_video_urls.length} previous version{t.previous_video_urls.length > 1 ? "s" : ""}
+                  </button>
+                  {historyOpenId === t.id && (
+                    <div className="flex flex-wrap gap-2 mt-1.5">
+                      {[...t.previous_video_urls].reverse().map((url, i) => (
+                        <a
+                          key={url} href={url} target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1 text-[11px] text-blue-500 hover:underline"
+                        >
+                          <ExternalLink className="h-3 w-3" /> {i + 1} version{i + 1 > 1 ? "s" : ""} ago
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="mt-2 pt-2 border-t border-gray-50">
                 <button

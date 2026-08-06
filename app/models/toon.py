@@ -45,6 +45,14 @@ class Toon(Base):
 
     raw_video_url = Column(Text, nullable=True)           # the single Kling Omni multi-shot stitched output
     clip_video_urls = Column(ARRAY(Text), nullable=True)   # 3-4 ffmpeg-cut candidates
+    # Regenerating used to silently overwrite raw_video_url/final_video_url
+    # with no way back to what was there before (confirmed live: a user
+    # regenerated to fix one issue and lost an otherwise-good previous take
+    # entirely). generate_video_for_toon pushes the pre-regeneration
+    # final_video_url onto this list right before overwriting it, oldest
+    # first — never trimmed/pruned, since a handful of stored video URLs is
+    # negligible next to the storage cost of the videos themselves.
+    previous_video_urls = Column(ARRAY(Text), nullable=True)
     kling_task_id = Column(String(64), nullable=True)
     generation_error = Column(Text, nullable=True)         # mirrors ShopifyProduct.reel_error's pattern
 

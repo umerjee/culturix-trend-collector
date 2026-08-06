@@ -458,18 +458,25 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
 
               <div className="mt-3 pt-3 border-t border-gray-50">
                 {bg ? (
-                  <div className="flex items-center gap-2.5">
+                  <div className="flex items-start gap-2.5">
                     {bg.image_url && (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={bg.image_url} alt={bg.name} className="h-12 w-12 rounded-lg object-cover shrink-0" />
                     )}
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium text-gray-700 truncate">{bg.name}</p>
-                      <div className="flex items-center gap-2 mt-1">
+                      <p className="text-xs font-medium text-gray-700 truncate mb-1">{bg.name}</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          type="text"
+                          value={extraDescByScript[s.id] ?? ""}
+                          onChange={(e) => setExtraDescByScript((prev) => ({ ...prev, [s.id]: e.target.value }))}
+                          placeholder="Correct or refine the scene before regenerating (optional)"
+                          className="flex-1 min-w-[10rem] rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
+                        />
                         <select
                           value={bgStyleByScript[s.id] ?? DEFAULT_BACKGROUND_STYLE}
                           onChange={(e) => setBgStyleByScript((prev) => ({ ...prev, [s.id]: e.target.value }))}
-                          className="rounded-lg border border-gray-200 px-1.5 py-1 text-[11px]"
+                          className="rounded-lg border border-gray-200 px-1.5 py-1.5 text-[11px] shrink-0"
                         >
                           {ART_STYLES.map((style) => (
                             <option key={style.key} value={style.key}>{style.label}</option>
@@ -478,7 +485,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
                         <button
                           onClick={() => generateBackground(s.id)}
                           disabled={generating}
-                          className="text-[11px] text-blue-500 hover:underline disabled:opacity-50"
+                          className="text-[11px] text-blue-500 hover:underline disabled:opacity-50 shrink-0"
                         >
                           {generating ? "Regenerating…" : "Regenerate background"}
                         </button>

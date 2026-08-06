@@ -140,14 +140,17 @@ def _build_cartoon_prompt(
         )
     else:
         grounding = (
-            f"Character portrait, {style['prompt']}. This must be a fully stylized, illustrated "
-            "cartoon character, not a photorealistic photo."
+            f"Waist-up studio character portrait, {style['prompt']}. This must be a fully stylized, "
+            "illustrated cartoon character, not a photorealistic photo. Consistent camera distance "
+            "and framing matters — this portrait is later composited alongside other characters "
+            "generated the same way, so an unusually close/cropped or unusually distant shot makes "
+            "the character read as a mismatched size next to the others."
         )
     parts = [grounding, extra, description, "Centered, front-facing, single character, high detail illustration."]
     return " ".join(p for p in parts if p)
 
 
-def _expand_variant_visual_description(character, variant, raw_description: str) -> str:
+def _expand_variant_visual_description(character, variant, raw_description: str) -> tuple:
     """A variant's own description is often relational/vague ("she is the
     wife of Kumar, high society") rather than visually concrete — fine for
     a human reader, but confirmed live to be too weak an anchor to reliably
@@ -159,7 +162,13 @@ def _expand_variant_visual_description(character, variant, raw_description: str)
     only to build the image prompt — the user's own raw_description is
     what's actually persisted/shown, this is never stored. Falls back to
     the raw description unchanged if the expansion call fails, so a
-    provider outage degrades generation quality rather than blocking it."""
+    provider outage degrades generation quality rather than blocking it —
+    but confirmed live that silent degradation is a real trap: with no
+    ethnicity/attire anchor at all, the image model is free to invent
+    anything (confirmed producing a shirtless portrait with no clothing
+    description ever requested). Returns (description, degraded) so the
+    caller can surface that this generation is lower-confidence instead of
+    the failure disappearing entirely."""
     prompt = f"""You are a character designer writing a concrete VISUAL description for an illustrator, based on a brief, possibly relational description of a character.
 
 Base character: {character.name} - {character.description or "no description"}
@@ -175,17 +184,17 @@ Write a single concrete paragraph (3-5 sentences) describing exactly what THIS V
             response = qwen.chat.completions.create(
                 model="qwen-max", messages=[{"role": "user", "content": prompt}], temperature=0.7,
             )
-            return response.choices[0].message.content.strip()
+            return response.choices[0].message.content.strip(), False
         import anthropic
         client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
         message = client.messages.create(
             model="claude-haiku-4-5-20251001", max_tokens=300,
             messages=[{"role": "user", "content": prompt}],
         )
-        return message.content[0].text.strip()
+        return message.content[0].text.strip(), False
     except Exception:
         logger.warning("Variant visual-description expansion failed, using raw description", exc_info=True)
-        return raw_description
+        return raw_description, True
 
 
 # ── ownership / lookup helpers ───────────────────────────────────────────
@@ -373,6 +382,7 @@ def _serialize_toon(t) -> dict:
         "posted_at": t.posted_at.isoformat() if t.posted_at else None,
         "notes": t.notes,
         "raw_video_url": t.raw_video_url, "clip_video_urls": t.clip_video_urls or [],
+        "previous_video_urls": t.previous_video_urls or [],
         "kling_task_id": t.kling_task_id, "generation_error": t.generation_error,
         "episode_id": str(t.episode_id) if t.episode_id else None, "part_order": t.part_order,
         "created_at": t.created_at.isoformat() if t.created_at else None,
@@ -937,6 +947,7 @@ def generate_variant_image(variant_id: str, body: dict):
 
         has_own_reference = bool(variant.reference_image_url)
         extra = f"This is a variant of the base character '{character.name}', called '{variant.name}'."
+        expansion_degraded = False
 
         if has_own_reference:
             reference_image_url = variant.reference_image_url
@@ -955,14 +966,14 @@ def generate_variant_image(variant_id: str, body: dict):
             # generating both versions of the exact same "Chinese variant of
             # an Indian character" case and comparing the output images.
             reference_image_url = None
-            description = _expand_variant_visual_description(character, variant, raw_description)
+            description, expansion_degraded = _expand_variant_visual_description(character, variant, raw_description)
             extra += f" Ethnicity / cultural appearance: {variant.culture_tag}."
         elif character.base_image_url:
             # No explicit ethnicity signal — assume family resemblance to
             # the base character is actually wanted (e.g. "grumpier version
             # of the same guy"), keep grounding on their photo.
             reference_image_url = character.base_image_url
-            description = _expand_variant_visual_description(character, variant, raw_description)
+            description, expansion_degraded = _expand_variant_visual_description(character, variant, raw_description)
         else:
             reference_image_url = None
             description = raw_description
@@ -990,7 +1001,19 @@ def generate_variant_image(variant_id: str, body: dict):
         variant.image_url = url
         session.commit()
         session.refresh(variant)
-        return _serialize_variant(variant)
+        serialized = _serialize_variant(variant)
+        if expansion_degraded:
+            # Not a hard failure (generation still produced an image), but
+            # confirmed live this silent path produces a materially worse
+            # result — no ethnicity/attire anchor at all — so the caller
+            # gets a transient, non-persisted warning instead of a
+            # generation that looks identical to a successful one.
+            serialized["generation_warning"] = (
+                "The AI description-expansion step failed, so this portrait was generated from your "
+                "raw description alone, with no explicit ethnicity/attire detail. Result quality may be "
+                "lower than usual — consider regenerating."
+            )
+        return serialized
     finally:
         session.close()
 
@@ -1588,7 +1611,15 @@ def generate_script_background(script_id: str, body: dict):
         script = _get_script_owned(session, script_id, brand_id, user_id)
         scene = _script_scene_description(script)
         extra_description = (body.get("extra_description") or "").strip()
-        description = " ".join(p for p in [scene, extra_description] if p)
+        # extra_description leads rather than trails: it's the user's own
+        # deliberate correction, while `scene` is often just the shots'
+        # character-action sentences (confirmed live: e.g. "John looks
+        # around confused... Asian version of Kumar shakes his head...")
+        # which describe people's behavior, not the venue — burying the
+        # one real scene cue after four sentences of that let it get lost
+        # or contradicted against the background prompt's own "no people"
+        # instruction.
+        description = " ".join(p for p in [extra_description, scene] if p)
         if not description:
             raise HTTPException(
                 status_code=400,
@@ -1596,38 +1627,76 @@ def generate_script_background(script_id: str, body: dict):
                        "add one, or pass extra_description.",
             )
         art_style = body.get("art_style") or DEFAULT_ART_STYLE
-        if art_style not in ART_STYLES:
-            raise HTTPException(status_code=400, detail=f"Unknown art_style: {art_style}")
-
-        prompt = _build_background_prompt(description, art_style)
-        from app.media.image_hybrid import HybridImageProvider
-        try:
-            result = HybridImageProvider().generate(prompt)
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Background generation failed: {exc}")
-
-        from app.models.toon_background import ToonBackground
-        ext = "jpg" if result.content_type == "image/jpeg" else "png"
-        background_id = _uuid.uuid4()
-        path = f"culturetoons/{brand_id}/backgrounds/{background_id}.{ext}"
-        from app.services.culturetoon_media import save_image, ImageUploadError
-        try:
-            url = save_image(result.asset_bytes, result.content_type, path)
-        except ImageUploadError as exc:
-            raise HTTPException(status_code=502, detail=f"Failed to store generated background: {exc}")
-
-        name = (body.get("name") or "").strip() or (script.hook_line or description)[:120]
-        background = ToonBackground(
-            id=background_id, brand_id=_uuid.UUID(brand_id), name=name,
-            image_url=url, description=description,
-        )
-        session.add(background)
-        script.background_id = background_id
+        default_name = (script.hook_line or description)[:120]
+        background = _generate_background_asset(session, brand_id, description, art_style, body.get("name"), default_name)
+        script.background_id = background.id
         session.commit()
         session.refresh(background)
         return _serialize_background(background)
     finally:
         session.close()
+
+
+@router.post("/backgrounds/generate")
+def generate_background(body: dict):
+    """AI-generates a background directly into the brand's reusable pool —
+    no script required. Added because the only way to populate the
+    Backgrounds tab's "build 5-10 and rotate them" gallery was manual image
+    upload, with zero AI assist, even though the exact same generation path
+    already existed for the script-tied flow (generate_script_background).
+    Shares _generate_background_asset with that route rather than
+    duplicating the prompt/generate/save block."""
+    from app.db import SessionLocal
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    description = (body.get("description") or "").strip()
+    if not user_id or not brand_id or not description:
+        raise HTTPException(status_code=400, detail="user_id, brand_id and description are required")
+    art_style = body.get("art_style") or DEFAULT_ART_STYLE
+    session = SessionLocal()
+    try:
+        _get_brand_owned(session, brand_id, user_id)
+        background = _generate_background_asset(session, brand_id, description, art_style, body.get("name"), description[:120])
+        session.commit()
+        session.refresh(background)
+        return _serialize_background(background)
+    finally:
+        session.close()
+
+
+def _generate_background_asset(session, brand_id: str, description: str, art_style: str,
+                                requested_name: Optional[str], default_name: str):
+    """Shared by generate_script_background and generate_background: builds
+    the prompt, generates + stores the image, and adds a new ToonBackground
+    to the session (uncommitted — callers commit, since generate_script_
+    background also needs to point its script at the new row in the same
+    transaction)."""
+    if art_style not in ART_STYLES:
+        raise HTTPException(status_code=400, detail=f"Unknown art_style: {art_style}")
+
+    prompt = _build_background_prompt(description, art_style)
+    from app.media.image_hybrid import HybridImageProvider
+    try:
+        result = HybridImageProvider().generate(prompt)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Background generation failed: {exc}")
+
+    from app.models.toon_background import ToonBackground
+    ext = "jpg" if result.content_type == "image/jpeg" else "png"
+    background_id = _uuid.uuid4()
+    path = f"culturetoons/{brand_id}/backgrounds/{background_id}.{ext}"
+    from app.services.culturetoon_media import save_image, ImageUploadError
+    try:
+        url = save_image(result.asset_bytes, result.content_type, path)
+    except ImageUploadError as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to store generated background: {exc}")
+
+    name = (requested_name or "").strip() or default_name
+    background = ToonBackground(
+        id=background_id, brand_id=_uuid.UUID(brand_id), name=name,
+        image_url=url, description=description,
+    )
+    session.add(background)
+    return background
 
 
 # ── toons ─────────────────────────────────────────────────────────────────
