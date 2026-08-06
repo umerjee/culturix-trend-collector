@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Plus, Loader2, ArrowRight } from "lucide-react";
-import type { CharacterBrand, Character, CharacterVariant, ToonBackground, ToonScript, Toon } from "@/lib/types";
+import type { CharacterBrand, Character, CharacterVariant, ToonBackground, ToonScript, Toon, ToonEpisode } from "@/lib/types";
 import CultureToonBrandForm from "@/components/CultureToonBrandForm";
 import CultureToonWorkspace from "@/components/CultureToonWorkspace";
 import ConnectedAccountsPanel from "@/components/ConnectedAccountsPanel";
@@ -17,6 +17,7 @@ interface BrandData {
   backgrounds: ToonBackground[];
   scripts: ToonScript[];
   toons: Toon[];
+  episodes: ToonEpisode[];
 }
 
 async function _json<T>(url: string, fallback: T): Promise<T> {
@@ -51,9 +52,10 @@ export default function CultureToonApp({ initialBrands }: Props) {
       _json<ToonBackground[]>(`/api/culturetoons/backgrounds?brand_id=${selectedBrandId}&active_only=false`, []),
       _json<ToonScript[]>(`/api/culturetoons/scripts?brand_id=${selectedBrandId}`, []),
       _json<Toon[]>(`/api/culturetoons/toons?brand_id=${selectedBrandId}`, []),
-    ]).then(([characters, variants, backgrounds, scripts, toons]) => {
+      _json<ToonEpisode[]>(`/api/culturetoons/episodes?brand_id=${selectedBrandId}`, []),
+    ]).then(([characters, variants, backgrounds, scripts, toons, episodes]) => {
       if (cancelled) return;
-      setData({ characters, variants, backgrounds, scripts, toons });
+      setData({ characters, variants, backgrounds, scripts, toons, episodes });
     }).finally(() => {
       if (!cancelled) setLoading(false);
     });
@@ -145,6 +147,7 @@ export default function CultureToonApp({ initialBrands }: Props) {
           initialBackgrounds={data.backgrounds}
           initialScripts={data.scripts}
           initialToons={data.toons}
+          initialEpisodes={data.episodes}
         />
       )}
     </div>

@@ -367,6 +367,7 @@ def _serialize_toon(t) -> dict:
         "notes": t.notes,
         "raw_video_url": t.raw_video_url, "clip_video_urls": t.clip_video_urls or [],
         "kling_task_id": t.kling_task_id, "generation_error": t.generation_error,
+        "episode_id": str(t.episode_id) if t.episode_id else None, "part_order": t.part_order,
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
@@ -392,6 +393,39 @@ def _serialize_toon_post(p) -> dict:
         "error": p.error,
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "posted_at": p.posted_at.isoformat() if p.posted_at else None,
+    }
+
+
+def _get_episode_owned(session, episode_id: str, brand_id: str, user_id: str):
+    from app.models.toon_episode import ToonEpisode
+    brand = _get_brand_owned(session, brand_id, user_id)
+    episode = session.query(ToonEpisode).filter_by(id=_uuid.UUID(episode_id)).first()
+    if not episode or episode.brand_id != brand.id:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    return episode
+
+
+def _serialize_episode(session, e) -> dict:
+    from app.models.toon import Toon
+    parts = (
+        session.query(Toon)
+        .filter_by(episode_id=e.id)
+        .order_by(Toon.part_order.asc())
+        .all()
+    )
+    return {
+        "id": str(e.id), "brand_id": str(e.brand_id), "title": e.title, "status": e.status,
+        "final_video_url": e.final_video_url, "clip_video_urls": e.clip_video_urls or [],
+        "generation_error": e.generation_error,
+        "parts": [
+            {
+                "toon_id": str(p.id), "order_index": p.part_order, "status": p.status,
+                "title": p.title, "has_raw_video": bool(p.raw_video_url),
+            }
+            for p in parts
+        ],
+        "created_at": e.created_at.isoformat() if e.created_at else None,
+        "updated_at": e.updated_at.isoformat() if e.updated_at else None,
     }
 
 
@@ -1743,3 +1777,211 @@ def refresh_toon_post(toon_post_id: str, body: dict, background_tasks: Backgroun
 
     background_tasks.add_task(fetch_toon_and_record, toon_post_id=toon_post_id)
     return {"status": "refresh_started"}
+
+
+# ── Episodes (multi-part stories stitched from several Toons) ──────────────
+
+@router.post("/episodes")
+def create_episode(body: dict):
+    from app.db import SessionLocal
+    from app.models.toon_episode import ToonEpisode
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+    session = SessionLocal()
+    try:
+        brand = _get_brand_owned(session, brand_id, user_id)
+        episode = ToonEpisode(brand_id=brand.id, title=body.get("title"), status="draft")
+        session.add(episode)
+        session.commit()
+        session.refresh(episode)
+        return _serialize_episode(session, episode)
+    finally:
+        session.close()
+
+
+@router.get("/episodes")
+def list_episodes(user_id: str, brand_id: str, status: Optional[str] = None):
+    from app.db import SessionLocal
+    from app.models.toon_episode import ToonEpisode
+    session = SessionLocal()
+    try:
+        brand = _get_brand_owned(session, brand_id, user_id)
+        query = session.query(ToonEpisode).filter_by(brand_id=brand.id)
+        if status:
+            query = query.filter_by(status=status)
+        episodes = query.order_by(ToonEpisode.created_at.desc()).all()
+        return [_serialize_episode(session, e) for e in episodes]
+    finally:
+        session.close()
+
+
+@router.get("/episodes/{episode_id}")
+def get_episode(episode_id: str, user_id: str, brand_id: str):
+    from app.db import SessionLocal
+    session = SessionLocal()
+    try:
+        episode = _get_episode_owned(session, episode_id, brand_id, user_id)
+        return _serialize_episode(session, episode)
+    finally:
+        session.close()
+
+
+@router.put("/episodes/{episode_id}")
+def update_episode(episode_id: str, body: dict):
+    from app.db import SessionLocal
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+    session = SessionLocal()
+    try:
+        episode = _get_episode_owned(session, episode_id, brand_id, user_id)
+        for field in ("title", "status", "generation_error"):
+            if field in body:
+                setattr(episode, field, body[field])
+        session.commit()
+        session.refresh(episode)
+        return _serialize_episode(session, episode)
+    finally:
+        session.close()
+
+
+@router.post("/episodes/{episode_id}/parts")
+def attach_episode_part(episode_id: str, body: dict):
+    """Attaches an existing, standalone Toon (same brand) as the next part
+    of this episode — a part IS a normal Toon, generated via the existing
+    unchanged POST /toons/{id}/generate-video; this endpoint only assigns
+    episode_id/part_order, it never creates or generates video itself."""
+    from app.db import SessionLocal
+    from app.models.toon import Toon
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    toon_id = body.get("toon_id")
+    if not user_id or not brand_id or not toon_id:
+        raise HTTPException(status_code=400, detail="user_id, brand_id and toon_id are required")
+    session = SessionLocal()
+    try:
+        episode = _get_episode_owned(session, episode_id, brand_id, user_id)
+        toon = _get_toon_owned(session, toon_id, brand_id, user_id)
+        if toon.episode_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="This toon is already attached to an episode — detach it first",
+            )
+        max_order = (
+            session.query(Toon).filter_by(episode_id=episode.id)
+            .order_by(Toon.part_order.desc()).first()
+        )
+        toon.episode_id = episode.id
+        toon.part_order = (max_order.part_order + 1) if max_order and max_order.part_order is not None else 0
+        session.commit()
+        return _serialize_episode(session, episode)
+    finally:
+        session.close()
+
+
+@router.delete("/episodes/{episode_id}/parts/{toon_id}")
+def detach_episode_part(episode_id: str, toon_id: str, user_id: str, brand_id: str):
+    """Detaches a part — the underlying Toon is untouched and simply
+    becomes a normal standalone Toon again, never deleted."""
+    from app.db import SessionLocal
+    session = SessionLocal()
+    try:
+        episode = _get_episode_owned(session, episode_id, brand_id, user_id)
+        toon = _get_toon_owned(session, toon_id, brand_id, user_id)
+        if toon.episode_id != episode.id:
+            raise HTTPException(status_code=404, detail="This toon is not a part of this episode")
+        toon.episode_id = None
+        toon.part_order = None
+        session.commit()
+        return _serialize_episode(session, episode)
+    finally:
+        session.close()
+
+
+@router.put("/episodes/{episode_id}/parts/reorder")
+def reorder_episode_parts(episode_id: str, body: dict):
+    from app.db import SessionLocal
+    from app.models.toon import Toon
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    toon_ids = body.get("toon_ids")
+    if not user_id or not brand_id or not isinstance(toon_ids, list):
+        raise HTTPException(status_code=400, detail="user_id, brand_id and toon_ids (list) are required")
+    session = SessionLocal()
+    try:
+        episode = _get_episode_owned(session, episode_id, brand_id, user_id)
+        current = session.query(Toon).filter_by(episode_id=episode.id).all()
+        current_ids = {str(t.id) for t in current}
+        if set(toon_ids) != current_ids:
+            raise HTTPException(status_code=400, detail="toon_ids must match exactly this episode's current parts")
+        by_id = {str(t.id): t for t in current}
+        for i, tid in enumerate(toon_ids):
+            by_id[tid].part_order = i
+        session.commit()
+        return _serialize_episode(session, episode)
+    finally:
+        session.close()
+
+
+@router.post("/episodes/{episode_id}/stitch")
+def stitch_episode_endpoint(episode_id: str, body: dict, background_tasks: BackgroundTasks):
+    """Backgrounded — a 60-180s multi-part re-encode is heavier than any
+    single existing ffmpeg step in this router, running well past a typical
+    HTTP gateway timeout. Validates readiness synchronously first (matching
+    generate_toon_video's pattern) so a not-ready episode 400s immediately
+    instead of only failing after being backgrounded."""
+    from app.db import SessionLocal
+    from app.models.toon import Toon
+    from app.services.culturetoon_episode import stitch_episode
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+
+    session = SessionLocal()
+    try:
+        episode = _get_episode_owned(session, episode_id, brand_id, user_id)
+        parts = (
+            session.query(Toon).filter_by(episode_id=episode.id)
+            .order_by(Toon.part_order.asc()).all()
+        )
+        if len(parts) < 2:
+            raise HTTPException(status_code=400, detail="An episode needs at least 2 parts before it can be stitched")
+        missing = [str(p.part_order) for p in parts if not p.raw_video_url]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Part(s) at position(s) {', '.join(missing)} have no generated video yet",
+            )
+
+        episode.status = "stitching"
+        episode.generation_error = None
+        session.commit()
+    finally:
+        session.close()
+
+    background_tasks.add_task(stitch_episode, user_id=user_id, episode_id=episode_id)
+    return {"status": "stitching_started"}
+
+
+@router.post("/episodes/{episode_id}/generate-clips")
+def generate_episode_clips_endpoint(episode_id: str, body: dict, background_tasks: BackgroundTasks):
+    """Cuts highlight candidate clips from a finished episode's stitched
+    video for social media — separate opt-in step from stitch (extra ffmpeg
+    cost not every stitch needs), reusing cut_clips() unmodified."""
+    from app.db import SessionLocal
+    from app.services.culturetoon_episode import generate_episode_clips
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+
+    session = SessionLocal()
+    try:
+        episode = _get_episode_owned(session, episode_id, brand_id, user_id)
+        if not episode.final_video_url:
+            raise HTTPException(status_code=400, detail="Stitch this episode first")
+    finally:
+        session.close()
+
+    background_tasks.add_task(generate_episode_clips, user_id=user_id, episode_id=episode_id)
+    return {"status": "clip_generation_started"}

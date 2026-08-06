@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Text, ARRAY
+from sqlalchemy import Column, String, DateTime, Text, ARRAY, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -15,11 +15,18 @@ class Toon(Base):
     (app/services/culturetoon_video.py) now generates one multi-shot video
     (raw_video_url) and cuts 3-4 candidate clips from it (clip_video_urls);
     the user picks one of those into final_video_url the same way they used
-    to paste in an externally-edited link."""
+    to paste in an externally-edited link.
+
+    episode_id/part_order: NULL for a normal standalone Toon. When set, this
+    Toon is one "part" of a ToonEpisode (app/models/toon_episode.py) — a
+    longer story assembled by stitching several parts' raw_video_url
+    together in part_order. See app/services/culturetoon_episode.py."""
     __tablename__ = "toons"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     brand_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    episode_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    part_order = Column(Integer, nullable=True)
     character_variant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     script_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     background_id = Column(UUID(as_uuid=True), nullable=True, index=True)

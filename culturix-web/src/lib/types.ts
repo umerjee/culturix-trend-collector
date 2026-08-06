@@ -530,6 +530,32 @@ export interface Toon {
   clip_video_urls: string[];
   kling_task_id: string | null;
   generation_error: string | null;
+  // Set when this Toon is one ordered "part" of a ToonEpisode (a longer
+  // story stitched from several parts' raw_video_url) — null for a normal
+  // standalone Toon.
+  episode_id: string | null;
+  part_order: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ToonEpisodePart {
+  toon_id: string;
+  order_index: number;
+  status: Toon["status"];
+  title: string | null;
+  has_raw_video: boolean;
+}
+
+export interface ToonEpisode {
+  id: string;
+  brand_id: string;
+  title: string | null;
+  status: "draft" | "stitching" | "ready" | "failed" | "archived";
+  final_video_url: string | null;
+  clip_video_urls: string[];
+  generation_error: string | null;
+  parts: ToonEpisodePart[];
   created_at: string | null;
   updated_at: string | null;
 }

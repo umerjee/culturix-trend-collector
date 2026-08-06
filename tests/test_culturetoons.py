@@ -26,6 +26,7 @@ from app.models.toon_background import ToonBackground
 from app.models.toon_script import ToonScript
 from app.models.toon import Toon
 from app.models.toon_post import ToonPost
+from app.models.toon_episode import ToonEpisode
 from app.models.connected_account import ConnectedAccount
 from app.models.persona import Persona
 from app.models.cluster import Cluster
@@ -51,7 +52,7 @@ def db(mocker):
     Base.metadata.create_all(bind=engine, tables=[
         CharacterBrand.__table__, Character.__table__, CharacterVariant.__table__,
         Expression.__table__, ToonBackground.__table__, ToonScript.__table__,
-        Toon.__table__, ToonPost.__table__, ConnectedAccount.__table__,
+        Toon.__table__, ToonPost.__table__, ToonEpisode.__table__, ConnectedAccount.__table__,
         Persona.__table__, Cluster.__table__,
     ])
     TestSessionLocal = sessionmaker(bind=engine)
@@ -1134,3 +1135,152 @@ class TestPublishToon:
         result = culturetoons.refresh_toon_post(post["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=bg)
         assert result["status"] == "refresh_started"
         assert len(bg.tasks) == 1
+
+
+class TestEpisodes:
+    def _make_toon_with_video(self, user_id, brand_id, variant_id, raw_video_url="https://example.com/raw.mp4"):
+        script = culturetoons.create_script({"user_id": user_id, "brand_id": brand_id, "character_variant_id": variant_id})
+        toon = culturetoons.create_toon({
+            "user_id": user_id, "brand_id": brand_id,
+            "character_variant_id": variant_id, "script_id": script["id"],
+        })
+        return culturetoons.update_toon(toon["id"], {"user_id": user_id, "brand_id": brand_id, "raw_video_url": raw_video_url})
+
+    def test_create_and_list_episode(self, db, user_id, brand_and_character):
+        brand, _character, _variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"], "title": "Kumar's Big Day"})
+        assert episode["status"] == "draft"
+        assert episode["parts"] == []
+
+        listed = culturetoons.list_episodes(user_id, brand["id"])
+        assert len(listed) == 1
+        assert listed[0]["id"] == episode["id"]
+
+    def test_attach_part_assigns_order_and_appears_in_episode(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        toon1 = self._make_toon_with_video(user_id, brand["id"], variant["id"])
+        toon2 = self._make_toon_with_video(user_id, brand["id"], variant["id"])
+
+        result = culturetoons.attach_episode_part(episode["id"], {"user_id": user_id, "brand_id": brand["id"], "toon_id": toon1["id"]})
+        assert result["parts"][0]["order_index"] == 0
+        result = culturetoons.attach_episode_part(episode["id"], {"user_id": user_id, "brand_id": brand["id"], "toon_id": toon2["id"]})
+        assert [p["order_index"] for p in result["parts"]] == [0, 1]
+        assert [p["toon_id"] for p in result["parts"]] == [toon1["id"], toon2["id"]]
+
+    def test_attach_part_already_in_episode_400s(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode1 = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        episode2 = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        toon = self._make_toon_with_video(user_id, brand["id"], variant["id"])
+        culturetoons.attach_episode_part(episode1["id"], {"user_id": user_id, "brand_id": brand["id"], "toon_id": toon["id"]})
+
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.attach_episode_part(episode2["id"], {"user_id": user_id, "brand_id": brand["id"], "toon_id": toon["id"]})
+        assert exc_info.value.status_code == 400
+
+    def test_detach_part_frees_toon_without_deleting_it(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        toon = self._make_toon_with_video(user_id, brand["id"], variant["id"])
+        culturetoons.attach_episode_part(episode["id"], {"user_id": user_id, "brand_id": brand["id"], "toon_id": toon["id"]})
+
+        result = culturetoons.detach_episode_part(episode["id"], toon["id"], user_id, brand["id"])
+        assert result["parts"] == []
+        still_exists = culturetoons.get_toon(toon["id"], user_id, brand["id"])
+        assert still_exists["episode_id"] is None
+
+    def test_reorder_parts(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        toon1 = self._make_toon_with_video(user_id, brand["id"], variant["id"])
+        toon2 = self._make_toon_with_video(user_id, brand["id"], variant["id"])
+        culturetoons.attach_episode_part(episode["id"], {"user_id": user_id, "brand_id": brand["id"], "toon_id": toon1["id"]})
+        culturetoons.attach_episode_part(episode["id"], {"user_id": user_id, "brand_id": brand["id"], "toon_id": toon2["id"]})
+
+        result = culturetoons.reorder_episode_parts(episode["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "toon_ids": [toon2["id"], toon1["id"]],
+        })
+        assert [p["toon_id"] for p in result["parts"]] == [toon2["id"], toon1["id"]]
+        assert [p["order_index"] for p in result["parts"]] == [0, 1]
+
+    def test_reorder_rejects_mismatched_toon_ids(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        toon1 = self._make_toon_with_video(user_id, brand["id"], variant["id"])
+        culturetoons.attach_episode_part(episode["id"], {"user_id": user_id, "brand_id": brand["id"], "toon_id": toon1["id"]})
+
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.reorder_episode_parts(episode["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "toon_ids": [str(uuid.uuid4())],
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_stitch_requires_min_two_parts_400s(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        toon1 = self._make_toon_with_video(user_id, brand["id"], variant["id"])
+        culturetoons.attach_episode_part(episode["id"], {"user_id": user_id, "brand_id": brand["id"], "toon_id": toon1["id"]})
+
+        class _FakeBackgroundTasks:
+            def add_task(self, *args, **kwargs):
+                pytest.fail("should not have been backgrounded")
+
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.stitch_episode_endpoint(
+                episode["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=_FakeBackgroundTasks(),
+            )
+        assert exc_info.value.status_code == 400
+
+    def test_stitch_requires_all_parts_have_raw_video_400s(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        toon1 = self._make_toon_with_video(user_id, brand["id"], variant["id"])
+        script2 = culturetoons.create_script({"user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"]})
+        toon2 = culturetoons.create_toon({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_variant_id": variant["id"], "script_id": script2["id"],
+        })  # no raw_video_url
+        culturetoons.attach_episode_part(episode["id"], {"user_id": user_id, "brand_id": brand["id"], "toon_id": toon1["id"]})
+        culturetoons.attach_episode_part(episode["id"], {"user_id": user_id, "brand_id": brand["id"], "toon_id": toon2["id"]})
+
+        class _FakeBackgroundTasks:
+            def add_task(self, *args, **kwargs):
+                pytest.fail("should not have been backgrounded")
+
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.stitch_episode_endpoint(
+                episode["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=_FakeBackgroundTasks(),
+            )
+        assert exc_info.value.status_code == 400
+        assert "1" in exc_info.value.detail  # names the unready part's order_index
+
+    def test_stitch_queues_background_task_and_sets_stitching_status(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        toon1 = self._make_toon_with_video(user_id, brand["id"], variant["id"])
+        toon2 = self._make_toon_with_video(user_id, brand["id"], variant["id"])
+        culturetoons.attach_episode_part(episode["id"], {"user_id": user_id, "brand_id": brand["id"], "toon_id": toon1["id"]})
+        culturetoons.attach_episode_part(episode["id"], {"user_id": user_id, "brand_id": brand["id"], "toon_id": toon2["id"]})
+
+        bg = BackgroundTasks()
+        result = culturetoons.stitch_episode_endpoint(episode["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=bg)
+        assert result["status"] == "stitching_started"
+        assert len(bg.tasks) == 1
+
+        updated = culturetoons.get_episode(episode["id"], user_id, brand["id"])
+        assert updated["status"] == "stitching"
+
+    def test_generate_clips_requires_stitched_video_400s(self, db, user_id, brand_and_character):
+        brand, _character, _variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+
+        class _FakeBackgroundTasks:
+            def add_task(self, *args, **kwargs):
+                pytest.fail("should not have been backgrounded")
+
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_episode_clips_endpoint(
+                episode["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=_FakeBackgroundTasks(),
+            )
+        assert exc_info.value.status_code == 400

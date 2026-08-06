@@ -41,6 +41,7 @@ async def lifespan(_):
     from app.models.toon_script import ToonScript                     # noqa: F401
     from app.models.toon import Toon                                  # noqa: F401
     from app.models.toon_post import ToonPost                         # noqa: F401
+    from app.models.toon_episode import ToonEpisode                   # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -206,6 +207,11 @@ async def lifespan(_):
             # CultureToons "toon accounts" — additive alongside content_profile_id.
             "ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS character_brand_id UUID",
             "ALTER TABLE connected_accounts ADD CONSTRAINT uq_connected_accounts_brand_platform UNIQUE (character_brand_id, platform)",
+            # Links a Toon into a ToonEpisode as one ordered "part" — NULL
+            # for a normal standalone Toon. See app/models/toon_episode.py
+            # and app/services/culturetoon_episode.py.
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS episode_id UUID",
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS part_order INTEGER",
         ]:
             try:
                 _conn.execute(_text(_stmt))

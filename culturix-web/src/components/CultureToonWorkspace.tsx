@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { Users, Image as ImageIcon, FileText, Clapperboard } from "lucide-react";
-import type { CharacterBrand, Character, CharacterVariant, ToonBackground, ToonScript, Toon } from "@/lib/types";
+import { Users, Image as ImageIcon, FileText, Clapperboard, Film } from "lucide-react";
+import type { CharacterBrand, Character, CharacterVariant, ToonBackground, ToonScript, Toon, ToonEpisode } from "@/lib/types";
 import CharacterVariantManager from "@/components/CharacterVariantManager";
 import BackgroundGallery from "@/components/BackgroundGallery";
 import ScriptManager from "@/components/ScriptManager";
 import ToonManager from "@/components/ToonManager";
+import EpisodeManager from "@/components/EpisodeManager";
 
 interface Props {
   brand: CharacterBrand;
@@ -15,19 +16,21 @@ interface Props {
   initialBackgrounds: ToonBackground[];
   initialScripts: ToonScript[];
   initialToons: Toon[];
+  initialEpisodes: ToonEpisode[];
 }
 
-type Tab = "characters" | "backgrounds" | "scripts" | "toons";
+type Tab = "characters" | "backgrounds" | "scripts" | "toons" | "episodes";
 
 const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: "characters", label: "Characters", icon: <Users className="h-3.5 w-3.5" /> },
   { key: "backgrounds", label: "Backgrounds", icon: <ImageIcon className="h-3.5 w-3.5" /> },
   { key: "scripts", label: "Scripts", icon: <FileText className="h-3.5 w-3.5" /> },
   { key: "toons", label: "Toons", icon: <Clapperboard className="h-3.5 w-3.5" /> },
+  { key: "episodes", label: "Episodes", icon: <Film className="h-3.5 w-3.5" /> },
 ];
 
 export default function CultureToonWorkspace({
-  brand, initialCharacters, initialVariants, initialBackgrounds, initialScripts, initialToons,
+  brand, initialCharacters, initialVariants, initialBackgrounds, initialScripts, initialToons, initialEpisodes,
 }: Props) {
   const [tab, setTab] = useState<Tab>("characters");
   // Set when a blocker elsewhere (e.g. ToonManager's "this character isn't
@@ -91,6 +94,13 @@ export default function CultureToonWorkspace({
           variants={initialVariants}
           backgrounds={initialBackgrounds}
           onJumpToVariant={jumpToVariant}
+        />
+      )}
+      {tab === "episodes" && (
+        <EpisodeManager
+          brandId={brand.id}
+          initialEpisodes={initialEpisodes}
+          initialToons={initialToons}
         />
       )}
     </div>
