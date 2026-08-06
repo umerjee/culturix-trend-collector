@@ -70,14 +70,19 @@ def run_generation(
     """Called as a background task. Updates the DB row when done or failed."""
     _update_row(row_id, status="processing")
     try:
-        provider = _get_provider(media_type)
-
-        if media_type == "voiceover":
-            result = provider.synthesize(prompt)
+        if media_type == "reel":
+            # Composite pipeline (script -> voiceover -> N images -> ffmpeg
+            # render), not a single provider .generate() call — no entry in
+            # _PROVIDERS, so the provider lookup below must stay out of this
+            # branch. See app/services/reel_pipeline.py.
+            from app.services.reel_pipeline import run_reel_pipeline
+            result = run_reel_pipeline(prompt)
+        elif media_type == "voiceover":
+            result = _get_provider(media_type).synthesize(prompt)
         elif media_type == "image":
-            result = provider.generate(prompt, reference_image_url=reference_image_url)
+            result = _get_provider(media_type).generate(prompt, reference_image_url=reference_image_url)
         elif media_type in ("music", "video"):
-            result = provider.generate(prompt)
+            result = _get_provider(media_type).generate(prompt)
         else:
             raise ValueError(f"Unknown media_type: {media_type}")
 

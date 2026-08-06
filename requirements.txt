@@ -28,40 +28,16 @@ PyJWT
 edge-tts
 stripe
 cryptography
-# Phase 7 — Clip generation (persona/cluster -> short-form vertical video)
-# NOTE: PyPI's "TTS" package (original Coqui TTS) has no release supporting
-# Python >=3.12 and fails to install outright on this project's Python 3.14
-# venv. "coqui-tts" is the actively-maintained fork (same `import TTS` API,
-# same model zoo, e.g. tts_models/multilingual/multi-dataset/xtts_v2) and is
-# the only way to get Coqui TTS running here — confirmed via pip install
-# --dry-run before adding. The [cpu] extra is required to pull in torch/
-# torchaudio at all (they're optional extras, not a base dependency).
-#
-# coqui-tts's own package metadata declares the exact same "torch>=2.2" for
-# both its [cpu] and [cuda] extras — the "cpu" name is purely conventional,
-# it does NOT actually select a CPU-only torch build. Without this
-# --extra-index-url, plain PyPI resolves torch's default Linux wheel, which
-# pulls a full CUDA runtime as separate nvidia-*-cu12 dependencies (often an
-# extra 1.5-2.5GB of downloads) even though every TTS call in this app runs
-# on CPU (WhisperModel(..., device="cpu", ...) in clip_transcribe.py) — this
-# was a major, unnecessary contributor to slow Railway builds. PyTorch's own
-# CPU wheels use a "+cpu" local version suffix (e.g. 2.5.1+cpu), which PEP
-# 440 sorts *higher* than the bare "2.5.1" on PyPI, so pip's normal
-# highest-version-wins resolution picks the CPU build automatically once
-# this extra index is available — no exact version pin needed.
---extra-index-url https://download.pytorch.org/whl/cpu
-coqui-tts[cpu,codec]
-# coqui-tts 0.27.5 declares "transformers>=4.57" with no upper bound, but its
-# XTTS implementation actually breaks against transformers 5.x (confirmed
-# live: "cannot import name 'isin_mps_friendly' from
-# transformers.pytorch_utils" — that symbol was removed in the 5.x line).
-# Pinned to the latest working 4.x release; don't let this float to 5.x.
-transformers==4.57.6
-# The [cpu] extra alone isn't enough — PyTorch >=2.9's audio backend needs the
-# separate torchcodec library (confirmed live: coqui-tts's TTS.load_tts()
-# raises "torchcodec library is required for audio IO" without it), hence
-# also requesting the [codec] extra above.
-faster-whisper
+# Faceless-reel media generation ("reel" type in app/media/service.py) —
+# script -> voiceover -> N segment images -> ffmpeg render. Voice is
+# edge-tts (already listed above, free/no key) with word-level timestamps
+# captured directly from its own event stream (confirmed live:
+# edge_tts.Communicate's boundary="WordBoundary" param, not the default
+# "SentenceBoundary") — no local TTS/transcription model needed. An earlier
+# version of this pipeline (Phase 7 clips.py, since removed) ran a
+# self-hosted Coqui XTTS v2 + faster-whisper stack instead — CPU-bound,
+# 20-60s per script, ~1-2GB of model weights, and a ~1.5-2.5GB PyTorch CPU
+# wheel dependency purely to support it. None of that is needed now.
 ffmpeg-python
 pillow
 # CultureToons image uploads (POST .../image routes use FastAPI's UploadFile,

@@ -57,7 +57,7 @@ export interface ContentIdea {
 export interface GeneratedMedia {
   id: string;
   idea_index: number;
-  media_type: "voiceover" | "music" | "video" | "image";
+  media_type: "voiceover" | "music" | "video" | "image" | "reel";
   provider: string;
   status: "pending" | "processing" | "done" | "failed";
   asset_url: string | null;

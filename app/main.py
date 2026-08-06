@@ -32,7 +32,6 @@ async def lifespan(_):
     from app.models.persona_occurrence import PersonaOccurrence       # noqa: F401
     from app.models.shopify_store import ShopifyStore                 # noqa: F401
     from app.models.shopify_product import ShopifyProduct             # noqa: F401
-    from app.models.clip import Clip                                  # noqa: F401
     from app.models.character_brand import CharacterBrand             # noqa: F401
     from app.models.character import Character                       # noqa: F401
     from app.models.character_variant import CharacterVariant         # noqa: F401
@@ -295,9 +294,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-from app.routers.clips import router as clips_router
-app.include_router(clips_router)
 
 from app.routers.culturetoons import router as culturetoons_router
 app.include_router(culturetoons_router)
@@ -1037,10 +1033,10 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
     if not content_id or idea_index is None or not user_id or not media_types:
         raise HTTPException(status_code=400, detail="content_id, idea_index, user_id, media_types required")
 
-    VALID = {"voiceover", "music", "video", "image"}
+    VALID = {"voiceover", "music", "video", "image", "reel"}
     media_types = [m for m in media_types if m in VALID]
     if not media_types:
-        raise HTTPException(status_code=400, detail="No valid media_types (voiceover|music|video|image)")
+        raise HTTPException(status_code=400, detail="No valid media_types (voiceover|music|video|image|reel)")
 
     # Plan-tier gating: free users cannot generate media
     # Superadmin (SUPERADMIN_USER_ID env var) always bypasses this check
@@ -1091,7 +1087,14 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
             detail="Media provider not configured — " + "; ".join(missing_keys)
         )
 
-    _PROVIDER_MAP = {"voiceover": "edge-tts", "music": "minimax", "video": "kling", "image": "qwen-image-2.0"}
+    _PROVIDER_MAP = {
+        "voiceover": "edge-tts", "music": "minimax", "video": "kling", "image": "qwen-image-2.0",
+        # Composite pipeline (edge-tts + HybridImageProvider + ffmpeg), not a
+        # single provider — see reel_pipeline.py. "edge-tts+cloudflare-flux+
+        # qwen-image-2.0" would be more descriptive but exceeds this column's
+        # String(30) limit (generated_media.py).
+        "reel": "reel-pipeline",
+    }
     created_ids = []
     session2 = SessionLocal()
     try:

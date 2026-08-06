@@ -1,13 +1,21 @@
-"""Video assembly for Phase 7 clips — composites a static image (Ken Burns
-pan/zoom), the TTS voiceover, and burned-in word-synced captions into a
-vertical 1080x1920 MP4 via ffmpeg. Captions are burned in via a generated
-.ass subtitle file rather than chained drawtext filters — more reliable for
-styled/timed captions, per the original phase spec's own recommendation.
+"""Video assembly for faceless-reel media generation — composites N segment
+images (each with its own Ken Burns pan/zoom for its own duration), one
+continuous TTS voiceover track, and burned-in word-synced captions into a
+vertical 1080x1920 MP4 via ffmpeg.
 
-Requires the `ffmpeg` and `ffprobe` binaries on PATH — see nixpacks.toml for
-how these get onto Railway's build image. For local dev, install ffmpeg via
-your OS package manager (e.g. `choco install ffmpeg`, `apt install ffmpeg`,
-`brew install ffmpeg`).
+Renders each segment as its own short silent clip, concatenates them (ffmpeg
+concat DEMUXER + stream-copy — safe here since every segment is freshly
+encoded by THIS function with identical libx264/fps/resolution params,
+unlike app/services/culturetoon_episode.py's stitch_episode, which concats
+clips from separate Kling API calls with no such guarantee and re-encodes on
+concat for that reason), then muxes in the voiceover and burns captions in
+one final pass.
+
+Captions burned in via a generated .ass subtitle file rather than chained
+drawtext filters — more reliable for styled/timed captions, per the
+original phase spec's own recommendation. Requires the `ffmpeg` and
+`ffprobe` binaries on PATH — see nixpacks.toml for how these get onto
+Railway's build image.
 """
 import logging
 import os
@@ -20,12 +28,11 @@ logger = logging.getLogger("culturix.services.clip_render")
 _WIDTH = 1080
 _HEIGHT = 1920
 _FPS = 25
-# Soft target from the spec ("target under 30s") — the script prompt itself
-# targets 80-110 words / ~30-45s, so the two targets can conflict on a longer
+# Soft target from the original spec ("target under 30s") — the script
+# prompt targets 80-110 words / ~30-45s, so the two can conflict on a longer
 # script. When they do, this logs a warning but still renders the full
-# voiceover rather than hard-truncating mid-sentence, which would ship a
-# clip with abruptly cut-off audio.
-_SOFT_MAX_DURATION_SECONDS = 30
+# voiceover rather than hard-truncating mid-sentence.
+_SOFT_MAX_DURATION_SECONDS = 45
 _CAPTION_CHUNK_SIZE = 3  # words per on-screen caption group
 
 
@@ -41,13 +48,13 @@ def _require_ffmpeg():
         )
 
 
-def _probe_duration(audio_path: str) -> float:
+def _probe_duration(path: str) -> float:
     try:
         import ffmpeg
-        info = ffmpeg.probe(audio_path)
+        info = ffmpeg.probe(path)
         return float(info["format"]["duration"])
     except Exception as exc:
-        raise RenderError(f"Failed to probe audio duration: {exc}") from exc
+        raise RenderError(f"Failed to probe duration: {exc}") from exc
 
 
 def _ass_time(seconds: float) -> str:
@@ -101,10 +108,35 @@ def _escape_for_filter(path: str) -> str:
     return path.replace("\\", "/").replace(":", "\\:")
 
 
-def render_clip(image_path: str, audio_path: str, word_timestamps: list, output_path: str) -> dict:
-    """Composites image + audio + word-synced captions into output_path.
+def _render_segment(image_path: str, duration: float, output_path: str) -> None:
+    total_frames = max(1, int(duration * _FPS))
+    zoompan = (
+        f"scale=8000:-1,zoompan=z='min(zoom+0.0008,1.2)':d={total_frames}:"
+        f"s={_WIDTH}x{_HEIGHT}:fps={_FPS},format=yuv420p"
+    )
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", image_path,
+        "-t", str(duration),
+        "-vf", zoompan,
+        "-an",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        output_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise RenderError(f"ffmpeg failed rendering segment (exit {result.returncode}): {result.stderr[-2000:]}")
+
+
+def render_clip(segments: list, audio_path: str, word_timestamps: list, output_path: str) -> dict:
+    """segments: [(image_path, duration_seconds), ...], in order — see
+    reel_pipeline.py for how these are derived from real word timestamps.
+    Renders each as its own silent clip, concatenates them, muxes in
+    audio_path, and burns word-synced captions over the result.
     Returns {"video_path": output_path, "duration_seconds": float}."""
     _require_ffmpeg()
+    if not segments:
+        raise RenderError("Cannot render a clip with no image segments")
 
     duration = _probe_duration(audio_path)
     if duration <= 0:
@@ -120,27 +152,36 @@ def render_clip(image_path: str, audio_path: str, word_timestamps: list, output_
         ass_path = os.path.join(tmp_dir, "captions.ass")
         _build_ass(word_timestamps, ass_path, duration)
 
-        total_frames = max(1, int(duration * _FPS))
-        zoompan = (
-            f"scale=8000:-1,zoompan=z='min(zoom+0.0008,1.2)':d={total_frames}:"
-            f"s={_WIDTH}x{_HEIGHT}:fps={_FPS},format=yuv420p"
-        )
-        subtitles = f"subtitles='{_escape_for_filter(ass_path)}'"
-        vf = f"{zoompan},{subtitles}"
+        segment_paths = []
+        for i, (image_path, seg_duration) in enumerate(segments):
+            seg_path = os.path.join(tmp_dir, f"segment_{i}.mp4")
+            _render_segment(image_path, seg_duration, seg_path)
+            segment_paths.append(seg_path)
 
-        cmd = [
+        list_path = os.path.join(tmp_dir, "concat_list.txt")
+        with open(list_path, "w", encoding="utf-8") as f:
+            for p in segment_paths:
+                f.write(f"file '{p}'\n")
+        concat_path = os.path.join(tmp_dir, "concat.mp4")
+        concat_cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", concat_path]
+        result = subprocess.run(concat_cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            raise RenderError(f"ffmpeg failed concatenating segments: {result.stderr[-2000:]}")
+
+        subtitles = f"subtitles='{_escape_for_filter(ass_path)}'"
+        final_cmd = [
             "ffmpeg", "-y",
-            "-loop", "1", "-i", image_path,
-            "-i", audio_path,
-            "-vf", vf,
+            "-i", concat_path, "-i", audio_path,
+            "-vf", subtitles,
             "-c:v", "libx264", "-c:a", "aac", "-b:a", "192k",
             "-pix_fmt", "yuv420p",
+            "-map", "0:v:0", "-map", "1:a:0",
             "-shortest",
             output_path,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(final_cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            raise RenderError(f"ffmpeg failed (exit {result.returncode}): {result.stderr[-2000:]}")
+            raise RenderError(f"ffmpeg failed muxing audio + captions (exit {result.returncode}): {result.stderr[-2000:]}")
 
     if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
         raise RenderError("ffmpeg produced no video output")

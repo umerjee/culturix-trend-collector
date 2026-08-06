@@ -7,7 +7,7 @@ import type { GeneratedMedia } from "@/lib/types";
 interface Props {
   contentId: string;
   ideaIndex: number;
-  mediaType: "voiceover" | "music" | "video" | "image";
+  mediaType: "voiceover" | "music" | "video" | "image" | "reel";
   onDone?: () => void;
 }
 
@@ -72,7 +72,11 @@ export default function MediaPreview({ contentId, ideaIndex, mediaType, onDone }
   }
 
   if (media.status === "done" && media.asset_url) {
-    const isVideo = media.media_type === "video";
+    // "reel" is a fully-composited faceless-reel video (see
+    // app/services/reel_pipeline.py) — same <video> treatment as "video",
+    // confirmed live this check needed widening or a reel would silently
+    // render as an <audio> player instead.
+    const isVideo = media.media_type === "video" || media.media_type === "reel";
     const isImage = media.media_type === "image";
     const duration = media.duration_seconds
       ? `${Math.round(media.duration_seconds)}s`

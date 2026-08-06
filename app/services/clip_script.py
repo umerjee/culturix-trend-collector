@@ -1,14 +1,21 @@
-"""Script generation for Phase 7 clip generation — turns a Persona or Cluster
-into a punchy, hook-first ~30-45s spoken script (80-110 words), reusing the
-same Qwen-max primary / Claude Haiku fallback pattern as content_strategist.py
-and shopify/content_ideas.py (this codebase's established content-generation
-convention — there is no dedicated "Instagram caption pipeline" module to
-reuse, despite what an earlier version of this spec assumed).
+"""Script generation for faceless-reel media generation ("reel" media_type in
+app/media/service.py) — turns a GeneratedContent idea's own hook/caption/cta
+(composed client-side into one prompt string by DigestCard.tsx, same
+convention every other media type's prompt already follows — see
+app/main.py's /api/generate-media) into a punchy, hook-first ~30-45s spoken
+script (80-110 words). Reuses the same Qwen-max primary / Claude Haiku
+fallback pattern as content_strategist.py and shopify/content_ideas.py.
+
+Originally built for the dormant Phase 7 clips.py pipeline, which generated
+a script from scratch off a bare Persona/Cluster row — no page ever let a
+user pick one of those directly, so that script could drift from the idea
+text the user actually saw and approved on their digest. Grounding on the
+idea's own text instead (the same "idea" pattern CultureToons'
+generate_toon_script_from_idea already uses successfully) keeps the reel
+consistent with what's on screen.
 """
 import logging
 import os
-
-from app.models.persona import Persona
 
 logger = logging.getLogger("culturix.services.clip_script")
 
@@ -30,30 +37,14 @@ def _get_claude_client():
     return anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 
-def _source_type_and_context(persona_or_cluster) -> tuple[str, str]:
-    if isinstance(persona_or_cluster, Persona):
-        p = persona_or_cluster
-        return "persona", (
-            f"Persona name: {p.name}\n"
-            f"Description: {p.description}\n"
-            f"Motivations: {p.motivations or 'n/a'}\n"
-            f"Interests: {p.interests or 'n/a'}\n"
-            f"Content angle ideas: {p.content_suggestions or 'n/a'}"
-        )
-    c = persona_or_cluster
-    return "cluster", (
-        f"Trend theme: {c.theme or 'n/a'}\n"
-        f"Summary: {c.summary or 'n/a'}"
-    )
-
-
-def _build_prompt(persona_or_cluster) -> str:
-    source_type, context = _source_type_and_context(persona_or_cluster)
+def _build_prompt(idea_text: str) -> str:
     return f"""You are a short-form video scriptwriter for TikTok/Instagram Reels/YouTube Shorts.
 
-Write a spoken voiceover script grounded in the {source_type} below.
+Write a spoken voiceover script grounded in the content idea below — a hook, caption, and
+call-to-action that a user has already approved for this post. Capture the same core message
+and angle, rewritten specifically for something spoken aloud over video.
 
-{context}
+{idea_text.strip()}
 
 Requirements:
 - Hook-first: the opening line must grab attention in under 2 seconds.
@@ -64,8 +55,12 @@ Requirements:
 Return ONLY the script text, nothing else."""
 
 
-def generate_script(persona_or_cluster) -> str:
-    prompt = _build_prompt(persona_or_cluster)
+def generate_script(idea_text: str) -> str:
+    """idea_text: the idea's hook/caption/cta, composed into one string by
+    the caller (see DigestCard.tsx's prompts.reel)."""
+    if not idea_text or not idea_text.strip():
+        raise ScriptGenerationError("Cannot generate a script from empty idea text")
+    prompt = _build_prompt(idea_text)
     try:
         if os.getenv("QWEN_API_KEY"):
             qwen = _get_qwen_client()

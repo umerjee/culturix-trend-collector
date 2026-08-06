@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { Music, Target, Megaphone, Copy, Check, Film, Mic, Video, Image as ImageIcon, Loader2, Clock, Zap, ChevronDown, ChevronUp, Send, Link2 } from "lucide-react";
+import { Music, Target, Megaphone, Copy, Check, Film, Mic, Video, Image as ImageIcon, Loader2, Clock, Zap, ChevronDown, ChevronUp, Send, Link2, Clapperboard } from "lucide-react";
 import { CONNECTABLE_PLATFORMS, type ContentIdea, type ContentPost } from "@/lib/types";
 import MediaPreview from "@/components/MediaPreview";
 import PostPerformance from "@/components/PostPerformance";
@@ -55,7 +55,7 @@ const PUBLISHABLE_PLATFORMS: Record<string, string> = Object.fromEntries(
   CONNECTABLE_PLATFORMS.map((p) => [p.display, p.key])
 );
 
-type MediaType = "voiceover" | "music" | "video" | "image";
+type MediaType = "voiceover" | "music" | "video" | "image" | "reel";
 
 function CopyBtn({ text, label }: { text: string; label: string }) {
   const [done, setDone] = useState(false);
@@ -162,6 +162,10 @@ export default function DigestCard({ idea, index, contentId, plan, connectedPlat
             music: idea.music_mood || "Upbeat trending pop",
             video: idea.video_prompt || idea.hook,
             image: idea.video_prompt || idea.hook,
+            // Hook+caption+cta only (not hashtags) — this becomes the
+            // grounding text for a server-side spoken-script rewrite
+            // (app/services/clip_script.py), not the final script itself.
+            reel: [idea.hook, idea.caption, idea.cta].filter(Boolean).join("\n\n"),
           },
         }),
       });
@@ -236,6 +240,7 @@ export default function DigestCard({ idea, index, contentId, plan, connectedPlat
     { type: "voiceover", label: "Voiceover", icon: <Mic className="h-3.5 w-3.5" /> },
     { type: "music",     label: "Music",     icon: <Music className="h-3.5 w-3.5" /> },
     { type: "video",     label: "Video",     icon: <Video className="h-3.5 w-3.5" /> },
+    { type: "reel",      label: "Reel",      icon: <Clapperboard className="h-3.5 w-3.5" /> },
   ];
   // idea.medium is absent on ideas generated before the preferred-formats
   // feature — fail open to "show everything" (video's full set) rather than
