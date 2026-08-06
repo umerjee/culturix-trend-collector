@@ -180,6 +180,33 @@ class TestGenerateOmniVideo:
             KlingOmniProvider().generate_omni_video(contents=[], settings={})
 
 
+class TestGenerateSceneProtocolAdapter:
+    def test_wraps_dict_result_as_dataclass(self, mocker):
+        from app.media.protocols import VideoProvider, VideoGenerationResult
+        create_resp = _FakeResponse({"code": 0, "data": {"id": "task1", "status": "submitted"}})
+        poll_resp = _FakeResponse({
+            "code": 0,
+            "data": [{"status": "succeeded", "outputs": [
+                {"type": "video", "url": "https://cdn/video.mp4", "duration": "8"},
+            ]}],
+        })
+        video_resp = _FakeResponse(content=b"fake-video-bytes")
+        mocker.patch("httpx.request", return_value=create_resp)
+        mocker.patch("httpx.get", side_effect=[poll_resp, video_resp])
+
+        provider = KlingOmniProvider()
+        assert isinstance(provider, VideoProvider)  # structurally satisfies the protocol
+
+        result = provider.generate_scene(
+            contents=[{"type": "prompt", "text": "shot 1, 5, @Mom waves;"}],
+            settings={"multi_shot": True, "duration": 8},
+        )
+        assert isinstance(result, VideoGenerationResult)
+        assert result.video_bytes == b"fake-video-bytes"
+        assert result.duration_seconds == 8.0
+        assert result.task_id == "task1"
+
+
 class TestMissingCredentials:
     def test_raises_without_api_key(self, mocker):
         mocker.patch.dict(os.environ, {"KLING_API_KEY": ""})

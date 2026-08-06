@@ -17,6 +17,12 @@ class CharacterVariant(Base):
     character_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     name = Column(String(120), nullable=False)
     culture_tag = Column(String(60), nullable=True)
+    # Optional link into the shared Culture library (app/models/culture.py)
+    # for structured social/comedy context in script generation — falls
+    # back to the free-text culture_tag above when unset (a culture not
+    # yet in the library, or a user who just wants to type something
+    # quick). See docs/culturix-comedy-architecture.md §3.7.
+    culture_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     description = Column(Text, nullable=True)
     image_url = Column(Text, nullable=True)
     # A variant-specific raw reference photo, if the user has one (e.g. a

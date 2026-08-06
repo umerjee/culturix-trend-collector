@@ -43,6 +43,8 @@ async def lifespan(_):
     from app.models.toon_episode import ToonEpisode                   # noqa: F401
     from app.models.character_relationship import CharacterRelationship  # noqa: F401
     from app.models.generation_usage import GenerationUsage           # noqa: F401
+    from app.models.character_memory import CharacterMemory           # noqa: F401
+    from app.models.culture import Culture                            # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -216,6 +218,13 @@ async def lifespan(_):
             # Regeneration history — see Toon model's docstring on
             # previous_video_urls.
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS previous_video_urls TEXT[] DEFAULT '{}'",
+            # Optional link into the shared Culture library — see
+            # app/models/culture.py.
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS culture_id UUID",
+            # QA results — see Toon model's docstring and
+            # app/services/culturetoon_qa.py.
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS qa_results JSON",
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS publish_recommended BOOLEAN",
             # Structured personality — see docs/culturix-comedy-architecture.md
             # §3.2. Consumed by culturetoon_script.py's prompt builder.
             "ALTER TABLE characters ADD COLUMN IF NOT EXISTS personality JSON",
@@ -283,6 +292,51 @@ async def lifespan(_):
                 ON CONFLICT (user_id) DO UPDATE SET plan = 'pro', approved = TRUE
             """), {"uid": _superadmin_id})
             _conn3.commit()
+
+    # Seed the shared Culture library (idempotent — only inserts cultures
+    # that don't already exist by name) with the cultures already in active
+    # use in this account's real character roster, per
+    # docs/culturix-comedy-architecture.md §7 Phase 5. Not exhaustive —
+    # more cultures can be added via POST /api/culturetoons/cultures.
+    from app.db import SessionLocal as _SessionLocal
+    from app.models.culture import Culture as _Culture
+    _seed_session = _SessionLocal()
+    try:
+        _existing_culture_names = {c.name for c in _seed_session.query(_Culture.name).all()}
+        for _culture_kwargs in [
+            dict(
+                name="Indian", country="India", region="South Asia", language="Hindi/English",
+                cultural_patterns={"food": "central to hospitality and family life", "family": "close-knit, multigenerational households common"},
+                humor_sensitivity="food, family dynamics, and cross-cultural mix-ups land well; avoid caste, religion, or accent-mockery jokes",
+                common_misunderstandings=["assuming every guest must be fed, even uninvited ones", "family elders inserting themselves into personal decisions"],
+                stereotypes_to_avoid=["call-center/tech-support stereotype", "arranged-marriage-obsessed caricature", "exaggerated accent mockery"],
+                positive_traits=["hospitable", "family-oriented", "resourceful", "warm"],
+            ),
+            dict(
+                name="Chinese", country="China", region="East Asia", language="Mandarin",
+                cultural_patterns={"food": "central social ritual, sharing dishes", "family": "respect for elders, filial duty"},
+                humor_sensitivity="food and generational-gap jokes land well; avoid accent mockery or reducing characters to a single stereotype",
+                common_misunderstandings=["directness read as rudeness by other cultures", "gift-giving etiquette mix-ups"],
+                stereotypes_to_avoid=["tiger-parent caricature", "kung-fu/martial-arts default association", "exaggerated accent mockery"],
+                positive_traits=["disciplined", "pragmatic", "family-oriented", "dry wit"],
+            ),
+            dict(
+                name="African", country=None, region="Africa", language=None,
+                cultural_patterns={"family": "extended family and community strongly valued", "social_norms": "storytelling and communal celebration"},
+                humor_sensitivity="community/family jokes land well; this is a continent of many distinct cultures — avoid flattening them into one generic 'African' stereotype",
+                common_misunderstandings=["assuming one country/culture represents the whole continent"],
+                stereotypes_to_avoid=["poverty/safari caricature", "treating 'African' as a single homogeneous culture rather than many distinct nations"],
+                positive_traits=["resourceful", "community-oriented", "resilient", "warm"],
+            ),
+        ]:
+            if _culture_kwargs["name"] not in _existing_culture_names:
+                _seed_session.add(_Culture(**_culture_kwargs))
+        _seed_session.commit()
+    except Exception:
+        logging.getLogger("culturix.startup").warning("Culture library seeding failed, skipping", exc_info=True)
+        _seed_session.rollback()
+    finally:
+        _seed_session.close()
 
     from app.scheduler import start, stop
     start()

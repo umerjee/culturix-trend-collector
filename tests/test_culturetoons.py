@@ -32,6 +32,8 @@ from app.models.persona import Persona
 from app.models.cluster import Cluster
 from app.models.character_relationship import CharacterRelationship
 from app.models.generation_usage import GenerationUsage
+from app.models.character_memory import CharacterMemory
+from app.models.culture import Culture
 from app.routers import culturetoons
 
 
@@ -48,6 +50,20 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_memory_retrieval(mocker):
+    # retrieve_relevant_memories talks to real Qdrant/Voyage when
+    # QDRANT_URL/VOYAGE_API_KEY are set in the environment (they are, via
+    # .env, transitively loaded by app.embeddings) — every suggest_script*
+    # test would otherwise make a real network call (and, once the
+    # "culturetoon_memories" collection exists in production, a real billed
+    # Voyage embedding call) on every test run. Autouse so this is opt-out,
+    # not opt-in — a new test that forgets to mock it would otherwise
+    # silently start hitting the network. Tests that specifically want to
+    # exercise memory retrieval override this mock explicitly.
+    return mocker.patch("app.services.culturetoon_memory.retrieve_relevant_memories", return_value=[])
+
+
 @pytest.fixture
 def db(mocker):
     engine = create_engine("sqlite:///:memory:")
@@ -56,7 +72,8 @@ def db(mocker):
         Expression.__table__, ToonBackground.__table__, ToonScript.__table__,
         Toon.__table__, ToonPost.__table__, ToonEpisode.__table__, ConnectedAccount.__table__,
         Persona.__table__, Cluster.__table__,
-        CharacterRelationship.__table__, GenerationUsage.__table__,
+        CharacterRelationship.__table__, GenerationUsage.__table__, CharacterMemory.__table__,
+        Culture.__table__,
     ])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)
@@ -508,6 +525,127 @@ class TestVariantImageGeneration:
         assert result["image_url"] is None
 
 
+class TestCultureLibrary:
+    def test_create_and_list(self, db, user_id):
+        created = culturetoons.create_culture({
+            "user_id": user_id, "name": "Testonian", "country": "Testonia",
+            "humor_sensitivity": "self-deprecating humor lands well",
+            "stereotypes_to_avoid": ["lazy caricature"],
+        })
+        assert created["name"] == "Testonian"
+
+        listed = culturetoons.list_cultures()
+        assert any(c["name"] == "Testonian" for c in listed)
+
+    def test_duplicate_name_conflicts(self, db, user_id):
+        culturetoons.create_culture({"user_id": user_id, "name": "Testonian"})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_culture({"user_id": user_id, "name": "Testonian"})
+        assert exc_info.value.status_code == 409
+
+    def test_requires_name(self, db, user_id):
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_culture({"user_id": user_id})
+        assert exc_info.value.status_code == 400
+
+    def test_variant_links_to_culture(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        culture = culturetoons.create_culture({"user_id": user_id, "name": "Testonian"})
+
+        updated = culturetoons.update_variant(variant["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "culture_id": culture["id"],
+        })
+        assert updated["culture_id"] == culture["id"]
+
+    def test_unknown_culture_id_404s(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.update_variant(variant["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "culture_id": str(uuid.uuid4()),
+            })
+        assert exc_info.value.status_code == 404
+
+    def test_gather_script_context_resolves_linked_culture(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        culture = culturetoons.create_culture({
+            "user_id": user_id, "name": "Testonian", "humor_sensitivity": "self-deprecating humor lands well",
+        })
+        culturetoons.update_variant(variant["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "culture_id": culture["id"],
+        })
+
+        session = db()
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        _personalities, _relationships, _memories, cultures, _performance = culturetoons._gather_script_generation_context(
+            session, brand["id"], [variant_row]
+        )
+        session.close()
+
+        assert len(cultures) == 1
+        assert cultures[0]["name"] == "Testonian"
+
+
+class TestCharacterMemories:
+    def test_create_requires_valid_memory_type(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_memory(variant["id"], {
+                "user_id": user_id, "brand_id": brand["id"],
+                "memory_type": "not_a_real_type", "content": "Something happened.",
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_create_and_list(self, db, user_id, brand_and_character, mocker):
+        mock_index = mocker.patch("app.services.culturetoon_memory.index_memory")
+        brand, _character, variant = brand_and_character
+
+        created = culturetoons.create_memory(variant["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+            "memory_type": "running_gag", "content": "Once tried to negotiate a Swiss train ticket.",
+            "importance": 7,
+        })
+        assert created["memory_type"] == "running_gag"
+        assert created["importance"] == 7
+        mock_index.assert_called_once()
+
+        listed = culturetoons.list_memories(variant["id"], user_id, brand["id"])
+        assert len(listed) == 1
+        assert listed[0]["id"] == created["id"]
+
+    def test_importance_must_be_0_to_10(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_memory(variant["id"], {
+                "user_id": user_id, "brand_id": brand["id"],
+                "memory_type": "preference", "content": "Loves spicy food.", "importance": 99,
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_delete_removes_from_db_and_index(self, db, user_id, brand_and_character, mocker):
+        mocker.patch("app.services.culturetoon_memory.index_memory")
+        mock_delete_index = mocker.patch("app.services.culturetoon_memory.delete_memory_index")
+        brand, _character, variant = brand_and_character
+
+        created = culturetoons.create_memory(variant["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+            "memory_type": "preference", "content": "Loves spicy food.",
+        })
+        culturetoons.delete_memory(created["id"], user_id, brand["id"])
+
+        assert culturetoons.list_memories(variant["id"], user_id, brand["id"]) == []
+        mock_delete_index.assert_called_once_with(created["id"])
+
+    def test_cross_brand_variant_404s(self, db, user_id, brand_and_character):
+        _brand, _character, variant = brand_and_character
+        other_brand = culturetoons.create_brand({"user_id": user_id, "name": "Other Brand"})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_memory(variant["id"], {
+                "user_id": user_id, "brand_id": other_brand["id"],
+                "memory_type": "preference", "content": "Loves spicy food.",
+            })
+        assert exc_info.value.status_code == 404
+
+
 class TestVariantsAndExpressions:
     def test_delete_variant_archives_not_deletes(self, db, user_id, brand_and_character):
         # brand_and_character's Character auto-creates its own default
@@ -889,6 +1027,61 @@ class TestSuggestScriptFromIdea:
         mock_generate.assert_called_once()
         call_args = mock_generate.call_args
         assert call_args[0][0] == "The character comes home to find the kitchen destroyed"
+
+    def test_passes_personality_and_relationships_to_generator(self, db, user_id, brand_and_character, mocker):
+        # Locks in the Phase 3 wiring: _gather_script_generation_context
+        # resolves each cast character's personality and any relationship
+        # between them, and suggest_script_from_idea forwards both to the
+        # generator so identity stays deterministic instead of being
+        # re-improvised per script.
+        brand, character, variant = brand_and_character
+        culturetoons.update_character(character["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+            "personality": {"traits": {"confidence": 0.9}, "behavioral_rules": ["negotiates hard"]},
+        })
+        hans = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Hans"})
+        hans_variant = culturetoons.create_variant({
+            "user_id": user_id, "brand_id": brand["id"], "character_id": hans["id"], "name": "Hans",
+        })
+        culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": character["id"], "character_b_id": hans["id"],
+            "relationship_type": "friendly_rivalry",
+        })
+
+        fake_shots = [{"shot_number": 1, "duration_seconds": 4, "action": "argues", "expression": "Annoyed", "dialogue": "No!"}]
+        mock_generate = mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H", "tone": "funny", "shots": fake_shots, "total_duration_seconds": 4},
+        )
+        culturetoons.suggest_script_from_idea({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_variant_ids": [variant["id"], hans_variant["id"]],
+            "idea": "They argue about recycling", "tone": "funny",
+        })
+
+        kwargs = mock_generate.call_args.kwargs
+        assert kwargs["character_personalities"][character["id"]]["behavioral_rules"] == ["negotiates hard"]
+        assert kwargs["relationships"][0]["relationship_type"] == "friendly_rivalry"
+
+    def test_passes_retrieved_memories_to_generator(self, db, user_id, brand_and_character, mocker):
+        brand, _character, variant = brand_and_character
+        mock_retrieve = mocker.patch(
+            "app.services.culturetoon_memory.retrieve_relevant_memories",
+            return_value=["Once tried to negotiate a Swiss train ticket."],
+        )
+        mock_generate = mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H", "tone": "funny", "shots": [], "total_duration_seconds": 4},
+        )
+        culturetoons.suggest_script_from_idea({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "idea": "Tries to negotiate a train ticket", "tone": "funny",
+        })
+
+        mock_retrieve.assert_called_once()
+        assert mock_retrieve.call_args.args[1] == "Tries to negotiate a train ticket"
+        assert mock_generate.call_args.kwargs["memories"] == ["Once tried to negotiate a Swiss train ticket."]
 
     def test_generation_failure_returns_502(self, db, user_id, brand_and_character, mocker):
         from app.services.culturetoon_script import ToonScriptGenerationError

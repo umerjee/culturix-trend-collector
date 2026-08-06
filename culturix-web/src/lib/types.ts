@@ -493,6 +493,22 @@ export interface CharacterRelationship {
   updated_at: string | null;
 }
 
+export const MEMORY_TYPES = [
+  "backstory", "recurring_fact", "relationship_event",
+  "previous_joke", "preference", "running_gag", "episode_event",
+] as const;
+
+export interface CharacterMemory {
+  id: string;
+  character_variant_id: string;
+  brand_id: string;
+  memory_type: (typeof MEMORY_TYPES)[number];
+  content: string;
+  importance: number | null;
+  source_toon_id: string | null;
+  created_at: string | null;
+}
+
 export interface BrandUsageByType {
   generation_type: string;
   count: number;
@@ -589,6 +605,16 @@ export interface Toon {
   // first — set by generate_video_for_toon so a regeneration never
   // silently discards a previous take.
   previous_video_urls: string[];
+  // Set automatically right after generation (see
+  // app/services/culturetoon_qa.py) — null means QA hasn't run yet.
+  // publish_recommended is a soft signal only, never a hard server-side
+  // block; a human always makes the final publish call.
+  qa_results: {
+    visual_score: number; comedy_score: number; cultural_score: number; technical_score: number;
+    overall_score: number; publish_recommended: boolean; issues: string[];
+    reasoning: string | null; judge_failed: boolean;
+  } | null;
+  publish_recommended: boolean | null;
   kling_task_id: string | null;
   generation_error: string | null;
   // Set when this Toon is one ordered "part" of a ToonEpisode (a longer

@@ -333,7 +333,8 @@ def _serialize_character(c) -> dict:
 def _serialize_variant(v) -> dict:
     return {
         "id": str(v.id), "character_id": str(v.character_id), "name": v.name,
-        "culture_tag": v.culture_tag, "description": v.description,
+        "culture_tag": v.culture_tag, "culture_id": str(v.culture_id) if v.culture_id else None,
+        "description": v.description,
         "image_url": v.image_url, "reference_image_url": v.reference_image_url,
         "previous_image_urls": v.previous_image_urls or [],
         "persona_id": v.persona_id, "is_active": v.is_active,
@@ -442,6 +443,7 @@ def _serialize_toon(t) -> dict:
         "notes": t.notes,
         "raw_video_url": t.raw_video_url, "clip_video_urls": t.clip_video_urls or [],
         "previous_video_urls": t.previous_video_urls or [],
+        "qa_results": t.qa_results, "publish_recommended": t.publish_recommended,
         "kling_task_id": t.kling_task_id, "generation_error": t.generation_error,
         "episode_id": str(t.episode_id) if t.episode_id else None, "part_order": t.part_order,
         "created_at": t.created_at.isoformat() if t.created_at else None,
@@ -903,6 +905,38 @@ def resolve_relationships_for_cast(session, brand_id, character_ids: list) -> li
     return [_serialize_relationship(r) for r in relationships]
 
 
+def _gather_script_generation_context(session, brand_id, variants: list, query_text: str = "") -> tuple:
+    """Builds the (character_personalities, relationships, memories,
+    cultures, performance_context) tuple culturetoon_script.py's generators
+    accept, from a cast of already-loaded CharacterVariant ORM objects — one
+    place to assemble this so all three suggest_script/
+    suggest_script_from_idea/suggest_next_episode_part call sites stay in
+    sync rather than each re-deriving it slightly differently. query_text
+    grounds the memory semantic search (see
+    app/services/culturetoon_memory.py::retrieve_relevant_memories) — the
+    persona/cluster context, user idea, or next-part idea, whichever this
+    particular script generation is actually about."""
+    from app.models.character import Character
+    from app.models.culture import Culture
+    from app.services.culturetoon_memory import retrieve_relevant_memories
+    from app.services.culturetoon_analytics import get_cast_performance_context
+    character_ids = list({v.character_id for v in variants})
+    if not character_ids:
+        return {}, [], [], [], ""
+    characters = session.query(Character).filter(Character.id.in_(character_ids)).all()
+    character_personalities = {str(c.id): c.personality for c in characters if c.personality}
+    relationships = resolve_relationships_for_cast(session, brand_id, character_ids)
+    variant_ids = [v.id for v in variants]
+    memories = retrieve_relevant_memories(variant_ids, query_text) if query_text.strip() else []
+    culture_ids = list({v.culture_id for v in variants if v.culture_id})
+    cultures = (
+        [_serialize_culture(c) for c in session.query(Culture).filter(Culture.id.in_(culture_ids)).all()]
+        if culture_ids else []
+    )
+    performance_context = get_cast_performance_context(session, brand_id, variant_ids)
+    return character_personalities, relationships, memories, cultures, performance_context
+
+
 @router.post("/characters/{character_id}/image")
 async def upload_character_image(character_id: str, user_id: str = Form(...), brand_id: str = Form(...),
                                   file: UploadFile = File(...)):
@@ -1029,10 +1063,16 @@ def create_variant(body: dict):
     try:
         from app.models.character_variant import CharacterVariant
         _get_character_owned(session, character_id, brand_id, user_id)
+        culture_id = body.get("culture_id")
+        if culture_id:
+            from app.models.culture import Culture
+            if not session.query(Culture).filter_by(id=_uuid.UUID(culture_id)).first():
+                raise HTTPException(status_code=404, detail="Culture not found")
         variant = CharacterVariant(
             character_id=_uuid.UUID(character_id),
             name=body["name"],
             culture_tag=body.get("culture_tag"),
+            culture_id=_uuid.UUID(culture_id) if culture_id else None,
             description=body.get("description"),
             persona_id=body.get("persona_id"),
         )
@@ -1086,10 +1126,14 @@ def update_variant(variant_id: str, body: dict):
     session = SessionLocal()
     try:
         variant = _get_variant_owned(session, variant_id, brand_id, user_id)
-        for field in ("name", "culture_tag", "description", "persona_id", "is_active",
+        if "culture_id" in body and body["culture_id"]:
+            from app.models.culture import Culture
+            if not session.query(Culture).filter_by(id=_uuid.UUID(body["culture_id"])).first():
+                raise HTTPException(status_code=404, detail="Culture not found")
+        for field in ("name", "culture_tag", "culture_id", "description", "persona_id", "is_active",
                       "voice_provider", "elevenlabs_voice_id"):
             if field in body:
-                setattr(variant, field, body[field])
+                setattr(variant, field, _uuid.UUID(body[field]) if field == "culture_id" and body[field] else body[field])
         session.commit()
         session.refresh(variant)
         return _serialize_variant(variant)
@@ -1477,6 +1521,164 @@ def delete_expression(expression_id: str, user_id: str, brand_id: str):
         session.close()
 
 
+# ── cultures ─────────────────────────────────────────────────────────────
+# Global shared reference library, not brand-scoped — see Culture's
+# docstring (app/models/culture.py).
+
+def _serialize_culture(c) -> dict:
+    return {
+        "id": str(c.id), "name": c.name, "country": c.country, "region": c.region,
+        "language": c.language, "cultural_patterns": c.cultural_patterns,
+        "humor_sensitivity": c.humor_sensitivity,
+        "common_misunderstandings": c.common_misunderstandings or [],
+        "stereotypes_to_avoid": c.stereotypes_to_avoid or [],
+        "positive_traits": c.positive_traits or [],
+        "is_active": c.is_active,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+    }
+
+
+@router.get("/cultures")
+def list_cultures(active_only: bool = True):
+    from app.db import SessionLocal
+    from app.models.culture import Culture
+    session = SessionLocal()
+    try:
+        query = session.query(Culture)
+        if active_only:
+            query = query.filter_by(is_active=True)
+        cultures = query.order_by(Culture.name.asc()).all()
+        return [_serialize_culture(c) for c in cultures]
+    finally:
+        session.close()
+
+
+@router.post("/cultures")
+def create_culture(body: dict):
+    """Any authenticated user can add to the shared library — it's meant to
+    grow as an open reference, not gated behind admin approval. user_id is
+    still required (basic auth, matching every other route's convention)
+    even though the row itself isn't user-owned."""
+    from app.db import SessionLocal
+    from app.models.culture import Culture
+
+    if not body.get("user_id"):
+        raise HTTPException(status_code=400, detail="user_id is required")
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+
+    session = SessionLocal()
+    try:
+        if session.query(Culture).filter_by(name=name).first():
+            raise HTTPException(status_code=409, detail=f"Culture '{name}' already exists")
+        culture = Culture(
+            name=name, country=body.get("country"), region=body.get("region"), language=body.get("language"),
+            cultural_patterns=body.get("cultural_patterns"), humor_sensitivity=body.get("humor_sensitivity"),
+            common_misunderstandings=body.get("common_misunderstandings"),
+            stereotypes_to_avoid=body.get("stereotypes_to_avoid"),
+            positive_traits=body.get("positive_traits"),
+        )
+        session.add(culture)
+        session.commit()
+        session.refresh(culture)
+        return _serialize_culture(culture)
+    finally:
+        session.close()
+
+
+# ── memories ─────────────────────────────────────────────────────────────
+# Variant-level, not character-level — see CharacterMemory's docstring.
+
+_MEMORY_TYPES = [
+    "backstory", "recurring_fact", "relationship_event",
+    "previous_joke", "preference", "running_gag", "episode_event",
+]
+
+
+def _serialize_memory(m) -> dict:
+    return {
+        "id": str(m.id), "character_variant_id": str(m.character_variant_id), "brand_id": str(m.brand_id),
+        "memory_type": m.memory_type, "content": m.content, "importance": m.importance,
+        "source_toon_id": str(m.source_toon_id) if m.source_toon_id else None,
+        "created_at": m.created_at.isoformat() if m.created_at else None,
+    }
+
+
+@router.post("/variants/{variant_id}/memories")
+def create_memory(variant_id: str, body: dict):
+    from app.db import SessionLocal
+    from app.models.character_memory import CharacterMemory
+    from app.services.culturetoon_memory import index_memory
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    memory_type = body.get("memory_type")
+    content = (body.get("content") or "").strip()
+    if not user_id or not brand_id or not content:
+        raise HTTPException(status_code=400, detail="user_id, brand_id and content are required")
+    if memory_type not in _MEMORY_TYPES:
+        raise HTTPException(status_code=400, detail=f"memory_type must be one of {_MEMORY_TYPES}")
+    importance = body.get("importance")
+    if importance is not None and not (0 <= int(importance) <= 10):
+        raise HTTPException(status_code=400, detail="importance must be between 0 and 10")
+
+    session = SessionLocal()
+    try:
+        brand = _get_brand_owned(session, brand_id, user_id)
+        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
+        source_toon_id = body.get("source_toon_id")
+        if source_toon_id:
+            _get_toon_owned(session, source_toon_id, brand_id, user_id)
+        memory = CharacterMemory(
+            character_variant_id=variant.id, brand_id=brand.id,
+            memory_type=memory_type, content=content, importance=importance,
+            source_toon_id=_uuid.UUID(source_toon_id) if source_toon_id else None,
+        )
+        session.add(memory)
+        session.commit()
+        session.refresh(memory)
+        index_memory(memory)  # best-effort, see culturetoon_memory.py
+        return _serialize_memory(memory)
+    finally:
+        session.close()
+
+
+@router.get("/variants/{variant_id}/memories")
+def list_memories(variant_id: str, user_id: str, brand_id: str):
+    from app.db import SessionLocal
+    from app.models.character_memory import CharacterMemory
+    session = SessionLocal()
+    try:
+        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
+        memories = (
+            session.query(CharacterMemory).filter_by(character_variant_id=variant.id)
+            .order_by(CharacterMemory.created_at.desc()).all()
+        )
+        return [_serialize_memory(m) for m in memories]
+    finally:
+        session.close()
+
+
+@router.delete("/memories/{memory_id}")
+def delete_memory(memory_id: str, user_id: str, brand_id: str):
+    from app.db import SessionLocal
+    from app.models.character_memory import CharacterMemory
+    from app.services.culturetoon_memory import delete_memory_index
+
+    session = SessionLocal()
+    try:
+        memory = session.query(CharacterMemory).filter_by(id=_uuid.UUID(memory_id)).first()
+        if not memory:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        _get_variant_owned(session, str(memory.character_variant_id), brand_id, user_id)
+        session.delete(memory)
+        session.commit()
+        delete_memory_index(memory_id)
+        return {"status": "deleted"}
+    finally:
+        session.close()
+
+
 # ── backgrounds ───────────────────────────────────────────────────────────
 
 @router.post("/backgrounds")
@@ -1702,12 +1904,21 @@ def suggest_script(body: dict):
         source = _fetch_trend_source(session, source_type, source_id)
         if not source:
             raise HTTPException(status_code=404, detail=f"{source_type} {source_id} not found")
+        source_query_text = getattr(source, "description", None) or getattr(source, "summary", None) or getattr(source, "theme", None) or ""
+        character_personalities, relationships, memories, cultures, performance_context = _gather_script_generation_context(
+            session, brand_id, variants, source_query_text
+        )
 
         try:
             idea = generate_toon_script(
                 source, variants, tone=tone,
                 num_shots=num_shots,
                 target_duration_seconds=target_duration_seconds,
+                character_personalities=character_personalities,
+                relationships=relationships,
+                memories=memories,
+                cultures=cultures,
+                performance_context=performance_context,
             )
         except ToonScriptGenerationError as exc:
             raise HTTPException(status_code=502, detail=f"Script generation failed: {exc}")
@@ -1767,12 +1978,20 @@ def suggest_script_from_idea(body: dict):
     try:
         brand = _get_brand_owned(session, brand_id, user_id)
         variants = _resolve_cast(session, body, brand_id, user_id)
+        character_personalities, relationships, memories, cultures, performance_context = _gather_script_generation_context(
+            session, brand_id, variants, idea
+        )
 
         try:
             result = generate_toon_script_from_idea(
                 idea, variants, tone=tone,
                 num_shots=num_shots,
                 target_duration_seconds=target_duration_seconds,
+                character_personalities=character_personalities,
+                relationships=relationships,
+                memories=memories,
+                cultures=cultures,
+                performance_context=performance_context,
             )
         except ToonScriptGenerationError as exc:
             raise HTTPException(status_code=502, detail=f"Script generation failed: {exc}")
@@ -2374,11 +2593,16 @@ def suggest_next_episode_part(episode_id: str, body: dict):
                 status_code=400,
                 detail="This episode has no parts with a generated script yet — attach or suggest a first part before continuing the story",
             )
+        character_personalities, relationships, memories, cultures, performance_context = _gather_script_generation_context(
+            session, brand_id, variants, idea
+        )
 
         try:
             result = generate_toon_script_continuing_episode(
                 prior_parts_summary, idea, variants, tone=tone,
                 num_shots=num_shots, target_duration_seconds=target_duration_seconds,
+                character_personalities=character_personalities, relationships=relationships,
+                memories=memories, cultures=cultures, performance_context=performance_context,
             )
         except ToonScriptGenerationError as exc:
             raise HTTPException(status_code=502, detail=f"Script generation failed: {exc}")

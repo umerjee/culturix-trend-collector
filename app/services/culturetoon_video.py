@@ -227,6 +227,27 @@ def generate_video_for_toon(user_id, toon_id) -> None:
                 toon.previous_video_urls = (toon.previous_video_urls or []) + [previous_url]
             toon.raw_video_url = raw_url
             toon.final_video_url = raw_url
+
+            # QA — see app/services/culturetoon_qa.py. Run against the local
+            # final_path (still on disk inside this tempdir) rather than
+            # re-downloading raw_url. Not a gate: a QA failure still leaves
+            # the toon "ready", just with publish_recommended=False for the
+            # frontend to warn on — a human always makes the final call.
+            from app.services.culturetoon_qa import run_full_qa
+            culture_ids = list({v.culture_id for v in variants if v.culture_id})
+            cultures_for_qa = []
+            if culture_ids:
+                from app.models.culture import Culture
+                cultures_for_qa = [
+                    {"name": c.name, "stereotypes_to_avoid": c.stereotypes_to_avoid or []}
+                    for c in session.query(Culture).filter(Culture.id.in_(culture_ids)).all()
+                ]
+            qa_results = run_full_qa(
+                final_path, total_duration, script.hook_line, script.tone or "funny",
+                script.shots, cultures_for_qa,
+            )
+            toon.qa_results = qa_results
+            toon.publish_recommended = qa_results["publish_recommended"]
             session.commit()
 
         toon.status = "ready"

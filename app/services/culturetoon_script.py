@@ -76,7 +76,32 @@ def _source_type_and_context(persona_or_cluster) -> tuple[str, str]:
     )
 
 
-def _cast_line(variants: list, source_type: str) -> str:
+def _personality_line(v, character_personalities: Optional[dict]) -> str:
+    """Renders one variant's parent Character.personality (traits/
+    behavioral_rules/speech_rules — see docs/culturix-comedy-architecture.md
+    §3.2) as a short inline clause, or "" if no personality is set. Keeping
+    character identity deterministic across scripts is the whole point of
+    this field existing — without it, the LLM re-improvises personality
+    from scratch (or from the vaguer free-text description) every single
+    call."""
+    if not character_personalities:
+        return ""
+    personality = character_personalities.get(str(getattr(v, "character_id", "")))
+    if not personality:
+        return ""
+    bits = []
+    traits = personality.get("traits") or {}
+    if traits:
+        top_traits = sorted(traits.items(), key=lambda kv: kv[1], reverse=True)[:4]
+        bits.append("traits: " + ", ".join(f"{name} ({value:.1f})" for name, value in top_traits))
+    if personality.get("behavioral_rules"):
+        bits.append("always: " + "; ".join(personality["behavioral_rules"]))
+    if personality.get("speech_rules"):
+        bits.append("speech style: " + "; ".join(personality["speech_rules"]))
+    return f" [{'; '.join(bits)}]" if bits else ""
+
+
+def _cast_line(variants: list, source_type: str, character_personalities: Optional[dict] = None) -> str:
     """variants: a list of CharacterVariant-like objects (may be empty).
     Single-character phrasing is kept as its own branch (not just a 1-item
     version of the multi-character one) since it reads more naturally and
@@ -84,19 +109,27 @@ def _cast_line(variants: list, source_type: str) -> str:
     multi-character branch requires the model to name a REAL character per
     shot via "speaker_name" rather than inventing one — this is the direct
     fix for a script inventing a fictional second character (e.g. a "Marvel
-    purist") when only one real variant was ever supplied."""
+    purist") when only one real variant was ever supplied.
+
+    character_personalities: optional {character_id: personality_dict} —
+    see _personality_line. Keyed by Character.id (the base character), not
+    CharacterVariant.id, since personality lives on the base Character and
+    is shared across its cultural variants."""
     if not variants:
         return ""
     if len(variants) == 1:
         v = variants[0]
         return (
             f"\nWrite this specifically for the character '{v.name}' "
-            f"({v.description or v.culture_tag or 'no further description'}). "
+            f"({v.description or v.culture_tag or 'no further description'})"
+            f"{_personality_line(v, character_personalities)}. "
             f"Every shot's action/dialogue must be something THIS character does/says, "
             f"reacting to the {source_type} below in a way that reflects their cultural humor/perspective.\n"
         )
     cast_block = "\n".join(
-        f"- '{v.name}' ({v.description or v.culture_tag or 'no further description'})" for v in variants
+        f"- '{v.name}' ({v.description or v.culture_tag or 'no further description'})"
+        f"{_personality_line(v, character_personalities)}"
+        for v in variants
     )
     return f"""
 This is a scene between these {len(variants)} REAL characters — do not invent any other
@@ -109,9 +142,79 @@ acting/speaking in that shot.
 """
 
 
+def _memory_context(memories: Optional[list]) -> str:
+    """memories: list of memory content strings, already retrieved/filtered
+    by app/services/culturetoon_memory.py::retrieve_relevant_memories for
+    relevance to this script's context — see
+    docs/culturix-comedy-architecture.md §3.5. Empty string if none."""
+    if not memories:
+        return ""
+    lines = "\n".join(f"- {m}" for m in memories)
+    return f"\nRelevant things that happened before, from this character's history (reference naturally if it fits, don't force it):\n{lines}\n"
+
+
+def _culture_context(cultures: Optional[list]) -> str:
+    """cultures: list of serialized Culture dicts (see
+    app/models/culture.py — deduped, one per distinct culture actually
+    present in the cast, resolved from each variant's culture_id). Surfaces
+    real comedy material (common_misunderstandings, positive_traits) AND an
+    explicit avoid-list (stereotypes_to_avoid) in the same breath — the
+    culture library exists specifically so cultural humor doesn't default
+    to demeaning generalizations, per docs/culturix-comedy-architecture.md
+    §11/§3.7."""
+    if not cultures:
+        return ""
+    lines = []
+    for c in cultures:
+        parts = [f"{c['name']}:"]
+        if c.get("humor_sensitivity"):
+            parts.append(c["humor_sensitivity"])
+        if c.get("common_misunderstandings"):
+            parts.append("Material to draw on: " + "; ".join(c["common_misunderstandings"]))
+        if c.get("positive_traits"):
+            parts.append("Positive traits to reflect: " + ", ".join(c["positive_traits"]))
+        if c.get("stereotypes_to_avoid"):
+            parts.append("AVOID: " + "; ".join(c["stereotypes_to_avoid"]))
+        lines.append("- " + " ".join(parts))
+    return "\nCultural context (use for authentic material, respect the AVOID guidance strictly):\n" + "\n".join(lines) + "\n"
+
+
+def _relationship_context(relationships: Optional[list]) -> str:
+    """relationships: list of serialized CharacterRelationship dicts (see
+    app/routers/culturetoons.py::resolve_relationships_for_cast) — already
+    filtered to the pair(s) actually present in this script's cast. Empty
+    string if none, so a single-character script or a cast with no stored
+    relationship doesn't get a dangling empty section in the prompt."""
+    if not relationships:
+        return ""
+    lines = []
+    for r in relationships:
+        parts = []
+        if r.get("relationship_type"):
+            parts.append(r["relationship_type"].replace("_", " "))
+        if r.get("description"):
+            parts.append(r["description"])
+        if r.get("behavioral_rules"):
+            parts.append("Rules: " + "; ".join(r["behavioral_rules"]))
+        if parts:
+            lines.append("- " + " — ".join(parts))
+    if not lines:
+        return ""
+    return "\nEstablished relationship between these characters (keep the dynamic consistent, don't contradict it):\n" + "\n".join(lines) + "\n"
+
+
 def _build_prompt_from_context(source_type: str, context: str, variants: list, tone: str,
-                                num_shots: int, target_duration_seconds: int) -> str:
-    cast_line = _cast_line(variants, source_type)
+                                num_shots: int, target_duration_seconds: int,
+                                character_personalities: Optional[dict] = None,
+                                relationships: Optional[list] = None,
+                                memories: Optional[list] = None,
+                                cultures: Optional[list] = None,
+                                performance_context: Optional[str] = None) -> str:
+    cast_line = _cast_line(variants, source_type, character_personalities)
+    relationship_line = _relationship_context(relationships)
+    memory_line = _memory_context(memories)
+    culture_line = _culture_context(cultures)
+    performance_line = performance_context or ""
     speaker_field = (
         '\n- "speaker_name" is the exact name of which listed character is acting/speaking in '
         "that shot (required when more than one character is listed; omit or null otherwise)."
@@ -124,6 +227,10 @@ social video, grounded in the {source_type} below. The tone must be: {tone}.
 
 {context}
 {cast_line}
+{relationship_line}
+{memory_line}
+{culture_line}
+{performance_line}
 Aim for around {num_shots} shots totaling about {target_duration_seconds} seconds, though you
 may adjust within the hard limits below if it better serves the joke.
 
@@ -145,9 +252,13 @@ Return ONLY valid JSON with exactly these keys:
 Return ONLY the JSON object, no other text."""
 
 
-def _build_prompt(persona_or_cluster, variants: list, tone: str, num_shots: int, target_duration_seconds: int) -> str:
+def _build_prompt(persona_or_cluster, variants: list, tone: str, num_shots: int, target_duration_seconds: int,
+                   character_personalities: Optional[dict] = None, relationships: Optional[list] = None,
+                   memories: Optional[list] = None, cultures: Optional[list] = None,
+                   performance_context: Optional[str] = None) -> str:
     source_type, context = _source_type_and_context(persona_or_cluster)
-    return _build_prompt_from_context(source_type, context, variants, tone, num_shots, target_duration_seconds)
+    return _build_prompt_from_context(source_type, context, variants, tone, num_shots, target_duration_seconds,
+                                       character_personalities, relationships, memories, cultures, performance_context)
 
 
 def _assign_speakers(shots: list, variants: list) -> list:
@@ -216,20 +327,37 @@ def _call_llm_for_script(prompt: str, tone: str, variants: list) -> dict:
 
 
 def generate_toon_script(persona_or_cluster, variants: Optional[list] = None, tone: str = "funny",
-                          num_shots: int = 4, target_duration_seconds: int = 12) -> dict:
+                          num_shots: int = 4, target_duration_seconds: int = 12,
+                          character_personalities: Optional[dict] = None,
+                          relationships: Optional[list] = None,
+                          memories: Optional[list] = None,
+                          cultures: Optional[list] = None,
+                          performance_context: Optional[str] = None) -> dict:
     """variants: the full cast for this script (list of CharacterVariant-like
     objects) — one real character writes a monologue, two or more write an
-    actual scene between them (see _cast_line). Returns {"hook_line": str,
-    "tone": str, "shots": [{"shot_number", "duration_seconds", "action",
-    "expression", "dialogue", "speaker_variant_id"}, ...],
+    actual scene between them (see _cast_line). character_personalities:
+    optional {character_id: personality_dict}, relationships: optional list
+    of serialized CharacterRelationship dicts already filtered to this
+    cast — see app/routers/culturetoons.py::resolve_relationships_for_cast.
+    Both are how a character's identity stays deterministic across scripts
+    instead of being re-improvised by the LLM each call — see
+    docs/culturix-comedy-architecture.md §3.2/§3.4. Returns {"hook_line":
+    str, "tone": str, "shots": [{"shot_number", "duration_seconds",
+    "action", "expression", "dialogue", "speaker_variant_id"}, ...],
     "total_duration_seconds": int}."""
     variants = variants or []
-    prompt = _build_prompt(persona_or_cluster, variants, tone, num_shots, target_duration_seconds)
+    prompt = _build_prompt(persona_or_cluster, variants, tone, num_shots, target_duration_seconds,
+                            character_personalities, relationships, memories, cultures, performance_context)
     return _call_llm_for_script(prompt, tone, variants)
 
 
 def generate_toon_script_from_idea(idea: str, variants: Optional[list] = None, tone: str = "funny",
-                                    num_shots: int = 4, target_duration_seconds: int = 12) -> dict:
+                                    num_shots: int = 4, target_duration_seconds: int = 12,
+                                    character_personalities: Optional[dict] = None,
+                                    relationships: Optional[list] = None,
+                                    memories: Optional[list] = None,
+                                    cultures: Optional[list] = None,
+                                    performance_context: Optional[str] = None) -> dict:
     """Same shape/contract as generate_toon_script, but grounded in the
     user's own free-text scenario idea instead of a live trending Persona
     or Cluster — for when someone already knows what they want the
@@ -237,13 +365,20 @@ def generate_toon_script_from_idea(idea: str, variants: Optional[list] = None, t
     variants = variants or []
     context = f"User's scenario idea: {idea.strip()}"
     prompt = _build_prompt_from_context("user-provided scenario idea", context, variants, tone,
-                                         num_shots, target_duration_seconds)
+                                         num_shots, target_duration_seconds,
+                                         character_personalities, relationships, memories, cultures,
+                                         performance_context)
     return _call_llm_for_script(prompt, tone, variants)
 
 
 def generate_toon_script_continuing_episode(prior_parts_summary: str, idea: str, variants: Optional[list] = None,
                                              tone: str = "funny", num_shots: int = 4,
-                                             target_duration_seconds: int = 12) -> dict:
+                                             target_duration_seconds: int = 12,
+                                             character_personalities: Optional[dict] = None,
+                                             relationships: Optional[list] = None,
+                                             memories: Optional[list] = None,
+                                             cultures: Optional[list] = None,
+                                             performance_context: Optional[str] = None) -> dict:
     """Same shape/contract as generate_toon_script_from_idea, but grounded in
     a synopsis of an episode's prior parts too (see
     app/routers/culturetoons.py's _episode_synopsis) — the next part is
@@ -257,7 +392,8 @@ def generate_toon_script_continuing_episode(prior_parts_summary: str, idea: str,
     )
     prompt = _build_prompt_from_context(
         "the ongoing story so far, and what should happen in this next part", context, variants, tone,
-        num_shots, target_duration_seconds,
+        num_shots, target_duration_seconds, character_personalities, relationships, memories, cultures,
+        performance_context,
     )
     prompt += (
         "\n\nThis is a continuation, not a new story — do not recap, re-introduce the characters, "

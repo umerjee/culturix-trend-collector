@@ -173,6 +173,138 @@ class TestGenerateToonScript:
         assert "speaker_name" not in sent_prompt
 
 
+class TestPersonalityAndRelationshipContext:
+    def test_personality_injected_for_single_character(self, mocker):
+        from app.models.cluster import Cluster
+        import uuid as _uuid
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        char_id = _uuid.uuid4()
+        kumar = mocker.Mock()
+        kumar.name = "Kumar"; kumar.description = "middle class man"; kumar.culture_tag = None
+        kumar.character_id = char_id
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(
+            cluster, variants=[kumar], tone="funny",
+            character_personalities={
+                str(char_id): {
+                    "traits": {"confidence": 0.9, "humor": 0.8},
+                    "behavioral_rules": ["tries to negotiate when prices seem high"],
+                    "speech_rules": ["speaks confidently"],
+                }
+            },
+        )
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "confidence (0.9)" in sent_prompt
+        assert "tries to negotiate when prices seem high" in sent_prompt
+        assert "speaks confidently" in sent_prompt
+
+    def test_no_personality_no_extra_text(self, mocker):
+        from app.models.cluster import Cluster
+        import uuid as _uuid
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        kumar = mocker.Mock()
+        kumar.name = "Kumar"; kumar.description = None; kumar.culture_tag = None
+        kumar.character_id = _uuid.uuid4()
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(cluster, variants=[kumar], tone="funny", character_personalities=None)
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "traits:" not in sent_prompt
+
+    def test_relationship_injected_when_cast_includes_both_characters(self, mocker):
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        kumar = mocker.Mock(); kumar.name = "Kumar"; kumar.description = None; kumar.culture_tag = None
+        hans = mocker.Mock(); hans.name = "Hans"; hans.description = None; hans.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(
+            cluster, variants=[kumar, hans], tone="funny",
+            relationships=[{
+                "relationship_type": "friendly_rivalry",
+                "description": "Kumar finds Hans excessively rule-oriented.",
+                "behavioral_rules": ["Kumar attempts to persuade Hans."],
+            }],
+        )
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "friendly rivalry" in sent_prompt
+        assert "excessively rule-oriented" in sent_prompt
+        assert "Kumar attempts to persuade Hans" in sent_prompt
+
+    def test_no_relationships_no_extra_section(self, mocker):
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        kumar = mocker.Mock(); kumar.name = "Kumar"; kumar.description = None; kumar.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(cluster, variants=[kumar], tone="funny", relationships=None)
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "Established relationship" not in sent_prompt
+
+    def test_culture_context_injected_with_avoid_guidance(self, mocker):
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        kumar = mocker.Mock(); kumar.name = "Kumar"; kumar.description = None; kumar.culture_tag = "indian"
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(
+            cluster, variants=[kumar], tone="funny",
+            cultures=[{
+                "name": "Indian",
+                "humor_sensitivity": "food and family jokes land well",
+                "common_misunderstandings": ["assuming every guest must be fed"],
+                "positive_traits": ["hospitable"],
+                "stereotypes_to_avoid": ["accent mockery"],
+            }],
+        )
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "food and family jokes land well" in sent_prompt
+        assert "assuming every guest must be fed" in sent_prompt
+        assert "AVOID: accent mockery" in sent_prompt
+
+    def test_no_cultures_no_extra_section(self, mocker):
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        kumar = mocker.Mock(); kumar.name = "Kumar"; kumar.description = None; kumar.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(cluster, variants=[kumar], tone="funny", cultures=None)
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "Cultural context" not in sent_prompt
+
+    def test_performance_context_injected_verbatim(self, mocker):
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        kumar = mocker.Mock(); kumar.name = "Kumar"; kumar.description = None; kumar.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(
+            cluster, variants=[kumar], tone="funny",
+            performance_context="\nPast performance for this cast: 3 posts, avg 1500 views, 12.0% engagement\n",
+        )
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "avg 1500 views, 12.0% engagement" in sent_prompt
+
+    def test_no_performance_context_no_extra_text(self, mocker):
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        kumar = mocker.Mock(); kumar.name = "Kumar"; kumar.description = None; kumar.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(cluster, variants=[kumar], tone="funny", performance_context=None)
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "Past performance" not in sent_prompt
+
+
 class TestAssignSpeakers:
     def test_no_variants_returns_shots_unchanged(self):
         shots = [{"shot_number": 1, "speaker_name": "Kumar"}]

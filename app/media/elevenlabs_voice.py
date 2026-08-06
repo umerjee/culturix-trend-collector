@@ -47,6 +47,13 @@ class ElevenLabsProvider:
             raise ElevenLabsError("ElevenLabs returned no audio data")
         return resp.content
 
+    def generate_dialogue(self, dialogue: str, voice_id: str):
+        """Adapter satisfying app.media.protocols.VoiceProvider — see that
+        module's docstring for why call sites don't use this yet. Thin
+        wrapper, no new behavior."""
+        from app.media.protocols import AudioResult
+        return AudioResult(audio_bytes=self.synthesize(dialogue, voice_id))
+
     def list_voices(self) -> list:
         """GET /voices — populates the variant-level voice picker in the UI."""
         try:

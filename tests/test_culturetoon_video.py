@@ -28,6 +28,21 @@ _SHOTS = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _no_real_ai_judge_call(mocker):
+    # run_ai_judge_qa makes a real Qwen/Claude call when QWEN_API_KEY/
+    # ANTHROPIC_API_KEY are set in the environment (they are, via .env) —
+    # every successful-generation test would otherwise make a real, billed
+    # LLM call on every test run. Autouse so it's opt-out, not opt-in.
+    # run_technical_qa is left real — ffmpeg.probe() on the fake video
+    # bytes these tests upload just fails harmlessly (no network, no cost),
+    # which is itself useful coverage of the QA wiring's failure path.
+    return mocker.patch(
+        "app.services.culturetoon_qa.run_ai_judge_qa",
+        return_value={"comedy_score": 80, "cultural_score": 90, "cultural_concerns": [], "reasoning": "mocked", "judge_failed": False},
+    )
+
+
 @pytest.fixture
 def db(mocker):
     engine = create_engine("sqlite:///:memory:")
@@ -143,6 +158,13 @@ class TestGenerateVideoForToonSuccess:
         assert toon.final_video_url == "https://supabase/video.mp4"
         assert toon.kling_task_id == "task-123"
         assert toon.generation_error is None
+        # QA (Phase 7a+7b) runs automatically — technical checks fail on
+        # the fake (non-mp4) video bytes these tests upload, so
+        # publish_recommended is correctly False here; this is exercising
+        # the real run_technical_qa path, only the LLM half is mocked (see
+        # the _no_real_ai_judge_call autouse fixture).
+        assert toon.qa_results is not None
+        assert toon.publish_recommended is False
         session.close()
 
         mock_upload.assert_called()

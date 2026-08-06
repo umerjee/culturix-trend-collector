@@ -430,6 +430,24 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
               {t.final_video_url && (
                 <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 mt-3">
                   <span className="text-xs font-semibold text-gray-700">Publish</span>
+                  {t.publish_recommended === false && t.qa_results && (
+                    <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-100 px-2.5 py-2 mt-1.5">
+                      <AlertTriangle className="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" />
+                      <div className="flex-1">
+                        <p className="text-xs text-amber-700">
+                          QA flagged this toon (overall {t.qa_results.overall_score}/100 — comedy {t.qa_results.comedy_score},
+                          cultural {t.qa_results.cultural_score}, technical {t.qa_results.technical_score}). Review before publishing:
+                        </p>
+                        {t.qa_results.issues.length > 0 && (
+                          <ul className="mt-1 space-y-0.5">
+                            {t.qa_results.issues.map((issue, i) => (
+                              <li key={i} className="text-[11px] text-amber-600">· {issue}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   <div className="flex flex-wrap gap-2 items-center mt-1.5">
                     <select
                       value={publishPlatformByToon[t.id] ?? connectablePlatforms[0]?.platform ?? ""}

@@ -218,3 +218,13 @@ class KlingOmniProvider:
                 raise KlingOmniError(f"Kling omni task failed: {pdata.get('message')}")
 
         raise KlingOmniError(f"Kling omni task {task_id} did not complete in time")
+
+    def generate_scene(self, contents: list, settings: dict, options: Optional[dict] = None):
+        """Adapter satisfying app.media.protocols.VideoProvider — see that
+        module's docstring for why call sites don't use this yet. Thin
+        wrapper, no new behavior."""
+        from app.media.protocols import VideoGenerationResult
+        result = self.generate_omni_video(contents, settings, options)
+        return VideoGenerationResult(
+            video_bytes=result["video_bytes"], duration_seconds=result["duration_seconds"], task_id=result["task_id"],
+        )

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Text, ARRAY, Integer
+from sqlalchemy import Column, String, DateTime, Text, ARRAY, Integer, JSON, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -53,6 +53,17 @@ class Toon(Base):
     # first — never trimmed/pruned, since a handful of stored video URLs is
     # negligible next to the storage cost of the videos themselves.
     previous_video_urls = Column(ARRAY(Text), nullable=True)
+    # QA — run automatically right after a successful generation (see
+    # app/services/culturetoon_qa.py). Deliberately NOT a new Toon.status
+    # value (no "qa" state inserted into idea|animating|ready|posted|
+    # archived|failed) — the existing status flow stays exactly as tested;
+    # QA is additive metadata layered on top of "ready", not a gate a toon
+    # must pass through. publish_recommended is a soft signal the frontend
+    # uses to warn before publishing, never a hard block enforced
+    # server-side — a human always makes the final call. NULL means QA
+    # hasn't run yet (e.g. a toon generated before this feature existed).
+    qa_results = Column(JSON, nullable=True)
+    publish_recommended = Column(Boolean, nullable=True)
     kling_task_id = Column(String(64), nullable=True)
     generation_error = Column(Text, nullable=True)         # mirrors ShopifyProduct.reel_error's pattern
 

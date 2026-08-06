@@ -7,6 +7,7 @@ import { PERSONALITY_TRAITS } from "@/lib/types";
 import CharacterImageBuilder from "@/components/CharacterImageBuilder";
 import ExpressionUploadGrid from "@/components/ExpressionUploadGrid";
 import RelationshipManager from "@/components/RelationshipManager";
+import MemoryManager from "@/components/MemoryManager";
 
 interface Props {
   brandId: string;
@@ -678,6 +679,8 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                       key={selectedVariant.id} brandId={brandId} variantId={selectedVariant.id}
                       hasPortrait={!!selectedVariant.image_url}
                     />
+
+                    <MemoryManager key={`memory-${selectedVariant.id}`} brandId={brandId} variantId={selectedVariant.id} />
                   </div>
                 )}
               </div>
