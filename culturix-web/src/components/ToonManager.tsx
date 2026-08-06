@@ -16,6 +16,16 @@ interface Props {
 }
 
 const STATUSES: Toon["status"][] = ["idea", "animating", "ready", "posted", "archived"];
+// "animating" is system-managed — only the real Generate video flow (which
+// also launches the actual background Kling call) should ever set it.
+// Picking it manually from this dropdown used to set the status flag with
+// nothing behind it: no kling_task_id, no error, no background task —
+// just a permanently "stuck" spinner with no way forward (confirmed live:
+// a toon sat in "animating" for hours with an unregistered character and
+// no Kling call ever made). Still rendered as an option so the dropdown
+// can display it as the current value while a real generation is in
+// flight, but disabled so it can't be freely (re-)selected.
+const MANUALLY_UNSELECTABLE_STATUSES: Toon["status"][] = ["animating"];
 
 export default function ToonManager({ brandId, brandName, initialToons, scripts, variants, backgrounds }: Props) {
   const [toons, setToons] = useState(initialToons.filter((t) => t.status !== "archived"));
@@ -246,9 +256,12 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
                 <select
                   value={t.status}
                   onChange={(e) => updateToon(t.id, { status: e.target.value })}
-                  className="rounded-lg border border-gray-200 px-2 py-1 text-xs"
+                  disabled={t.status === "animating"}
+                  className="rounded-lg border border-gray-200 px-2 py-1 text-xs disabled:opacity-60"
                 >
-                  {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                  {STATUSES.map((s) => (
+                    <option key={s} value={s} disabled={MANUALLY_UNSELECTABLE_STATUSES.includes(s)}>{s}</option>
+                  ))}
                 </select>
               </div>
 
