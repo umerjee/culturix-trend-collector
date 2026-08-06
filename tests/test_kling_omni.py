@@ -13,10 +13,11 @@ from app.media.kling_omni import KlingOmniProvider, KlingOmniError
 
 
 class _FakeResponse:
-    def __init__(self, json_data=None, status_code=200, content=b""):
+    def __init__(self, json_data=None, status_code=200, content=b"", text=""):
         self._json = json_data or {}
         self.status_code = status_code
         self.content = content
+        self.text = text
         self.headers = {}
 
     def json(self):
@@ -64,6 +65,27 @@ class TestCreateElement:
         mocker.patch("app.media.kling_omni._ELEMENT_MAX_POLLS", 2)
 
         with pytest.raises(KlingOmniError, match="did not complete in time"):
+            KlingOmniProvider().create_element("Mom", "desc", "https://img/f.png")
+
+    def test_http_400_surfaces_response_body(self, mocker):
+        # Confirmed live: a bare raise_for_status() on a 400 response
+        # discarded Kling's actual error message, surfacing only "400 Bad
+        # Request" with no way to diagnose which field/constraint was
+        # violated. _check must read and include the body instead.
+        create_resp = _FakeResponse(
+            {"message": "frontal_image resolution too low"}, status_code=400,
+        )
+        mocker.patch("httpx.request", return_value=create_resp)
+
+        with pytest.raises(KlingOmniError, match="frontal_image resolution too low"):
+            KlingOmniProvider().create_element("Mom", "desc", "https://img/f.png")
+
+    def test_http_400_with_non_json_body_falls_back_to_text(self, mocker):
+        create_resp = _FakeResponse(status_code=400, text="upstream gateway error")
+        create_resp.json = lambda: (_ for _ in ()).throw(ValueError("not json"))
+        mocker.patch("httpx.request", return_value=create_resp)
+
+        with pytest.raises(KlingOmniError, match="upstream gateway error"):
             KlingOmniProvider().create_element("Mom", "desc", "https://img/f.png")
 
 

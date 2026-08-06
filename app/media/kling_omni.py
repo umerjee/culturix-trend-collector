@@ -83,7 +83,19 @@ class KlingOmniProvider:
         return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
     def _check(self, resp: httpx.Response, context: str) -> dict:
-        resp.raise_for_status()
+        # A bare resp.raise_for_status() discards Kling's actual response
+        # body on an HTTP error — confirmed live: a real 400 from
+        # create_element surfaced only "400 Bad Request" with zero
+        # indication of which field/constraint was actually violated, making
+        # it undiagnosable without reproducing the exact same call. Kling's
+        # error responses put the real reason in the JSON body (or plain
+        # text), so read that before raising.
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json()
+            except Exception:
+                detail = resp.text
+            raise KlingOmniError(f"{context}: HTTP {resp.status_code} — {detail}")
         data = resp.json()
         if data.get("code", 0) != 0:
             raise KlingOmniError(f"{context}: {data.get('message', data)}")
