@@ -429,6 +429,40 @@ def _serialize_episode(session, e) -> dict:
     }
 
 
+def _episode_synopsis(session, episode) -> str:
+    """Builds the "what happened so far" text fed to
+    generate_toon_script_continuing_episode — one line per existing part,
+    made of that part's shots' dialogue/action beats (dialogue carries more
+    continuity signal than action alone, so a shot with both leads with
+    action then quotes the line; a silent shot falls back to its hook_line
+    so a part never contributes an empty line)."""
+    from app.models.toon import Toon
+    from app.models.toon_script import ToonScript
+
+    parts = (
+        session.query(Toon).filter_by(episode_id=episode.id)
+        .order_by(Toon.part_order.asc()).all()
+    )
+    lines = []
+    for i, part in enumerate(parts, start=1):
+        script = session.query(ToonScript).filter_by(id=part.script_id).first()
+        if not script:
+            continue
+        beats = []
+        for shot in (script.shots or []):
+            action = (shot.get("action") or "").strip()
+            dialogue = (shot.get("dialogue") or "").strip()
+            if action and dialogue:
+                beats.append(f'{action} — "{dialogue}"')
+            elif dialogue:
+                beats.append(f'"{dialogue}"')
+            elif action:
+                beats.append(action)
+        summary = " ".join(beats) or (script.hook_line or "")
+        lines.append(f"Part {i}: {summary}")
+    return "\n".join(lines)
+
+
 # ── brands ────────────────────────────────────────────────────────────────
 
 @router.post("/brands")
@@ -1874,6 +1908,100 @@ def attach_episode_part(episode_id: str, body: dict):
         toon.episode_id = episode.id
         toon.part_order = (max_order.part_order + 1) if max_order and max_order.part_order is not None else 0
         session.commit()
+        return _serialize_episode(session, episode)
+    finally:
+        session.close()
+
+
+@router.post("/episodes/{episode_id}/parts/suggest-next")
+def suggest_next_episode_part(episode_id: str, body: dict):
+    """AI-suggests the next part's script grounded in a synopsis of every
+    part already attached (see _episode_synopsis), so the story continues
+    naturally instead of each part being written blind — then creates the
+    script + a new Toon and attaches it as the episode's next part in one
+    step, mirroring suggest_script_from_idea's create-and-return shape.
+    Synchronous like the other suggest endpoints: one LLM call, the caller
+    needs the result immediately to render it. Video generation for the new
+    part is a separate step (POST /toons/{id}/generate-video), same as any
+    other toon."""
+    from app.db import SessionLocal
+    from app.models.toon import Toon
+    from app.models.toon_script import ToonScript
+    from app.services.culturetoon_script import (
+        generate_toon_script_continuing_episode, ToonScriptGenerationError, TONE_OPTIONS as _TONES,
+    )
+
+    user_id = body.get("user_id")
+    brand_id = body.get("brand_id")
+    idea = (body.get("idea") or "").strip()
+    tone = body.get("tone", "funny")
+
+    if not user_id or not brand_id or not idea:
+        raise HTTPException(status_code=400, detail="user_id, brand_id and idea are required")
+    if not _extract_cast_ids(body):
+        raise HTTPException(
+            status_code=400,
+            detail="character_variant_ids (or character_variant_id) is required — pick at least one real character",
+        )
+    if tone not in _TONES:
+        raise HTTPException(status_code=400, detail=f"tone must be one of {_TONES}")
+    num_shots, target_duration_seconds = _validate_script_generation_params(body)
+
+    session = SessionLocal()
+    try:
+        brand = _get_brand_owned(session, brand_id, user_id)
+        episode = _get_episode_owned(session, episode_id, brand_id, user_id)
+        variants = _resolve_cast(session, body, brand_id, user_id)
+        prior_parts_summary = _episode_synopsis(session, episode)
+        if not prior_parts_summary:
+            raise HTTPException(
+                status_code=400,
+                detail="This episode has no parts with a generated script yet — attach or suggest a first part before continuing the story",
+            )
+
+        try:
+            result = generate_toon_script_continuing_episode(
+                prior_parts_summary, idea, variants, tone=tone,
+                num_shots=num_shots, target_duration_seconds=target_duration_seconds,
+            )
+        except ToonScriptGenerationError as exc:
+            raise HTTPException(status_code=502, detail=f"Script generation failed: {exc}")
+
+        script = ToonScript(
+            brand_id=brand.id,
+            character_variant_id=variants[0].id,
+            character_variant_ids=[str(v.id) for v in variants],
+            source_type="idea",
+            hook_line=result.get("hook_line"),
+            tone=result.get("tone"),
+            shots=result.get("shots"),
+            total_duration_seconds=result.get("total_duration_seconds"),
+            generation_source="ai",
+            status="draft",
+        )
+        session.add(script)
+        session.commit()
+        session.refresh(script)
+
+        toon = Toon(
+            brand_id=brand.id,
+            character_variant_id=variants[0].id,
+            script_id=script.id,
+            title=result.get("hook_line"),
+            status="idea",
+        )
+        session.add(toon)
+        session.commit()
+        session.refresh(toon)
+
+        max_order = (
+            session.query(Toon).filter_by(episode_id=episode.id)
+            .order_by(Toon.part_order.desc()).first()
+        )
+        toon.episode_id = episode.id
+        toon.part_order = (max_order.part_order + 1) if max_order and max_order.part_order is not None else 0
+        session.commit()
+
         return _serialize_episode(session, episode)
     finally:
         session.close()

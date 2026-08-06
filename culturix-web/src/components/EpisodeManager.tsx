@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Loader2, ExternalLink, Clapperboard, ArrowUp, ArrowDown, X, Scissors } from "lucide-react";
-import type { Toon, ToonEpisode } from "@/lib/types";
+import { Plus, Loader2, ExternalLink, Clapperboard, ArrowUp, ArrowDown, X, Scissors, Sparkles } from "lucide-react";
+import type { Toon, ToonEpisode, CharacterVariant } from "@/lib/types";
 
 interface Props {
   brandId: string;
   initialEpisodes: ToonEpisode[];
   initialToons: Toon[];
+  variants: CharacterVariant[];
 }
 
 const STATUS_BADGE_STYLES: Record<ToonEpisode["status"], string> = {
@@ -18,13 +19,17 @@ const STATUS_BADGE_STYLES: Record<ToonEpisode["status"], string> = {
   archived: "bg-gray-50 text-gray-400",
 };
 
-export default function EpisodeManager({ brandId, initialEpisodes, initialToons }: Props) {
+export default function EpisodeManager({ brandId, initialEpisodes, initialToons, variants }: Props) {
   const [episodes, setEpisodes] = useState(initialEpisodes.filter((e) => e.status !== "archived"));
   const [toons, setToons] = useState(initialToons);
   const [title, setTitle] = useState("");
   const [creating, setCreating] = useState(false);
   const [attachToonId, setAttachToonId] = useState<Record<string, string>>({});
   const [busyEpisodeId, setBusyEpisodeId] = useState<string | null>(null);
+  const [nextIdea, setNextIdea] = useState<Record<string, string>>({});
+  const [nextVariantId, setNextVariantId] = useState<Record<string, string>>({});
+  const [suggestingNextId, setSuggestingNextId] = useState<string | null>(null);
+  const [suggestNextError, setSuggestNextError] = useState<Record<string, string>>({});
 
   // A toon already in an episode (this one or another) shouldn't be offered
   // again — episode parts are 1:1 with their episode, not shared.
@@ -90,6 +95,35 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons 
       }
     } finally {
       setBusyEpisodeId(null);
+    }
+  }
+
+  async function suggestNextPart(episodeId: string) {
+    const idea = (nextIdea[episodeId] ?? "").trim();
+    const variantId = nextVariantId[episodeId] || variants[0]?.id;
+    if (!idea || !variantId) return;
+    setSuggestingNextId(episodeId);
+    setSuggestNextError((prev) => ({ ...prev, [episodeId]: "" }));
+    try {
+      const res = await fetch(`/api/culturetoons/episodes/${episodeId}/parts/suggest-next`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, idea, character_variant_id: variantId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setEpisodes((prev) => prev.map((e) => (e.id === episodeId ? data : e)));
+        setNextIdea((prev) => ({ ...prev, [episodeId]: "" }));
+        // The new part's Toon isn't in `toons` yet (created server-side, not
+        // via the usual Toons-tab flow) — refetch so it shows up correctly
+        // in the "attach existing toon" picker and Toons tab alike.
+        const toonsRes = await fetch(`/api/culturetoons/toons?brand_id=${brandId}`, { cache: "no-store" });
+        if (toonsRes.ok) setToons(await toonsRes.json());
+      } else {
+        setSuggestNextError((prev) => ({ ...prev, [episodeId]: typeof data.detail === "string" ? data.detail : "Suggestion failed" }));
+      }
+    } finally {
+      setSuggestingNextId(null);
     }
   }
 
@@ -250,6 +284,41 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons 
                   <Plus className="h-3.5 w-3.5" /> Attach
                 </button>
               </div>
+
+              {ep.parts.length > 0 && (
+                <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 mt-2">
+                  <span className="text-xs font-semibold text-gray-700">Suggest the next part with AI</span>
+                  <p className="text-[11px] text-gray-400 mt-0.5 mb-1.5">
+                    Grounded in what already happened in this episode — describe what should happen next.
+                  </p>
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <input
+                      type="text"
+                      value={nextIdea[ep.id] ?? ""}
+                      onChange={(e) => setNextIdea((prev) => ({ ...prev, [ep.id]: e.target.value }))}
+                      placeholder={`E.g. "Mom walks in with even more food"`}
+                      className="flex-1 min-w-[10rem] rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs"
+                    />
+                    <select
+                      value={nextVariantId[ep.id] ?? variants[0]?.id ?? ""}
+                      onChange={(e) => setNextVariantId((prev) => ({ ...prev, [ep.id]: e.target.value }))}
+                      className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                    >
+                      {variants.length === 0 && <option value="">No characters yet</option>}
+                      {variants.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                    </select>
+                    <button
+                      onClick={() => suggestNextPart(ep.id)}
+                      disabled={!(nextIdea[ep.id] ?? "").trim() || suggestingNextId === ep.id}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium px-3 py-1.5 hover:bg-blue-700 transition-colors disabled:opacity-60"
+                    >
+                      {suggestingNextId === ep.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                      Suggest
+                    </button>
+                  </div>
+                  {suggestNextError[ep.id] && <p className="text-[11px] text-red-500 mt-1">{suggestNextError[ep.id]}</p>}
+                </div>
+              )}
 
               <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 mt-3">
                 <div className="flex items-center justify-between mb-1.5">

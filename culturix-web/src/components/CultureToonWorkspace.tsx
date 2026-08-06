@@ -101,6 +101,7 @@ export default function CultureToonWorkspace({
           brandId={brand.id}
           initialEpisodes={initialEpisodes}
           initialToons={initialToons}
+          variants={initialVariants}
         />
       )}
     </div>

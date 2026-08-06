@@ -241,6 +241,31 @@ def generate_toon_script_from_idea(idea: str, variants: Optional[list] = None, t
     return _call_llm_for_script(prompt, tone, variants)
 
 
+def generate_toon_script_continuing_episode(prior_parts_summary: str, idea: str, variants: Optional[list] = None,
+                                             tone: str = "funny", num_shots: int = 4,
+                                             target_duration_seconds: int = 12) -> dict:
+    """Same shape/contract as generate_toon_script_from_idea, but grounded in
+    a synopsis of an episode's prior parts too (see
+    app/routers/culturetoons.py's _episode_synopsis) — the next part is
+    written with awareness of what already happened instead of starting
+    cold each time, which is what episode stitching otherwise leaves to the
+    user to maintain by hand across separately-suggested scripts."""
+    variants = variants or []
+    context = (
+        f"What has happened so far in this story, in order:\n{prior_parts_summary.strip()}\n\n"
+        f"What should happen in this NEXT part: {idea.strip()}"
+    )
+    prompt = _build_prompt_from_context(
+        "the ongoing story so far, and what should happen in this next part", context, variants, tone,
+        num_shots, target_duration_seconds,
+    )
+    prompt += (
+        "\n\nThis is a continuation, not a new story — do not recap, re-introduce the characters, "
+        "or restate what already happened. Continue directly from where the story left off."
+    )
+    return _call_llm_for_script(prompt, tone, variants)
+
+
 def build_kling_prompt(shots: list, element_names) -> str:
     """Assembles Kling Omni's multi-shot DSL string ("shot n, m, words; ...")
     from stored shots + registered element name(s). Raises

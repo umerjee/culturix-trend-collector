@@ -1284,3 +1284,65 @@ class TestEpisodes:
                 episode["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=_FakeBackgroundTasks(),
             )
         assert exc_info.value.status_code == 400
+
+    def test_suggest_next_requires_idea_400s(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.suggest_next_episode_part(episode["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_suggest_next_requires_cast_400s(self, db, user_id, brand_and_character):
+        brand, _character, _variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.suggest_next_episode_part(episode["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "idea": "something happens next",
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_suggest_next_requires_existing_part_with_script_400s(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.suggest_next_episode_part(episode["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "idea": "something happens next",
+                "character_variant_id": variant["id"],
+            })
+        assert exc_info.value.status_code == 400
+        assert "no parts" in exc_info.value.detail.lower()
+
+    def test_suggest_next_creates_script_and_attaches_as_next_part(self, db, user_id, brand_and_character, mocker):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        toon1 = self._make_toon_with_video(user_id, brand["id"], variant["id"])
+        session = db()
+        script1 = session.query(ToonScript).filter_by(id=uuid.UUID(toon1["script_id"])).first()
+        script1.shots = [{"shot_number": 1, "duration_seconds": 4, "action": "waves hello", "expression": "Happy", "dialogue": "Hi there!"}]
+        session.commit()
+        session.close()
+        culturetoons.attach_episode_part(episode["id"], {"user_id": user_id, "brand_id": brand["id"], "toon_id": toon1["id"]})
+
+        fake_shots = [{"shot_number": 1, "duration_seconds": 5, "action": "reacts", "expression": "Shocked", "dialogue": None}]
+        mock_generate = mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_continuing_episode",
+            return_value={"hook_line": "Part 2 begins", "tone": "funny", "shots": fake_shots, "total_duration_seconds": 5},
+        )
+
+        result = culturetoons.suggest_next_episode_part(episode["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "idea": "something surprising happens",
+            "character_variant_id": variant["id"],
+        })
+
+        assert len(result["parts"]) == 2
+        assert result["parts"][0]["toon_id"] == toon1["id"]
+        assert result["parts"][1]["order_index"] == 1
+        assert result["parts"][1]["title"] == "Part 2 begins"
+
+        sent_summary = mock_generate.call_args[0][0]
+        assert "waves hello" in sent_summary
+        assert "Hi there!" in sent_summary
+        sent_idea = mock_generate.call_args[0][1]
+        assert sent_idea == "something surprising happens"
