@@ -153,6 +153,23 @@ class TestCharactersRequireBrand:
         assert len(listed) == 1
         assert listed[0]["id"] == character["id"]
 
+    def test_create_character_auto_creates_default_variant(self, db, user_id):
+        # A bare Character has no element_status/kling_element_id of its own
+        # — those live only on CharacterVariant — so a character with zero
+        # variants has no "Register for video" step reachable anywhere.
+        # Confirmed live: this left a real user with a fully-built base
+        # character and no way to register it at all. A default variant
+        # named after the character removes that dead end.
+        brand = culturetoons.create_brand({"user_id": user_id})
+        result = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Kumar"})
+        assert "default_variant" in result
+        assert result["default_variant"]["name"] == "Kumar"
+        assert result["default_variant"]["character_id"] == result["id"]
+
+        variants = culturetoons.list_variants(user_id, brand["id"], character_id=result["id"])
+        assert len(variants) == 1
+        assert variants[0]["id"] == result["default_variant"]["id"]
+
     def test_update_character(self, db, user_id):
         brand = culturetoons.create_brand({"user_id": user_id})
         character = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Base Character"})
@@ -471,6 +488,56 @@ class TestVariantsAndExpressions:
                 file=_FakeUploadFile(b"x", "image/png"),
             ))
         assert exc_info.value.status_code == 400
+
+    def test_generate_expression_image_requires_variant_portrait(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_expression_image(
+                variant["id"], "Angry", {"user_id": user_id, "brand_id": brand["id"]},
+            )
+        assert exc_info.value.status_code == 400
+
+    def test_generate_expression_image_rejects_invalid_name(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_expression_image(
+                variant["id"], "Bored", {"user_id": user_id, "brand_id": brand["id"]},
+            )
+        assert exc_info.value.status_code == 400
+
+    def test_generate_expression_image_grounds_on_variant_portrait(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, _character, variant = brand_and_character
+        session = db()
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        variant_row.image_url = "https://supabase/variant-portrait.png"
+        session.commit()
+        session.close()
+
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/expr-angry.png")
+
+        result = culturetoons.generate_expression_image(
+            variant["id"], "Angry", {"user_id": user_id, "brand_id": brand["id"]},
+        )
+
+        assert result["name"] == "Angry"
+        assert result["image_url"] == "https://supabase/expr-angry.png"
+        _, kwargs = mock_generate.call_args
+        assert kwargs["reference_image_url"] == "https://supabase/variant-portrait.png"
+        sent_prompt = mock_generate.call_args[0][0]
+        assert "same clothing" in sent_prompt.lower()
+        assert "angry" in sent_prompt.lower()
+
+        # Regenerating overwrites rather than duplicating, same as upload.
+        culturetoons.generate_expression_image(
+            variant["id"], "Angry", {"user_id": user_id, "brand_id": brand["id"]},
+        )
+        expressions = culturetoons.list_expressions(variant["id"], user_id, brand["id"])
+        assert len(expressions) == 1
 
     def test_expression_unique_constraint_enforced_at_db_level(self, db, brand_and_character):
         _brand, _character, variant = brand_and_character

@@ -27,6 +27,23 @@ EXPRESSION_NAMES = [
     "Angry", "Confused", "Happy", "Shocked", "Laughing",
     "Side-eye", "Crying", "Annoyed", "Smiling", "Deadpan",
 ]
+# Concrete facial-expression phrasing per name, for AI-generating an
+# expression image (see generate_expression_image) — a few of these names
+# ("Side-eye", "Deadpan") are common English idioms but not obviously
+# unambiguous instructions for an image model on their own, so each gets a
+# short, visually concrete cue instead of relying on the bare name alone.
+EXPRESSION_PROMPT_HINTS = {
+    "Angry": "an angry expression — furrowed brow, gritted teeth, glaring eyes",
+    "Confused": "a confused expression — one eyebrow raised, tilted head, puzzled frown",
+    "Happy": "a happy, cheerful expression — bright open smile, relaxed eyes",
+    "Shocked": "a shocked expression — wide eyes, raised eyebrows, open mouth",
+    "Laughing": "a laughing expression — eyes crinkled shut or nearly shut, wide open-mouth smile",
+    "Side-eye": "a skeptical side-eye expression — eyes glancing sideways without turning the head, one eyebrow slightly raised, flat mouth",
+    "Crying": "a crying expression — welling or streaming tears, downturned trembling mouth",
+    "Annoyed": "an annoyed expression — narrowed eyes, tight flat mouth, slightly furrowed brow",
+    "Smiling": "a warm, gentle smiling expression — soft closed-mouth or light smile, relaxed eyes",
+    "Deadpan": "a deadpan expression — completely neutral, flat affect, no visible emotion, still front-facing",
+}
 TONE_OPTIONS = ["funny", "dramatic", "satiric", "sad", "wholesome", "chaotic", "deadpan"]
 
 # Every character (and, by default, its variants) is illustrated in one of
@@ -475,7 +492,24 @@ def create_character(body: dict):
         session.add(character)
         session.commit()
         session.refresh(character)
-        return _serialize_character(character)
+
+        # A bare Character has nowhere to be registered as a Kling element —
+        # element_status/kling_element_id all live on CharacterVariant, never
+        # on Character itself, so a character with zero variants has no
+        # "Register for video" step reachable anywhere in the UI at all.
+        # Confirmed live: this produced a genuinely stuck user ("no place to
+        # register Kumar") who had no way to know a variant — even one just
+        # representing the character itself — was a required extra step.
+        # Auto-creating one named after the character removes that step
+        # entirely for the common "just use this character as-is" case,
+        # while named cultural variants remain fully optional additions.
+        from app.models.character_variant import CharacterVariant
+        default_variant = CharacterVariant(character_id=character.id, name=character.name[:120])
+        session.add(default_variant)
+        session.commit()
+        session.refresh(default_variant)
+
+        return {**_serialize_character(character), "default_variant": _serialize_variant(default_variant)}
     finally:
         session.close()
 
@@ -923,6 +957,78 @@ async def upload_expression_image(variant_id: str, name: str, user_id: str = For
             url = save_image(data, file.content_type, path)
         except ImageUploadError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+
+        expression = (
+            session.query(Expression)
+            .filter_by(character_variant_id=_uuid.UUID(variant_id), name=name)
+            .first()
+        )
+        if expression:
+            expression.image_url = url
+        else:
+            expression = Expression(character_variant_id=_uuid.UUID(variant_id), name=name, image_url=url)
+            session.add(expression)
+        session.commit()
+        session.refresh(expression)
+        return _serialize_expression(expression)
+    finally:
+        session.close()
+
+
+@router.post("/variants/{variant_id}/expressions/{name}/generate-image")
+def generate_expression_image(variant_id: str, name: str, body: dict):
+    """AI-generates one expression image, grounded on this variant's own
+    portrait — added because the upload-only flow above put the user in the
+    position of having to source 10 separate photos of an AI-generated
+    character themselves (confirmed live: genuinely confusing — "the avatar
+    was created by the AI not me"). Reuses the exact same
+    HybridImageProvider/_build_cartoon_prompt pipeline as the portrait
+    itself, with preserve_identity=True (this IS the same character, just a
+    different expression — not a recast) grounded on variant.image_url."""
+    if name not in EXPRESSION_NAMES:
+        raise HTTPException(status_code=400, detail=f"name must be one of {EXPRESSION_NAMES}")
+    from app.db import SessionLocal
+    from app.models.expression import Expression
+    from app.models.character import Character
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+
+    session = SessionLocal()
+    try:
+        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
+        character = session.query(Character).filter_by(id=variant.character_id).first()
+        if not variant.image_url:
+            raise HTTPException(status_code=400, detail="Build this variant's own portrait first — expressions are generated from it")
+
+        hint = EXPRESSION_PROMPT_HINTS.get(name, f"a {name.lower()} facial expression")
+        style = ART_STYLES.get(character.art_style if character else DEFAULT_ART_STYLE, ART_STYLES[DEFAULT_ART_STYLE])
+        # Deliberately NOT _build_cartoon_prompt's preserve_identity=True
+        # branch — that one is written for regenerating a fresh portrait
+        # from a reference photo (explicitly wants "a different framing and
+        # setting... redraw everything else, including clothing"), which is
+        # the opposite of what an expression variant needs: the SAME pose,
+        # clothing, and framing as the base portrait, with only the face
+        # changed.
+        prompt = (
+            f"Same character, same {style['prompt']}, same pose, same clothing, same framing and "
+            f"background as the reference image — change ONLY the facial expression to {hint}. "
+            "Everything else about the character must stay identical to the reference."
+        )
+
+        from app.media.image_hybrid import HybridImageProvider
+        try:
+            result = HybridImageProvider().generate(prompt, reference_image_url=variant.image_url)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}")
+
+        path = f"culturetoons/{variant.character_id}/variants/{variant.id}/expressions/{name}-{_uuid.uuid4().hex[:8]}.png"
+        from app.services.culturetoon_media import save_image, ImageUploadError
+        try:
+            url = save_image(result.asset_bytes, result.content_type, path)
+        except ImageUploadError as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to store generated image: {exc}")
 
         expression = (
             session.query(Expression)

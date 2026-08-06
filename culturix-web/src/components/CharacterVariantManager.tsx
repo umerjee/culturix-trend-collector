@@ -101,10 +101,17 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
         body: JSON.stringify({ brand_id: brandId, name: newCharacterName.trim() }),
       });
       if (res.ok) {
-        const character = await res.json();
-        setCharacters((prev) => [...prev, character]);
+        const data = await res.json();
+        // The backend auto-creates a variant named after the character
+        // (default_variant) — without this, a character with zero variants
+        // has no "Register for video" step reachable anywhere (that step
+        // only exists per-variant), which left a real user stuck with no
+        // way to register their base character at all.
+        const { default_variant, ...character } = data;
+        setCharacters((prev) => [...prev, character as Character]);
+        if (default_variant) setVariants((prev) => [...prev, default_variant as CharacterVariant]);
         setSelectedCharacterId(character.id);
-        setSelectedVariantId(null);
+        setSelectedVariantId(default_variant?.id ?? null);
         setNewCharacterName("");
       }
     } finally {
@@ -366,7 +373,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                           onChange={(e) => setVoiceProvider(e.target.value as VoiceProvider)}
                           className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
                         >
-                          <option value="kling">Kling native voice</option>
+                          <option value="kling">Auto (Kling picks a voice)</option>
                           <option value="elevenlabs" disabled={!hasElevenLabsKey}>
                             ElevenLabs {!hasElevenLabsKey && "(add API key in brand settings)"}
                           </option>
@@ -380,12 +387,21 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                           {selectedVariant.element_status === "ready" ? "Re-register" : "Register"}
                         </button>
                       </div>
+                      <p className="text-[11px] text-gray-400 mt-1.5">
+                        Neither option lets you preview a voice ahead of time — &quot;Auto&quot; means Kling
+                        assigns one automatically when a video is generated, no specific voice chosen now.
+                        ElevenLabs is only meaningfully different once you have a specific cloned or
+                        pre-selected voice for this character (not yet supported from this screen).
+                      </p>
                       {!selectedVariant.image_url && (
                         <p className="text-[11px] text-gray-400 mt-1.5">Build a variant image above first.</p>
                       )}
                     </div>
 
-                    <ExpressionUploadGrid key={selectedVariant.id} brandId={brandId} variantId={selectedVariant.id} />
+                    <ExpressionUploadGrid
+                      key={selectedVariant.id} brandId={brandId} variantId={selectedVariant.id}
+                      hasPortrait={!!selectedVariant.image_url}
+                    />
                   </div>
                 )}
               </div>
