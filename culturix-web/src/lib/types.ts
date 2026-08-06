@@ -413,6 +413,7 @@ export const ART_STYLES = [
   { key: "anime", label: "2D anime style" },
   { key: "flat_vector", label: "Flat vector illustration" },
   { key: "claymation", label: "Claymation style" },
+  { key: "cinematic_cultural", label: "Cinematic cultural (painterly)" },
 ] as const;
 
 export interface Character {

@@ -1,8 +1,9 @@
 """Orchestrates one Toon's video generation end to end: builds the Kling
 Omni multi-shot prompt from its shot-structured ToonScript, generates the
 video (character-consistent via the variant's registered Kling Element),
-optionally dubs in ElevenLabs dialogue audio, uploads the raw video, and
-cuts 3-4 candidate clips from it. Mirrors
+optionally dubs in ElevenLabs dialogue audio, and uploads the result as the
+one persistent video (raw_video_url, auto-promoted to final_video_url —
+no candidate-clip picking step). Mirrors
 app/shopify/reels.py::generate_reel_for_product's shape exactly (load row ->
 set in-progress status -> do slow work -> write result back ->
 catch-and-record-error -> finally: session.close()).
@@ -90,7 +91,6 @@ def generate_video_for_toon(user_id, toon_id) -> None:
     from app.media.kling_omni import KlingOmniProvider, KlingOmniError
     from app.media.elevenlabs_voice import ElevenLabsError
     from app.services.culturetoon_script import build_kling_prompt, ToonScriptGenerationError
-    from app.services.culturetoon_clip_cutter import cut_clips, ClipCutError
     from app.media import storage
     from app.social.crypto import decrypt
 
@@ -195,23 +195,14 @@ def generate_video_for_toon(user_id, toon_id) -> None:
             with open(final_path, "rb") as f:
                 raw_url = storage.upload(f.read(), f"culturetoons/{toon.brand_id}/toons/{toon.id}/raw.mp4", "video/mp4")
             toon.raw_video_url = raw_url
+            toon.final_video_url = raw_url
             session.commit()
-
-            clip_infos = cut_clips(final_path, tmp_dir)
-            clip_urls = []
-            for i, info in enumerate(clip_infos):
-                with open(info["path"], "rb") as f:
-                    url = storage.upload(
-                        f.read(), f"culturetoons/{toon.brand_id}/toons/{toon.id}/clip_{i + 1}.mp4", "video/mp4"
-                    )
-                clip_urls.append(url)
-            toon.clip_video_urls = clip_urls
 
         toon.status = "ready"
         session.commit()
         logger.info("Video generation complete for toon %s", toon_id)
 
-    except (ValueError, KlingOmniError, ElevenLabsError, ClipCutError, ToonScriptGenerationError) as exc:
+    except (ValueError, KlingOmniError, ElevenLabsError, ToonScriptGenerationError) as exc:
         session.rollback()
         if toon:
             toon.status = "failed"

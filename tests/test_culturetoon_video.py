@@ -1,7 +1,7 @@
 """Tests for app/services/culturetoon_video.py — the Kling Omni generation
 orchestration. Mirrors tests/test_shopify_reels.py's
 TestGenerateReelForProduct shape: in-memory SQLite, every external call
-(Kling, storage, clip cutting) mocked, no real network/ffmpeg needed.
+(Kling, storage) mocked, no real network/ffmpeg needed.
 """
 import os
 os.environ.setdefault("TOKEN_ENCRYPTION_KEY", "zJZ2n2n0vXW5X8mYQKqVYV9YQe3F2Z8h0m3nQeF1nQ8=")
@@ -127,21 +127,9 @@ def _mock_kling_success(mocker):
     return mock_provider
 
 
-def _mock_cut_clips(mocker, tmp_path, n=4):
-    def _fake_cut(source_video_path, output_dir, **kwargs):
-        results = []
-        for i in range(n):
-            p = tmp_path / f"clip_{i}.mp4"
-            p.write_bytes(b"fake-clip-bytes")
-            results.append({"path": str(p), "start": float(i), "end": float(i + 6)})
-        return results
-    return mocker.patch("app.services.culturetoon_clip_cutter.cut_clips", side_effect=_fake_cut)
-
-
 class TestGenerateVideoForToonSuccess:
-    def test_native_kling_audio_path(self, db, seeded, mocker, tmp_path):
+    def test_native_kling_audio_path(self, db, seeded, mocker):
         _mock_kling_success(mocker)
-        _mock_cut_clips(mocker, tmp_path)
         mock_upload = mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
 
         generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
@@ -150,16 +138,15 @@ class TestGenerateVideoForToonSuccess:
         toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
         assert toon.status == "ready"
         assert toon.raw_video_url == "https://supabase/video.mp4"
-        assert toon.clip_video_urls == ["https://supabase/video.mp4"] * 4
+        assert toon.final_video_url == "https://supabase/video.mp4"
         assert toon.kling_task_id == "task-123"
         assert toon.generation_error is None
         session.close()
 
         mock_upload.assert_called()
 
-    def test_generate_omni_video_called_with_native_audio_and_element(self, db, seeded, mocker, tmp_path):
+    def test_generate_omni_video_called_with_native_audio_and_element(self, db, seeded, mocker):
         mock_provider = _mock_kling_success(mocker)
-        _mock_cut_clips(mocker, tmp_path)
         mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
 
         generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
@@ -218,28 +205,10 @@ class TestGenerateVideoForToonFailures:
         assert "content risk control triggered" in toon.generation_error
         session.close()
 
-    def test_clip_cut_error_marks_failed(self, db, seeded, mocker):
-        from app.services.culturetoon_clip_cutter import ClipCutError
-        _mock_kling_success(mocker)
-        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
-        mocker.patch("app.services.culturetoon_clip_cutter.cut_clips", side_effect=ClipCutError("ffmpeg not found"))
-
-        generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
-
-        session = db()
-        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
-        assert toon.status == "failed"
-        assert "ffmpeg not found" in toon.generation_error
-        # The raw video should still have been uploaded before the clip-cut
-        # step failed — partial progress is preserved, not lost.
-        assert toon.raw_video_url == "https://supabase/video.mp4"
-        session.close()
-
 
 class TestMultiCharacterGeneration:
-    def test_sends_one_element_per_cast_member_and_alternates_dsl_speaker(self, db, seeded_two_variants, mocker, tmp_path):
+    def test_sends_one_element_per_cast_member_and_alternates_dsl_speaker(self, db, seeded_two_variants, mocker):
         mock_provider = _mock_kling_success(mocker)
-        _mock_cut_clips(mocker, tmp_path)
         mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
 
         generate_video_for_toon(seeded_two_variants["user_id"], seeded_two_variants["toon_id"])
@@ -293,7 +262,7 @@ class TestMultiCharacterGeneration:
 
 
 class TestElevenLabsOptIn:
-    def test_no_key_configured_falls_back_to_kling_native(self, db, seeded, mocker, tmp_path):
+    def test_no_key_configured_falls_back_to_kling_native(self, db, seeded, mocker):
         session = db()
         variant = session.query(CharacterVariant).filter_by(id=uuid.UUID(seeded["variant_id"])).first()
         variant.voice_provider = "elevenlabs"
@@ -302,7 +271,6 @@ class TestElevenLabsOptIn:
         session.close()
 
         mock_provider = _mock_kling_success(mocker)
-        _mock_cut_clips(mocker, tmp_path)
         mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
 
         generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
@@ -316,7 +284,7 @@ class TestElevenLabsOptIn:
         assert toon.status == "ready"
         session.close()
 
-    def test_key_configured_uses_off_audio_and_dubs(self, db, seeded, mocker, tmp_path):
+    def test_key_configured_uses_off_audio_and_dubs(self, db, seeded, mocker):
         from app.social.crypto import encrypt
 
         session = db()
@@ -329,7 +297,6 @@ class TestElevenLabsOptIn:
         session.close()
 
         mock_provider = _mock_kling_success(mocker)
-        _mock_cut_clips(mocker, tmp_path)
         mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
         mock_dub = mocker.patch(
             "app.services.culturetoon_video._dub_dialogue",

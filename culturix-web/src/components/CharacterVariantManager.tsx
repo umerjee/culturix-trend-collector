@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Loader2, CheckCircle2, XCircle, Sparkles, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus, Loader2, CheckCircle2, XCircle, Sparkles, ChevronDown, ChevronRight, Pencil, Trash2 } from "lucide-react";
 import type { Character, CharacterVariant, VoiceProvider } from "@/lib/types";
 import CharacterImageBuilder from "@/components/CharacterImageBuilder";
 import ExpressionUploadGrid from "@/components/ExpressionUploadGrid";
@@ -48,6 +48,9 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   const [artStyleDraft, setArtStyleDraft] = useState<Character["art_style"]>("cartoon_3d");
   const [generatingImage, setGeneratingImage] = useState(false);
   const [imageGenError, setImageGenError] = useState<string | null>(null);
+  const [nameDraft, setNameDraft] = useState("");
+  const [savingName, setSavingName] = useState(false);
+  const [archivingCharacter, setArchivingCharacter] = useState(false);
 
   const [newVariantName, setNewVariantName] = useState("");
   const [creatingVariant, setCreatingVariant] = useState(false);
@@ -59,6 +62,9 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   const [variantCultureTagDraft, setVariantCultureTagDraft] = useState("");
   const [generatingVariantImage, setGeneratingVariantImage] = useState(false);
   const [variantImageGenError, setVariantImageGenError] = useState<string | null>(null);
+  const [variantNameDraft, setVariantNameDraft] = useState("");
+  const [savingVariantName, setSavingVariantName] = useState(false);
+  const [archivingVariant, setArchivingVariant] = useState(false);
 
   const selectedCharacter = characters.find((c) => c.id === selectedCharacterId) ?? null;
   const characterVariants = variants.filter((v) => v.character_id === selectedCharacterId);
@@ -81,6 +87,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     setDescriptionDraft(selectedCharacter?.description ?? "");
     setArtStyleDraft(selectedCharacter?.art_style ?? "cartoon_3d");
     setImageGenError(null);
+    setNameDraft(selectedCharacter?.name ?? "");
   }, [selectedCharacterId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -88,6 +95,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     setVariantCultureTagDraft(selectedVariant?.culture_tag ?? "");
     setVariantImageGenError(null);
     setAdvancedOpen(!!selectedVariant?.image_url);
+    setVariantNameDraft(selectedVariant?.name ?? "");
   }, [selectedVariantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function addCharacter(e: React.FormEvent) {
@@ -209,6 +217,73 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     }
   }
 
+  async function saveCharacterName() {
+    if (!selectedCharacter || !nameDraft.trim() || nameDraft.trim() === selectedCharacter.name) return;
+    setSavingName(true);
+    try {
+      const res = await fetch(`/api/culturetoons/characters/${selectedCharacter.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, name: nameDraft.trim() }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCharacters((prev) => prev.map((c) => (c.id === selectedCharacter.id ? (data as Character) : c)));
+      }
+    } finally {
+      setSavingName(false);
+    }
+  }
+
+  async function archiveCharacter() {
+    if (!selectedCharacter) return;
+    setArchivingCharacter(true);
+    try {
+      const res = await fetch(`/api/culturetoons/characters/${selectedCharacter.id}?brand_id=${brandId}`, { method: "DELETE" });
+      if (res.ok) {
+        const remaining = characters.filter((c) => c.id !== selectedCharacter.id);
+        setCharacters(remaining);
+        setVariants((prev) => prev.filter((v) => v.character_id !== selectedCharacter.id));
+        setSelectedCharacterId(remaining[0]?.id ?? null);
+        setSelectedVariantId(null);
+      }
+    } finally {
+      setArchivingCharacter(false);
+    }
+  }
+
+  async function saveVariantName() {
+    if (!selectedVariant || !variantNameDraft.trim() || variantNameDraft.trim() === selectedVariant.name) return;
+    setSavingVariantName(true);
+    try {
+      const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, name: variantNameDraft.trim() }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setVariants((prev) => prev.map((v) => (v.id === selectedVariant.id ? (data as CharacterVariant) : v)));
+      }
+    } finally {
+      setSavingVariantName(false);
+    }
+  }
+
+  async function archiveVariant() {
+    if (!selectedVariant) return;
+    setArchivingVariant(true);
+    try {
+      const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}?brand_id=${brandId}`, { method: "DELETE" });
+      if (res.ok) {
+        setVariants((prev) => prev.filter((v) => v.id !== selectedVariant.id));
+        setSelectedVariantId(null);
+      }
+    } finally {
+      setArchivingVariant(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Step 1 — base character */}
@@ -247,7 +322,29 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
         </div>
 
         {selectedCharacter ? (
-          <CharacterImageBuilder
+          <>
+            <div className="flex items-center gap-2 mb-3">
+              <Pencil className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+              <input
+                type="text"
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                onBlur={saveCharacterName}
+                onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                className="flex-1 min-w-[8rem] rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
+              />
+              {savingName && <Loader2 className="h-3.5 w-3.5 text-gray-400 animate-spin shrink-0" />}
+              <button
+                onClick={archiveCharacter}
+                disabled={archivingCharacter}
+                title="Archive this character and all its variants"
+                className="inline-flex items-center gap-1 rounded-lg border border-gray-200 text-gray-500 hover:text-red-600 hover:border-red-200 text-xs px-2.5 py-1.5 transition-colors disabled:opacity-60 shrink-0"
+              >
+                {archivingCharacter ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                Archive
+              </button>
+            </div>
+            <CharacterImageBuilder
             description={descriptionDraft}
             onDescriptionChange={setDescriptionDraft}
             descriptionPlaceholder="Describe the character — appearance, age, culture, personality, style. E.g. &quot;A cheerful Nigerian uncle in his 50s, round glasses, colorful agbada, warm expressive face.&quot;"
@@ -264,6 +361,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
             error={imageGenError}
             helperText="A reference photo is optional — with one, generation is grounded on your photo's likeness but always re-illustrated in the chosen style. Regenerate as many times as you like to refine it."
           />
+          </>
         ) : (
           <p className="text-xs text-gray-400">Name a character above to get started.</p>
         )}
@@ -312,6 +410,27 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
 
           {selectedVariant ? (
             <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <Pencil className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                <input
+                  type="text"
+                  value={variantNameDraft}
+                  onChange={(e) => setVariantNameDraft(e.target.value)}
+                  onBlur={saveVariantName}
+                  onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                  className="flex-1 min-w-[8rem] rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
+                />
+                {savingVariantName && <Loader2 className="h-3.5 w-3.5 text-gray-400 animate-spin shrink-0" />}
+                <button
+                  onClick={archiveVariant}
+                  disabled={archivingVariant}
+                  title="Archive this variant"
+                  className="inline-flex items-center gap-1 rounded-lg border border-gray-200 text-gray-500 hover:text-red-600 hover:border-red-200 text-xs px-2.5 py-1.5 transition-colors disabled:opacity-60 shrink-0"
+                >
+                  {archivingVariant ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  Archive
+                </button>
+              </div>
               <CharacterImageBuilder
                 description={variantDescriptionDraft}
                 onDescriptionChange={setVariantDescriptionDraft}

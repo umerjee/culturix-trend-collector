@@ -179,6 +179,16 @@ class TestCharactersRequireBrand:
         })
         assert updated["description"] == "desc"
 
+    def test_delete_character_archives_not_deletes(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        character = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Base Character"})
+        culturetoons.delete_character(character["id"], user_id, brand["id"])
+
+        assert culturetoons.list_characters(user_id, brand["id"]) == []
+        archived = culturetoons.list_characters(user_id, brand["id"], active_only=False)
+        assert len(archived) == 1
+        assert archived[0]["is_active"] is False
+
 
 class TestCharacterImageGeneration:
     def test_generate_image_requires_description(self, db, user_id, brand_and_character):
@@ -462,6 +472,22 @@ class TestVariantImageGeneration:
 
 
 class TestVariantsAndExpressions:
+    def test_delete_variant_archives_not_deletes(self, db, user_id, brand_and_character):
+        # brand_and_character's Character auto-creates its own default
+        # variant on top of the explicit "Indian Mom" one the fixture also
+        # creates, so the active list still has one entry (the default
+        # variant) after archiving "Indian Mom" — assert on that specific
+        # variant's is_active flag, not on the whole list being empty.
+        brand, _character, variant = brand_and_character
+        culturetoons.delete_variant(variant["id"], user_id, brand["id"])
+
+        active_ids = {v["id"] for v in culturetoons.list_variants(user_id, brand["id"])}
+        assert variant["id"] not in active_ids
+
+        archived = culturetoons.list_variants(user_id, brand["id"], active_only=False)
+        archived_variant = next(v for v in archived if v["id"] == variant["id"])
+        assert archived_variant["is_active"] is False
+
     def test_create_variant_and_upload_expression_image(self, db, user_id, brand_and_character, mocker):
         brand, _character, variant = brand_and_character
         mock_upload = mocker.patch("app.media.storage.upload", return_value="https://supabase/expr.png")

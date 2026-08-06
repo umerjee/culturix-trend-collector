@@ -74,6 +74,13 @@ ART_STYLES = {
         "prompt": "a claymation-style stop-motion character, sculpted clay texture, soft "
                   "rounded forms, subtle visible tool/fingerprint marks",
     },
+    "cinematic_cultural": {
+        "label": "Cinematic cultural (painterly)",
+        "prompt": "a semi-realistic painterly digital illustration character, cinematic matte-"
+                  "painting rendering, warm golden-hour lighting, rich saturated color grading, "
+                  "detailed but stylized (not photoreal) — the same illustration technique used "
+                  "for concept-art establishing shots",
+    },
 }
 DEFAULT_ART_STYLE = "cartoon_3d"
 
@@ -619,6 +626,24 @@ def update_character(character_id: str, body: dict):
         session.close()
 
 
+@router.delete("/characters/{character_id}")
+def delete_character(character_id: str, user_id: str, brand_id: str):
+    """Soft-delete, same pattern as delete_background: flips is_active off
+    rather than removing the row, so existing scripts/toons/variants that
+    still reference this character keep working. list_characters already
+    filters to active_only=True by default, so this is enough to make the
+    character disappear from the roster."""
+    from app.db import SessionLocal
+    session = SessionLocal()
+    try:
+        character = _get_character_owned(session, character_id, brand_id, user_id)
+        character.is_active = False
+        session.commit()
+        return {"status": "deactivated"}
+    finally:
+        session.close()
+
+
 @router.post("/characters/{character_id}/image")
 async def upload_character_image(character_id: str, user_id: str = Form(...), brand_id: str = Form(...),
                                   file: UploadFile = File(...)):
@@ -796,6 +821,24 @@ def update_variant(variant_id: str, body: dict):
         session.commit()
         session.refresh(variant)
         return _serialize_variant(variant)
+    finally:
+        session.close()
+
+
+@router.delete("/variants/{variant_id}")
+def delete_variant(variant_id: str, user_id: str, brand_id: str):
+    """Soft-delete, same pattern as delete_background/delete_character:
+    flips is_active off rather than removing the row, so scripts/toons that
+    already reference this variant keep working. list_variants already
+    filters to active_only=True by default, so this is enough to make the
+    variant disappear from the roster."""
+    from app.db import SessionLocal
+    session = SessionLocal()
+    try:
+        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
+        variant.is_active = False
+        session.commit()
+        return {"status": "deactivated"}
     finally:
         session.close()
 

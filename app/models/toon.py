@@ -11,11 +11,17 @@ class Toon(Base):
 
     final_video_url is the one video the user has picked to post — its
     meaning is unchanged from the original manual-CapCut-paste-in design.
-    raw_video_url/clip_video_urls are new: the in-house Kling Omni pipeline
-    (app/services/culturetoon_video.py) now generates one multi-shot video
-    (raw_video_url) and cuts 3-4 candidate clips from it (clip_video_urls);
-    the user picks one of those into final_video_url the same way they used
-    to paste in an externally-edited link.
+    raw_video_url is new: the in-house Kling Omni pipeline
+    (app/services/culturetoon_video.py) generates one multi-shot video and
+    uploads it as raw_video_url, auto-promoting the same URL into
+    final_video_url — no candidate-clip picking step, one persistent video
+    per generation (still manually overridable, same as the old
+    externally-edited-link paste-in). clip_video_urls is a legacy column:
+    an earlier version of the pipeline cut 3-4 overlapping candidate clips
+    into it, which is no longer done for a single Toon (still populated by
+    the Episode-level highlight-clips step — see
+    app/services/culturetoon_episode.py::generate_episode_clips, which cuts
+    clips from a stitched 60-180s episode, not a single <=15s Toon).
 
     episode_id/part_order: NULL for a normal standalone Toon. When set, this
     Toon is one "part" of a ToonEpisode (app/models/toon_episode.py) — a

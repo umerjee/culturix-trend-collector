@@ -151,6 +151,24 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
     updateToon(toonId, { final_video_url: url });
   }
 
+  // A script that came from "Suggest a script" already carries its own
+  // cast (character_variant_id as primary, character_variant_ids as the
+  // full multi-character list) — re-picking "a" character independently
+  // of that, from a dropdown of the whole brand's roster, was confusing
+  // and redundant (confirmed live: "the script already has three
+  // characters... why would I have to pick characters again"). The actual
+  // generation cast always comes from the script (see
+  // generate_video_for_toon's cast_ids resolution) — this field is only a
+  // fallback for scripts with no cast of their own (manual scripts with no
+  // character chosen), so keep it in sync with the script's own primary
+  // character whenever one exists, rather than leaving it independently
+  // editable.
+  useEffect(() => {
+    const script = scriptFor(scriptId);
+    if (script?.character_variant_id) setVariantId(script.character_variant_id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scriptId]);
+
   // Poll toons that are mid-generation.
   useEffect(() => {
     const animating = toons.filter((t) => t.status === "animating");
@@ -258,18 +276,30 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
       <div className="rounded-2xl bg-white border border-gray-100 p-4">
         <h3 className="text-sm font-semibold text-gray-900 mb-3">Step 2 · Plan a new toon</h3>
         <form onSubmit={createToon} className="flex flex-wrap gap-2 items-center">
-          <select value={variantId} onChange={(e) => setVariantId(e.target.value)} className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs">
-            {variants.length === 0 && <option value="">No characters yet</option>}
-            {variants.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.name}{v.element_status !== "ready" ? " — not registered yet" : ""}
-              </option>
-            ))}
-          </select>
           <select value={scriptId} onChange={(e) => setScriptId(e.target.value)} className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs min-w-[10rem]">
             {scripts.length === 0 && <option value="">No scripts yet</option>}
             {scripts.map((s) => <option key={s.id} value={s.id}>{s.hook_line || s.dialogue || s.id.slice(0, 8)}</option>)}
           </select>
+          {scriptFor(scriptId)?.character_variant_id ? (
+            // The script already declares its own cast — generation uses
+            // that, not this field — so just show who it is instead of
+            // asking the user to pick a character again.
+            <span className="rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs text-gray-500">
+              Cast: {(scriptFor(scriptId)?.character_variant_ids?.length
+                ? scriptFor(scriptId)!.character_variant_ids
+                : [variantId]
+              ).map((id) => variantName(id)).join(", ")}
+            </span>
+          ) : (
+            <select value={variantId} onChange={(e) => setVariantId(e.target.value)} className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs">
+              {variants.length === 0 && <option value="">No characters yet</option>}
+              {variants.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}{v.element_status !== "ready" ? " — not registered yet" : ""}
+                </option>
+              ))}
+            </select>
+          )}
           <input
             type="text" value={title} onChange={(e) => setTitle(e.target.value)}
             placeholder="Internal title (optional)"

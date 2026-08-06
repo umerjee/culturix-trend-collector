@@ -3,7 +3,16 @@
 import { useEffect, useState } from "react";
 import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check } from "lucide-react";
 import type { ToonScript, CharacterVariant, ToonBackground } from "@/lib/types";
-import { TONE_OPTIONS, MAX_CHARACTERS_PER_VIDEO } from "@/lib/types";
+import { TONE_OPTIONS, MAX_CHARACTERS_PER_VIDEO, ART_STYLES } from "@/lib/types";
+
+// Backgrounds pick their own rendering style independently of the
+// character's art_style — a background is composited separately at
+// video-generation time (Kling adds the character element on top), so
+// there's no requirement the two match. Defaults to the painterly
+// "Cinematic cultural" look rather than DEFAULT_ART_STYLE's Pixar-cartoon
+// look, since this product's scenes are grounded in real-world cultural
+// settings that read better in that style.
+const DEFAULT_BACKGROUND_STYLE = "cinematic_cultural";
 
 interface TrendSource {
   id: number;
@@ -75,6 +84,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
   const [creatingManual, setCreatingManual] = useState(false);
 
   const [extraDescByScript, setExtraDescByScript] = useState<Record<string, string>>({});
+  const [bgStyleByScript, setBgStyleByScript] = useState<Record<string, string>>({});
   const [generatingBgFor, setGeneratingBgFor] = useState<string | null>(null);
   const [bgErrors, setBgErrors] = useState<Record<string, string>>({});
 
@@ -211,6 +221,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
         body: JSON.stringify({
           brand_id: brandId,
           extra_description: (extraDescByScript[scriptId] || "").trim() || undefined,
+          art_style: bgStyleByScript[scriptId] ?? DEFAULT_BACKGROUND_STYLE,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -454,13 +465,24 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
                     )}
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-medium text-gray-700 truncate">{bg.name}</p>
-                      <button
-                        onClick={() => generateBackground(s.id)}
-                        disabled={generating}
-                        className="text-[11px] text-blue-500 hover:underline disabled:opacity-50"
-                      >
-                        {generating ? "Regenerating…" : "Regenerate background"}
-                      </button>
+                      <div className="flex items-center gap-2 mt-1">
+                        <select
+                          value={bgStyleByScript[s.id] ?? DEFAULT_BACKGROUND_STYLE}
+                          onChange={(e) => setBgStyleByScript((prev) => ({ ...prev, [s.id]: e.target.value }))}
+                          className="rounded-lg border border-gray-200 px-1.5 py-1 text-[11px]"
+                        >
+                          {ART_STYLES.map((style) => (
+                            <option key={style.key} value={style.key}>{style.label}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => generateBackground(s.id)}
+                          disabled={generating}
+                          className="text-[11px] text-blue-500 hover:underline disabled:opacity-50"
+                        >
+                          {generating ? "Regenerating…" : "Regenerate background"}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -472,6 +494,15 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
                       placeholder={hasScene ? "Extra detail for the background (optional)" : "Describe the setting — no scene direction on this script yet"}
                       className="flex-1 min-w-[10rem] rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
                     />
+                    <select
+                      value={bgStyleByScript[s.id] ?? DEFAULT_BACKGROUND_STYLE}
+                      onChange={(e) => setBgStyleByScript((prev) => ({ ...prev, [s.id]: e.target.value }))}
+                      className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs shrink-0"
+                    >
+                      {ART_STYLES.map((style) => (
+                        <option key={style.key} value={style.key}>{style.label}</option>
+                      ))}
+                    </select>
                     <button
                       onClick={() => generateBackground(s.id)}
                       disabled={generating || (!hasScene && !(extraDescByScript[s.id] ?? "").trim())}

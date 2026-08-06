@@ -127,10 +127,12 @@ def stitch_episode(user_id, episode_id) -> None:
 
 def generate_episode_clips(user_id, episode_id, num_clips: int = 8, clip_seconds: int = 8) -> None:
     """Cuts highlight candidate clips from a finished episode's stitched
-    video for social media — the episode-level analogue of Toon's own
-    raw_video_url -> clip_video_urls step. Reuses cut_clips() unmodified
-    (app/services/culturetoon_clip_cutter.py); a stitched episode is 60-180s
-    versus a single Toon's <=15s, hence the larger defaults here."""
+    video for social media. A single Toon no longer has an equivalent step
+    (app/services/culturetoon_video.py promotes its one raw_video_url
+    straight to final_video_url instead of cutting candidates) — this is
+    now the only caller of cut_clips() (app/services/culturetoon_clip_cutter.py).
+    A stitched episode is 60-180s versus a single Toon's <=15s, hence the
+    larger defaults here."""
     from app.db import SessionLocal
     from app.models.toon_episode import ToonEpisode
     from app.services.culturetoon_clip_cutter import cut_clips, ClipCutError
