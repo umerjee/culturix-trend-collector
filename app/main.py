@@ -41,6 +41,8 @@ async def lifespan(_):
     from app.models.toon import Toon                                  # noqa: F401
     from app.models.toon_post import ToonPost                         # noqa: F401
     from app.models.toon_episode import ToonEpisode                   # noqa: F401
+    from app.models.character_relationship import CharacterRelationship  # noqa: F401
+    from app.models.generation_usage import GenerationUsage           # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -214,6 +216,19 @@ async def lifespan(_):
             # Regeneration history — see Toon model's docstring on
             # previous_video_urls.
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS previous_video_urls TEXT[] DEFAULT '{}'",
+            # Structured personality — see docs/culturix-comedy-architecture.md
+            # §3.2. Consumed by culturetoon_script.py's prompt builder.
+            "ALTER TABLE characters ADD COLUMN IF NOT EXISTS personality JSON",
+            # Portrait regeneration history, same pattern/reasoning as
+            # Toon.previous_video_urls above — see
+            # docs/culturix-comedy-architecture.md §3.3.
+            "ALTER TABLE characters ADD COLUMN IF NOT EXISTS previous_image_urls TEXT[] DEFAULT '{}'",
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS previous_image_urls TEXT[] DEFAULT '{}'",
+            # Per-brand spend caps — see
+            # app/services/culturetoon_usage.py::check_budget. NULL means no
+            # cap set (budgets are opt-in, not a default limit on every brand).
+            "ALTER TABLE character_brands ADD COLUMN IF NOT EXISTS daily_budget NUMERIC(10,2)",
+            "ALTER TABLE character_brands ADD COLUMN IF NOT EXISTS monthly_budget NUMERIC(10,2)",
         ]:
             try:
                 _conn.execute(_text(_stmt))

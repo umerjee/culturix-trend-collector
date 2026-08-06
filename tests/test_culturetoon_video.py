@@ -19,6 +19,7 @@ from app.models.character_variant import CharacterVariant
 from app.models.toon_background import ToonBackground
 from app.models.toon_script import ToonScript
 from app.models.toon import Toon
+from app.models.generation_usage import GenerationUsage
 from app.services.culturetoon_video import generate_video_for_toon
 
 _SHOTS = [
@@ -33,6 +34,7 @@ def db(mocker):
     Base.metadata.create_all(bind=engine, tables=[
         CharacterBrand.__table__, Character.__table__, CharacterVariant.__table__,
         ToonBackground.__table__, ToonScript.__table__, Toon.__table__,
+        GenerationUsage.__table__,
     ])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)
@@ -144,6 +146,21 @@ class TestGenerateVideoForToonSuccess:
         session.close()
 
         mock_upload.assert_called()
+
+    def test_records_generation_usage_for_video(self, db, seeded, mocker):
+        from decimal import Decimal
+        _mock_kling_success(mocker)  # duration_seconds=8.0
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
+
+        generate_video_for_toon(seeded["user_id"], seeded["toon_id"])
+
+        session = db()
+        rows = session.query(GenerationUsage).filter_by(toon_id=uuid.UUID(seeded["toon_id"])).all()
+        assert len(rows) == 1
+        assert rows[0].provider == "kling_omni"
+        assert rows[0].generation_type == "video"
+        assert rows[0].cost_usd == Decimal("0.6720")
+        session.close()
 
     def test_regeneration_archives_previous_video_instead_of_discarding_it(self, db, seeded, mocker):
         # Confirmed live: regenerating used to silently overwrite

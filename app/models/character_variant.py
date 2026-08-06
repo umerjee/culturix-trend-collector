@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, Text, Boolean
+from sqlalchemy import Column, String, Integer, DateTime, Text, Boolean, ARRAY
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -25,6 +25,8 @@ class CharacterVariant(Base):
     # base_image_url instead, so a variant with no photo of its own still
     # inherits the character's already-established illustrated look.
     reference_image_url = Column(Text, nullable=True)
+    # Same regeneration-history reasoning as Character.previous_image_urls.
+    previous_image_urls = Column(ARRAY(Text), nullable=True)
     persona_id = Column(Integer, nullable=True, index=True)
     is_active = Column(Boolean, nullable=False, default=True)
 

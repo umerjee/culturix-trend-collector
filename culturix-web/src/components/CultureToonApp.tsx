@@ -148,6 +148,7 @@ export default function CultureToonApp({ initialBrands }: Props) {
           initialScripts={data.scripts}
           initialToons={data.toons}
           initialEpisodes={data.episodes}
+          onBrandUpdated={(updated) => setBrands((prev) => prev.map((b) => (b.id === updated.id ? updated : b)))}
         />
       )}
     </div>

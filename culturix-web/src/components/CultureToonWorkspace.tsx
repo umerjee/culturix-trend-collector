@@ -1,13 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { Users, Image as ImageIcon, FileText, Clapperboard, Film } from "lucide-react";
+import { Users, Image as ImageIcon, FileText, Clapperboard, Film, Wallet } from "lucide-react";
 import type { CharacterBrand, Character, CharacterVariant, ToonBackground, ToonScript, Toon, ToonEpisode } from "@/lib/types";
 import CharacterVariantManager from "@/components/CharacterVariantManager";
 import BackgroundGallery from "@/components/BackgroundGallery";
 import ScriptManager from "@/components/ScriptManager";
 import ToonManager from "@/components/ToonManager";
 import EpisodeManager from "@/components/EpisodeManager";
+import UsageBudgetPanel from "@/components/UsageBudgetPanel";
 
 interface Props {
   brand: CharacterBrand;
@@ -17,9 +18,10 @@ interface Props {
   initialScripts: ToonScript[];
   initialToons: Toon[];
   initialEpisodes: ToonEpisode[];
+  onBrandUpdated: (brand: CharacterBrand) => void;
 }
 
-type Tab = "characters" | "backgrounds" | "scripts" | "toons" | "episodes";
+type Tab = "characters" | "backgrounds" | "scripts" | "toons" | "episodes" | "usage";
 
 const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: "characters", label: "Characters", icon: <Users className="h-3.5 w-3.5" /> },
@@ -27,10 +29,12 @@ const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: "scripts", label: "Scripts", icon: <FileText className="h-3.5 w-3.5" /> },
   { key: "toons", label: "Toons", icon: <Clapperboard className="h-3.5 w-3.5" /> },
   { key: "episodes", label: "Episodes", icon: <Film className="h-3.5 w-3.5" /> },
+  { key: "usage", label: "Usage & Budget", icon: <Wallet className="h-3.5 w-3.5" /> },
 ];
 
 export default function CultureToonWorkspace({
   brand, initialCharacters, initialVariants, initialBackgrounds, initialScripts, initialToons, initialEpisodes,
+  onBrandUpdated,
 }: Props) {
   const [tab, setTab] = useState<Tab>("characters");
   // Set when a blocker elsewhere (e.g. ToonManager's "this character isn't
@@ -104,6 +108,7 @@ export default function CultureToonWorkspace({
           variants={initialVariants}
         />
       )}
+      {tab === "usage" && <UsageBudgetPanel brand={brand} onBrandUpdated={onBrandUpdated} />}
     </div>
   );
 }

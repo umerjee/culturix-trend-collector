@@ -183,6 +183,14 @@ def generate_video_for_toon(user_id, toon_id) -> None:
         toon.kling_task_id = result["task_id"]
         session.commit()
 
+        from app.services.culturetoon_usage import record_usage, estimate_video_cost, estimate_voice_cost
+        video_duration = result.get("duration_seconds") or total_duration
+        record_usage(
+            session, user_id=user_id, brand_id=toon.brand_id, toon_id=toon.id,
+            provider="kling_omni", generation_type="video",
+            output_units=int(video_duration), cost_usd=estimate_video_cost(video_duration),
+        )
+
         with tempfile.TemporaryDirectory(prefix=f"toon-{toon_id}-") as tmp_dir:
             raw_path = os.path.join(tmp_dir, "raw.mp4")
             with open(raw_path, "wb") as f:
@@ -191,6 +199,13 @@ def generate_video_for_toon(user_id, toon_id) -> None:
             final_path = raw_path
             if use_elevenlabs:
                 final_path = _dub_dialogue(tmp_dir, raw_path, script.shots, elevenlabs_key, primary_variant.elevenlabs_voice_id)
+                dialogue_chars = sum(len((s.get("dialogue") or "")) for s in script.shots)
+                if dialogue_chars:
+                    record_usage(
+                        session, user_id=user_id, brand_id=toon.brand_id, toon_id=toon.id,
+                        provider="elevenlabs", generation_type="voice_dubbing",
+                        input_units=dialogue_chars, cost_usd=estimate_voice_cost(dialogue_chars),
+                    )
 
             with open(final_path, "rb") as f:
                 # Unique suffix per generation, not a fixed "raw.mp4" path —

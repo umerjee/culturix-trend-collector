@@ -85,6 +85,32 @@ ART_STYLES = {
 DEFAULT_ART_STYLE = "cartoon_3d"
 
 
+def _validate_personality(personality: dict) -> None:
+    """Light structural validation for Character.personality — see
+    docs/culturix-comedy-architecture.md §3.2 for the shape. JSON, not
+    DB-constrained, so this is the only guard against garbage shapes making
+    it into the prompt builder later."""
+    if not isinstance(personality, dict):
+        raise HTTPException(status_code=400, detail="personality must be an object")
+    allowed_keys = {"traits", "behavioral_rules", "speech_rules"}
+    unknown = set(personality.keys()) - allowed_keys
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"personality has unknown fields: {sorted(unknown)}")
+    traits = personality.get("traits")
+    if traits is not None:
+        if not isinstance(traits, dict):
+            raise HTTPException(status_code=400, detail="personality.traits must be an object of trait_name -> number")
+        for name, value in traits.items():
+            if not isinstance(name, str) or not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise HTTPException(status_code=400, detail=f"personality.traits.{name} must be a number")
+            if not (0 <= value <= 1):
+                raise HTTPException(status_code=400, detail=f"personality.traits.{name} must be between 0 and 1")
+    for list_field in ("behavioral_rules", "speech_rules"):
+        value = personality.get(list_field)
+        if value is not None and (not isinstance(value, list) or not all(isinstance(v, str) for v in value)):
+            raise HTTPException(status_code=400, detail=f"personality.{list_field} must be a list of strings")
+
+
 def _build_cartoon_prompt(
     description: str, art_style_key: str, has_reference_image: bool,
     preserve_identity: bool = True, extra: str = "",
@@ -207,6 +233,20 @@ def _get_brand_owned(session, brand_id: str, user_id: str):
     return brand
 
 
+def _check_budget_or_raise(session, brand):
+    """Call at the top of every route that's about to spend money on a
+    generation (video, image, voice, Kling Element/voice registration) —
+    before the provider call, not after. Returns a warning string (or None)
+    for the caller to surface non-blockingly; raises 402 if the brand's
+    budget is exhausted. A brand with no budget configured is never
+    blocked — see app/services/culturetoon_usage.py::check_budget."""
+    from app.services.culturetoon_usage import check_budget
+    result = check_budget(session, brand)
+    if result["blocked"]:
+        raise HTTPException(status_code=402, detail=result["reason"])
+    return result["warning"]
+
+
 def _get_character_owned(session, character_id: str, brand_id: str, user_id: str):
     from app.models.character import Character
     _get_brand_owned(session, brand_id, user_id)
@@ -270,6 +310,8 @@ def _serialize_brand(b) -> dict:
         "delivery_freq": b.delivery_freq, "delivery_time": b.delivery_time,
         "delivery_day_of_week": b.delivery_day_of_week,
         "has_elevenlabs_key": bool(b.elevenlabs_api_key_encrypted),
+        "daily_budget": float(b.daily_budget) if b.daily_budget is not None else None,
+        "monthly_budget": float(b.monthly_budget) if b.monthly_budget is not None else None,
         "created_at": b.created_at.isoformat() if b.created_at else None,
         "updated_at": b.updated_at.isoformat() if b.updated_at else None,
     }
@@ -279,7 +321,9 @@ def _serialize_character(c) -> dict:
     return {
         "id": str(c.id), "brand_id": str(c.brand_id), "name": c.name,
         "description": c.description, "base_image_url": c.base_image_url,
-        "reference_image_url": c.reference_image_url, "art_style": c.art_style,
+        "reference_image_url": c.reference_image_url,
+        "previous_image_urls": c.previous_image_urls or [],
+        "art_style": c.art_style, "personality": c.personality,
         "is_active": c.is_active,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
@@ -291,6 +335,7 @@ def _serialize_variant(v) -> dict:
         "id": str(v.id), "character_id": str(v.character_id), "name": v.name,
         "culture_tag": v.culture_tag, "description": v.description,
         "image_url": v.image_url, "reference_image_url": v.reference_image_url,
+        "previous_image_urls": v.previous_image_urls or [],
         "persona_id": v.persona_id, "is_active": v.is_active,
         "kling_element_id": v.kling_element_id, "kling_element_name": v.kling_element_name,
         "kling_voice_id": v.kling_voice_id, "element_status": v.element_status,
@@ -298,6 +343,20 @@ def _serialize_variant(v) -> dict:
         "voice_provider": v.voice_provider, "elevenlabs_voice_id": v.elevenlabs_voice_id,
         "created_at": v.created_at.isoformat() if v.created_at else None,
         "updated_at": v.updated_at.isoformat() if v.updated_at else None,
+    }
+
+
+def _serialize_relationship(r) -> dict:
+    return {
+        "id": str(r.id), "brand_id": str(r.brand_id),
+        "character_a_id": str(r.character_a_id), "character_b_id": str(r.character_b_id),
+        "relationship_type": r.relationship_type, "description": r.description,
+        "emotional_dynamic": r.emotional_dynamic,
+        "conflict_level": r.conflict_level, "trust_level": r.trust_level,
+        "humor_dynamic": r.humor_dynamic, "behavioral_rules": r.behavioral_rules or [],
+        "is_active": r.is_active,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     }
 
 
@@ -544,6 +603,17 @@ def update_brand(brand_id: str, body: dict):
                       "delivery_freq", "delivery_time", "delivery_day_of_week"):
             if field in body:
                 setattr(brand, field, body[field])
+        for budget_field in ("daily_budget", "monthly_budget"):
+            if budget_field in body:
+                value = body[budget_field]
+                if value is not None:
+                    try:
+                        value = float(value)
+                    except (TypeError, ValueError):
+                        raise HTTPException(status_code=400, detail=f"{budget_field} must be a number or null")
+                    if value < 0:
+                        raise HTTPException(status_code=400, detail=f"{budget_field} must be >= 0")
+                setattr(brand, budget_field, value)
         if "elevenlabs_api_key" in body:
             from app.social.crypto import encrypt
             raw_key = body["elevenlabs_api_key"]
@@ -551,6 +621,59 @@ def update_brand(brand_id: str, body: dict):
         session.commit()
         session.refresh(brand)
         return _serialize_brand(brand)
+    finally:
+        session.close()
+
+
+@router.get("/brands/{brand_id}/usage")
+def get_brand_usage(brand_id: str, user_id: str):
+    """Surfaces generation_usage spend for the Usage & Budget panel — see
+    app/services/culturetoon_usage.py. cost_usd can be NULL for
+    not-yet-priced generations (Qwen-Image fallback tier, most notably), so
+    daily_spend/monthly_spend here are a floor, not a ceiling, on actual
+    spend — see that module's docstring."""
+    from app.db import SessionLocal
+    from datetime import datetime as _datetime
+    from sqlalchemy import func
+    from app.models.generation_usage import GenerationUsage
+    from app.services.culturetoon_usage import check_budget
+
+    session = SessionLocal()
+    try:
+        brand = _get_brand_owned(session, brand_id, user_id)
+        budget_status = check_budget(session, brand)
+
+        month_start = _datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        by_type = (
+            session.query(
+                GenerationUsage.generation_type,
+                func.count(GenerationUsage.id),
+                func.coalesce(func.sum(GenerationUsage.cost_usd), 0),
+            )
+            .filter(GenerationUsage.brand_id == brand.id, GenerationUsage.created_at >= month_start)
+            .group_by(GenerationUsage.generation_type)
+            .all()
+        )
+        untyped_count = (
+            session.query(func.count(GenerationUsage.id))
+            .filter(
+                GenerationUsage.brand_id == brand.id,
+                GenerationUsage.created_at >= month_start,
+                GenerationUsage.cost_usd.is_(None),
+            )
+            .scalar()
+        )
+        return {
+            "daily_budget": float(brand.daily_budget) if brand.daily_budget is not None else None,
+            "monthly_budget": float(brand.monthly_budget) if brand.monthly_budget is not None else None,
+            "daily_spend": float(budget_status["daily_spend"]),
+            "monthly_spend": float(budget_status["monthly_spend"]),
+            "warning": budget_status["warning"],
+            "this_month_by_type": [
+                {"generation_type": t, "count": c, "cost_usd": float(cost)} for t, c, cost in by_type
+            ],
+            "unpriced_generations_this_month": untyped_count or 0,
+        }
     finally:
         session.close()
 
@@ -626,7 +749,9 @@ def update_character(character_id: str, body: dict):
         character = _get_character_owned(session, character_id, brand_id, user_id)
         if "art_style" in body and body["art_style"] not in ART_STYLES:
             raise HTTPException(status_code=400, detail=f"Unknown art_style: {body['art_style']}")
-        for field in ("name", "description", "is_active", "art_style"):
+        if "personality" in body and body["personality"] is not None:
+            _validate_personality(body["personality"])
+        for field in ("name", "description", "is_active", "art_style", "personality"):
             if field in body:
                 setattr(character, field, body[field])
         session.commit()
@@ -652,6 +777,130 @@ def delete_character(character_id: str, user_id: str, brand_id: str):
         return {"status": "deactivated"}
     finally:
         session.close()
+
+
+# ── relationships ────────────────────────────────────────────────────────
+# Character-level, not CharacterVariant-level — see
+# docs/culturix-comedy-architecture.md §3.4/decision 5.
+
+@router.post("/relationships")
+def create_relationship(body: dict):
+    from app.db import SessionLocal
+    from app.models.character_relationship import CharacterRelationship
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    character_a_id, character_b_id = body.get("character_a_id"), body.get("character_b_id")
+    if not user_id or not brand_id or not character_a_id or not character_b_id:
+        raise HTTPException(status_code=400, detail="user_id, brand_id, character_a_id and character_b_id are required")
+    if character_a_id == character_b_id:
+        raise HTTPException(status_code=400, detail="character_a_id and character_b_id must be different characters")
+    session = SessionLocal()
+    try:
+        brand = _get_brand_owned(session, brand_id, user_id)
+        _get_character_owned(session, character_a_id, brand_id, user_id)
+        _get_character_owned(session, character_b_id, brand_id, user_id)
+        for level_field in ("conflict_level", "trust_level"):
+            if body.get(level_field) is not None and not (0 <= int(body[level_field]) <= 10):
+                raise HTTPException(status_code=400, detail=f"{level_field} must be between 0 and 10")
+        relationship = CharacterRelationship(
+            brand_id=brand.id,
+            character_a_id=_uuid.UUID(character_a_id), character_b_id=_uuid.UUID(character_b_id),
+            relationship_type=body.get("relationship_type"), description=body.get("description"),
+            emotional_dynamic=body.get("emotional_dynamic"),
+            conflict_level=body.get("conflict_level"), trust_level=body.get("trust_level"),
+            humor_dynamic=body.get("humor_dynamic"), behavioral_rules=body.get("behavioral_rules"),
+        )
+        session.add(relationship)
+        session.commit()
+        session.refresh(relationship)
+        return _serialize_relationship(relationship)
+    finally:
+        session.close()
+
+
+@router.get("/relationships")
+def list_relationships(user_id: str, brand_id: str, character_id: Optional[str] = None, active_only: bool = True):
+    from app.db import SessionLocal
+    from app.models.character_relationship import CharacterRelationship
+    session = SessionLocal()
+    try:
+        brand = _get_brand_owned(session, brand_id, user_id)
+        query = session.query(CharacterRelationship).filter_by(brand_id=brand.id)
+        if active_only:
+            query = query.filter_by(is_active=True)
+        if character_id:
+            cid = _uuid.UUID(character_id)
+            query = query.filter(
+                (CharacterRelationship.character_a_id == cid) | (CharacterRelationship.character_b_id == cid)
+            )
+        relationships = query.order_by(CharacterRelationship.created_at.asc()).all()
+        return [_serialize_relationship(r) for r in relationships]
+    finally:
+        session.close()
+
+
+def _get_relationship_owned(session, relationship_id: str, brand_id: str, user_id: str):
+    from app.models.character_relationship import CharacterRelationship
+    brand = _get_brand_owned(session, brand_id, user_id)
+    relationship = session.query(CharacterRelationship).filter_by(id=_uuid.UUID(relationship_id)).first()
+    if not relationship or relationship.brand_id != brand.id:
+        raise HTTPException(status_code=404, detail="Relationship not found")
+    return relationship
+
+
+@router.put("/relationships/{relationship_id}")
+def update_relationship(relationship_id: str, body: dict):
+    from app.db import SessionLocal
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+    session = SessionLocal()
+    try:
+        relationship = _get_relationship_owned(session, relationship_id, brand_id, user_id)
+        for level_field in ("conflict_level", "trust_level"):
+            if body.get(level_field) is not None and not (0 <= int(body[level_field]) <= 10):
+                raise HTTPException(status_code=400, detail=f"{level_field} must be between 0 and 10")
+        for field in ("relationship_type", "description", "emotional_dynamic", "conflict_level",
+                      "trust_level", "humor_dynamic", "behavioral_rules", "is_active"):
+            if field in body:
+                setattr(relationship, field, body[field])
+        session.commit()
+        session.refresh(relationship)
+        return _serialize_relationship(relationship)
+    finally:
+        session.close()
+
+
+@router.delete("/relationships/{relationship_id}")
+def delete_relationship(relationship_id: str, user_id: str, brand_id: str):
+    from app.db import SessionLocal
+    session = SessionLocal()
+    try:
+        relationship = _get_relationship_owned(session, relationship_id, brand_id, user_id)
+        relationship.is_active = False
+        session.commit()
+        return {"status": "deactivated"}
+    finally:
+        session.close()
+
+
+def resolve_relationships_for_cast(session, brand_id, character_ids: list) -> list:
+    """Looks up every stored relationship between any two Characters in
+    `character_ids` (deduped, order-independent — a relationship's
+    character_a_id/character_b_id order doesn't imply direction). Used by
+    culturetoon_script.py's prompt builder when a script casts 2+ characters
+    together. Returns serialized relationship dicts, empty list if none or
+    fewer than 2 distinct characters are cast."""
+    from app.models.character_relationship import CharacterRelationship
+    ids = {_uuid.UUID(str(c)) for c in character_ids}
+    if len(ids) < 2:
+        return []
+    relationships = session.query(CharacterRelationship).filter(
+        CharacterRelationship.brand_id == _uuid.UUID(str(brand_id)),
+        CharacterRelationship.is_active == True,  # noqa: E712
+        CharacterRelationship.character_a_id.in_(ids),
+        CharacterRelationship.character_b_id.in_(ids),
+    ).all()
+    return [_serialize_relationship(r) for r in relationships]
 
 
 @router.post("/characters/{character_id}/image")
@@ -721,7 +970,9 @@ def generate_character_image(character_id: str, body: dict):
         raise HTTPException(status_code=400, detail="user_id and brand_id are required")
     session = SessionLocal()
     try:
+        brand = _get_brand_owned(session, brand_id, user_id)
         character = _get_character_owned(session, character_id, brand_id, user_id)
+        budget_warning = _check_budget_or_raise(session, brand)
         if "description" in body:
             character.description = (body.get("description") or "").strip() or None
         if "art_style" in body:
@@ -747,10 +998,21 @@ def generate_character_image(character_id: str, body: dict):
             url = save_image(result.asset_bytes, result.content_type, path)
         except ImageUploadError as exc:
             raise HTTPException(status_code=502, detail=f"Failed to store generated image: {exc}")
+
+        from app.services.culturetoon_usage import record_usage
+        record_usage(
+            session, user_id=user_id, brand_id=brand.id, provider="hybrid_image",
+            generation_type="character_image", cost_usd=result.cost_usd,
+        )
+        if character.base_image_url:
+            character.previous_image_urls = (character.previous_image_urls or []) + [character.base_image_url]
         character.base_image_url = url
         session.commit()
         session.refresh(character)
-        return _serialize_character(character)
+        serialized = _serialize_character(character)
+        if budget_warning:
+            serialized["budget_warning"] = budget_warning
+        return serialized
     finally:
         session.close()
 
@@ -933,7 +1195,9 @@ def generate_variant_image(variant_id: str, body: dict):
         raise HTTPException(status_code=400, detail="user_id and brand_id are required")
     session = SessionLocal()
     try:
+        brand = _get_brand_owned(session, brand_id, user_id)
         variant = _get_variant_owned(session, variant_id, brand_id, user_id)
+        budget_warning = _check_budget_or_raise(session, brand)
         from app.models.character import Character
         character = session.query(Character).filter_by(id=variant.character_id).first()
         if "description" in body:
@@ -998,6 +1262,14 @@ def generate_variant_image(variant_id: str, body: dict):
             url = save_image(result.asset_bytes, result.content_type, path)
         except ImageUploadError as exc:
             raise HTTPException(status_code=502, detail=f"Failed to store generated image: {exc}")
+
+        from app.services.culturetoon_usage import record_usage
+        record_usage(
+            session, user_id=user_id, brand_id=brand.id, provider="hybrid_image",
+            generation_type="variant_image", cost_usd=result.cost_usd,
+        )
+        if variant.image_url:
+            variant.previous_image_urls = (variant.previous_image_urls or []) + [variant.image_url]
         variant.image_url = url
         session.commit()
         session.refresh(variant)
@@ -1013,6 +1285,8 @@ def generate_variant_image(variant_id: str, body: dict):
                 "raw description alone, with no explicit ethnicity/attire detail. Result quality may be "
                 "lower than usual — consider regenerating."
             )
+        if budget_warning:
+            serialized["budget_warning"] = budget_warning
         return serialized
     finally:
         session.close()
@@ -1032,9 +1306,11 @@ def register_variant_element(variant_id: str, body: dict, background_tasks: Back
 
     session = SessionLocal()
     try:
+        brand = _get_brand_owned(session, brand_id, user_id)
         variant = _get_variant_owned(session, variant_id, brand_id, user_id)
         if not variant.image_url:
             raise HTTPException(status_code=400, detail="Variant has no image to register — upload one first")
+        budget_warning = _check_budget_or_raise(session, brand)
         variant.element_status = "pending"
         session.commit()
     finally:
@@ -1049,7 +1325,10 @@ def register_variant_element(variant_id: str, body: dict, background_tasks: Back
         voice_provider=body.get("voice_provider", "kling"),
         elevenlabs_voice_id=body.get("elevenlabs_voice_id"),
     )
-    return {"status": "registration_started"}
+    response = {"status": "registration_started"}
+    if budget_warning:
+        response["budget_warning"] = budget_warning
+    return response
 
 
 # ── expressions ───────────────────────────────────────────────────────────
@@ -1608,6 +1887,7 @@ def generate_script_background(script_id: str, body: dict):
         raise HTTPException(status_code=400, detail="user_id and brand_id are required")
     session = SessionLocal()
     try:
+        brand = _get_brand_owned(session, brand_id, user_id)
         script = _get_script_owned(session, script_id, brand_id, user_id)
         scene = _script_scene_description(script)
         extra_description = (body.get("extra_description") or "").strip()
@@ -1628,11 +1908,16 @@ def generate_script_background(script_id: str, body: dict):
             )
         art_style = body.get("art_style") or DEFAULT_ART_STYLE
         default_name = (script.hook_line or description)[:120]
-        background = _generate_background_asset(session, brand_id, description, art_style, body.get("name"), default_name)
+        background, budget_warning = _generate_background_asset(
+            session, brand, user_id, description, art_style, body.get("name"), default_name
+        )
         script.background_id = background.id
         session.commit()
         session.refresh(background)
-        return _serialize_background(background)
+        serialized = _serialize_background(background)
+        if budget_warning:
+            serialized["budget_warning"] = budget_warning
+        return serialized
     finally:
         session.close()
 
@@ -1654,24 +1939,32 @@ def generate_background(body: dict):
     art_style = body.get("art_style") or DEFAULT_ART_STYLE
     session = SessionLocal()
     try:
-        _get_brand_owned(session, brand_id, user_id)
-        background = _generate_background_asset(session, brand_id, description, art_style, body.get("name"), description[:120])
+        brand = _get_brand_owned(session, brand_id, user_id)
+        background, budget_warning = _generate_background_asset(
+            session, brand, user_id, description, art_style, body.get("name"), description[:120]
+        )
         session.commit()
         session.refresh(background)
-        return _serialize_background(background)
+        serialized = _serialize_background(background)
+        if budget_warning:
+            serialized["budget_warning"] = budget_warning
+        return serialized
     finally:
         session.close()
 
 
-def _generate_background_asset(session, brand_id: str, description: str, art_style: str,
+def _generate_background_asset(session, brand, user_id: str, description: str, art_style: str,
                                 requested_name: Optional[str], default_name: str):
-    """Shared by generate_script_background and generate_background: builds
-    the prompt, generates + stores the image, and adds a new ToonBackground
-    to the session (uncommitted — callers commit, since generate_script_
-    background also needs to point its script at the new row in the same
-    transaction)."""
+    """Shared by generate_script_background and generate_background: checks
+    budget, builds the prompt, generates + stores the image, records usage,
+    and adds a new ToonBackground to the session (uncommitted — callers
+    commit, since generate_script_background also needs to point its script
+    at the new row in the same transaction). Returns (background,
+    budget_warning) — warning is None unless the brand is approaching its
+    configured budget."""
     if art_style not in ART_STYLES:
         raise HTTPException(status_code=400, detail=f"Unknown art_style: {art_style}")
+    budget_warning = _check_budget_or_raise(session, brand)
 
     prompt = _build_background_prompt(description, art_style)
     from app.media.image_hybrid import HybridImageProvider
@@ -1683,20 +1976,26 @@ def _generate_background_asset(session, brand_id: str, description: str, art_sty
     from app.models.toon_background import ToonBackground
     ext = "jpg" if result.content_type == "image/jpeg" else "png"
     background_id = _uuid.uuid4()
-    path = f"culturetoons/{brand_id}/backgrounds/{background_id}.{ext}"
+    path = f"culturetoons/{brand.id}/backgrounds/{background_id}.{ext}"
     from app.services.culturetoon_media import save_image, ImageUploadError
     try:
         url = save_image(result.asset_bytes, result.content_type, path)
     except ImageUploadError as exc:
         raise HTTPException(status_code=502, detail=f"Failed to store generated background: {exc}")
 
+    from app.services.culturetoon_usage import record_usage
+    record_usage(
+        session, user_id=user_id, brand_id=brand.id, provider="hybrid_image",
+        generation_type="background_image", cost_usd=result.cost_usd,
+    )
+
     name = (requested_name or "").strip() or default_name
     background = ToonBackground(
-        id=background_id, brand_id=_uuid.UUID(brand_id), name=name,
+        id=background_id, brand_id=brand.id, name=name,
         image_url=url, description=description,
     )
     session.add(background)
-    return background
+    return background, budget_warning
 
 
 # ── toons ─────────────────────────────────────────────────────────────────
@@ -1822,7 +2121,9 @@ def generate_toon_video(toon_id: str, body: dict, background_tasks: BackgroundTa
 
     session = SessionLocal()
     try:
+        brand = _get_brand_owned(session, brand_id, user_id)
         toon = _get_toon_owned(session, toon_id, brand_id, user_id)
+        budget_warning = _check_budget_or_raise(session, brand)
         from app.models.toon_script import ToonScript
         from app.models.character_variant import CharacterVariant
         script = session.query(ToonScript).filter_by(id=toon.script_id).first()
@@ -1839,7 +2140,10 @@ def generate_toon_video(toon_id: str, body: dict, background_tasks: BackgroundTa
         session.close()
 
     background_tasks.add_task(generate_video_for_toon, user_id=user_id, toon_id=toon_id)
-    return {"status": "generation_started"}
+    response = {"status": "generation_started"}
+    if budget_warning:
+        response["budget_warning"] = budget_warning
+    return response
 
 
 @router.post("/toons/{toon_id}/publish")

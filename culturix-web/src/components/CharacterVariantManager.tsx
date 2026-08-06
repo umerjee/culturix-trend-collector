@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Loader2, CheckCircle2, XCircle, Sparkles, ChevronDown, ChevronRight, Pencil, Trash2 } from "lucide-react";
-import type { Character, CharacterVariant, VoiceProvider } from "@/lib/types";
+import { Plus, Loader2, CheckCircle2, XCircle, Sparkles, ChevronDown, ChevronRight, Pencil, Trash2, X } from "lucide-react";
+import type { Character, CharacterVariant, VoiceProvider, CharacterPersonality } from "@/lib/types";
+import { PERSONALITY_TRAITS } from "@/lib/types";
 import CharacterImageBuilder from "@/components/CharacterImageBuilder";
 import ExpressionUploadGrid from "@/components/ExpressionUploadGrid";
+import RelationshipManager from "@/components/RelationshipManager";
 
 interface Props {
   brandId: string;
@@ -52,6 +54,14 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   const [savingName, setSavingName] = useState(false);
   const [archivingCharacter, setArchivingCharacter] = useState(false);
 
+  const [personalityOpen, setPersonalityOpen] = useState(false);
+  const [traits, setTraits] = useState<Record<string, number>>({});
+  const [behavioralRules, setBehavioralRules] = useState<string[]>([]);
+  const [speechRules, setSpeechRules] = useState<string[]>([]);
+  const [newBehavioralRule, setNewBehavioralRule] = useState("");
+  const [newSpeechRule, setNewSpeechRule] = useState("");
+  const [savingPersonality, setSavingPersonality] = useState(false);
+
   const [newVariantName, setNewVariantName] = useState("");
   const [creatingVariant, setCreatingVariant] = useState(false);
   const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>("kling");
@@ -89,6 +99,11 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     setArtStyleDraft(selectedCharacter?.art_style ?? "cartoon_3d");
     setImageGenError(null);
     setNameDraft(selectedCharacter?.name ?? "");
+    setTraits(selectedCharacter?.personality?.traits ?? {});
+    setBehavioralRules(selectedCharacter?.personality?.behavioral_rules ?? []);
+    setSpeechRules(selectedCharacter?.personality?.speech_rules ?? []);
+    setNewBehavioralRule("");
+    setNewSpeechRule("");
   }, [selectedCharacterId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -239,6 +254,39 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     }
   }
 
+  async function savePersonality() {
+    if (!selectedCharacter) return;
+    setSavingPersonality(true);
+    try {
+      const personality: CharacterPersonality = {
+        traits, behavioral_rules: behavioralRules, speech_rules: speechRules,
+      };
+      const res = await fetch(`/api/culturetoons/characters/${selectedCharacter.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, personality }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCharacters((prev) => prev.map((c) => (c.id === selectedCharacter.id ? (data as Character) : c)));
+      }
+    } finally {
+      setSavingPersonality(false);
+    }
+  }
+
+  function addBehavioralRule() {
+    if (!newBehavioralRule.trim()) return;
+    setBehavioralRules((prev) => [...prev, newBehavioralRule.trim()]);
+    setNewBehavioralRule("");
+  }
+
+  function addSpeechRule() {
+    if (!newSpeechRule.trim()) return;
+    setSpeechRules((prev) => [...prev, newSpeechRule.trim()]);
+    setNewSpeechRule("");
+  }
+
   async function archiveCharacter() {
     if (!selectedCharacter) return;
     setArchivingCharacter(true);
@@ -365,11 +413,115 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
             error={imageGenError}
             helperText="A reference photo is optional — with one, generation is grounded on your photo's likeness but always re-illustrated in the chosen style. Regenerate as many times as you like to refine it."
           />
+
+          <div className="rounded-xl border border-gray-100 mt-4">
+            <button
+              onClick={() => setPersonalityOpen((v) => !v)}
+              className="w-full flex items-center justify-between px-3 py-2.5 text-xs font-semibold text-gray-700"
+            >
+              <span className="flex items-center gap-1.5">
+                {personalityOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                Personality
+              </span>
+              {(behavioralRules.length > 0 || speechRules.length > 0 || Object.keys(traits).length > 0) && (
+                <span className="text-[10px] text-gray-400">Configured</span>
+              )}
+            </button>
+            {personalityOpen && (
+              <div className="px-3 pb-3 space-y-4">
+                <p className="text-[11px] text-gray-400">
+                  Drives future script generation so {selectedCharacter.name}&apos;s personality stays consistent
+                  across episodes instead of being reinvented by the AI each time.
+                </p>
+
+                <div>
+                  <p className="text-[11px] font-medium text-gray-500 mb-2">Traits</p>
+                  <div className="space-y-2">
+                    {PERSONALITY_TRAITS.map((trait) => (
+                      <div key={trait} className="flex items-center gap-2">
+                        <span className="text-xs text-gray-600 w-28 capitalize shrink-0">{trait.replace("_", " ")}</span>
+                        <input
+                          type="range" min={0} max={1} step={0.05}
+                          value={traits[trait] ?? 0.5}
+                          onChange={(e) => setTraits((prev) => ({ ...prev, [trait]: parseFloat(e.target.value) }))}
+                          className="flex-1"
+                        />
+                        <span className="text-[11px] text-gray-400 w-8 text-right">{(traits[trait] ?? 0.5).toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-[11px] font-medium text-gray-500 mb-2">Behavioral rules</p>
+                  <div className="space-y-1 mb-2">
+                    {behavioralRules.map((rule, i) => (
+                      <div key={i} className="flex items-center gap-1.5 text-xs text-gray-600 bg-gray-50 rounded-lg px-2 py-1.5">
+                        <span className="flex-1">{rule}</span>
+                        <button onClick={() => setBehavioralRules((prev) => prev.filter((_, idx) => idx !== i))} className="text-gray-400 hover:text-red-500">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex gap-1.5">
+                    <input
+                      type="text" value={newBehavioralRule} onChange={(e) => setNewBehavioralRule(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addBehavioralRule(); } }}
+                      placeholder="e.g. tries to negotiate when prices seem high"
+                      className="flex-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
+                    />
+                    <button onClick={addBehavioralRule} className="rounded-lg bg-gray-100 text-gray-600 px-2.5 hover:bg-gray-200 transition-colors">
+                      <Plus className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-[11px] font-medium text-gray-500 mb-2">Speech rules</p>
+                  <div className="space-y-1 mb-2">
+                    {speechRules.map((rule, i) => (
+                      <div key={i} className="flex items-center gap-1.5 text-xs text-gray-600 bg-gray-50 rounded-lg px-2 py-1.5">
+                        <span className="flex-1">{rule}</span>
+                        <button onClick={() => setSpeechRules((prev) => prev.filter((_, idx) => idx !== i))} className="text-gray-400 hover:text-red-500">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex gap-1.5">
+                    <input
+                      type="text" value={newSpeechRule} onChange={(e) => setNewSpeechRule(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addSpeechRule(); } }}
+                      placeholder="e.g. uses short sentences"
+                      className="flex-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
+                    />
+                    <button onClick={addSpeechRule} className="rounded-lg bg-gray-100 text-gray-600 px-2.5 hover:bg-gray-200 transition-colors">
+                      <Plus className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  onClick={savePersonality}
+                  disabled={savingPersonality}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 text-white text-xs font-medium px-3 py-1.5 hover:bg-gray-800 transition-colors disabled:opacity-60"
+                >
+                  {savingPersonality ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  Save personality
+                </button>
+              </div>
+            )}
+          </div>
           </>
         ) : (
           <p className="text-xs text-gray-400">Name a character above to get started.</p>
         )}
       </div>
+
+      {selectedCharacter && (
+        <RelationshipManager brandId={brandId} characters={characters} />
+      )}
 
       {/* Step 2 — cultural variants */}
       {selectedCharacter && (

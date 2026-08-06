@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Text, Boolean
+from sqlalchemy import Column, String, DateTime, Text, Boolean, JSON, ARRAY
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -21,12 +21,23 @@ class Character(Base):
     # the same source photo instead of compounding drift by re-generating
     # from the previous generation's own output.
     reference_image_url = Column(Text, nullable=True)
+    # Regenerating base_image_url used to silently discard the prior
+    # portrait, same trap as Toon.raw_video_url before previous_video_urls
+    # was added — see docs/culturix-comedy-architecture.md §3.3.
+    previous_image_urls = Column(ARRAY(Text), nullable=True)
     # Which illustrated art style AI image generation renders this character
     # (and, by default, its variants) into — see ART_STYLES in
     # app/routers/culturetoons.py. Without an explicit style instruction in
     # the prompt, a supplied reference photo tends to just get lightly
     # re-touched rather than actually re-illustrated as a cartoon.
     art_style = Column(String(30), nullable=False, default="cartoon_3d")
+    # Structured personality — {"traits": {name: 0-1 float, ...},
+    # "behavioral_rules": [str, ...], "speech_rules": [str, ...]}, validated
+    # at the API boundary (app/routers/culturetoons.py), not DB-constrained.
+    # Consumed by culturetoon_script.py's prompt builder so character
+    # identity is deterministic across scripts rather than re-improvised by
+    # the LLM each time — see docs/culturix-comedy-architecture.md §3.2.
+    personality = Column(JSON, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -403,6 +403,9 @@ export interface CharacterBrand {
   delivery_time: string;
   delivery_day_of_week: number;
   has_elevenlabs_key: boolean;
+  // NULL means no cap set — budgets are opt-in per brand, not a default limit.
+  daily_budget: number | null;
+  monthly_budget: number | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -416,6 +419,21 @@ export const ART_STYLES = [
   { key: "cinematic_cultural", label: "Cinematic cultural (painterly)" },
 ] as const;
 
+// Character.personality's shape — see docs/culturix-comedy-architecture.md §3.2.
+export interface CharacterPersonality {
+  traits?: Record<string, number>;
+  behavioral_rules?: string[];
+  speech_rules?: string[];
+}
+
+// Fixed slider set for the personality editor — matches the spec's example
+// trait names. Not exhaustive; any trait name is valid in the traits object,
+// this is just what the UI offers sliders for by default.
+export const PERSONALITY_TRAITS = [
+  "confidence", "humor", "patience", "competitiveness",
+  "warmth", "risk_tolerance", "formality", "impulsiveness",
+] as const;
+
 export interface Character {
   id: string;
   brand_id: string;
@@ -423,7 +441,9 @@ export interface Character {
   description: string | null;
   base_image_url: string | null;
   reference_image_url: string | null;
+  previous_image_urls: string[];
   art_style: (typeof ART_STYLES)[number]["key"];
+  personality: CharacterPersonality | null;
   is_active: boolean;
   created_at: string | null;
   updated_at: string | null;
@@ -440,6 +460,7 @@ export interface CharacterVariant {
   description: string | null;
   image_url: string | null;
   reference_image_url: string | null;
+  previous_image_urls: string[];
   persona_id: number | null;
   is_active: boolean;
   kling_element_id: string | null;
@@ -451,6 +472,41 @@ export interface CharacterVariant {
   elevenlabs_voice_id: string | null;
   created_at: string | null;
   updated_at: string | null;
+}
+
+// Character-level (not CharacterVariant-level) — see
+// docs/culturix-comedy-architecture.md §3.4/decision 5.
+export interface CharacterRelationship {
+  id: string;
+  brand_id: string;
+  character_a_id: string;
+  character_b_id: string;
+  relationship_type: string | null;
+  description: string | null;
+  emotional_dynamic: string | null;
+  conflict_level: number | null;
+  trust_level: number | null;
+  humor_dynamic: string | null;
+  behavioral_rules: string[];
+  is_active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface BrandUsageByType {
+  generation_type: string;
+  count: number;
+  cost_usd: number;
+}
+
+export interface BrandUsage {
+  daily_budget: number | null;
+  monthly_budget: number | null;
+  daily_spend: number;
+  monthly_spend: number;
+  warning: string | null;
+  this_month_by_type: BrandUsageByType[];
+  unpriced_generations_this_month: number;
 }
 
 export const EXPRESSION_NAMES = [

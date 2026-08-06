@@ -30,6 +30,8 @@ from app.models.toon_episode import ToonEpisode
 from app.models.connected_account import ConnectedAccount
 from app.models.persona import Persona
 from app.models.cluster import Cluster
+from app.models.character_relationship import CharacterRelationship
+from app.models.generation_usage import GenerationUsage
 from app.routers import culturetoons
 
 
@@ -54,6 +56,7 @@ def db(mocker):
         Expression.__table__, ToonBackground.__table__, ToonScript.__table__,
         Toon.__table__, ToonPost.__table__, ToonEpisode.__table__, ConnectedAccount.__table__,
         Persona.__table__, Cluster.__table__,
+        CharacterRelationship.__table__, GenerationUsage.__table__,
     ])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)
@@ -1452,3 +1455,264 @@ class TestEpisodes:
         assert "Hi there!" in sent_summary
         sent_idea = mock_generate.call_args[0][1]
         assert sent_idea == "something surprising happens"
+
+
+class TestPersonality:
+    def test_valid_personality_saved(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        personality = {
+            "traits": {"confidence": 0.9, "humor": 0.8},
+            "behavioral_rules": ["tries to negotiate when prices seem high"],
+            "speech_rules": ["speaks confidently"],
+        }
+        result = culturetoons.update_character(character["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "personality": personality,
+        })
+        assert result["personality"] == personality
+
+    def test_personality_must_be_object(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.update_character(character["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "personality": "not an object",
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_personality_rejects_unknown_keys(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.update_character(character["id"], {
+                "user_id": user_id, "brand_id": brand["id"],
+                "personality": {"traits": {}, "made_up_field": True},
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_trait_value_must_be_0_to_1(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.update_character(character["id"], {
+                "user_id": user_id, "brand_id": brand["id"],
+                "personality": {"traits": {"confidence": 1.5}},
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_behavioral_rules_must_be_list_of_strings(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.update_character(character["id"], {
+                "user_id": user_id, "brand_id": brand["id"],
+                "personality": {"behavioral_rules": "not a list"},
+            })
+        assert exc_info.value.status_code == 400
+
+
+class TestCharacterRelationships:
+    def _second_character(self, user_id, brand_id, name="Hans"):
+        return culturetoons.create_character({"user_id": user_id, "brand_id": brand_id, "name": name})
+
+    def test_create_requires_two_distinct_characters(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_relationship({
+                "user_id": user_id, "brand_id": brand["id"],
+                "character_a_id": character["id"], "character_b_id": character["id"],
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_create_and_list(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+
+        created = culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": character["id"], "character_b_id": hans["id"],
+            "relationship_type": "friendly_rivalry",
+            "description": "Kumar finds Hans excessively rule-oriented.",
+            "conflict_level": 4, "trust_level": 7,
+            "behavioral_rules": ["Kumar attempts to persuade Hans.", "Hans responds literally."],
+        })
+        assert created["relationship_type"] == "friendly_rivalry"
+        assert created["conflict_level"] == 4
+
+        listed = culturetoons.list_relationships(user_id, brand["id"])
+        assert len(listed) == 1
+        assert listed[0]["id"] == created["id"]
+
+        # Filtering by either character in the pair returns it — the
+        # relationship is order-independent.
+        by_a = culturetoons.list_relationships(user_id, brand["id"], character_id=character["id"])
+        by_b = culturetoons.list_relationships(user_id, brand["id"], character_id=hans["id"])
+        assert len(by_a) == 1 and len(by_b) == 1
+
+    def test_level_fields_must_be_0_to_10(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_relationship({
+                "user_id": user_id, "brand_id": brand["id"],
+                "character_a_id": character["id"], "character_b_id": hans["id"],
+                "conflict_level": 11,
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_update_and_delete_archives(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        created = culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": character["id"], "character_b_id": hans["id"],
+        })
+
+        updated = culturetoons.update_relationship(created["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "trust_level": 9,
+        })
+        assert updated["trust_level"] == 9
+
+        culturetoons.delete_relationship(created["id"], user_id, brand["id"])
+        assert culturetoons.list_relationships(user_id, brand["id"]) == []
+        archived = culturetoons.list_relationships(user_id, brand["id"], active_only=False)
+        assert len(archived) == 1 and archived[0]["is_active"] is False
+
+    def test_resolve_relationships_for_cast(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        third = self._second_character(user_id, brand["id"], name="Pierre")
+        culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": character["id"], "character_b_id": hans["id"],
+            "relationship_type": "friendly_rivalry",
+        })
+
+        session = db()
+        # Cast includes Kumar + Hans -> relationship resolves.
+        found = culturetoons.resolve_relationships_for_cast(session, brand["id"], [character["id"], hans["id"]])
+        assert len(found) == 1
+        assert found[0]["relationship_type"] == "friendly_rivalry"
+
+        # Cast includes only Pierre + Hans (no stored relationship) -> empty.
+        none_found = culturetoons.resolve_relationships_for_cast(session, brand["id"], [third["id"], hans["id"]])
+        assert none_found == []
+
+        # Fewer than 2 distinct characters -> empty, no query needed.
+        assert culturetoons.resolve_relationships_for_cast(session, brand["id"], [character["id"]]) == []
+        session.close()
+
+    def test_cross_brand_character_404s(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        other_brand = culturetoons.create_brand({"user_id": user_id, "name": "Other Brand"})
+        other_character = culturetoons.create_character({"user_id": user_id, "brand_id": other_brand["id"], "name": "Outsider"})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_relationship({
+                "user_id": user_id, "brand_id": brand["id"],
+                "character_a_id": character["id"], "character_b_id": other_character["id"],
+            })
+        assert exc_info.value.status_code == 404
+
+
+class TestBudgetEnforcement:
+    def _exhaust_budget(self, db, brand_id, user_id, amount="10.00"):
+        from decimal import Decimal
+        from app.services.culturetoon_usage import record_usage
+        session = db()
+        record_usage(session, user_id=user_id, brand_id=brand_id, provider="kling_omni",
+                     generation_type="video", cost_usd=Decimal(amount))
+        session.commit()
+        session.close()
+
+    def test_update_brand_validates_budget_fields(self, db, user_id, brand_and_character):
+        brand, _character, _variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.update_brand(brand["id"], {"user_id": user_id, "monthly_budget": "not-a-number"})
+        assert exc_info.value.status_code == 400
+
+        updated = culturetoons.update_brand(brand["id"], {
+            "user_id": user_id, "daily_budget": 5, "monthly_budget": 100,
+        })
+        assert updated["daily_budget"] == 5.0
+        assert updated["monthly_budget"] == 100.0
+
+    def test_character_image_generation_blocked_when_monthly_budget_exhausted(self, db, user_id, brand_and_character, mocker):
+        brand, character, _variant = brand_and_character
+        culturetoons.update_brand(brand["id"], {"user_id": user_id, "monthly_budget": 10})
+        self._exhaust_budget(db, brand["id"], user_id, amount="10.00")
+
+        mock_generate = mocker.patch("app.media.image_hybrid.HybridImageProvider.generate")
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_character_image(character["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "description": "A tall man",
+            })
+        assert exc_info.value.status_code == 402
+        mock_generate.assert_not_called()  # blocked before spending anything further
+
+    def test_variant_image_generation_blocked_when_monthly_budget_exhausted(self, db, user_id, brand_and_character, mocker):
+        brand, _character, variant = brand_and_character
+        culturetoons.update_brand(brand["id"], {"user_id": user_id, "monthly_budget": 10})
+        self._exhaust_budget(db, brand["id"], user_id, amount="10.00")
+
+        mock_generate = mocker.patch("app.media.image_hybrid.HybridImageProvider.generate")
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_variant_image(variant["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "description": "A relative",
+            })
+        assert exc_info.value.status_code == 402
+        mock_generate.assert_not_called()
+
+    def test_not_blocked_under_budget_and_warning_surfaced_near_limit(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, character, _variant = brand_and_character
+        culturetoons.update_brand(brand["id"], {"user_id": user_id, "monthly_budget": 10})
+        self._exhaust_budget(db, brand["id"], user_id, amount="8.50")  # 85% of budget
+
+        mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png", cost_usd=0.1),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/char-gen.png")
+
+        result = culturetoons.generate_character_image(character["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "description": "A tall man",
+        })
+        assert "budget_warning" in result
+        assert "80%" in result["budget_warning"] or "85%" in result["budget_warning"]
+
+    def test_generate_toon_video_blocked_before_background_task_fires(self, db, user_id, brand_and_character, mocker):
+        # generate_toon_video kicks off a BackgroundTasks job rather than
+        # calling Kling synchronously — the budget check must happen before
+        # background_tasks.add_task(), not inside the task itself, or a
+        # blocked brand would still burn a real Kling call in the background
+        # before anyone finds out.
+        brand, _character, variant = brand_and_character
+        session = db()
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        variant_row.element_status = "ready"
+        session.commit()
+        script = culturetoons.create_script({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+        })
+        script_row = session.query(ToonScript).filter_by(id=uuid.UUID(script["id"])).first()
+        script_row.shots = [{"shot_number": 1, "duration_seconds": 4, "action": "waves", "expression": "Happy", "dialogue": "Hi"}]
+        session.commit()
+        session.close()
+        toon = culturetoons.create_toon({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_variant_id": variant["id"], "script_id": script["id"],
+        })
+
+        culturetoons.update_brand(brand["id"], {"user_id": user_id, "monthly_budget": 10})
+        self._exhaust_budget(db, brand["id"], user_id, amount="10.00")
+
+        mock_task = mocker.patch("app.services.culturetoon_video.generate_video_for_toon")
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_toon_video(toon["id"], {"user_id": user_id, "brand_id": brand["id"]}, BackgroundTasks())
+        assert exc_info.value.status_code == 402
+        mock_task.assert_not_called()
+
+    def test_brand_usage_endpoint_reports_spend(self, db, user_id, brand_and_character):
+        brand, _character, _variant = brand_and_character
+        culturetoons.update_brand(brand["id"], {"user_id": user_id, "monthly_budget": 100})
+        self._exhaust_budget(db, brand["id"], user_id, amount="25.00")
+
+        usage = culturetoons.get_brand_usage(brand["id"], user_id)
+        assert usage["monthly_budget"] == 100.0
+        assert usage["monthly_spend"] == 25.0
+        assert any(row["generation_type"] == "video" for row in usage["this_month_by_type"])

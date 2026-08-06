@@ -76,11 +76,17 @@ def register_character_variant(user_id, brand_id, variant_id, refer_image_urls=N
         # Kling still needs the visual Element for character consistency, but
         # dialogue audio for these characters is synthesized separately (see
         # app/services/culturetoon_video.py) and muxed in afterward.
+        from app.services.culturetoon_usage import record_usage, KLING_ELEMENT_REGISTRATION_COST_USD
+
         provider = KlingOmniProvider()
         kling_voice_id = None
         if voice_provider != "elevenlabs":
             if voice_sample_url:
                 kling_voice_id = provider.create_voice(f"{variant.name[:15]}-voice", voice_sample_url)
+                record_usage(
+                    session, user_id=user_id, brand_id=brand_id, provider="kling_omni",
+                    generation_type="voice_registration", cost_usd=KLING_ELEMENT_REGISTRATION_COST_USD,
+                )
             elif preset_voice_id:
                 kling_voice_id = preset_voice_id
 
@@ -93,6 +99,10 @@ def register_character_variant(user_id, brand_id, variant_id, refer_image_urls=N
             frontal_image_url=variant.image_url,
             refer_image_urls=refer_image_urls,
             voice_id=kling_voice_id,
+        )
+        record_usage(
+            session, user_id=user_id, brand_id=brand_id, provider="kling_omni",
+            generation_type="element_registration", cost_usd=KLING_ELEMENT_REGISTRATION_COST_USD,
         )
 
         variant.kling_element_id = element_id

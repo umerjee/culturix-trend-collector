@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, Text, Boolean, ARRAY
+from sqlalchemy import Column, String, Integer, DateTime, Text, Boolean, ARRAY, Numeric
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -32,6 +32,13 @@ class CharacterBrand(Base):
     # app/media/elevenlabs_voice.py). Encrypted via app/social/crypto.py's
     # existing helper, same pattern as ConnectedAccount's OAuth tokens.
     elevenlabs_api_key_encrypted = Column(Text, nullable=True)
+
+    # Spend caps enforced by app/services/culturetoon_usage.py::check_budget
+    # against generation_usage rows. NULL means no cap — budgets are opt-in
+    # per brand, not a default limit. See
+    # docs/culturix-comedy-architecture.md §3.9.
+    daily_budget = Column(Numeric(10, 2), nullable=True)
+    monthly_budget = Column(Numeric(10, 2), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
