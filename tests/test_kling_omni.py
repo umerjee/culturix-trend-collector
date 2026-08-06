@@ -48,6 +48,43 @@ class TestCreateElement:
         )
         assert element_id == "e1"
 
+    def test_defaults_refer_images_to_frontal_when_none_supplied(self, mocker):
+        # Kling requires 1-3 refer_images alongside frontal_image — an empty
+        # list 400s (confirmed live: "The number of element refer images
+        # must be between 1 and 3"). This product has no UI for supplying
+        # separate refer angles, so the frontal image must be reused as its
+        # own refer image rather than sending an empty list.
+        create_resp = _FakeResponse({"code": 0, "data": {"task_id": "t1"}})
+        poll_resp = _FakeResponse({
+            "code": 0,
+            "data": {"task_status": "succeed", "task_result": {"elements": [{"element_id": "e1"}]}},
+        })
+        mock_request = mocker.patch("httpx.request", return_value=create_resp)
+        mocker.patch("httpx.get", return_value=poll_resp)
+
+        KlingOmniProvider().create_element("Mom", "desc", "https://img/frontal.png")
+
+        sent_body = mock_request.call_args.kwargs["json"]
+        assert sent_body["element_image_list"]["refer_images"] == [{"image_url": "https://img/frontal.png"}]
+
+    def test_preserves_explicit_refer_images(self, mocker):
+        create_resp = _FakeResponse({"code": 0, "data": {"task_id": "t1"}})
+        poll_resp = _FakeResponse({
+            "code": 0,
+            "data": {"task_status": "succeed", "task_result": {"elements": [{"element_id": "e1"}]}},
+        })
+        mock_request = mocker.patch("httpx.request", return_value=create_resp)
+        mocker.patch("httpx.get", return_value=poll_resp)
+
+        KlingOmniProvider().create_element(
+            "Mom", "desc", "https://img/frontal.png", refer_image_urls=["https://img/a.png", "https://img/b.png"],
+        )
+
+        sent_body = mock_request.call_args.kwargs["json"]
+        assert sent_body["element_image_list"]["refer_images"] == [
+            {"image_url": "https://img/a.png"}, {"image_url": "https://img/b.png"},
+        ]
+
     def test_task_failed(self, mocker):
         create_resp = _FakeResponse({"code": 0, "data": {"task_id": "t1"}})
         poll_resp = _FakeResponse({"code": 0, "data": {"task_status": "failed", "task_status_msg": "bad image"}})

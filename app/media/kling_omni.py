@@ -107,14 +107,21 @@ class KlingOmniProvider:
                         refer_image_urls: Optional[list] = None, voice_id: Optional[str] = None,
                         tag_id: str = "o_102") -> str:
         """POST /v1/general/advanced-custom-elements (image_refer), poll
-        GET .../{task_id}. Returns element_id."""
+        GET .../{task_id}. Returns element_id.
+
+        Kling requires 1-3 refer_images alongside frontal_image (confirmed
+        live: an empty list 400s with "The number of element refer images
+        must be between 1 and 3") — this product only ever generates one
+        portrait per variant, with no UI for supplying separate refer
+        angles, so when the caller has none, the frontal image is reused as
+        its own (sole) refer image rather than leaving the list empty."""
         body = {
             "element_name": element_name[:20],
             "element_description": element_description[:100],
             "reference_type": "image_refer",
             "element_image_list": {
                 "frontal_image": frontal_image_url,
-                "refer_images": [{"image_url": u} for u in (refer_image_urls or [])],
+                "refer_images": [{"image_url": u} for u in (refer_image_urls or [frontal_image_url])],
             },
             "tag_list": [{"tag_id": tag_id}],
         }
