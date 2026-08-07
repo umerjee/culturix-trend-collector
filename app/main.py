@@ -49,6 +49,7 @@ async def lifespan(_):
     from app.models.character_memory import CharacterMemory           # noqa: F401
     from app.models.culture import Culture                            # noqa: F401
     from app.models.toon_scene import ToonScene                       # noqa: F401
+    from app.models.toon_shot import ToonShot                         # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -272,6 +273,8 @@ async def lifespan(_):
             "ALTER TABLE character_brands ADD COLUMN IF NOT EXISTS trend_interests_embedding JSON",
             "ALTER TABLE personas ADD COLUMN IF NOT EXISTS relevance_embedding JSON",
             "ALTER TABLE clusters ADD COLUMN IF NOT EXISTS relevance_embedding JSON",
+            # Cinematic shot production — see app/models/toon_shot.py.
+            "ALTER TABLE generation_usage ADD COLUMN IF NOT EXISTS shot_id UUID",
         ]:
             try:
                 _conn.execute(_text(_stmt))

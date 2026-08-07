@@ -31,15 +31,17 @@ class StitchError(Exception):
     pass
 
 
-def _stitch_video_urls(episode, video_urls: list) -> str:
-    """Shared by stitch_episode (Toon-parts) and
-    assemble_episode_from_scenes (ToonScene-based) — downloads each URL,
-    ffmpeg-concatenates them in the given order, uploads the result, and
-    returns its URL. Callers own the session/status transitions; this is
-    pure ffmpeg-plumbing with no DB access of its own."""
+def _stitch_video_urls(video_urls: list, output_path: str, tmp_prefix: str = "stitch-") -> str:
+    """Shared by stitch_episode/assemble_episode_from_scenes (ToonEpisode)
+    and app/services/culturetoon_scene.py::assemble_scene_from_shots
+    (ToonScene) — downloads each URL, ffmpeg-concatenates them in the
+    given order, uploads to output_path, and returns its URL. Callers own
+    the session/status transitions and the storage path (so a scene's
+    assembled video doesn't end up mislabeled under an "episodes/" path);
+    this is pure ffmpeg-plumbing with no DB access of its own."""
     from app.media import storage
 
-    with tempfile.TemporaryDirectory(prefix=f"episode-{episode.id}-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix=tmp_prefix) as tmp_dir:
         segment_paths = []
         for i, url in enumerate(video_urls):
             resp = httpx.get(url, timeout=120)
@@ -74,9 +76,7 @@ def _stitch_video_urls(episode, video_urls: list) -> str:
             raise StitchError(f"ffmpeg failed stitching video segments: {result.stderr[-1000:]}")
 
         with open(stitched_path, "rb") as f:
-            return storage.upload(
-                f.read(), f"culturetoons/{episode.brand_id}/episodes/{episode.id}/final.mp4", "video/mp4"
-            )
+            return storage.upload(f.read(), output_path, "video/mp4")
 
 
 def stitch_episode(user_id, episode_id) -> None:
@@ -110,7 +110,11 @@ def stitch_episode(user_id, episode_id) -> None:
         episode.generation_error = None
         session.commit()
 
-        episode.final_video_url = _stitch_video_urls(episode, [p.raw_video_url for p in parts])
+        episode.final_video_url = _stitch_video_urls(
+            [p.raw_video_url for p in parts],
+            f"culturetoons/{episode.brand_id}/episodes/{episode.id}/final.mp4",
+            tmp_prefix=f"episode-{episode.id}-",
+        )
         episode.status = "ready"
         session.commit()
         logger.info("Stitched episode %s from %d parts", episode_id, len(parts))
@@ -166,7 +170,11 @@ def assemble_episode_from_scenes(user_id, episode_id) -> None:
         episode.generation_error = None
         session.commit()
 
-        episode.final_video_url = _stitch_video_urls(episode, [s.video_url for s in scenes])
+        episode.final_video_url = _stitch_video_urls(
+            [s.video_url for s in scenes],
+            f"culturetoons/{episode.brand_id}/episodes/{episode.id}/final.mp4",
+            tmp_prefix=f"episode-{episode.id}-",
+        )
         episode.status = "ready"
         session.commit()
         logger.info("Assembled episode %s from %d scenes", episode_id, len(scenes))

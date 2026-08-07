@@ -16,8 +16,9 @@ from app.models.character import Character
 from app.models.character_variant import CharacterVariant
 from app.models.toon_episode import ToonEpisode
 from app.models.toon_scene import ToonScene
+from app.models.toon_shot import ToonShot
 from app.models.generation_usage import GenerationUsage
-from app.services.culturetoon_scene import generate_scene_video
+from app.services.culturetoon_scene import generate_scene_video, assemble_scene_from_shots
 
 
 @pytest.fixture
@@ -25,7 +26,7 @@ def db(mocker):
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(bind=engine, tables=[
         CharacterBrand.__table__, Character.__table__, CharacterVariant.__table__,
-        ToonEpisode.__table__, ToonScene.__table__, GenerationUsage.__table__,
+        ToonEpisode.__table__, ToonScene.__table__, ToonShot.__table__, GenerationUsage.__table__,
     ])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)
@@ -184,4 +185,93 @@ class TestGenerateSceneVideoFailures:
         assert scene.status == "failed"
         assert "content risk control" in scene.generation_error
         assert scene.generation_attempts == 1
+        session.close()
+
+
+def _make_scene_with_shots(session, brand_id, episode_id, shot_asset_urls, statuses=None):
+    scene = ToonScene(episode_id=episode_id, brand_id=brand_id, scene_number=1)
+    session.add(scene)
+    session.commit()
+    for i, url in enumerate(shot_asset_urls):
+        status = (statuses[i] if statuses else "ready")
+        shot = ToonShot(
+            scene_id=scene.id, brand_id=brand_id, shot_number=i + 1,
+            character_variant_ids=[str(uuid.uuid4())], generated_asset_id=url, generation_status=status,
+        )
+        session.add(shot)
+    session.commit()
+    return scene
+
+
+class TestAssembleSceneFromShots:
+    def _mock_ffmpeg_success(self, mocker, upload_url="https://supabase/scene-final.mp4"):
+        mocker.patch("app.services.culturetoon_episode.httpx.get", return_value=mocker.Mock(content=b"video-bytes", raise_for_status=lambda: None))
+
+        def _fake_run(cmd, **kwargs):
+            out_path = cmd[-1]
+            with open(out_path, "wb") as f:
+                f.write(b"stitched-bytes")
+            return mocker.Mock(returncode=0, stderr="")
+        mocker.patch("app.services.culturetoon_episode.subprocess.run", side_effect=_fake_run)
+        return mocker.patch("app.media.storage.upload", return_value=upload_url)
+
+    def test_success_concatenates_ready_shots_in_order(self, mocker, db):
+        session = db()
+        brand_id = uuid.uuid4()
+        episode_id = uuid.uuid4()
+        scene = _make_scene_with_shots(session, brand_id, episode_id, ["https://example.com/s1.mp4", "https://example.com/s2.mp4"])
+        scene_id = str(scene.id)
+        session.close()
+
+        mock_upload = self._mock_ffmpeg_success(mocker)
+        assemble_scene_from_shots(str(uuid.uuid4()), scene_id)
+
+        session = db()
+        try:
+            updated = session.query(ToonScene).filter_by(id=uuid.UUID(scene_id)).first()
+            assert updated.status == "ready"
+            assert updated.video_url == "https://supabase/scene-final.mp4"
+        finally:
+            session.close()
+        mock_upload.assert_called_once()
+
+    def test_skips_non_ready_shots(self, mocker, db):
+        session = db()
+        brand_id = uuid.uuid4()
+        episode_id = uuid.uuid4()
+        scene = _make_scene_with_shots(
+            session, brand_id, episode_id,
+            ["https://example.com/s1.mp4", None, "https://example.com/s3.mp4"],
+            statuses=["ready", "failed", "ready"],
+        )
+        scene_id = str(scene.id)
+        session.close()
+
+        self._mock_ffmpeg_success(mocker)
+        assemble_scene_from_shots(str(uuid.uuid4()), scene_id)
+
+        session = db()
+        try:
+            updated = session.query(ToonScene).filter_by(id=uuid.UUID(scene_id)).first()
+            assert updated.status == "ready"
+        finally:
+            session.close()
+
+    def test_no_ready_shots_marks_failed(self, mocker, db):
+        session = db()
+        brand_id = uuid.uuid4()
+        episode_id = uuid.uuid4()
+        scene = _make_scene_with_shots(session, brand_id, episode_id, [None], statuses=["idea"])
+        scene_id = str(scene.id)
+        session.close()
+
+        assemble_scene_from_shots(str(uuid.uuid4()), scene_id)
+
+        session = db()
+        try:
+            updated = session.query(ToonScene).filter_by(id=uuid.UUID(scene_id)).first()
+            assert updated.status == "failed"
+            assert "no ready shots" in updated.generation_error.lower()
+        finally:
+            session.close()
         session.close()

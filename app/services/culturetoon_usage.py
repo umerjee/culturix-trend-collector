@@ -51,7 +51,7 @@ def estimate_voice_cost(char_count: int) -> Decimal:
 
 
 def record_usage(session, *, user_id, brand_id, generation_type: str, provider: str,
-                  toon_id=None, episode_id=None, scene_id=None, model: Optional[str] = None,
+                  toon_id=None, episode_id=None, scene_id=None, shot_id=None, model: Optional[str] = None,
                   input_units: Optional[int] = None, output_units: Optional[int] = None,
                   cost_usd=None) -> None:
     """Adds one GenerationUsage row to `session` — does NOT commit, since
@@ -60,7 +60,8 @@ def record_usage(session, *, user_id, brand_id, generation_type: str, provider: 
     alongside this). Cost is stored as-is, including None (see
     GenerationUsage's docstring on why None must not be treated as 0).
     episode_id/scene_id are set by scene-level generation (see
-    app/services/culturetoon_scene.py); toon_id stays the field for the
+    app/services/culturetoon_scene.py); shot_id by shot-level generation
+    (see app/services/culturetoon_shot.py); toon_id stays the field for the
     original one-shot-per-Toon generation path."""
     from app.models.generation_usage import GenerationUsage
     row = GenerationUsage(
@@ -68,6 +69,7 @@ def record_usage(session, *, user_id, brand_id, generation_type: str, provider: 
         toon_id=_uuid.UUID(str(toon_id)) if toon_id else None,
         episode_id=_uuid.UUID(str(episode_id)) if episode_id else None,
         scene_id=_uuid.UUID(str(scene_id)) if scene_id else None,
+        shot_id=_uuid.UUID(str(shot_id)) if shot_id else None,
         provider=provider, model=model, generation_type=generation_type,
         input_units=input_units, output_units=output_units,
         cost_usd=cost_usd,

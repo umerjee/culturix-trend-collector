@@ -3535,3 +3535,305 @@ def assemble_episode_from_scenes_endpoint(episode_id: str, body: dict, backgroun
 
     background_tasks.add_task(assemble_episode_from_scenes, user_id=user_id, episode_id=episode_id)
     return {"status": "assembly_started"}
+
+
+# ── shots ────────────────────────────────────────────────────────────────
+# Cinematic production units within a ToonScene — see
+# app/models/toon_shot.py's docstring for how this relates to (and doesn't
+# replace) the pre-existing single-shot-per-Scene generation path
+# (generate_scene above). A Scene simple enough to be one clip can stay
+# that way; a Scene that needs real coverage (establishing, entrance,
+# reaction, close-up, punchline...) decomposes into these instead.
+
+def _serialize_shot(s) -> dict:
+    return {
+        "id": str(s.id), "scene_id": str(s.scene_id), "brand_id": str(s.brand_id),
+        "shot_number": s.shot_number, "shot_type": s.shot_type, "duration_seconds": s.duration_seconds,
+        "character_variant_ids": s.character_variant_ids or [],
+        "background_id": str(s.background_id) if s.background_id else None,
+        "action": s.action, "emotion": s.emotion, "dialogue": s.dialogue, "comedic_beat": s.comedic_beat,
+        "camera_framing": s.camera_framing, "camera_angle": s.camera_angle, "camera_movement": s.camera_movement,
+        "lens": s.lens, "composition": s.composition, "lighting": s.lighting,
+        "visual_prompt": s.visual_prompt, "motion_prompt": s.motion_prompt, "audio_notes": s.audio_notes,
+        "reference_assets": s.reference_assets or [],
+        "provider": s.provider, "model": s.model,
+        "generation_status": s.generation_status, "generation_attempts": s.generation_attempts,
+        "generated_asset_id": s.generated_asset_id, "previous_asset_ids": s.previous_asset_ids or [],
+        "kling_task_id": s.kling_task_id, "generation_error": s.generation_error,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+        "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+    }
+
+
+def _get_shot_owned(session, shot_id: str, brand_id: str, user_id: str):
+    from app.models.toon_shot import ToonShot
+    brand = _get_brand_owned(session, brand_id, user_id)
+    shot = session.query(ToonShot).filter_by(id=_uuid.UUID(shot_id)).first()
+    if not shot or shot.brand_id != brand.id:
+        raise HTTPException(status_code=404, detail="Shot not found")
+    return shot
+
+
+_SHOT_EDITABLE_FIELDS = (
+    "shot_number", "shot_type", "duration_seconds", "character_variant_ids", "background_id",
+    "action", "emotion", "dialogue", "comedic_beat", "camera_framing", "camera_angle",
+    "camera_movement", "lens", "composition", "lighting", "audio_notes",
+)
+
+
+def _validate_shot_fields(body: dict) -> None:
+    from app.models.toon_shot import SHOT_TYPES, CAMERA_MOVEMENTS, COMEDIC_BEATS, MIN_SHOT_DURATION_SECONDS, MAX_SHOT_DURATION_SECONDS
+    if body.get("shot_type") is not None and body["shot_type"] not in SHOT_TYPES:
+        raise HTTPException(status_code=400, detail=f"shot_type must be one of {SHOT_TYPES}")
+    if body.get("camera_movement") is not None and body["camera_movement"] not in CAMERA_MOVEMENTS:
+        raise HTTPException(status_code=400, detail=f"camera_movement must be one of {CAMERA_MOVEMENTS}")
+    if body.get("comedic_beat") is not None and body["comedic_beat"] not in COMEDIC_BEATS:
+        raise HTTPException(status_code=400, detail=f"comedic_beat must be one of {COMEDIC_BEATS}")
+    if body.get("duration_seconds") is not None:
+        d = body["duration_seconds"]
+        if not isinstance(d, int) or not (MIN_SHOT_DURATION_SECONDS <= d <= MAX_SHOT_DURATION_SECONDS):
+            raise HTTPException(status_code=400, detail=f"duration_seconds must be an integer between {MIN_SHOT_DURATION_SECONDS} and {MAX_SHOT_DURATION_SECONDS}")
+
+
+@router.post("/scenes/{scene_id}/shots")
+def create_shot(scene_id: str, body: dict):
+    from app.db import SessionLocal
+    from app.models.toon_shot import ToonShot
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+    _validate_shot_fields(body)
+
+    session = SessionLocal()
+    try:
+        scene = _get_scene_owned(session, scene_id, brand_id, user_id)
+        for vid in body.get("character_variant_ids") or []:
+            _get_variant_owned(session, vid, brand_id, user_id)
+        if body.get("background_id"):
+            _get_background_owned(session, body["background_id"], brand_id, user_id)
+
+        next_number = body.get("shot_number")
+        if next_number is None:
+            existing_max = (
+                session.query(ToonShot).filter_by(scene_id=scene.id)
+                .order_by(ToonShot.shot_number.desc()).first()
+            )
+            next_number = (existing_max.shot_number + 1) if existing_max else 1
+
+        shot = ToonShot(
+            scene_id=scene.id, brand_id=scene.brand_id, shot_number=next_number,
+            shot_type=body.get("shot_type") or "medium", duration_seconds=body.get("duration_seconds") or 3,
+            character_variant_ids=body.get("character_variant_ids") or None,
+            background_id=_uuid.UUID(body["background_id"]) if body.get("background_id") else None,
+            action=body.get("action"), emotion=body.get("emotion"), dialogue=body.get("dialogue"),
+            comedic_beat=body.get("comedic_beat"), camera_framing=body.get("camera_framing"),
+            camera_angle=body.get("camera_angle"), camera_movement=body.get("camera_movement"),
+            lens=body.get("lens"), composition=body.get("composition"), lighting=body.get("lighting"),
+            audio_notes=body.get("audio_notes"),
+        )
+        session.add(shot)
+        session.commit()
+        session.refresh(shot)
+        return _serialize_shot(shot)
+    finally:
+        session.close()
+
+
+@router.post("/scenes/{scene_id}/shots/plan")
+def plan_scene_shots(scene_id: str, body: dict):
+    """The "Generate Storyboard" step — AI (CinematicDirector, see
+    app/services/culturetoon_cinematic_director.py) plans a shot sequence
+    for this scene and persists it as real, editable ToonShot rows (status
+    "idea", no video yet) so the user can review/edit before generating any
+    clips. Appends after this scene's existing shots rather than replacing
+    them, same convention as create_scenes_from_script — regenerating the
+    whole storyboard from scratch is just deleting the old shots first."""
+    from app.db import SessionLocal
+    from app.models.toon_shot import ToonShot
+    from app.models.character_variant import CharacterVariant
+    from app.models.toon_background import ToonBackground
+    from app.services.culturetoon_cinematic_director import plan_shots, CinematicDirectorError
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+
+    session = SessionLocal()
+    try:
+        scene = _get_scene_owned(session, scene_id, brand_id, user_id)
+        cast_ids = list(scene.character_variant_ids or [])
+        if not cast_ids:
+            raise HTTPException(status_code=400, detail="This scene has no cast — assign at least one character before planning shots")
+        variants = session.query(CharacterVariant).filter(CharacterVariant.id.in_([_uuid.UUID(v) for v in cast_ids])).all()
+        cast = [{"variant_id": str(v.id), "name": v.name, "description": v.description} for v in variants]
+
+        location_description = ""
+        if scene.background_id:
+            background = session.query(ToonBackground).filter_by(id=scene.background_id).first()
+            if background:
+                location_description = background.description or background.name
+
+        scene_summary = (body.get("scene_summary") or "").strip() or scene.action or scene.dialogue or "A scene between the cast above"
+        tone = body.get("tone") or "funny"
+        target_duration_seconds = body.get("target_duration_seconds") or 20
+
+        try:
+            planned = plan_shots(
+                scene_summary, cast, relationship_context=body.get("relationship_context") or "",
+                location_description=location_description, tone=tone, target_duration_seconds=target_duration_seconds,
+            )
+        except CinematicDirectorError as exc:
+            raise HTTPException(status_code=502, detail=f"Storyboard planning failed: {exc}")
+
+        existing_max = (
+            session.query(ToonShot).filter_by(scene_id=scene.id)
+            .order_by(ToonShot.shot_number.desc()).first()
+        )
+        next_number = (existing_max.shot_number + 1) if existing_max else 1
+
+        created = []
+        for planned_shot in planned:
+            shot = ToonShot(
+                scene_id=scene.id, brand_id=scene.brand_id, shot_number=next_number,
+                shot_type=planned_shot["shot_type"], duration_seconds=planned_shot["duration_seconds"],
+                character_variant_ids=planned_shot["character_variant_ids"] or None,
+                action=planned_shot["action"], emotion=planned_shot["emotion"], dialogue=planned_shot["dialogue"],
+                comedic_beat=planned_shot["comedic_beat"], camera_framing=planned_shot["camera_framing"],
+                camera_angle=planned_shot["camera_angle"], camera_movement=planned_shot["camera_movement"],
+                lens=planned_shot["lens"], composition=planned_shot["composition"], lighting=planned_shot["lighting"],
+            )
+            session.add(shot)
+            created.append(shot)
+            next_number += 1
+        session.commit()
+        for shot in created:
+            session.refresh(shot)
+        return [_serialize_shot(s) for s in created]
+    finally:
+        session.close()
+
+
+@router.get("/scenes/{scene_id}/shots")
+def list_shots(scene_id: str, user_id: str, brand_id: str):
+    from app.db import SessionLocal
+    from app.models.toon_shot import ToonShot
+    session = SessionLocal()
+    try:
+        scene = _get_scene_owned(session, scene_id, brand_id, user_id)
+        shots = (
+            session.query(ToonShot).filter_by(scene_id=scene.id)
+            .order_by(ToonShot.shot_number.asc()).all()
+        )
+        return [_serialize_shot(s) for s in shots]
+    finally:
+        session.close()
+
+
+@router.put("/shots/{shot_id}")
+def update_shot(shot_id: str, body: dict):
+    from app.db import SessionLocal
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+    _validate_shot_fields(body)
+    session = SessionLocal()
+    try:
+        shot = _get_shot_owned(session, shot_id, brand_id, user_id)
+        for vid in body.get("character_variant_ids") or []:
+            _get_variant_owned(session, vid, brand_id, user_id)
+        if body.get("background_id"):
+            _get_background_owned(session, body["background_id"], brand_id, user_id)
+        for field in _SHOT_EDITABLE_FIELDS:
+            if field in body:
+                value = body[field]
+                if field == "background_id" and value:
+                    value = _uuid.UUID(value)
+                setattr(shot, field, value)
+        session.commit()
+        session.refresh(shot)
+        return _serialize_shot(shot)
+    finally:
+        session.close()
+
+
+@router.delete("/shots/{shot_id}")
+def delete_shot(shot_id: str, user_id: str, brand_id: str):
+    """Hard delete — same reasoning as ToonScene: a shot is disposable
+    storyboard-authoring scaffolding, not a reusable resource."""
+    from app.db import SessionLocal
+    session = SessionLocal()
+    try:
+        shot = _get_shot_owned(session, shot_id, brand_id, user_id)
+        session.delete(shot)
+        session.commit()
+        return {"status": "deleted"}
+    finally:
+        session.close()
+
+
+@router.post("/shots/{shot_id}/generate")
+def generate_shot(shot_id: str, body: dict, background_tasks: BackgroundTasks):
+    """Backgrounded, same reasoning as every other Kling-call route in this
+    file — a generation can run minutes, past any HTTP gateway timeout."""
+    from app.db import SessionLocal
+    from app.services.culturetoon_shot import generate_shot_video
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+
+    session = SessionLocal()
+    try:
+        brand = _get_brand_owned(session, brand_id, user_id)
+        shot = _get_shot_owned(session, shot_id, brand_id, user_id)
+        budget_warning = _check_budget_or_raise(session, brand)
+        if shot.character_variant_ids:
+            from app.models.character_variant import CharacterVariant
+            variants = session.query(CharacterVariant).filter(
+                CharacterVariant.id.in_([_uuid.UUID(v) for v in shot.character_variant_ids])
+            ).all()
+            not_ready = [v.name for v in variants if v.element_status != "ready"]
+            if not_ready:
+                raise HTTPException(status_code=400, detail=f"Character(s) not registered as a ready Kling element: {', '.join(not_ready)}")
+
+        shot.generation_status = "generating"
+        shot.generation_error = None
+        session.commit()
+    finally:
+        session.close()
+
+    background_tasks.add_task(generate_shot_video, user_id=user_id, shot_id=shot_id)
+    response = {"status": "generation_started"}
+    if budget_warning:
+        response["budget_warning"] = budget_warning
+    return response
+
+
+@router.post("/scenes/{scene_id}/assemble-shots")
+def assemble_scene_from_shots_endpoint(scene_id: str, body: dict, background_tasks: BackgroundTasks):
+    """The Shot-based analogue of POST /scenes/{id}/generate — assembles a
+    scene's own video from its ready shots instead of one direct Kling call."""
+    from app.db import SessionLocal
+    from app.models.toon_shot import ToonShot
+    from app.services.culturetoon_scene import assemble_scene_from_shots
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+
+    session = SessionLocal()
+    try:
+        scene = _get_scene_owned(session, scene_id, brand_id, user_id)
+        ready_count = session.query(ToonShot).filter_by(scene_id=scene.id, generation_status="ready").count()
+        if ready_count < 1:
+            raise HTTPException(status_code=400, detail="No ready shots to assemble — generate at least one shot's video first")
+
+        scene.status = "generating"
+        scene.generation_error = None
+        session.commit()
+    finally:
+        session.close()
+
+    background_tasks.add_task(assemble_scene_from_shots, user_id=user_id, scene_id=scene_id)
+    return {"status": "assembly_started"}

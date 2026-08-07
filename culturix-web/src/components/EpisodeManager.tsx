@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Loader2, ExternalLink, Clapperboard, ArrowUp, ArrowDown, X, Scissors, Sparkles, Film, RefreshCw, Trash2 } from "lucide-react";
-import type { Toon, ToonEpisode, ToonScene, CharacterVariant, ToonScript, ToonBackground } from "@/lib/types";
+import { Plus, Loader2, ExternalLink, Clapperboard, ArrowUp, ArrowDown, X, Scissors, Sparkles, Film, RefreshCw, Trash2, Clapperboard as StoryboardIcon, ChevronDown, ChevronUp } from "lucide-react";
+import type { Toon, ToonEpisode, ToonScene, ToonShot, CharacterVariant, ToonScript, ToonBackground } from "@/lib/types";
 
 interface Props {
   brandId: string;
@@ -53,6 +53,17 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
   const [sceneScriptId, setSceneScriptId] = useState<Record<string, string>>({});
   const [busySceneId, setBusySceneId] = useState<string | null>(null);
   const [sceneError, setSceneError] = useState<Record<string, string>>({});
+
+  // Storyboard — the Shot layer beneath a Scene, optional deeper
+  // decomposition of the scene's single direct-generation path above.
+  // Loaded lazily per scene, keyed by scene id.
+  const [storyboardOpen, setStoryboardOpen] = useState<Record<string, boolean>>({});
+  const [shotsByScene, setShotsByScene] = useState<Record<string, ToonShot[]>>({});
+  const [shotsLoading, setShotsLoading] = useState<Record<string, boolean>>({});
+  const [planningStoryboard, setPlanningStoryboard] = useState<string | null>(null);
+  const [busyShotId, setBusyShotId] = useState<string | null>(null);
+  const [shotError, setShotError] = useState<Record<string, string>>({});
+  const [storyboardTone, setStoryboardTone] = useState<Record<string, string>>({});
 
   // A toon already in an episode (this one or another) shouldn't be offered
   // again — episode parts are 1:1 with their episode, not shared.
@@ -355,6 +366,116 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
     }
   }
 
+  async function loadShots(sceneId: string) {
+    setShotsLoading((prev) => ({ ...prev, [sceneId]: true }));
+    try {
+      const res = await fetch(`/api/culturetoons/scenes/${sceneId}/shots?brand_id=${brandId}`, { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        setShotsByScene((prev) => ({ ...prev, [sceneId]: data }));
+      }
+    } finally {
+      setShotsLoading((prev) => ({ ...prev, [sceneId]: false }));
+    }
+  }
+
+  function toggleStoryboard(sceneId: string) {
+    const opening = !storyboardOpen[sceneId];
+    setStoryboardOpen((prev) => ({ ...prev, [sceneId]: opening }));
+    if (opening && !shotsByScene[sceneId]) loadShots(sceneId);
+  }
+
+  async function planStoryboard(sceneId: string) {
+    setPlanningStoryboard(sceneId);
+    setShotError((prev) => ({ ...prev, [sceneId]: "" }));
+    try {
+      const res = await fetch(`/api/culturetoons/scenes/${sceneId}/shots/plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, tone: storyboardTone[sceneId] || undefined }),
+      });
+      const data = await res.json().catch(() => ([]));
+      if (res.ok) {
+        setShotsByScene((prev) => ({ ...prev, [sceneId]: [...(prev[sceneId] ?? []), ...data] }));
+        setStoryboardOpen((prev) => ({ ...prev, [sceneId]: true }));
+      } else {
+        setShotError((prev) => ({ ...prev, [sceneId]: typeof data.detail === "string" ? data.detail : "Couldn't plan a storyboard for this scene" }));
+      }
+    } finally {
+      setPlanningStoryboard(null);
+    }
+  }
+
+  async function generateShot(sceneId: string, shotId: string) {
+    setBusyShotId(shotId);
+    setShotError((prev) => ({ ...prev, [shotId]: "" }));
+    try {
+      const res = await fetch(`/api/culturetoons/shots/${shotId}/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setShotsByScene((prev) => ({
+          ...prev,
+          [sceneId]: (prev[sceneId] ?? []).map((s) => (s.id === shotId ? { ...s, generation_status: "generating", generation_error: null } : s)),
+        }));
+      } else {
+        setShotError((prev) => ({ ...prev, [shotId]: typeof data.detail === "string" ? data.detail : "Couldn't start generation" }));
+      }
+    } finally {
+      setBusyShotId(null);
+    }
+  }
+
+  async function deleteShot(sceneId: string, shotId: string) {
+    setBusyShotId(shotId);
+    try {
+      const res = await fetch(`/api/culturetoons/shots/${shotId}?brand_id=${brandId}`, { method: "DELETE" });
+      if (res.ok) {
+        setShotsByScene((prev) => ({ ...prev, [sceneId]: (prev[sceneId] ?? []).filter((s) => s.id !== shotId) }));
+      }
+    } finally {
+      setBusyShotId(null);
+    }
+  }
+
+  async function assembleSceneFromShots(episodeId: string, sceneId: string) {
+    setBusySceneId(sceneId);
+    try {
+      const res = await fetch(`/api/culturetoons/scenes/${sceneId}/assemble-shots`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId }),
+      });
+      if (res.ok) {
+        setScenesByEpisode((prev) => ({
+          ...prev,
+          [episodeId]: (prev[episodeId] ?? []).map((s) => (s.id === sceneId ? { ...s, status: "generating", generation_error: null } : s)),
+        }));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setShotError((prev) => ({ ...prev, [sceneId]: typeof data.detail === "string" ? data.detail : "Assembly failed to start" }));
+      }
+    } finally {
+      setBusySceneId(null);
+    }
+  }
+
+  // Poll shots mid-generation for any open storyboard — same cadence/shape
+  // as the scenes/episode polls above.
+  useEffect(() => {
+    const openSceneIds = Object.keys(storyboardOpen).filter((id) => storyboardOpen[id]);
+    const generating = openSceneIds.filter((id) => (shotsByScene[id] ?? []).some((s) => s.generation_status === "generating"));
+    if (generating.length === 0) return;
+    const interval = setInterval(() => {
+      for (const id of generating) loadShots(id);
+    }, 5000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storyboardOpen, shotsByScene, brandId]);
+
   return (
     <div className="space-y-6">
       <div>
@@ -594,6 +715,107 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
                         )}
                         {scene.generation_error && <p className="text-[11px] text-red-500 mt-1">{scene.generation_error}</p>}
                         {sceneError[scene.id] && <p className="text-[11px] text-red-500 mt-1">{sceneError[scene.id]}</p>}
+
+                        <div className="mt-2 pt-2 border-t border-gray-50">
+                          <button
+                            onClick={() => toggleStoryboard(scene.id)}
+                            className="flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-700"
+                          >
+                            <StoryboardIcon className="h-3 w-3" />
+                            Storyboard {(shotsByScene[scene.id]?.length ?? 0) > 0 && `(${shotsByScene[scene.id]!.length} shots)`}
+                            {storyboardOpen[scene.id] ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                          </button>
+
+                          {storyboardOpen[scene.id] && (
+                            <div className="mt-2 space-y-1.5">
+                              <p className="text-[10px] text-gray-400">
+                                Optional — break this scene into individual camera shots (establishing, entrance,
+                                reaction, close-up, punchline...) instead of one direct clip. Each shot generates
+                                and regenerates independently.
+                              </p>
+                              {shotsLoading[scene.id] && <Loader2 className="h-3 w-3 animate-spin text-gray-400" />}
+
+                              {(shotsByScene[scene.id] ?? []).map((shot) => (
+                                <div key={shot.id} className="rounded-lg bg-gray-50 border border-gray-100 p-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="text-[11px] font-medium text-gray-700">
+                                      Shot {shot.shot_number} · {shot.shot_type.replace("_", " ")} · {shot.duration_seconds}s
+                                    </span>
+                                    <span className={`text-[9px] uppercase tracking-wide font-medium rounded-full px-1.5 py-0.5 shrink-0 ${SCENE_STATUS_STYLES[shot.generation_status]}`}>
+                                      {shot.generation_status}
+                                    </span>
+                                  </div>
+                                  {shot.action && <p className="text-[11px] text-gray-600 mt-0.5">{shot.action}</p>}
+                                  {shot.dialogue && <p className="text-[11px] text-gray-400 italic">&ldquo;{shot.dialogue}&rdquo;</p>}
+                                  {(shot.camera_angle || shot.camera_movement) && (
+                                    <p className="text-[10px] text-gray-400 mt-0.5">
+                                      {[shot.camera_angle, shot.camera_movement?.replace("_", " ")].filter(Boolean).join(" · ")}
+                                    </p>
+                                  )}
+                                  <div className="flex flex-wrap items-center gap-2 mt-1.5">
+                                    <button
+                                      onClick={() => generateShot(scene.id, shot.id)}
+                                      disabled={shot.generation_status === "generating" || busyShotId === shot.id}
+                                      className="inline-flex items-center gap-1 rounded-lg bg-gray-900 text-white text-[10px] font-medium px-2 py-0.5 hover:bg-gray-800 transition-colors disabled:opacity-60"
+                                    >
+                                      {shot.generation_status === "generating" ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <RefreshCw className="h-2.5 w-2.5" />}
+                                      {shot.generated_asset_id ? "Regenerate" : "Generate"}
+                                    </button>
+                                    {shot.generated_asset_id && (
+                                      <a href={shot.generated_asset_id} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[10px] text-blue-500 hover:underline">
+                                        <ExternalLink className="h-2.5 w-2.5" /> View
+                                      </a>
+                                    )}
+                                    <button
+                                      onClick={() => deleteShot(scene.id, shot.id)}
+                                      disabled={busyShotId === shot.id}
+                                      className="inline-flex items-center gap-1 text-[10px] text-gray-400 hover:text-red-500 disabled:opacity-40 ml-auto"
+                                    >
+                                      <Trash2 className="h-2.5 w-2.5" />
+                                    </button>
+                                  </div>
+                                  {shot.generation_error && <p className="text-[10px] text-red-500 mt-1">{shot.generation_error}</p>}
+                                  {shotError[shot.id] && <p className="text-[10px] text-red-500 mt-1">{shotError[shot.id]}</p>}
+                                </div>
+                              ))}
+
+                              <div className="flex flex-wrap items-center gap-2">
+                                <select
+                                  value={storyboardTone[scene.id] ?? "funny"}
+                                  onChange={(e) => setStoryboardTone((prev) => ({ ...prev, [scene.id]: e.target.value }))}
+                                  className="rounded-lg border border-gray-200 px-2 py-1 text-[11px]"
+                                >
+                                  {["funny", "dramatic", "satiric", "sad", "wholesome", "chaotic", "deadpan"].map((t) => (
+                                    <option key={t} value={t}>{t}</option>
+                                  ))}
+                                </select>
+                                <button
+                                  onClick={() => planStoryboard(scene.id)}
+                                  disabled={!scene.character_variant_ids.length || planningStoryboard === scene.id}
+                                  className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 text-blue-600 text-[11px] font-medium px-2.5 py-1 hover:bg-blue-50 transition-colors disabled:opacity-60"
+                                  title="AI plans a shot sequence for this scene — appends to any existing shots, editable/deletable before generating video."
+                                >
+                                  {planningStoryboard === scene.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+                                  Generate Storyboard
+                                </button>
+                                {(shotsByScene[scene.id] ?? []).some((s) => s.generation_status === "ready") && (
+                                  <button
+                                    onClick={() => assembleSceneFromShots(ep.id, scene.id)}
+                                    disabled={busySceneId === scene.id || scene.status === "generating"}
+                                    className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 text-white text-[11px] font-medium px-2.5 py-1 hover:bg-gray-800 transition-colors disabled:opacity-60"
+                                  >
+                                    {scene.status === "generating" ? <Loader2 className="h-3 w-3 animate-spin" /> : <Film className="h-3 w-3" />}
+                                    Assemble scene from shots
+                                  </button>
+                                )}
+                              </div>
+                              {!scene.character_variant_ids.length && (
+                                <p className="text-[10px] text-amber-600">Assign a character to this scene before planning a storyboard.</p>
+                              )}
+                              {shotError[scene.id] && <p className="text-[10px] text-red-500">{shotError[scene.id]}</p>}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     ))}
 

@@ -131,3 +131,67 @@ def generate_scene_video(user_id, scene_id) -> None:
         logger.exception("Scene generation failed unexpectedly for %s", scene_id)
     finally:
         session.close()
+
+
+def assemble_scene_from_shots(user_id, scene_id) -> None:
+    """The Shot-based analogue of app/services/culturetoon_episode.py's
+    assemble_episode_from_scenes — concatenates every "ready" ToonShot's
+    generated_asset_id (shot_number order) into the scene's own video_url,
+    instead of the scene generating as one direct Kling call
+    (generate_scene_video above, unchanged, still the right choice for a
+    scene simple enough not to need multiple shots). A shot left in
+    "idea"/"generating"/"failed" is skipped, not a hard blocker — same
+    reasoning as episode assembly: regenerating one failed shot and
+    re-assembling is the whole point of shots being independently
+    regeneratable."""
+    from app.db import SessionLocal
+    from app.models.toon_scene import ToonScene
+    from app.models.toon_shot import ToonShot
+    from app.services.culturetoon_episode import _stitch_video_urls, StitchError
+    import httpx as _httpx
+
+    session = SessionLocal()
+    scene = None
+    try:
+        scene = session.query(ToonScene).filter_by(id=_uuid.UUID(str(scene_id))).first()
+        if not scene:
+            return
+
+        shots = (
+            session.query(ToonShot)
+            .filter_by(scene_id=scene.id, generation_status="ready")
+            .order_by(ToonShot.shot_number.asc())
+            .all()
+        )
+        if len(shots) < 1:
+            raise ValueError("No ready shots to assemble — generate at least one shot's video first")
+
+        scene.status = "generating"
+        scene.generation_error = None
+        session.commit()
+
+        scene.video_url = _stitch_video_urls(
+            [s.generated_asset_id for s in shots],
+            f"culturetoons/{scene.brand_id}/episodes/{scene.episode_id}/scenes/{scene.id}/final.mp4",
+            tmp_prefix=f"scene-{scene.id}-",
+        )
+        scene.status = "ready"
+        session.commit()
+        logger.info("Assembled scene %s from %d shots", scene_id, len(shots))
+
+    except (ValueError, StitchError, _httpx.HTTPError) as exc:
+        session.rollback()
+        if scene:
+            scene.status = "failed"
+            scene.generation_error = str(exc)[:2000]
+            session.commit()
+        logger.error("Scene shot assembly failed for %s: %s", scene_id, exc)
+    except Exception as exc:
+        session.rollback()
+        if scene:
+            scene.status = "failed"
+            scene.generation_error = f"Unexpected error: {exc}"[:2000]
+            session.commit()
+        logger.exception("Scene shot assembly failed unexpectedly for %s", scene_id)
+    finally:
+        session.close()

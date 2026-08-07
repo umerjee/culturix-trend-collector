@@ -781,3 +781,59 @@ export interface ToonScene {
   created_at: string | null;
   updated_at: string | null;
 }
+
+// Keep in sync with SHOT_TYPES/CAMERA_MOVEMENTS/COMEDIC_BEATS in
+// app/models/toon_shot.py.
+export const SHOT_TYPES = [
+  "establishing", "wide", "full", "medium", "medium_closeup", "closeup", "extreme_closeup",
+  "over_shoulder", "two_shot", "pov", "insert", "reaction", "reveal",
+] as const;
+
+export const CAMERA_MOVEMENTS = [
+  "static", "push_in", "pull_out", "pan_left", "pan_right", "tilt",
+  "tracking", "dolly", "orbit", "crane", "handheld", "whip_pan",
+] as const;
+
+export const COMEDIC_BEATS = [
+  "setup", "exposition", "anticipation", "escalation", "reaction",
+  "misdirection", "reveal", "punchline", "aftermath",
+] as const;
+
+// A single 1-5s camera setup within a ToonScene — the cinematic
+// production unit beneath Scene. Optional: a scene can still generate
+// directly as one clip (ToonScene.video_url path above) instead of
+// decomposing into these. See app/models/toon_shot.py.
+export interface ToonShot {
+  id: string;
+  scene_id: string;
+  brand_id: string;
+  shot_number: number;
+  shot_type: (typeof SHOT_TYPES)[number];
+  duration_seconds: number;
+  character_variant_ids: string[];
+  background_id: string | null;
+  action: string | null;
+  emotion: string | null;
+  dialogue: string | null;
+  comedic_beat: (typeof COMEDIC_BEATS)[number] | null;
+  camera_framing: string | null;
+  camera_angle: string | null;
+  camera_movement: (typeof CAMERA_MOVEMENTS)[number] | null;
+  lens: string | null;
+  composition: string | null;
+  lighting: string | null;
+  visual_prompt: string | null;
+  motion_prompt: string | null;
+  audio_notes: string | null;
+  reference_assets: string[];
+  provider: string | null;
+  model: string | null;
+  generation_status: "idea" | "generating" | "ready" | "failed";
+  generation_attempts: number;
+  generated_asset_id: string | null;
+  previous_asset_ids: string[];
+  kling_task_id: string | null;
+  generation_error: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
