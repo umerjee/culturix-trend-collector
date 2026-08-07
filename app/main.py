@@ -42,6 +42,7 @@ async def lifespan(_):
     from app.models.toon_post import ToonPost                         # noqa: F401
     from app.models.toon_episode import ToonEpisode                   # noqa: F401
     from app.models.character_relationship import CharacterRelationship  # noqa: F401
+    from app.models.character_relationship_event import CharacterRelationshipEvent  # noqa: F401
     from app.models.generation_usage import GenerationUsage           # noqa: F401
     from app.models.character_memory import CharacterMemory           # noqa: F401
     from app.models.culture import Culture                            # noqa: F401
@@ -246,6 +247,14 @@ async def lifespan(_):
             # cap set (budgets are opt-in, not a default limit on every brand).
             "ALTER TABLE character_brands ADD COLUMN IF NOT EXISTS daily_budget NUMERIC(10,2)",
             "ALTER TABLE character_brands ADD COLUMN IF NOT EXISTS monthly_budget NUMERIC(10,2)",
+            # Locations (Backgrounds evolution) — see
+            # docs/culturix-character-studio-upgrade.md §4 Phase 3.
+            # reference_image_urls holds *additional* canonical angles/rooms
+            # beyond the primary image_url, same ARRAY(Text) pattern as
+            # Toon.previous_video_urls elsewhere in this schema.
+            "ALTER TABLE toon_backgrounds ADD COLUMN IF NOT EXISTS country VARCHAR(100)",
+            "ALTER TABLE toon_backgrounds ADD COLUMN IF NOT EXISTS visual_style VARCHAR(30)",
+            "ALTER TABLE toon_backgrounds ADD COLUMN IF NOT EXISTS reference_image_urls TEXT[] DEFAULT '{}'",
         ]:
             try:
                 _conn.execute(_text(_stmt))

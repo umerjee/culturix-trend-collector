@@ -31,6 +31,7 @@ from app.models.connected_account import ConnectedAccount
 from app.models.persona import Persona
 from app.models.cluster import Cluster
 from app.models.character_relationship import CharacterRelationship
+from app.models.character_relationship_event import CharacterRelationshipEvent
 from app.models.generation_usage import GenerationUsage
 from app.models.character_memory import CharacterMemory
 from app.models.culture import Culture
@@ -74,7 +75,7 @@ def db(mocker):
         Toon.__table__, ToonPost.__table__, ToonEpisode.__table__, ConnectedAccount.__table__,
         Persona.__table__, Cluster.__table__,
         CharacterRelationship.__table__, GenerationUsage.__table__, CharacterMemory.__table__,
-        Culture.__table__, ToonScene.__table__,
+        Culture.__table__, ToonScene.__table__, CharacterRelationshipEvent.__table__,
     ])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)
@@ -822,6 +823,86 @@ class TestBackgrounds:
         culturetoons.delete_background(bg["id"], user_id, brand["id"])
         assert culturetoons.list_backgrounds(user_id, brand["id"]) == []
         assert len(culturetoons.list_backgrounds(user_id, brand["id"], active_only=False)) == 1
+
+    def test_country_and_visual_style_set_on_create(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        bg = culturetoons.create_background({
+            "user_id": user_id, "brand_id": brand["id"], "name": "Mandap",
+            "country": "India", "visual_style": "cinematic_cultural",
+        })
+        assert bg["country"] == "India"
+        assert bg["visual_style"] == "cinematic_cultural"
+        assert bg["reference_image_urls"] == []
+
+    def test_invalid_visual_style_rejected_on_create(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_background({
+                "user_id": user_id, "brand_id": brand["id"], "name": "Mandap",
+                "visual_style": "not_a_real_style",
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_update_country_and_visual_style(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        bg = culturetoons.create_background({"user_id": user_id, "brand_id": brand["id"], "name": "Mandap"})
+        updated = culturetoons.update_background(bg["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "country": "Switzerland", "visual_style": "anime",
+        })
+        assert updated["country"] == "Switzerland"
+        assert updated["visual_style"] == "anime"
+
+    def test_invalid_visual_style_rejected_on_update(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        bg = culturetoons.create_background({"user_id": user_id, "brand_id": brand["id"], "name": "Mandap"})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.update_background(bg["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "visual_style": "not_a_real_style",
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_add_and_remove_reference_images(self, db, user_id, mocker):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        bg = culturetoons.create_background({"user_id": user_id, "brand_id": brand["id"], "name": "House"})
+
+        mocker.patch("app.media.storage.upload", side_effect=[
+            "https://supabase/house-angle-1.png", "https://supabase/house-angle-2.png",
+        ])
+        result = _run(culturetoons.upload_background_reference_image(
+            bg["id"], user_id=user_id, brand_id=brand["id"], file=_FakeUploadFile(b"fake-png-1", "image/png"),
+        ))
+        assert result["reference_image_urls"] == ["https://supabase/house-angle-1.png"]
+
+        result = _run(culturetoons.upload_background_reference_image(
+            bg["id"], user_id=user_id, brand_id=brand["id"], file=_FakeUploadFile(b"fake-png-2", "image/png"),
+        ))
+        assert result["reference_image_urls"] == [
+            "https://supabase/house-angle-1.png", "https://supabase/house-angle-2.png",
+        ]
+        # Primary image_url is untouched by adding reference angles.
+        assert result["image_url"] is None
+
+        removed = culturetoons.delete_background_reference_image(
+            bg["id"], user_id, brand["id"], "https://supabase/house-angle-1.png",
+        )
+        assert removed["reference_image_urls"] == ["https://supabase/house-angle-2.png"]
+
+    def test_generate_background_stores_visual_style_and_country(self, db, user_id, mocker):
+        from app.media.base import MediaResult
+        brand = culturetoons.create_brand({"user_id": user_id})
+        mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png", cost_usd=0.1),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/generated.png")
+
+        result = culturetoons.generate_background({
+            "user_id": user_id, "brand_id": brand["id"],
+            "description": "A Swiss chalet interior, empty of people",
+            "art_style": "flat_vector", "country": "Switzerland",
+        })
+        assert result["visual_style"] == "flat_vector"
+        assert result["country"] == "Switzerland"
 
 
 class TestScripts:
@@ -2046,6 +2127,7 @@ class TestCharacterRelationships:
         found = culturetoons.resolve_relationships_for_cast(session, brand["id"], [character["id"], hans["id"]])
         assert len(found) == 1
         assert found[0]["relationship_type"] == "friendly_rivalry"
+        assert found[0]["recent_events"] == []
 
         # Cast includes only Pierre + Hans (no stored relationship) -> empty.
         none_found = culturetoons.resolve_relationships_for_cast(session, brand["id"], [third["id"], hans["id"]])
@@ -2065,6 +2147,122 @@ class TestCharacterRelationships:
                 "character_a_id": character["id"], "character_b_id": other_character["id"],
             })
         assert exc_info.value.status_code == 404
+
+
+class TestRelationshipEvents:
+    def _second_character(self, user_id, brand_id, name="Hans"):
+        return culturetoons.create_character({"user_id": user_id, "brand_id": brand_id, "name": name})
+
+    def _relationship(self, user_id, brand, character, **overrides):
+        hans = self._second_character(user_id, brand["id"])
+        body = {
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": character["id"], "character_b_id": hans["id"],
+            "trust_level": 5, "affection_level": 5, "conflict_level": 5,
+        }
+        body.update(overrides)
+        return culturetoons.create_relationship(body), hans
+
+    def test_create_requires_valid_event_type(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        rel, _hans = self._relationship(user_id, brand, character)
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_relationship_event(rel["id"], {
+                "user_id": user_id, "brand_id": brand["id"],
+                "event_type": "not_a_real_type", "description": "Something happened",
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_create_requires_description(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        rel, _hans = self._relationship(user_id, brand, character)
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_relationship_event(rel["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "event_type": "general",
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_create_and_list_newest_first(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        rel, _hans = self._relationship(user_id, brand, character)
+
+        first = culturetoons.create_relationship_event(rel["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+            "event_type": "conflict", "description": "Argued over samosas",
+        })
+        second = culturetoons.create_relationship_event(rel["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+            "event_type": "reconciliation", "description": "Made up over chai",
+        })
+        assert first["event_type"] == "conflict"
+
+        listed = culturetoons.list_relationship_events(rel["id"], user_id, brand["id"])
+        assert [e["id"] for e in listed] == [second["id"], first["id"]]
+
+    def test_deltas_applied_to_relationship_and_clamped(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        rel, _hans = self._relationship(user_id, brand, character, trust_level=8, affection_level=2, conflict_level=5)
+
+        culturetoons.create_relationship_event(rel["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "event_type": "betrayal",
+            "description": "Hans threw Kumar under the bus in the meeting",
+            "trust_delta": -5, "affection_delta": 9,  # would overflow past 10, must clamp
+        })
+
+        updated = culturetoons.list_relationships(user_id, brand["id"])[0]
+        assert updated["trust_level"] == 3     # 8 - 5
+        assert updated["affection_level"] == 10  # 2 + 9 = 11, clamped to 10
+
+    def test_delta_must_be_within_range(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        rel, _hans = self._relationship(user_id, brand, character)
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_relationship_event(rel["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "event_type": "general",
+                "description": "Extreme event", "trust_delta": 50,
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_delete_does_not_reverse_deltas(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        rel, _hans = self._relationship(user_id, brand, character, trust_level=5)
+        event = culturetoons.create_relationship_event(rel["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "event_type": "conflict",
+            "description": "A big fight", "trust_delta": -3,
+        })
+        after_create = culturetoons.list_relationships(user_id, brand["id"])[0]
+        assert after_create["trust_level"] == 2
+
+        culturetoons.delete_relationship_event(event["id"], user_id, brand["id"])
+        assert culturetoons.list_relationship_events(rel["id"], user_id, brand["id"]) == []
+        after_delete = culturetoons.list_relationships(user_id, brand["id"])[0]
+        assert after_delete["trust_level"] == 2  # unchanged — not an undo stack
+
+    def test_wrong_brand_relationship_404s(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        rel, _hans = self._relationship(user_id, brand, character)
+        other_brand = culturetoons.create_brand({"user_id": user_id, "name": "Other Brand"})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_relationship_event(rel["id"], {
+                "user_id": user_id, "brand_id": other_brand["id"],
+                "event_type": "general", "description": "Shouldn't work",
+            })
+        assert exc_info.value.status_code == 404
+
+    def test_resolve_relationships_for_cast_attaches_recent_events(self, db, user_id, brand_and_character):
+        brand, character, _variant = brand_and_character
+        rel, hans = self._relationship(user_id, brand, character)
+        culturetoons.create_relationship_event(rel["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+            "event_type": "bonding", "description": "Shared an umbrella in the rain",
+        })
+
+        session = db()
+        found = culturetoons.resolve_relationships_for_cast(session, brand["id"], [character["id"], hans["id"]])
+        session.close()
+        assert len(found) == 1
+        assert len(found[0]["recent_events"]) == 1
+        assert found[0]["recent_events"][0]["description"] == "Shared an umbrella in the rain"
 
 
 class TestBudgetEnforcement:

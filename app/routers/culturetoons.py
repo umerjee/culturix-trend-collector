@@ -374,6 +374,8 @@ def _serialize_background(bg) -> dict:
     return {
         "id": str(bg.id), "brand_id": str(bg.brand_id), "name": bg.name,
         "image_url": bg.image_url, "tags": bg.tags, "description": bg.description,
+        "country": bg.country, "visual_style": bg.visual_style,
+        "reference_image_urls": bg.reference_image_urls or [],
         "is_active": bg.is_active,
         "created_at": bg.created_at.isoformat() if bg.created_at else None,
         "updated_at": bg.updated_at.isoformat() if bg.updated_at else None,
@@ -887,14 +889,141 @@ def delete_relationship(relationship_id: str, user_id: str, brand_id: str):
         session.close()
 
 
+# ── relationship history (events) ───────────────────────────────────────
+# A chronological log of what actually happened between two characters,
+# distinct from the relationship's own static current-state fields — see
+# app/models/character_relationship_event.py.
+
+_RELATIONSHIP_EVENT_TYPES = [
+    "conflict", "bonding", "running_joke", "betrayal", "reconciliation", "milestone", "general",
+]
+_RECENT_EVENTS_FOR_SCRIPT_CONTEXT = 3
+
+
+def _serialize_relationship_event(e) -> dict:
+    return {
+        "id": str(e.id), "relationship_id": str(e.relationship_id), "brand_id": str(e.brand_id),
+        "event_type": e.event_type, "description": e.description,
+        "affection_delta": e.affection_delta, "trust_delta": e.trust_delta, "conflict_delta": e.conflict_delta,
+        "source_toon_id": str(e.source_toon_id) if e.source_toon_id else None,
+        "source_episode_id": str(e.source_episode_id) if e.source_episode_id else None,
+        "source_scene_id": str(e.source_scene_id) if e.source_scene_id else None,
+        "created_at": e.created_at.isoformat() if e.created_at else None,
+    }
+
+
+def _apply_relationship_deltas(relationship, affection_delta, trust_delta, conflict_delta) -> None:
+    """Nudges the relationship's current-state levels by the given deltas,
+    clamped to 0-10 — applied once at event creation so a logged event is
+    consequential, not just narrative flavor. See CharacterRelationshipEvent's
+    docstring on why this isn't reversed on delete."""
+    for field, delta in (("affection_level", affection_delta), ("trust_level", trust_delta), ("conflict_level", conflict_delta)):
+        if delta:
+            current = getattr(relationship, field) if getattr(relationship, field) is not None else 5
+            setattr(relationship, field, max(0, min(10, current + delta)))
+
+
+@router.post("/relationships/{relationship_id}/events")
+def create_relationship_event(relationship_id: str, body: dict):
+    from app.db import SessionLocal
+    from app.models.character_relationship_event import CharacterRelationshipEvent
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    event_type = body.get("event_type")
+    description = (body.get("description") or "").strip()
+    if not user_id or not brand_id or not description:
+        raise HTTPException(status_code=400, detail="user_id, brand_id and description are required")
+    if event_type not in _RELATIONSHIP_EVENT_TYPES:
+        raise HTTPException(status_code=400, detail=f"event_type must be one of {_RELATIONSHIP_EVENT_TYPES}")
+    deltas = {}
+    for field in ("affection_delta", "trust_delta", "conflict_delta"):
+        value = body.get(field)
+        if value is not None:
+            if not (-10 <= int(value) <= 10):
+                raise HTTPException(status_code=400, detail=f"{field} must be between -10 and 10")
+            deltas[field] = int(value)
+
+    session = SessionLocal()
+    try:
+        relationship = _get_relationship_owned(session, relationship_id, brand_id, user_id)
+        source_toon_id = body.get("source_toon_id")
+        if source_toon_id:
+            _get_toon_owned(session, source_toon_id, brand_id, user_id)
+        source_episode_id = body.get("source_episode_id")
+        if source_episode_id:
+            _get_episode_owned(session, source_episode_id, brand_id, user_id)
+        source_scene_id = body.get("source_scene_id")
+        if source_scene_id:
+            _get_scene_owned(session, source_scene_id, brand_id, user_id)
+
+        event = CharacterRelationshipEvent(
+            relationship_id=relationship.id, brand_id=relationship.brand_id,
+            event_type=event_type, description=description,
+            affection_delta=deltas.get("affection_delta"), trust_delta=deltas.get("trust_delta"),
+            conflict_delta=deltas.get("conflict_delta"),
+            source_toon_id=_uuid.UUID(source_toon_id) if source_toon_id else None,
+            source_episode_id=_uuid.UUID(source_episode_id) if source_episode_id else None,
+            source_scene_id=_uuid.UUID(source_scene_id) if source_scene_id else None,
+        )
+        session.add(event)
+        _apply_relationship_deltas(
+            relationship, deltas.get("affection_delta"), deltas.get("trust_delta"), deltas.get("conflict_delta"),
+        )
+        session.commit()
+        session.refresh(event)
+        return _serialize_relationship_event(event)
+    finally:
+        session.close()
+
+
+@router.get("/relationships/{relationship_id}/events")
+def list_relationship_events(relationship_id: str, user_id: str, brand_id: str, limit: int = 50):
+    from app.db import SessionLocal
+    from app.models.character_relationship_event import CharacterRelationshipEvent
+    session = SessionLocal()
+    try:
+        relationship = _get_relationship_owned(session, relationship_id, brand_id, user_id)
+        events = (
+            session.query(CharacterRelationshipEvent).filter_by(relationship_id=relationship.id)
+            .order_by(CharacterRelationshipEvent.created_at.desc()).limit(limit).all()
+        )
+        return [_serialize_relationship_event(e) for e in events]
+    finally:
+        session.close()
+
+
+@router.delete("/relationship-events/{event_id}")
+def delete_relationship_event(event_id: str, user_id: str, brand_id: str):
+    """Hard delete — this is a log, not a soft-archivable resource like the
+    relationship itself. Does not reverse the event's deltas, see
+    CharacterRelationshipEvent's docstring."""
+    from app.db import SessionLocal
+    from app.models.character_relationship_event import CharacterRelationshipEvent
+    session = SessionLocal()
+    try:
+        event = session.query(CharacterRelationshipEvent).filter_by(id=_uuid.UUID(event_id)).first()
+        if not event:
+            raise HTTPException(status_code=404, detail="Relationship event not found")
+        _get_relationship_owned(session, str(event.relationship_id), brand_id, user_id)
+        session.delete(event)
+        session.commit()
+        return {"status": "deleted"}
+    finally:
+        session.close()
+
+
 def resolve_relationships_for_cast(session, brand_id, character_ids: list) -> list:
     """Looks up every stored relationship between any two Characters in
     `character_ids` (deduped, order-independent — a relationship's
     character_a_id/character_b_id order doesn't imply direction). Used by
     culturetoon_script.py's prompt builder when a script casts 2+ characters
-    together. Returns serialized relationship dicts, empty list if none or
-    fewer than 2 distinct characters are cast."""
+    together. Returns serialized relationship dicts, each with a
+    "recent_events" key (most recent few, newest first) so script
+    generation can reference the relationship's trajectory, not just its
+    current-state snapshot. Empty list if none or fewer than 2 distinct
+    characters are cast."""
     from app.models.character_relationship import CharacterRelationship
+    from app.models.character_relationship_event import CharacterRelationshipEvent
     ids = {_uuid.UUID(str(c)) for c in character_ids}
     if len(ids) < 2:
         return []
@@ -904,7 +1033,17 @@ def resolve_relationships_for_cast(session, brand_id, character_ids: list) -> li
         CharacterRelationship.character_a_id.in_(ids),
         CharacterRelationship.character_b_id.in_(ids),
     ).all()
-    return [_serialize_relationship(r) for r in relationships]
+    serialized = []
+    for r in relationships:
+        row = _serialize_relationship(r)
+        events = (
+            session.query(CharacterRelationshipEvent).filter_by(relationship_id=r.id)
+            .order_by(CharacterRelationshipEvent.created_at.desc())
+            .limit(_RECENT_EVENTS_FOR_SCRIPT_CONTEXT).all()
+        )
+        row["recent_events"] = [_serialize_relationship_event(e) for e in events]
+        serialized.append(row)
+    return serialized
 
 
 def _gather_script_generation_context(session, brand_id, variants: list, query_text: str = "") -> tuple:
@@ -1690,12 +1829,16 @@ def create_background(body: dict):
     user_id, brand_id = body.get("user_id"), body.get("brand_id")
     if not user_id or not brand_id or not body.get("name"):
         raise HTTPException(status_code=400, detail="user_id, brand_id and name are required")
+    visual_style = body.get("visual_style")
+    if visual_style is not None and visual_style not in ART_STYLES:
+        raise HTTPException(status_code=400, detail=f"visual_style must be one of {list(ART_STYLES)}")
     session = SessionLocal()
     try:
         brand = _get_brand_owned(session, brand_id, user_id)
         background = ToonBackground(
             brand_id=brand.id, name=body["name"], tags=body.get("tags"),
             description=body.get("description"),
+            country=body.get("country"), visual_style=visual_style,
         )
         session.add(background)
         session.commit()
@@ -1727,12 +1870,53 @@ def update_background(background_id: str, body: dict):
     user_id, brand_id = body.get("user_id"), body.get("brand_id")
     if not user_id or not brand_id:
         raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+    if body.get("visual_style") is not None and body["visual_style"] not in ART_STYLES:
+        raise HTTPException(status_code=400, detail=f"visual_style must be one of {list(ART_STYLES)}")
     session = SessionLocal()
     try:
         background = _get_background_owned(session, background_id, brand_id, user_id)
-        for field in ("name", "tags", "description", "is_active"):
+        for field in ("name", "tags", "description", "country", "visual_style", "is_active"):
             if field in body:
                 setattr(background, field, body[field])
+        session.commit()
+        session.refresh(background)
+        return _serialize_background(background)
+    finally:
+        session.close()
+
+
+@router.post("/backgrounds/{background_id}/reference-images")
+async def upload_background_reference_image(background_id: str, user_id: str = Form(...), brand_id: str = Form(...),
+                                              file: UploadFile = File(...)):
+    """Adds one more canonical angle/room for this location, alongside
+    (not replacing) its primary image_url — see ToonBackground's docstring."""
+    from app.db import SessionLocal
+    from app.services.culturetoon_media import save_image, ImageUploadError
+    session = SessionLocal()
+    try:
+        background = _get_background_owned(session, background_id, brand_id, user_id)
+        data = await file.read()
+        existing_count = len(background.reference_image_urls or [])
+        path = f"culturetoons/{background.brand_id}/backgrounds/{background.id}-ref-{existing_count + 1}.png"
+        try:
+            url = save_image(data, file.content_type, path)
+        except ImageUploadError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        background.reference_image_urls = (background.reference_image_urls or []) + [url]
+        session.commit()
+        session.refresh(background)
+        return _serialize_background(background)
+    finally:
+        session.close()
+
+
+@router.delete("/backgrounds/{background_id}/reference-images")
+def delete_background_reference_image(background_id: str, user_id: str, brand_id: str, image_url: str):
+    from app.db import SessionLocal
+    session = SessionLocal()
+    try:
+        background = _get_background_owned(session, background_id, brand_id, user_id)
+        background.reference_image_urls = [u for u in (background.reference_image_urls or []) if u != image_url]
         session.commit()
         session.refresh(background)
         return _serialize_background(background)
@@ -2130,7 +2314,8 @@ def generate_script_background(script_id: str, body: dict):
         art_style = body.get("art_style") or DEFAULT_ART_STYLE
         default_name = (script.hook_line or description)[:120]
         background, budget_warning = _generate_background_asset(
-            session, brand, user_id, description, art_style, body.get("name"), default_name
+            session, brand, user_id, description, art_style, body.get("name"), default_name,
+            country=body.get("country"),
         )
         script.background_id = background.id
         session.commit()
@@ -2162,7 +2347,8 @@ def generate_background(body: dict):
     try:
         brand = _get_brand_owned(session, brand_id, user_id)
         background, budget_warning = _generate_background_asset(
-            session, brand, user_id, description, art_style, body.get("name"), description[:120]
+            session, brand, user_id, description, art_style, body.get("name"), description[:120],
+            country=body.get("country"),
         )
         session.commit()
         session.refresh(background)
@@ -2175,14 +2361,17 @@ def generate_background(body: dict):
 
 
 def _generate_background_asset(session, brand, user_id: str, description: str, art_style: str,
-                                requested_name: Optional[str], default_name: str):
+                                requested_name: Optional[str], default_name: str,
+                                country: Optional[str] = None):
     """Shared by generate_script_background and generate_background: checks
     budget, builds the prompt, generates + stores the image, records usage,
     and adds a new ToonBackground to the session (uncommitted — callers
     commit, since generate_script_background also needs to point its script
     at the new row in the same transaction). Returns (background,
     budget_warning) — warning is None unless the brand is approaching its
-    configured budget."""
+    configured budget. art_style is stored as visual_style on the created
+    row (it's already validated against ART_STYLES below), so a generated
+    location remembers the style it was illustrated in."""
     if art_style not in ART_STYLES:
         raise HTTPException(status_code=400, detail=f"Unknown art_style: {art_style}")
     budget_warning = _check_budget_or_raise(session, brand)
@@ -2214,6 +2403,7 @@ def _generate_background_asset(session, brand, user_id: str, description: str, a
     background = ToonBackground(
         id=background_id, brand_id=brand.id, name=name,
         image_url=url, description=description,
+        visual_style=art_style, country=country,
     )
     session.add(background)
     return background, budget_warning

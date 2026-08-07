@@ -252,6 +252,34 @@ class TestPersonalityAndRelationshipContext:
         assert "trust 2/10" in sent_prompt
         assert "conflict 6/10" in sent_prompt
 
+    def test_relationship_recent_events_injected(self, mocker):
+        # recent_events (see resolve_relationships_for_cast) is the
+        # relationship's history log — it must reach the prompt so a
+        # script can reflect the trajectory, not just the static snapshot.
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        kumar = mocker.Mock(); kumar.name = "Kumar"; kumar.description = None; kumar.culture_tag = None
+        hans = mocker.Mock(); hans.name = "Hans"; hans.description = None; hans.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(
+            cluster, variants=[kumar, hans], tone="funny",
+            relationships=[{
+                "relationship_type": "friendly_rivalry",
+                "recent_events": [
+                    {"description": "Made up over chai"},
+                    {"description": "Argued over samosas"},
+                ],
+            }],
+        )
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "Argued over samosas" in sent_prompt
+        assert "Made up over chai" in sent_prompt
+        # Rendered oldest-of-the-batch first, so it reads as a timeline —
+        # the resolver hands events newest-first, so this must be reversed.
+        assert sent_prompt.index("Argued over samosas") < sent_prompt.index("Made up over chai")
+
     def test_no_relationships_no_extra_section(self, mocker):
         from app.models.cluster import Cluster
         cluster = Cluster(label=1, theme="X", summary="Y")

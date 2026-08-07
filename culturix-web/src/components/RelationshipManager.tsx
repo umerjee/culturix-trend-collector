@@ -1,12 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Loader2, Trash2, X } from "lucide-react";
-import type { Character, CharacterRelationship } from "@/lib/types";
+import { Plus, Loader2, Trash2, X, History, ChevronDown, ChevronUp } from "lucide-react";
+import type { Character, CharacterRelationship, CharacterRelationshipEvent } from "@/lib/types";
+import { RELATIONSHIP_EVENT_TYPES } from "@/lib/types";
 
 interface Props {
   brandId: string;
 }
+
+const EVENT_TYPE_LABELS: Record<(typeof RELATIONSHIP_EVENT_TYPES)[number], string> = {
+  conflict: "Conflict", bonding: "Bonding", running_joke: "Running joke",
+  betrayal: "Betrayal", reconciliation: "Reconciliation", milestone: "Milestone", general: "General",
+};
 
 // Simple list, not a graph — decided against a visual relationship graph
 // for v1, see docs/culturix-comedy-architecture.md §7 Phase 3. Self-fetches
@@ -30,6 +36,19 @@ export default function RelationshipManager({ brandId }: Props) {
   const [newRule, setNewRule] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // History (events) — loaded lazily per relationship, not eagerly for
+  // every relationship on mount.
+  const [historyOpen, setHistoryOpen] = useState<Record<string, boolean>>({});
+  const [eventsByRelationship, setEventsByRelationship] = useState<Record<string, CharacterRelationshipEvent[]>>({});
+  const [eventsLoading, setEventsLoading] = useState<Record<string, boolean>>({});
+  const [newEventType, setNewEventType] = useState<Record<string, string>>({});
+  const [newEventDescription, setNewEventDescription] = useState<Record<string, string>>({});
+  const [newEventAffectionDelta, setNewEventAffectionDelta] = useState<Record<string, number>>({});
+  const [newEventTrustDelta, setNewEventTrustDelta] = useState<Record<string, number>>({});
+  const [newEventConflictDelta, setNewEventConflictDelta] = useState<Record<string, number>>({});
+  const [addingEvent, setAddingEvent] = useState<string | null>(null);
+  const [eventError, setEventError] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -95,6 +114,69 @@ export default function RelationshipManager({ brandId }: Props) {
     await fetch(`/api/culturetoons/relationships/${id}?brand_id=${brandId}`, { method: "DELETE" });
   }
 
+  async function loadEvents(relationshipId: string) {
+    setEventsLoading((prev) => ({ ...prev, [relationshipId]: true }));
+    try {
+      const res = await fetch(`/api/culturetoons/relationships/${relationshipId}/events?brand_id=${brandId}`, { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        setEventsByRelationship((prev) => ({ ...prev, [relationshipId]: data }));
+      }
+    } finally {
+      setEventsLoading((prev) => ({ ...prev, [relationshipId]: false }));
+    }
+  }
+
+  function toggleHistory(relationshipId: string) {
+    const opening = !historyOpen[relationshipId];
+    setHistoryOpen((prev) => ({ ...prev, [relationshipId]: opening }));
+    if (opening && !eventsByRelationship[relationshipId]) loadEvents(relationshipId);
+  }
+
+  async function addEvent(relationshipId: string) {
+    const eventType = newEventType[relationshipId] || "general";
+    const description = (newEventDescription[relationshipId] ?? "").trim();
+    if (!description) return;
+    setAddingEvent(relationshipId);
+    setEventError((prev) => ({ ...prev, [relationshipId]: "" }));
+    try {
+      const res = await fetch(`/api/culturetoons/relationships/${relationshipId}/events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          brand_id: brandId, event_type: eventType, description,
+          affection_delta: newEventAffectionDelta[relationshipId] || undefined,
+          trust_delta: newEventTrustDelta[relationshipId] || undefined,
+          conflict_delta: newEventConflictDelta[relationshipId] || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEventError((prev) => ({ ...prev, [relationshipId]: typeof data.detail === "string" ? data.detail : "Couldn't add event" }));
+        return;
+      }
+      setEventsByRelationship((prev) => ({ ...prev, [relationshipId]: [data, ...(prev[relationshipId] ?? [])] }));
+      setNewEventDescription((prev) => ({ ...prev, [relationshipId]: "" }));
+      setNewEventAffectionDelta((prev) => ({ ...prev, [relationshipId]: 0 }));
+      setNewEventTrustDelta((prev) => ({ ...prev, [relationshipId]: 0 }));
+      setNewEventConflictDelta((prev) => ({ ...prev, [relationshipId]: 0 }));
+      // Deltas (if any) shifted the relationship's own current-state levels
+      // server-side — refetch the relationship list so those numbers stay
+      // in sync with what was just applied, instead of drifting stale.
+      const relRes = await fetch(`/api/culturetoons/relationships?brand_id=${brandId}`, { cache: "no-store" });
+      if (relRes.ok) setRelationships(await relRes.json());
+    } finally {
+      setAddingEvent(null);
+    }
+  }
+
+  async function deleteEvent(relationshipId: string, eventId: string) {
+    setEventsByRelationship((prev) => ({
+      ...prev, [relationshipId]: (prev[relationshipId] ?? []).filter((e) => e.id !== eventId),
+    }));
+    await fetch(`/api/culturetoons/relationship-events/${eventId}?brand_id=${brandId}`, { method: "DELETE" });
+  }
+
   return (
     <div className="space-y-6">
       <div className="rounded-2xl bg-white border border-gray-100 p-4">
@@ -144,6 +226,105 @@ export default function RelationshipManager({ brandId }: Props) {
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
                     </div>
+
+                    <button
+                      onClick={() => toggleHistory(r.id)}
+                      className="flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-700 mt-2"
+                    >
+                      <History className="h-3 w-3" />
+                      History {(eventsByRelationship[r.id]?.length ?? 0) > 0 && `(${eventsByRelationship[r.id]!.length})`}
+                      {historyOpen[r.id] ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                    </button>
+
+                    {historyOpen[r.id] && (
+                      <div className="mt-2 pt-2 border-t border-gray-100 space-y-2">
+                        <p className="text-[10px] text-gray-400">
+                          What actually happened between them, over time — the most recent few are given to
+                          script generation as context, in addition to the current-state dynamic above.
+                        </p>
+                        {eventsLoading[r.id] && <Loader2 className="h-3 w-3 animate-spin text-gray-400" />}
+                        {(eventsByRelationship[r.id] ?? []).map((ev) => (
+                          <div key={ev.id} className="flex items-start gap-2 bg-white rounded-lg border border-gray-100 px-2 py-1.5">
+                            <div className="flex-1">
+                              <span className="text-[10px] uppercase tracking-wide text-gray-400">{EVENT_TYPE_LABELS[ev.event_type]}</span>
+                              <p className="text-[11px] text-gray-600">{ev.description}</p>
+                              {(ev.affection_delta || ev.trust_delta || ev.conflict_delta) && (
+                                <div className="flex gap-2 mt-0.5 text-[10px] text-gray-400">
+                                  {!!ev.affection_delta && <span>Affection {ev.affection_delta > 0 ? "+" : ""}{ev.affection_delta}</span>}
+                                  {!!ev.trust_delta && <span>Trust {ev.trust_delta > 0 ? "+" : ""}{ev.trust_delta}</span>}
+                                  {!!ev.conflict_delta && <span>Conflict {ev.conflict_delta > 0 ? "+" : ""}{ev.conflict_delta}</span>}
+                                </div>
+                              )}
+                            </div>
+                            <button onClick={() => deleteEvent(r.id, ev.id)} className="text-gray-300 hover:text-red-500 shrink-0">
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ))}
+                        {!eventsLoading[r.id] && (eventsByRelationship[r.id] ?? []).length === 0 && (
+                          <p className="text-[11px] text-gray-400">No history logged yet.</p>
+                        )}
+
+                        <div className="bg-white rounded-lg border border-dashed border-gray-200 p-2 space-y-1.5">
+                          <div className="flex flex-wrap gap-1.5">
+                            <select
+                              value={newEventType[r.id] ?? "general"}
+                              onChange={(e) => setNewEventType((prev) => ({ ...prev, [r.id]: e.target.value }))}
+                              className="rounded-lg border border-gray-200 px-2 py-1 text-[11px]"
+                            >
+                              {RELATIONSHIP_EVENT_TYPES.map((t) => (
+                                <option key={t} value={t}>{EVENT_TYPE_LABELS[t]}</option>
+                              ))}
+                            </select>
+                            <input
+                              type="text"
+                              value={newEventDescription[r.id] ?? ""}
+                              onChange={(e) => setNewEventDescription((prev) => ({ ...prev, [r.id]: e.target.value }))}
+                              placeholder={`What happened, e.g. "Hans covered for Kumar's mistake in front of the boss"`}
+                              className="flex-1 min-w-[10rem] rounded-lg border border-gray-200 px-2.5 py-1 text-[11px]"
+                            />
+                          </div>
+                          <div className="flex gap-3 flex-wrap">
+                            <label className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                              Affection Δ
+                              <input
+                                type="number" min={-10} max={10}
+                                value={newEventAffectionDelta[r.id] ?? 0}
+                                onChange={(e) => setNewEventAffectionDelta((prev) => ({ ...prev, [r.id]: parseInt(e.target.value) || 0 }))}
+                                className="w-14 rounded-lg border border-gray-200 px-1.5 py-0.5 text-[11px]"
+                              />
+                            </label>
+                            <label className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                              Trust Δ
+                              <input
+                                type="number" min={-10} max={10}
+                                value={newEventTrustDelta[r.id] ?? 0}
+                                onChange={(e) => setNewEventTrustDelta((prev) => ({ ...prev, [r.id]: parseInt(e.target.value) || 0 }))}
+                                className="w-14 rounded-lg border border-gray-200 px-1.5 py-0.5 text-[11px]"
+                              />
+                            </label>
+                            <label className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                              Conflict Δ
+                              <input
+                                type="number" min={-10} max={10}
+                                value={newEventConflictDelta[r.id] ?? 0}
+                                onChange={(e) => setNewEventConflictDelta((prev) => ({ ...prev, [r.id]: parseInt(e.target.value) || 0 }))}
+                                className="w-14 rounded-lg border border-gray-200 px-1.5 py-0.5 text-[11px]"
+                              />
+                            </label>
+                            <button
+                              onClick={() => addEvent(r.id)}
+                              disabled={!(newEventDescription[r.id] ?? "").trim() || addingEvent === r.id}
+                              className="ml-auto inline-flex items-center gap-1 rounded-lg bg-gray-900 text-white text-[11px] font-medium px-2.5 py-1 hover:bg-gray-800 transition-colors disabled:opacity-60"
+                            >
+                              {addingEvent === r.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+                              Log event
+                            </button>
+                          </div>
+                          {eventError[r.id] && <p className="text-[11px] text-red-500">{eventError[r.id]}</p>}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

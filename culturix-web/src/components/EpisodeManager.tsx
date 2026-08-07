@@ -614,7 +614,7 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
                             onChange={(e) => setSceneBackgroundId((prev) => ({ ...prev, [ep.id]: e.target.value }))}
                             className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs"
                           >
-                            <option value="">No background</option>
+                            <option value="">No location</option>
                             {backgrounds.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                           </select>
                         </div>

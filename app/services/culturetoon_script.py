@@ -182,9 +182,12 @@ def _culture_context(cultures: Optional[list]) -> str:
 def _relationship_context(relationships: Optional[list]) -> str:
     """relationships: list of serialized CharacterRelationship dicts (see
     app/routers/culturetoons.py::resolve_relationships_for_cast) — already
-    filtered to the pair(s) actually present in this script's cast. Empty
-    string if none, so a single-character script or a cast with no stored
-    relationship doesn't get a dangling empty section in the prompt."""
+    filtered to the pair(s) actually present in this script's cast, each
+    optionally carrying a "recent_events" list (the relationship's own
+    history log, see CharacterRelationshipEvent — newest first, already
+    capped to a handful by the resolver). Empty string if none, so a
+    single-character script or a cast with no stored relationship doesn't
+    get a dangling empty section in the prompt."""
     if not relationships:
         return ""
     lines = []
@@ -210,9 +213,18 @@ def _relationship_context(relationships: Optional[list]) -> str:
             parts.append("Rules: " + "; ".join(r["behavioral_rules"]))
         if parts:
             lines.append("- " + " — ".join(parts))
+        # Recent history, oldest-of-the-recent-batch first so it reads as a
+        # timeline rather than newest-first — the events themselves arrive
+        # newest-first from the resolver (for UI display), reversed here
+        # only for this narrative rendering.
+        events = r.get("recent_events") or []
+        if events:
+            for e in reversed(events):
+                if e.get("description"):
+                    lines.append(f"  · (recently) {e['description']}")
     if not lines:
         return ""
-    return "\nEstablished relationship between these characters (keep the dynamic consistent, don't contradict it):\n" + "\n".join(lines) + "\n"
+    return "\nEstablished relationship between these characters (keep the dynamic consistent, don't contradict it — recent history shapes how they'd act now):\n" + "\n".join(lines) + "\n"
 
 
 def _build_prompt_from_context(source_type: str, context: str, variants: list, tone: str,

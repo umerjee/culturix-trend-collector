@@ -496,6 +496,28 @@ export interface CharacterRelationship {
   updated_at: string | null;
 }
 
+export const RELATIONSHIP_EVENT_TYPES = [
+  "conflict", "bonding", "running_joke", "betrayal", "reconciliation", "milestone", "general",
+] as const;
+
+// A timestamped entry in a relationship's history — distinct from
+// CharacterRelationship's own static current-state fields above. See
+// app/models/character_relationship_event.py.
+export interface CharacterRelationshipEvent {
+  id: string;
+  relationship_id: string;
+  brand_id: string;
+  event_type: (typeof RELATIONSHIP_EVENT_TYPES)[number];
+  description: string;
+  affection_delta: number | null;
+  trust_delta: number | null;
+  conflict_delta: number | null;
+  source_toon_id: string | null;
+  source_episode_id: string | null;
+  source_scene_id: string | null;
+  created_at: string | null;
+}
+
 export const MEMORY_TYPES = [
   "backstory", "recurring_fact", "relationship_event",
   "previous_joke", "preference", "running_gag", "episode_event",
@@ -541,6 +563,9 @@ export interface Expression {
   created_at: string | null;
 }
 
+// "Locations" per docs/culturix-character-studio-upgrade.md §4 Phase 3 —
+// same ToonBackground entity underneath, not renamed (see the model's own
+// docstring for why).
 export interface ToonBackground {
   id: string;
   brand_id: string;
@@ -548,6 +573,10 @@ export interface ToonBackground {
   image_url: string | null;
   tags: string | null;
   description: string | null;
+  country: string | null;
+  visual_style: (typeof ART_STYLES)[number]["key"] | null;
+  // Additional canonical angles/rooms of this same location, beyond image_url.
+  reference_image_urls: string[];
   is_active: boolean;
   created_at: string | null;
   updated_at: string | null;
