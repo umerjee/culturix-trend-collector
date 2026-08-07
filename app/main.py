@@ -43,6 +43,8 @@ async def lifespan(_):
     from app.models.toon_episode import ToonEpisode                   # noqa: F401
     from app.models.character_relationship import CharacterRelationship  # noqa: F401
     from app.models.character_relationship_event import CharacterRelationshipEvent  # noqa: F401
+    from app.models.character_relationship_direction import CharacterRelationshipDirection  # noqa: F401
+    from app.models.character_relationship_behavior_rule import CharacterRelationshipBehaviorRule  # noqa: F401
     from app.models.generation_usage import GenerationUsage           # noqa: F401
     from app.models.character_memory import CharacterMemory           # noqa: F401
     from app.models.culture import Culture                            # noqa: F401
@@ -255,6 +257,15 @@ async def lifespan(_):
             "ALTER TABLE toon_backgrounds ADD COLUMN IF NOT EXISTS country VARCHAR(100)",
             "ALTER TABLE toon_backgrounds ADD COLUMN IF NOT EXISTS visual_style VARCHAR(30)",
             "ALTER TABLE toon_backgrounds ADD COLUMN IF NOT EXISTS reference_image_urls TEXT[] DEFAULT '{}'",
+            # Directional relationship refinement — relationship_type becomes
+            # an enum key + human label, comedy_chemistry is new. Per-
+            # direction affection/trust/conflict/perspective/behavior live
+            # in the new character_relationship_directions/
+            # character_relationship_behavior_rules tables (created via
+            # Base.metadata.create_all above, no ALTER needed for those).
+            # See app/models/character_relationship_direction.py.
+            "ALTER TABLE character_relationships ADD COLUMN IF NOT EXISTS relationship_type_label VARCHAR(80)",
+            "ALTER TABLE character_relationships ADD COLUMN IF NOT EXISTS comedy_chemistry INTEGER",
         ]:
             try:
                 _conn.execute(_text(_stmt))

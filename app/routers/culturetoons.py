@@ -347,21 +347,6 @@ def _serialize_variant(v) -> dict:
     }
 
 
-def _serialize_relationship(r) -> dict:
-    return {
-        "id": str(r.id), "brand_id": str(r.brand_id),
-        "character_a_id": str(r.character_a_id), "character_b_id": str(r.character_b_id),
-        "relationship_type": r.relationship_type, "description": r.description,
-        "emotional_dynamic": r.emotional_dynamic,
-        "conflict_level": r.conflict_level, "trust_level": r.trust_level,
-        "affection_level": r.affection_level,
-        "humor_dynamic": r.humor_dynamic, "behavioral_rules": r.behavioral_rules or [],
-        "is_active": r.is_active,
-        "created_at": r.created_at.isoformat() if r.created_at else None,
-        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-    }
-
-
 def _serialize_expression(e) -> dict:
     return {
         "id": str(e.id), "character_variant_id": str(e.character_variant_id),
@@ -786,7 +771,207 @@ def delete_character(character_id: str, user_id: str, brand_id: str):
 
 # ── relationships ────────────────────────────────────────────────────────
 # Character-level, not CharacterVariant-level — see
-# docs/culturix-comedy-architecture.md §3.4/decision 5.
+# docs/culturix-comedy-architecture.md §3.4/decision 5. Directional
+# refinement (2026-08): personality toward another character is not
+# necessarily symmetrical, so per-direction affection/trust/conflict/
+# perspective/behavior now live on CharacterRelationshipDirection (exactly
+# two rows per relationship — see that model's docstring), while
+# CharacterRelationship itself stays the single record for the pair
+# (relationship type, general description, comedy_chemistry). The
+# relationship's own affection_level/trust_level/conflict_level/
+# behavioral_rules fields are kept for backward compatibility (existing
+# rows, CharacterRelationshipEvent's delta application below) — see
+# CharacterRelationship's class docstring.
+
+_RELATIONSHIP_TYPES = {
+    "friends": "Friends",
+    "best_friends": "Best Friends",
+    "friendly_rivalry": "Friendly Rivalry",
+    "rivals": "Rivals",
+    "coworkers": "Coworkers",
+    "boss_employee": "Boss / Employee",
+    "husband_wife": "Husband & Wife",
+    "parent_child": "Parent & Child",
+    "siblings": "Siblings",
+    "neighbors": "Neighbors",
+    "acquaintances": "Acquaintances",
+    "mentor_student": "Mentor & Student",
+    "enemies": "Enemies",
+    "custom": "Custom",
+}
+
+
+def _validate_relationship_type(body: dict) -> tuple:
+    """Returns (relationship_type, relationship_type_label). Both None if
+    relationship_type wasn't provided at all (still optional, same as
+    before this refinement). relationship_type_label defaults to the
+    enum's own canonical label, or must be explicitly given when
+    relationship_type is "custom"."""
+    rtype = body.get("relationship_type")
+    if rtype is None:
+        return None, None
+    if rtype not in _RELATIONSHIP_TYPES:
+        raise HTTPException(status_code=400, detail=f"relationship_type must be one of {list(_RELATIONSHIP_TYPES)}")
+    custom_label = (body.get("relationship_type_label") or "").strip()
+    if rtype == "custom" and not custom_label:
+        raise HTTPException(status_code=400, detail="relationship_type_label is required when relationship_type is 'custom'")
+    return rtype, custom_label or _RELATIONSHIP_TYPES[rtype]
+
+
+def _get_or_create_relationship_directions(session, relationship) -> list:
+    """Returns [character_a->b direction, character_b->a direction],
+    creating whichever are missing. A relationship created before this
+    directional refinement has none yet — rather than showing empty
+    dynamics for it (silently dropping data the user already entered),
+    freshly-created directions are seeded from the relationship's own
+    legacy symmetric fields (same affection/trust/conflict copied into
+    both, behavioral_rules copied into both directions' rule sets) so
+    existing functionality doesn't regress on first read after migration.
+    The user can then let each direction diverge going forward."""
+    from app.models.character_relationship_direction import CharacterRelationshipDirection
+    from app.models.character_relationship_behavior_rule import CharacterRelationshipBehaviorRule
+
+    existing = (
+        session.query(CharacterRelationshipDirection)
+        .filter_by(relationship_id=relationship.id).all()
+    )
+    by_from = {str(d.from_character_id): d for d in existing}
+    a_id, b_id = str(relationship.character_a_id), str(relationship.character_b_id)
+    created_any = False
+    for from_id, to_id in ((a_id, b_id), (b_id, a_id)):
+        if from_id in by_from:
+            continue
+        direction = CharacterRelationshipDirection(
+            relationship_id=relationship.id, brand_id=relationship.brand_id,
+            from_character_id=_uuid.UUID(from_id), to_character_id=_uuid.UUID(to_id),
+            affection_level=relationship.affection_level, trust_level=relationship.trust_level,
+            conflict_level=relationship.conflict_level,
+        )
+        session.add(direction)
+        session.flush()
+        for rule_text in (relationship.behavioral_rules or []):
+            session.add(CharacterRelationshipBehaviorRule(
+                relationship_direction_id=direction.id, brand_id=relationship.brand_id, rule_text=rule_text,
+            ))
+        by_from[from_id] = direction
+        created_any = True
+    if created_any:
+        session.flush()
+    return [by_from[a_id], by_from[b_id]]
+
+
+def _serialize_relationship_direction(session, d) -> dict:
+    from app.models.character_relationship_behavior_rule import CharacterRelationshipBehaviorRule
+    rules = (
+        session.query(CharacterRelationshipBehaviorRule)
+        .filter_by(relationship_direction_id=d.id)
+        .order_by(CharacterRelationshipBehaviorRule.created_at.asc()).all()
+    )
+    return {
+        "id": str(d.id), "relationship_id": str(d.relationship_id),
+        "from_character_id": str(d.from_character_id), "to_character_id": str(d.to_character_id),
+        "affection_level": d.affection_level, "trust_level": d.trust_level, "conflict_level": d.conflict_level,
+        "perspective_description": d.perspective_description,
+        "behavior_rules": [r.rule_text for r in rules],
+        "created_at": d.created_at.isoformat() if d.created_at else None,
+        "updated_at": d.updated_at.isoformat() if d.updated_at else None,
+    }
+
+
+def _apply_direction_data(session, direction, data: Optional[dict]) -> None:
+    """data: optional dict with any subset of affection_level/trust_level/
+    conflict_level/perspective_description/behavior_rules (list[str]).
+    behavior_rules, when provided, replaces the whole set for this
+    direction (delete + reinsert) — same whole-list-replace semantics the
+    old CharacterRelationship.behavioral_rules array column had, just
+    structured records now instead of a single array."""
+    if not data:
+        return
+    for level_field in ("affection_level", "trust_level", "conflict_level"):
+        if data.get(level_field) is not None:
+            value = int(data[level_field])
+            if not (0 <= value <= 10):
+                raise HTTPException(status_code=400, detail=f"{level_field} must be between 0 and 10")
+            setattr(direction, level_field, value)
+    if "perspective_description" in data:
+        direction.perspective_description = data["perspective_description"]
+    if "behavior_rules" in data:
+        from app.models.character_relationship_behavior_rule import CharacterRelationshipBehaviorRule
+        session.query(CharacterRelationshipBehaviorRule).filter_by(relationship_direction_id=direction.id).delete()
+        for rule_text in (data.get("behavior_rules") or []):
+            text = str(rule_text).strip()
+            if text:
+                session.add(CharacterRelationshipBehaviorRule(
+                    relationship_direction_id=direction.id, brand_id=direction.brand_id, rule_text=text,
+                ))
+
+
+def _episode_character_map(session, brand_id) -> dict:
+    """episode_id (str) -> set of character_id (str) present in that
+    episode, via either Toon-parts or ToonScenes — used for the
+    Relationship Library's "episodes together" count (section 7). Built
+    once per list_relationships call rather than per-relationship."""
+    from app.models.toon import Toon
+    from app.models.toon_scene import ToonScene
+    from app.models.character_variant import CharacterVariant
+    from app.models.character import Character
+
+    variant_rows = (
+        session.query(CharacterVariant.id, CharacterVariant.character_id)
+        .join(Character, Character.id == CharacterVariant.character_id)
+        .filter(Character.brand_id == _uuid.UUID(str(brand_id))).all()
+    )
+    variant_to_character = {str(vid): str(cid) for vid, cid in variant_rows}
+
+    episode_map: dict = {}
+    parts = (
+        session.query(Toon.episode_id, Toon.character_variant_id)
+        .filter(Toon.brand_id == _uuid.UUID(str(brand_id)), Toon.episode_id.isnot(None)).all()
+    )
+    for episode_id, variant_id in parts:
+        cid = variant_to_character.get(str(variant_id))
+        if cid:
+            episode_map.setdefault(str(episode_id), set()).add(cid)
+
+    scenes = (
+        session.query(ToonScene.episode_id, ToonScene.character_variant_ids)
+        .filter(ToonScene.brand_id == _uuid.UUID(str(brand_id))).all()
+    )
+    for episode_id, variant_ids in scenes:
+        for vid in (variant_ids or []):
+            cid = variant_to_character.get(str(vid))
+            if cid:
+                episode_map.setdefault(str(episode_id), set()).add(cid)
+    return episode_map
+
+
+def _episodes_together_count(episode_map: dict, character_a_id, character_b_id) -> int:
+    a, b = str(character_a_id), str(character_b_id)
+    return sum(1 for chars in episode_map.values() if a in chars and b in chars)
+
+
+def _serialize_relationship(session, r, episodes_together: int = 0) -> dict:
+    directions = _get_or_create_relationship_directions(session, r)
+    return {
+        "id": str(r.id), "brand_id": str(r.brand_id),
+        "character_a_id": str(r.character_a_id), "character_b_id": str(r.character_b_id),
+        "relationship_type": r.relationship_type, "relationship_type_label": r.relationship_type_label,
+        "description": r.description,
+        "comedy_chemistry": r.comedy_chemistry,
+        # Legacy symmetric fields — kept for backward compatibility, see
+        # CharacterRelationship's class docstring. New code should read
+        # "directions" instead.
+        "emotional_dynamic": r.emotional_dynamic,
+        "conflict_level": r.conflict_level, "trust_level": r.trust_level,
+        "affection_level": r.affection_level,
+        "humor_dynamic": r.humor_dynamic, "behavioral_rules": r.behavioral_rules or [],
+        "directions": [_serialize_relationship_direction(session, d) for d in directions],
+        "episodes_together": episodes_together,
+        "is_active": r.is_active,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+    }
+
 
 @router.post("/relationships")
 def create_relationship(body: dict):
@@ -798,6 +983,9 @@ def create_relationship(body: dict):
         raise HTTPException(status_code=400, detail="user_id, brand_id, character_a_id and character_b_id are required")
     if character_a_id == character_b_id:
         raise HTTPException(status_code=400, detail="character_a_id and character_b_id must be different characters")
+    relationship_type, relationship_type_label = _validate_relationship_type(body)
+    if body.get("comedy_chemistry") is not None and not (0 <= int(body["comedy_chemistry"]) <= 10):
+        raise HTTPException(status_code=400, detail="comedy_chemistry must be between 0 and 10")
     session = SessionLocal()
     try:
         brand = _get_brand_owned(session, brand_id, user_id)
@@ -809,16 +997,67 @@ def create_relationship(body: dict):
         relationship = CharacterRelationship(
             brand_id=brand.id,
             character_a_id=_uuid.UUID(character_a_id), character_b_id=_uuid.UUID(character_b_id),
-            relationship_type=body.get("relationship_type"), description=body.get("description"),
+            relationship_type=relationship_type, relationship_type_label=relationship_type_label,
+            description=body.get("description"), comedy_chemistry=body.get("comedy_chemistry"),
             emotional_dynamic=body.get("emotional_dynamic"),
             conflict_level=body.get("conflict_level"), trust_level=body.get("trust_level"),
             affection_level=body.get("affection_level"),
             humor_dynamic=body.get("humor_dynamic"), behavioral_rules=body.get("behavioral_rules"),
         )
         session.add(relationship)
+        session.flush()
+        directions = _get_or_create_relationship_directions(session, relationship)
+        directions_by_from = {str(d.from_character_id): d for d in directions}
+        _apply_direction_data(session, directions_by_from[str(relationship.character_a_id)], body.get("a_to_b"))
+        _apply_direction_data(session, directions_by_from[str(relationship.character_b_id)], body.get("b_to_a"))
         session.commit()
         session.refresh(relationship)
-        return _serialize_relationship(relationship)
+        return _serialize_relationship(session, relationship, episodes_together=0)
+    finally:
+        session.close()
+
+
+@router.post("/relationships/generate")
+def generate_relationship(body: dict):
+    """AI-drafts relationship_type/description/comedy_chemistry/both
+    directions' dynamics from the two characters' existing personality,
+    culture, speech style and behavioral DNA — see
+    app/services/culturetoon_relationship.py. Returns a draft only, never
+    persisted, so the user can edit before saving (POST /relationships or
+    PUT an existing one) — an existing relationship's data is never
+    overwritten by this call."""
+    from app.db import SessionLocal
+    from app.models.character_variant import CharacterVariant
+    from app.services.culturetoon_relationship import generate_relationship_dynamic, RelationshipGenerationError
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    character_a_id, character_b_id = body.get("character_a_id"), body.get("character_b_id")
+    if not user_id or not brand_id or not character_a_id or not character_b_id:
+        raise HTTPException(status_code=400, detail="user_id, brand_id, character_a_id and character_b_id are required")
+    if character_a_id == character_b_id:
+        raise HTTPException(status_code=400, detail="character_a_id and character_b_id must be different characters")
+
+    session = SessionLocal()
+    try:
+        _get_brand_owned(session, brand_id, user_id)
+        character_a = _get_character_owned(session, character_a_id, brand_id, user_id)
+        character_b = _get_character_owned(session, character_b_id, brand_id, user_id)
+
+        def _culture_summary(character_id):
+            tags = (
+                session.query(CharacterVariant.culture_tag)
+                .filter(CharacterVariant.character_id == character_id, CharacterVariant.culture_tag.isnot(None))
+                .distinct().all()
+            )
+            return ", ".join(t[0] for t in tags if t[0])
+
+        try:
+            return generate_relationship_dynamic(
+                character_a, character_b,
+                culture_a=_culture_summary(character_a.id), culture_b=_culture_summary(character_b.id),
+            )
+        except RelationshipGenerationError as exc:
+            raise HTTPException(status_code=502, detail=f"Relationship generation failed: {exc}")
     finally:
         session.close()
 
@@ -839,7 +1078,11 @@ def list_relationships(user_id: str, brand_id: str, character_id: Optional[str] 
                 (CharacterRelationship.character_a_id == cid) | (CharacterRelationship.character_b_id == cid)
             )
         relationships = query.order_by(CharacterRelationship.created_at.asc()).all()
-        return [_serialize_relationship(r) for r in relationships]
+        episode_map = _episode_character_map(session, brand.id)
+        return [
+            _serialize_relationship(session, r, episodes_together=_episodes_together_count(episode_map, r.character_a_id, r.character_b_id))
+            for r in relationships
+        ]
     finally:
         session.close()
 
@@ -859,19 +1102,36 @@ def update_relationship(relationship_id: str, body: dict):
     user_id, brand_id = body.get("user_id"), body.get("brand_id")
     if not user_id or not brand_id:
         raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+    relationship_type, relationship_type_label = _validate_relationship_type(body)
+    if body.get("comedy_chemistry") is not None and not (0 <= int(body["comedy_chemistry"]) <= 10):
+        raise HTTPException(status_code=400, detail="comedy_chemistry must be between 0 and 10")
     session = SessionLocal()
     try:
         relationship = _get_relationship_owned(session, relationship_id, brand_id, user_id)
         for level_field in ("conflict_level", "trust_level", "affection_level"):
             if body.get(level_field) is not None and not (0 <= int(body[level_field]) <= 10):
                 raise HTTPException(status_code=400, detail=f"{level_field} must be between 0 and 10")
-        for field in ("relationship_type", "description", "emotional_dynamic", "conflict_level",
-                      "trust_level", "affection_level", "humor_dynamic", "behavioral_rules", "is_active"):
+        if relationship_type is not None:
+            relationship.relationship_type = relationship_type
+            relationship.relationship_type_label = relationship_type_label
+        for field in ("description", "emotional_dynamic", "conflict_level", "trust_level",
+                      "affection_level", "humor_dynamic", "behavioral_rules", "is_active", "comedy_chemistry"):
             if field in body:
                 setattr(relationship, field, body[field])
+
+        if "a_to_b" in body or "b_to_a" in body:
+            directions = _get_or_create_relationship_directions(session, relationship)
+            directions_by_from = {str(d.from_character_id): d for d in directions}
+            if "a_to_b" in body:
+                _apply_direction_data(session, directions_by_from[str(relationship.character_a_id)], body.get("a_to_b"))
+            if "b_to_a" in body:
+                _apply_direction_data(session, directions_by_from[str(relationship.character_b_id)], body.get("b_to_a"))
+
         session.commit()
         session.refresh(relationship)
-        return _serialize_relationship(relationship)
+        episode_map = _episode_character_map(session, relationship.brand_id)
+        episodes_together = _episodes_together_count(episode_map, relationship.character_a_id, relationship.character_b_id)
+        return _serialize_relationship(session, relationship, episodes_together=episodes_together)
     finally:
         session.close()
 
@@ -1017,13 +1277,16 @@ def resolve_relationships_for_cast(session, brand_id, character_ids: list) -> li
     `character_ids` (deduped, order-independent — a relationship's
     character_a_id/character_b_id order doesn't imply direction). Used by
     culturetoon_script.py's prompt builder when a script casts 2+ characters
-    together. Returns serialized relationship dicts, each with a
-    "recent_events" key (most recent few, newest first) so script
-    generation can reference the relationship's trajectory, not just its
-    current-state snapshot. Empty list if none or fewer than 2 distinct
-    characters are cast."""
+    together. Returns serialized relationship dicts — each "directions"
+    entry additionally carries from_character_name/to_character_name (not
+    part of _serialize_relationship's normal output) so the script prompt
+    can name names instead of just UUIDs — plus a "recent_events" key
+    (most recent few, newest first) so script generation can reference the
+    relationship's trajectory, not just its current-state snapshot. Empty
+    list if none or fewer than 2 distinct characters are cast."""
     from app.models.character_relationship import CharacterRelationship
     from app.models.character_relationship_event import CharacterRelationshipEvent
+    from app.models.character import Character
     ids = {_uuid.UUID(str(c)) for c in character_ids}
     if len(ids) < 2:
         return []
@@ -1033,9 +1296,15 @@ def resolve_relationships_for_cast(session, brand_id, character_ids: list) -> li
         CharacterRelationship.character_a_id.in_(ids),
         CharacterRelationship.character_b_id.in_(ids),
     ).all()
+    if not relationships:
+        return []
+    name_map = {str(cid): name for cid, name in session.query(Character.id, Character.name).filter(Character.id.in_(ids)).all()}
     serialized = []
     for r in relationships:
-        row = _serialize_relationship(r)
+        row = _serialize_relationship(session, r)
+        for direction in row["directions"]:
+            direction["from_character_name"] = name_map.get(direction["from_character_id"], "?")
+            direction["to_character_name"] = name_map.get(direction["to_character_id"], "?")
         events = (
             session.query(CharacterRelationshipEvent).filter_by(relationship_id=r.id)
             .order_by(CharacterRelationshipEvent.created_at.desc())

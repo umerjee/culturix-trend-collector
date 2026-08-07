@@ -182,37 +182,53 @@ def _culture_context(cultures: Optional[list]) -> str:
 def _relationship_context(relationships: Optional[list]) -> str:
     """relationships: list of serialized CharacterRelationship dicts (see
     app/routers/culturetoons.py::resolve_relationships_for_cast) — already
-    filtered to the pair(s) actually present in this script's cast, each
-    optionally carrying a "recent_events" list (the relationship's own
-    history log, see CharacterRelationshipEvent — newest first, already
-    capped to a handful by the resolver). Empty string if none, so a
-    single-character script or a cast with no stored relationship doesn't
-    get a dangling empty section in the prompt."""
+    filtered to the pair(s) actually present in this script's cast. Each
+    dict carries a "directions" list (exactly 2 entries: A->B and B->A —
+    see CharacterRelationshipDirection) since personality toward another
+    character isn't necessarily symmetrical (Kumar's feelings about Hans
+    can differ from Hans's about Kumar), each direction optionally naming
+    from_character_name/to_character_name (attached by the resolver, not
+    part of the direction's normal serialization) so the prompt can name
+    names instead of UUIDs. Also optionally carries a "recent_events" list
+    (the relationship's own history log, see CharacterRelationshipEvent —
+    newest first, already capped to a handful by the resolver). Empty
+    string if none, so a single-character script or a cast with no stored
+    relationship doesn't get a dangling empty section in the prompt."""
     if not relationships:
         return ""
     lines = []
     for r in relationships:
-        parts = []
-        if r.get("relationship_type"):
-            parts.append(r["relationship_type"].replace("_", " "))
+        header = []
+        type_label = r.get("relationship_type_label") or (r.get("relationship_type") or "").replace("_", " ")
+        if type_label:
+            header.append(type_label)
         if r.get("description"):
-            parts.append(r["description"])
-        # affection and trust are independent (e.g. bickering siblings can
-        # be low-trust but high-affection) — surface both when set rather
-        # than assuming one implies the other.
-        dynamics = []
-        if r.get("affection_level") is not None:
-            dynamics.append(f"affection {r['affection_level']}/10")
-        if r.get("trust_level") is not None:
-            dynamics.append(f"trust {r['trust_level']}/10")
-        if r.get("conflict_level") is not None:
-            dynamics.append(f"conflict {r['conflict_level']}/10")
-        if dynamics:
-            parts.append(", ".join(dynamics))
-        if r.get("behavioral_rules"):
-            parts.append("Rules: " + "; ".join(r["behavioral_rules"]))
-        if parts:
-            lines.append("- " + " — ".join(parts))
+            header.append(r["description"])
+        if r.get("comedy_chemistry") is not None:
+            header.append(f"comedy chemistry {r['comedy_chemistry']}/10")
+        if header:
+            lines.append("- " + " — ".join(header))
+
+        for direction in r.get("directions") or []:
+            from_name = direction.get("from_character_name") or "one"
+            to_name = direction.get("to_character_name") or "the other"
+            # affection and trust are independent (e.g. bickering siblings
+            # can be low-trust but high-affection) — surface both when set
+            # rather than assuming one implies the other.
+            dynamics = []
+            if direction.get("affection_level") is not None:
+                dynamics.append(f"affection {direction['affection_level']}/10")
+            if direction.get("trust_level") is not None:
+                dynamics.append(f"trust {direction['trust_level']}/10")
+            if direction.get("conflict_level") is not None:
+                dynamics.append(f"conflict {direction['conflict_level']}/10")
+            dyn_str = f" ({', '.join(dynamics)})" if dynamics else ""
+            persp = f' — {from_name} thinks: "{direction["perspective_description"]}"' if direction.get("perspective_description") else ""
+            if dyn_str or persp:
+                lines.append(f"  · {from_name} toward {to_name}{dyn_str}{persp}")
+            if direction.get("behavior_rules"):
+                lines.append(f"    {from_name}'s rules toward {to_name}: " + "; ".join(direction["behavior_rules"]))
+
         # Recent history, oldest-of-the-recent-batch first so it reads as a
         # timeline rather than newest-first — the events themselves arrive
         # newest-first from the resolver (for UI display), reversed here
@@ -224,7 +240,11 @@ def _relationship_context(relationships: Optional[list]) -> str:
                     lines.append(f"  · (recently) {e['description']}")
     if not lines:
         return ""
-    return "\nEstablished relationship between these characters (keep the dynamic consistent, don't contradict it — recent history shapes how they'd act now):\n" + "\n".join(lines) + "\n"
+    return (
+        "\nEstablished relationship between these characters (each character's feelings/behavior toward "
+        "the other may differ — keep both directions consistent, don't contradict either one; recent "
+        "history shapes how they'd act now):\n" + "\n".join(lines) + "\n"
+    )
 
 
 def _build_prompt_from_context(source_type: str, context: str, variants: list, tone: str,

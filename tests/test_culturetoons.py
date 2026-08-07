@@ -32,6 +32,8 @@ from app.models.persona import Persona
 from app.models.cluster import Cluster
 from app.models.character_relationship import CharacterRelationship
 from app.models.character_relationship_event import CharacterRelationshipEvent
+from app.models.character_relationship_direction import CharacterRelationshipDirection
+from app.models.character_relationship_behavior_rule import CharacterRelationshipBehaviorRule
 from app.models.generation_usage import GenerationUsage
 from app.models.character_memory import CharacterMemory
 from app.models.culture import Culture
@@ -76,6 +78,7 @@ def db(mocker):
         Persona.__table__, Cluster.__table__,
         CharacterRelationship.__table__, GenerationUsage.__table__, CharacterMemory.__table__,
         Culture.__table__, ToonScene.__table__, CharacterRelationshipEvent.__table__,
+        CharacterRelationshipDirection.__table__, CharacterRelationshipBehaviorRule.__table__,
     ])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)
@@ -2147,6 +2150,282 @@ class TestCharacterRelationships:
                 "character_a_id": character["id"], "character_b_id": other_character["id"],
             })
         assert exc_info.value.status_code == 404
+
+
+class TestRelationshipDirections:
+    """Directional relationship refinement — personality toward another
+    character is not necessarily symmetrical, see docs/culturix-
+    relationship-refinement.md. Kumar<->Hans, friendly rivalry, is the
+    spec's own worked example (item 10's manual verification test),
+    reused here as the primary fixture."""
+
+    def _second_character(self, user_id, brand_id, name="Hans"):
+        return culturetoons.create_character({"user_id": user_id, "brand_id": brand_id, "name": name})
+
+    def test_create_with_directional_dynamics_not_symmetrical(self, db, user_id, brand_and_character):
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+
+        created = culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": kumar["id"], "character_b_id": hans["id"],
+            "relationship_type": "friendly_rivalry",
+            "a_to_b": {
+                "affection_level": 7, "trust_level": 8, "conflict_level": 6,
+                "perspective_description": "Hans takes rules too seriously.",
+                "behavior_rules": ["tries to persuade Hans to bend rules", "calls Hans \"brother\" when asking for something"],
+            },
+            "b_to_a": {
+                "affection_level": 6, "trust_level": 5, "conflict_level": 9,
+                "perspective_description": "Kumar creates unnecessary chaos.",
+                "behavior_rules": ["responds literally", "refuses to bend rules", "becomes increasingly frustrated with Kumar"],
+            },
+        })
+
+        assert len(created["directions"]) == 2
+        a_to_b = next(d for d in created["directions"] if d["from_character_id"] == kumar["id"])
+        b_to_a = next(d for d in created["directions"] if d["from_character_id"] == hans["id"])
+
+        assert a_to_b["to_character_id"] == hans["id"]
+        assert a_to_b["affection_level"] == 7 and a_to_b["trust_level"] == 8 and a_to_b["conflict_level"] == 6
+        assert a_to_b["perspective_description"] == "Hans takes rules too seriously."
+        assert a_to_b["behavior_rules"] == ["tries to persuade Hans to bend rules", "calls Hans \"brother\" when asking for something"]
+
+        assert b_to_a["to_character_id"] == kumar["id"]
+        assert b_to_a["affection_level"] == 6 and b_to_a["trust_level"] == 5 and b_to_a["conflict_level"] == 9
+        assert b_to_a["perspective_description"] == "Kumar creates unnecessary chaos."
+        assert len(b_to_a["behavior_rules"]) == 3
+
+        # The whole point — not just different objects, genuinely different values.
+        assert a_to_b["affection_level"] != b_to_a["affection_level"]
+        assert a_to_b["conflict_level"] != b_to_a["conflict_level"]
+
+    def test_relationship_stays_a_single_record_with_exactly_two_directions(self, db, user_id, brand_and_character):
+        from app.models.character_relationship import CharacterRelationship
+        from app.models.character_relationship_direction import CharacterRelationshipDirection
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+
+        created = culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": kumar["id"], "character_b_id": hans["id"],
+            "a_to_b": {"affection_level": 7}, "b_to_a": {"affection_level": 6},
+        })
+        # Reading it again (list, and re-fetching directions) must not create more rows.
+        culturetoons.list_relationships(user_id, brand["id"])
+        culturetoons.update_relationship(created["id"], {"user_id": user_id, "brand_id": brand["id"], "description": "edited"})
+
+        session = db()
+        relationship_rows = session.query(CharacterRelationship).filter_by(
+            character_a_id=uuid.UUID(kumar["id"]), character_b_id=uuid.UUID(hans["id"]),
+        ).all()
+        assert len(relationship_rows) == 1
+        direction_rows = session.query(CharacterRelationshipDirection).filter_by(
+            relationship_id=uuid.UUID(created["id"]),
+        ).all()
+        assert len(direction_rows) == 2
+        session.close()
+
+    def test_relationship_type_must_be_valid_enum(self, db, user_id, brand_and_character):
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_relationship({
+                "user_id": user_id, "brand_id": brand["id"],
+                "character_a_id": kumar["id"], "character_b_id": hans["id"],
+                "relationship_type": "sworn_enemies_of_destiny",
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_relationship_type_label_defaults_to_canonical(self, db, user_id, brand_and_character):
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        created = culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": kumar["id"], "character_b_id": hans["id"],
+            "relationship_type": "friendly_rivalry",
+        })
+        assert created["relationship_type_label"] == "Friendly Rivalry"
+
+    def test_custom_relationship_type_requires_label(self, db, user_id, brand_and_character):
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_relationship({
+                "user_id": user_id, "brand_id": brand["id"],
+                "character_a_id": kumar["id"], "character_b_id": hans["id"],
+                "relationship_type": "custom",
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_custom_relationship_type_with_label_persists(self, db, user_id, brand_and_character):
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        created = culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": kumar["id"], "character_b_id": hans["id"],
+            "relationship_type": "custom", "relationship_type_label": "Frenemies",
+        })
+        assert created["relationship_type"] == "custom"
+        assert created["relationship_type_label"] == "Frenemies"
+
+    def test_comedy_chemistry_persists_and_validated(self, db, user_id, brand_and_character):
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        created = culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": kumar["id"], "character_b_id": hans["id"],
+            "comedy_chemistry": 9,
+        })
+        assert created["comedy_chemistry"] == 9
+
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_relationship({
+                "user_id": user_id, "brand_id": brand["id"],
+                "character_a_id": kumar["id"], "character_b_id": hans["id"],
+                "comedy_chemistry": 11,
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_direction_level_out_of_range_400s(self, db, user_id, brand_and_character):
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_relationship({
+                "user_id": user_id, "brand_id": brand["id"],
+                "character_a_id": kumar["id"], "character_b_id": hans["id"],
+                "a_to_b": {"affection_level": 15},
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_update_direction_replaces_behavior_rules_not_appends(self, db, user_id, brand_and_character):
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        created = culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": kumar["id"], "character_b_id": hans["id"],
+            "a_to_b": {"behavior_rules": ["old rule one", "old rule two"]},
+        })
+
+        updated = culturetoons.update_relationship(created["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+            "a_to_b": {"behavior_rules": ["new rule"]},
+        })
+        a_to_b = next(d for d in updated["directions"] if d["from_character_id"] == kumar["id"])
+        assert a_to_b["behavior_rules"] == ["new rule"]
+
+    def test_update_only_touches_specified_direction(self, db, user_id, brand_and_character):
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        created = culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": kumar["id"], "character_b_id": hans["id"],
+            "a_to_b": {"affection_level": 7}, "b_to_a": {"affection_level": 6},
+        })
+
+        updated = culturetoons.update_relationship(created["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+            "a_to_b": {"affection_level": 10},
+        })
+        a_to_b = next(d for d in updated["directions"] if d["from_character_id"] == kumar["id"])
+        b_to_a = next(d for d in updated["directions"] if d["from_character_id"] == hans["id"])
+        assert a_to_b["affection_level"] == 10
+        assert b_to_a["affection_level"] == 6  # untouched
+
+    def test_legacy_relationship_directions_seeded_from_symmetric_fields(self, db, user_id, brand_and_character):
+        # Migration path — a relationship created the old way (no a_to_b/
+        # b_to_a) must not lose its existing data: reading it after this
+        # refinement lazily materializes both directions seeded from the
+        # old symmetric fields, not left empty.
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        created = culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": kumar["id"], "character_b_id": hans["id"],
+            "affection_level": 8, "trust_level": 7, "conflict_level": 4,
+            "behavioral_rules": ["Kumar attempts to persuade Hans.", "Hans responds literally."],
+        })
+        for direction in created["directions"]:
+            assert direction["affection_level"] == 8
+            assert direction["trust_level"] == 7
+            assert direction["conflict_level"] == 4
+            assert direction["behavior_rules"] == ["Kumar attempts to persuade Hans.", "Hans responds literally."]
+
+    def test_episodes_together_zero_for_new_relationship(self, db, user_id, brand_and_character):
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        created = culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": kumar["id"], "character_b_id": hans["id"],
+        })
+        assert created["episodes_together"] == 0
+        listed = culturetoons.list_relationships(user_id, brand["id"])
+        assert listed[0]["episodes_together"] == 0
+
+    def test_resolve_relationships_for_cast_includes_named_directions(self, db, user_id, brand_and_character):
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": kumar["id"], "character_b_id": hans["id"],
+            "relationship_type": "friendly_rivalry", "comedy_chemistry": 8,
+            "a_to_b": {"affection_level": 7}, "b_to_a": {"affection_level": 6},
+        })
+
+        session = db()
+        found = culturetoons.resolve_relationships_for_cast(session, brand["id"], [kumar["id"], hans["id"]])
+        session.close()
+
+        assert len(found) == 1
+        assert found[0]["comedy_chemistry"] == 8
+        directions = found[0]["directions"]
+        assert len(directions) == 2
+        kumar_to_hans = next(d for d in directions if d["from_character_id"] == kumar["id"])
+        assert kumar_to_hans["from_character_name"] == kumar["name"]
+        assert kumar_to_hans["to_character_name"] == "Hans"
+        assert kumar_to_hans["affection_level"] == 7
+
+    def test_generate_relationship_returns_draft_without_persisting(self, db, user_id, brand_and_character, mocker):
+        from app.models.character_relationship import CharacterRelationship
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+
+        mock_generate = mocker.patch(
+            "app.services.culturetoon_relationship.generate_relationship_dynamic",
+            return_value={
+                "relationship_type": "friendly_rivalry", "relationship_type_label": "Friendly Rivalry",
+                "description": "A rivalry.", "comedy_chemistry": 8,
+                "a_to_b": {"affection_level": 7, "trust_level": 8, "conflict_level": 6,
+                           "perspective_description": "Hans takes rules too seriously.",
+                           "behavior_rules": ["tries to persuade Hans"]},
+                "b_to_a": {"affection_level": 6, "trust_level": 5, "conflict_level": 9,
+                           "perspective_description": "Kumar creates unnecessary chaos.",
+                           "behavior_rules": ["responds literally"]},
+            },
+        )
+
+        draft = culturetoons.generate_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": kumar["id"], "character_b_id": hans["id"],
+        })
+
+        assert draft["relationship_type"] == "friendly_rivalry"
+        assert draft["a_to_b"]["affection_level"] == 7
+        assert draft["b_to_a"]["affection_level"] == 6
+        mock_generate.assert_called_once()
+
+        session = db()
+        assert session.query(CharacterRelationship).count() == 0  # never persisted
+        session.close()
+
+    def test_generate_relationship_requires_two_distinct_characters(self, db, user_id, brand_and_character):
+        brand, kumar, _variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_relationship({
+                "user_id": user_id, "brand_id": brand["id"],
+                "character_a_id": kumar["id"], "character_b_id": kumar["id"],
+            })
+        assert exc_info.value.status_code == 400
 
 
 class TestRelationshipEvents:

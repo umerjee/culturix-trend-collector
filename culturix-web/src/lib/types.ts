@@ -479,24 +479,95 @@ export interface CharacterVariant {
 
 // Character-level (not CharacterVariant-level) — see
 // docs/culturix-comedy-architecture.md §3.4/decision 5.
+// Machine-readable key -> human-readable label. Keep in sync with
+// _RELATIONSHIP_TYPES in app/routers/culturetoons.py. "custom" falls back
+// to a user-typed relationship_type_label instead of one of these.
+export const RELATIONSHIP_TYPES: Record<string, string> = {
+  friends: "Friends",
+  best_friends: "Best Friends",
+  friendly_rivalry: "Friendly Rivalry",
+  rivals: "Rivals",
+  coworkers: "Coworkers",
+  boss_employee: "Boss / Employee",
+  husband_wife: "Husband & Wife",
+  parent_child: "Parent & Child",
+  siblings: "Siblings",
+  neighbors: "Neighbors",
+  acquaintances: "Acquaintances",
+  mentor_student: "Mentor & Student",
+  enemies: "Enemies",
+  custom: "Custom",
+};
+
+// One character's dynamic TOWARD the other — personality toward another
+// character isn't necessarily symmetrical, so a CharacterRelationship
+// carries exactly two of these (A->B and B->A), not one shared set of
+// levels. See app/models/character_relationship_direction.py.
+export interface CharacterRelationshipDirection {
+  id: string;
+  relationship_id: string;
+  from_character_id: string;
+  to_character_id: string;
+  // Only present when resolved for script-generation context (see
+  // resolve_relationships_for_cast), not on directions fetched via the
+  // plain relationship CRUD endpoints.
+  from_character_name?: string;
+  to_character_name?: string;
+  affection_level: number | null;
+  trust_level: number | null;
+  conflict_level: number | null;
+  perspective_description: string | null;
+  behavior_rules: string[];
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 export interface CharacterRelationship {
   id: string;
   brand_id: string;
   character_a_id: string;
   character_b_id: string;
   relationship_type: string | null;
+  relationship_type_label: string | null;
   description: string | null;
+  // 0-10 — how naturally this pair generates humorous interactions.
+  comedy_chemistry: number | null;
+  // Legacy symmetric fields — kept for backward compatibility (pre-
+  // directional-refinement relationships). New code should read
+  // `directions` instead; these are seeded from the same data the moment
+  // a legacy relationship's directions get lazily created server-side.
   emotional_dynamic: string | null;
   conflict_level: number | null;
   trust_level: number | null;
-  // Independent of trust_level — e.g. bickering siblings can be
-  // low-trust but high-affection.
   affection_level: number | null;
   humor_dynamic: string | null;
   behavioral_rules: string[];
+  // Always exactly 2 entries once loaded from the backend (never fewer —
+  // the server lazily creates missing directions on read).
+  directions: CharacterRelationshipDirection[];
+  episodes_together: number;
   is_active: boolean;
   created_at: string | null;
   updated_at: string | null;
+}
+
+// The editable draft shape returned by POST /relationships/generate —
+// never auto-saved, see app/services/culturetoon_relationship.py.
+export interface RelationshipDraftDirection {
+  affection_level: number;
+  trust_level: number;
+  conflict_level: number;
+  perspective_description: string | null;
+  behavior_rules: string[];
+}
+
+export interface RelationshipDraft {
+  relationship_type: string;
+  relationship_type_label: string;
+  description: string | null;
+  comedy_chemistry: number;
+  a_to_b: RelationshipDraftDirection;
+  b_to_a: RelationshipDraftDirection;
 }
 
 export const RELATIONSHIP_EVENT_TYPES = [

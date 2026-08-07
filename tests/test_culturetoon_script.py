@@ -224,18 +224,26 @@ class TestPersonalityAndRelationshipContext:
         generate_toon_script(
             cluster, variants=[kumar, hans], tone="funny",
             relationships=[{
-                "relationship_type": "friendly_rivalry",
+                "relationship_type": "friendly_rivalry", "relationship_type_label": "Friendly Rivalry",
                 "description": "Kumar finds Hans excessively rule-oriented.",
-                "behavioral_rules": ["Kumar attempts to persuade Hans."],
+                "directions": [
+                    {
+                        "from_character_name": "Kumar", "to_character_name": "Hans",
+                        "behavior_rules": ["Kumar attempts to persuade Hans."],
+                    },
+                ],
             }],
         )
 
         sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
-        assert "friendly rivalry" in sent_prompt
+        assert "Friendly Rivalry" in sent_prompt
         assert "excessively rule-oriented" in sent_prompt
         assert "Kumar attempts to persuade Hans" in sent_prompt
 
-    def test_affection_trust_conflict_all_surfaced_independently(self, mocker):
+    def test_directional_dynamics_are_not_symmetrical(self, mocker):
+        # The whole point of the directional refinement — Kumar's dynamic
+        # toward Hans can differ from Hans's dynamic toward Kumar, and both
+        # must reach the prompt independently, not averaged/collapsed.
         from app.models.cluster import Cluster
         cluster = Cluster(label=1, theme="X", summary="Y")
         kumar = mocker.Mock(); kumar.name = "Kumar"; kumar.description = None; kumar.culture_tag = None
@@ -244,13 +252,35 @@ class TestPersonalityAndRelationshipContext:
         fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
         generate_toon_script(
             cluster, variants=[kumar, hans], tone="funny",
-            relationships=[{"affection_level": 9, "trust_level": 2, "conflict_level": 6}],
+            relationships=[{
+                "comedy_chemistry": 8,
+                "directions": [
+                    {
+                        "from_character_name": "Kumar", "to_character_name": "Hans",
+                        "affection_level": 7, "trust_level": 8, "conflict_level": 6,
+                        "perspective_description": "Hans takes rules too seriously.",
+                        "behavior_rules": ["tries to persuade Hans to bend rules"],
+                    },
+                    {
+                        "from_character_name": "Hans", "to_character_name": "Kumar",
+                        "affection_level": 6, "trust_level": 5, "conflict_level": 9,
+                        "perspective_description": "Kumar creates unnecessary chaos.",
+                        "behavior_rules": ["responds literally", "refuses to bend rules"],
+                    },
+                ],
+            }],
         )
 
         sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
-        assert "affection 9/10" in sent_prompt
-        assert "trust 2/10" in sent_prompt
-        assert "conflict 6/10" in sent_prompt
+        assert "comedy chemistry 8/10" in sent_prompt
+        assert "Kumar toward Hans" in sent_prompt and "affection 7/10" in sent_prompt
+        assert "Hans toward Kumar" in sent_prompt and "affection 6/10" in sent_prompt
+        assert "trust 8/10" in sent_prompt and "trust 5/10" in sent_prompt
+        assert "conflict 6/10" in sent_prompt and "conflict 9/10" in sent_prompt
+        assert "Hans takes rules too seriously." in sent_prompt
+        assert "Kumar creates unnecessary chaos." in sent_prompt
+        assert "tries to persuade Hans to bend rules" in sent_prompt
+        assert "responds literally" in sent_prompt and "refuses to bend rules" in sent_prompt
 
     def test_relationship_recent_events_injected(self, mocker):
         # recent_events (see resolve_relationships_for_cast) is the
@@ -266,6 +296,7 @@ class TestPersonalityAndRelationshipContext:
             cluster, variants=[kumar, hans], tone="funny",
             relationships=[{
                 "relationship_type": "friendly_rivalry",
+                "directions": [],
                 "recent_events": [
                     {"description": "Made up over chai"},
                     {"description": "Argued over samosas"},
