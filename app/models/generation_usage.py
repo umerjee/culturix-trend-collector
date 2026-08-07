@@ -24,6 +24,8 @@ class GenerationUsage(Base):
     user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     brand_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     toon_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    episode_id = Column(UUID(as_uuid=True), nullable=True, index=True)  # set for scene-level generation
+    scene_id = Column(UUID(as_uuid=True), nullable=True, index=True)    # see app/models/toon_scene.py
     provider = Column(String(30), nullable=False)          # kling_omni|hybrid_image|elevenlabs
     model = Column(String(60), nullable=True)               # e.g. cloudflare_flux|qwen_image
     generation_type = Column(String(30), nullable=False)    # video|character_image|variant_image|

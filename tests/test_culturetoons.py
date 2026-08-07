@@ -34,6 +34,7 @@ from app.models.character_relationship import CharacterRelationship
 from app.models.generation_usage import GenerationUsage
 from app.models.character_memory import CharacterMemory
 from app.models.culture import Culture
+from app.models.toon_scene import ToonScene
 from app.routers import culturetoons
 
 
@@ -73,7 +74,7 @@ def db(mocker):
         Toon.__table__, ToonPost.__table__, ToonEpisode.__table__, ConnectedAccount.__table__,
         Persona.__table__, Cluster.__table__,
         CharacterRelationship.__table__, GenerationUsage.__table__, CharacterMemory.__table__,
-        Culture.__table__,
+        Culture.__table__, ToonScene.__table__,
     ])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)
@@ -1648,6 +1649,256 @@ class TestEpisodes:
         assert "Hi there!" in sent_summary
         sent_idea = mock_generate.call_args[0][1]
         assert sent_idea == "something surprising happens"
+
+
+class TestScenes:
+    def test_create_scene_auto_numbers(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+
+        scene1 = culturetoons.create_scene(episode["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_variant_ids": [variant["id"]], "action": "arrives confused", "dialogue": "Huh?",
+        })
+        scene2 = culturetoons.create_scene(episode["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_ids": [variant["id"]],
+        })
+
+        assert scene1["scene_number"] == 1
+        assert scene1["status"] == "idea"
+        assert scene1["character_variant_ids"] == [variant["id"]]
+        assert scene2["scene_number"] == 2
+
+    def test_create_scene_rejects_invalid_duration(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_scene(episode["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "duration_seconds": 30,
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_create_scene_rejects_foreign_variant(self, db, user_id, brand_and_character):
+        brand, _character, _variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_scene(episode["id"], {
+                "user_id": user_id, "brand_id": brand["id"],
+                "character_variant_ids": [str(uuid.uuid4())],
+            })
+        assert exc_info.value.status_code == 404
+
+    def test_create_scenes_from_script_converts_shots(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        script = culturetoons.create_script({"user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"]})
+        session = db()
+        script_row = session.query(ToonScript).filter_by(id=uuid.UUID(script["id"])).first()
+        script_row.shots = [
+            {"shot_number": 1, "duration_seconds": 4, "action": "waves hello", "expression": "Happy", "dialogue": "Hi!"},
+            {"shot_number": 2, "duration_seconds": 5, "action": "reacts", "expression": "Shocked", "dialogue": None},
+        ]
+        session.commit()
+        session.close()
+
+        scenes = culturetoons.create_scenes_from_script(episode["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "script_id": script["id"],
+        })
+
+        assert len(scenes) == 2
+        assert [s["scene_number"] for s in scenes] == [1, 2]
+        assert scenes[0]["action"] == "waves hello"
+        assert scenes[0]["dialogue"] == "Hi!"
+        assert scenes[1]["expression"] == "Shocked"
+
+    def test_create_scenes_from_script_appends_after_existing_scenes(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        culturetoons.create_scene(episode["id"], {"user_id": user_id, "brand_id": brand["id"]})
+        script = culturetoons.create_script({"user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"]})
+        session = db()
+        script_row = session.query(ToonScript).filter_by(id=uuid.UUID(script["id"])).first()
+        script_row.shots = [{"shot_number": 1, "duration_seconds": 4, "action": "enters", "expression": "Happy", "dialogue": None}]
+        session.commit()
+        session.close()
+
+        scenes = culturetoons.create_scenes_from_script(episode["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "script_id": script["id"],
+        })
+        assert scenes[0]["scene_number"] == 2
+
+    def test_create_scenes_from_script_requires_shots(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        script = culturetoons.create_script({"user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"]})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_scenes_from_script(episode["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "script_id": script["id"],
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_list_scenes_ordered_by_scene_number(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        culturetoons.create_scene(episode["id"], {"user_id": user_id, "brand_id": brand["id"], "scene_number": 2})
+        culturetoons.create_scene(episode["id"], {"user_id": user_id, "brand_id": brand["id"], "scene_number": 1})
+
+        listed = culturetoons.list_scenes(episode["id"], user_id, brand["id"])
+        assert [s["scene_number"] for s in listed] == [1, 2]
+
+    def test_update_scene_fields(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        scene = culturetoons.create_scene(episode["id"], {"user_id": user_id, "brand_id": brand["id"]})
+
+        updated = culturetoons.update_scene(scene["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+            "action": "storms off", "dialogue": "Unbelievable!", "duration_seconds": 6,
+        })
+        assert updated["action"] == "storms off"
+        assert updated["dialogue"] == "Unbelievable!"
+        assert updated["duration_seconds"] == 6
+
+    def test_update_scene_rejects_invalid_duration(self, db, user_id, brand_and_character):
+        brand, _character, _variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        scene = culturetoons.create_scene(episode["id"], {"user_id": user_id, "brand_id": brand["id"]})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.update_scene(scene["id"], {"user_id": user_id, "brand_id": brand["id"], "duration_seconds": 0})
+        assert exc_info.value.status_code == 400
+
+    def test_update_scene_wrong_brand_404s(self, db, user_id, brand_and_character):
+        brand, _character, _variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        scene = culturetoons.create_scene(episode["id"], {"user_id": user_id, "brand_id": brand["id"]})
+        other_brand = culturetoons.create_brand({"user_id": user_id, "name": "Other Brand"})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.update_scene(scene["id"], {
+                "user_id": user_id, "brand_id": other_brand["id"], "action": "hijacked",
+            })
+        assert exc_info.value.status_code == 404
+
+    def test_delete_scene_hard_deletes(self, db, user_id, brand_and_character):
+        brand, _character, _variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        scene = culturetoons.create_scene(episode["id"], {"user_id": user_id, "brand_id": brand["id"]})
+
+        result = culturetoons.delete_scene(scene["id"], user_id, brand["id"])
+        assert result["status"] == "deleted"
+        assert culturetoons.list_scenes(episode["id"], user_id, brand["id"]) == []
+
+    def test_generate_scene_requires_cast(self, db, user_id, brand_and_character):
+        brand, _character, _variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        scene = culturetoons.create_scene(episode["id"], {"user_id": user_id, "brand_id": brand["id"]})
+
+        class _FakeBackgroundTasks:
+            def add_task(self, *args, **kwargs):
+                pytest.fail("should not have been backgrounded")
+
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_scene(scene["id"], {"user_id": user_id, "brand_id": brand["id"]}, _FakeBackgroundTasks())
+        assert exc_info.value.status_code == 400
+
+    def test_generate_scene_requires_ready_element(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        scene = culturetoons.create_scene(episode["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_ids": [variant["id"]],
+        })
+
+        class _FakeBackgroundTasks:
+            def add_task(self, *args, **kwargs):
+                pytest.fail("should not have been backgrounded")
+
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_scene(scene["id"], {"user_id": user_id, "brand_id": brand["id"]}, _FakeBackgroundTasks())
+        assert exc_info.value.status_code == 400
+        assert "Kling element" in exc_info.value.detail
+
+    def test_generate_scene_queues_background_task(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        session = db()
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        variant_row.element_status = "ready"
+        session.commit()
+        session.close()
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        scene = culturetoons.create_scene(episode["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_ids": [variant["id"]],
+        })
+
+        bg = BackgroundTasks()
+        result = culturetoons.generate_scene(scene["id"], {"user_id": user_id, "brand_id": brand["id"]}, bg)
+        assert result["status"] == "generation_started"
+        assert len(bg.tasks) == 1
+
+        updated = culturetoons.list_scenes(episode["id"], user_id, brand["id"])[0]
+        assert updated["status"] == "generating"
+
+    def test_generate_scene_blocked_when_budget_exhausted(self, db, user_id, brand_and_character):
+        from decimal import Decimal
+        from app.services.culturetoon_usage import record_usage
+        brand, _character, variant = brand_and_character
+        session = db()
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        variant_row.element_status = "ready"
+        session.commit()
+        record_usage(session, user_id=user_id, brand_id=brand["id"], provider="kling_omni",
+                     generation_type="video", cost_usd=Decimal("10.00"))
+        session.commit()
+        session.close()
+        culturetoons.update_brand(brand["id"], {"user_id": user_id, "monthly_budget": 10})
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        scene = culturetoons.create_scene(episode["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_ids": [variant["id"]],
+        })
+
+        bg = BackgroundTasks()
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_scene(scene["id"], {"user_id": user_id, "brand_id": brand["id"]}, bg)
+        assert exc_info.value.status_code == 402
+        assert len(bg.tasks) == 0
+
+    def test_assemble_scenes_requires_at_least_one_ready(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        culturetoons.create_scene(episode["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_ids": [variant["id"]],
+        })
+
+        class _FakeBackgroundTasks:
+            def add_task(self, *args, **kwargs):
+                pytest.fail("should not have been backgrounded")
+
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.assemble_episode_from_scenes_endpoint(
+                episode["id"], {"user_id": user_id, "brand_id": brand["id"]}, _FakeBackgroundTasks(),
+            )
+        assert exc_info.value.status_code == 400
+
+    def test_assemble_scenes_queues_background_task_and_sets_stitching(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        episode = culturetoons.create_episode({"user_id": user_id, "brand_id": brand["id"]})
+        scene = culturetoons.create_scene(episode["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_ids": [variant["id"]],
+        })
+        session = db()
+        scene_row = session.query(ToonScene).filter_by(id=uuid.UUID(scene["id"])).first()
+        scene_row.status = "ready"
+        scene_row.video_url = "https://example.com/scene1.mp4"
+        session.commit()
+        session.close()
+
+        bg = BackgroundTasks()
+        result = culturetoons.assemble_episode_from_scenes_endpoint(
+            episode["id"], {"user_id": user_id, "brand_id": brand["id"]}, bg,
+        )
+        assert result["status"] == "assembly_started"
+        assert len(bg.tasks) == 1
+
+        updated = culturetoons.get_episode(episode["id"], user_id, brand["id"])
+        assert updated["status"] == "stitching"
 
 
 class TestPersonality:

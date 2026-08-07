@@ -45,6 +45,7 @@ async def lifespan(_):
     from app.models.generation_usage import GenerationUsage           # noqa: F401
     from app.models.character_memory import CharacterMemory           # noqa: F401
     from app.models.culture import Culture                            # noqa: F401
+    from app.models.toon_scene import ToonScene                       # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -228,6 +229,10 @@ async def lifespan(_):
             # Independent of trust_level (e.g. bickering siblings: low
             # trust, high affection) — see CharacterRelationship's docstring.
             "ALTER TABLE character_relationships ADD COLUMN IF NOT EXISTS affection_level INTEGER",
+            # Scene-level generation cost attribution — see
+            # app/models/toon_scene.py.
+            "ALTER TABLE generation_usage ADD COLUMN IF NOT EXISTS episode_id UUID",
+            "ALTER TABLE generation_usage ADD COLUMN IF NOT EXISTS scene_id UUID",
             # Structured personality — see docs/culturix-comedy-architecture.md
             # §3.2. Consumed by culturetoon_script.py's prompt builder.
             "ALTER TABLE characters ADD COLUMN IF NOT EXISTS personality JSON",

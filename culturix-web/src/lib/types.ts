@@ -649,3 +649,28 @@ export interface ToonEpisode {
   created_at: string | null;
   updated_at: string | null;
 }
+
+// Independently-generated production unit within a ToonEpisode — an
+// alternative to the Toon-parts path above (see app/models/toon_scene.py).
+// Hard-deleted, not soft-delete, unlike every other CultureToons entity.
+export interface ToonScene {
+  id: string;
+  episode_id: string;
+  brand_id: string;
+  scene_number: number;
+  character_variant_ids: string[];
+  background_id: string | null;
+  action: string | null;
+  dialogue: string | null;
+  expression: string | null;
+  camera_direction: string | null;
+  duration_seconds: number;
+  status: "idea" | "generating" | "ready" | "failed";
+  video_url: string | null;
+  previous_video_urls: string[];
+  kling_task_id: string | null;
+  generation_error: string | null;
+  generation_attempts: number;
+  created_at: string | null;
+  updated_at: string | null;
+}

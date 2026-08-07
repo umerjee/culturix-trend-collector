@@ -31,11 +31,58 @@ class StitchError(Exception):
     pass
 
 
+def _stitch_video_urls(episode, video_urls: list) -> str:
+    """Shared by stitch_episode (Toon-parts) and
+    assemble_episode_from_scenes (ToonScene-based) — downloads each URL,
+    ffmpeg-concatenates them in the given order, uploads the result, and
+    returns its URL. Callers own the session/status transitions; this is
+    pure ffmpeg-plumbing with no DB access of its own."""
+    from app.media import storage
+
+    with tempfile.TemporaryDirectory(prefix=f"episode-{episode.id}-") as tmp_dir:
+        segment_paths = []
+        for i, url in enumerate(video_urls):
+            resp = httpx.get(url, timeout=120)
+            resp.raise_for_status()
+            seg_path = os.path.join(tmp_dir, f"part_{i}.mp4")
+            with open(seg_path, "wb") as f:
+                f.write(resp.content)
+            segment_paths.append(seg_path)
+
+        list_path = os.path.join(tmp_dir, "concat_list.txt")
+        with open(list_path, "w", encoding="utf-8") as f:
+            for p in segment_paths:
+                f.write(f"file '{p}'\n")
+
+        stitched_path = os.path.join(tmp_dir, "stitched.mp4")
+        # Re-encode rather than -c copy: segments come from separately
+        # issued Kling calls with no guaranteed identical codec/timebase,
+        # same category of ffmpeg gotcha culturetoon_clip_cutter.py already
+        # documents for its own re-encode choice. Known limitation: the
+        # concat demuxer doesn't normalize mismatched resolution/fps across
+        # inputs — currently safe because every segment is generated with
+        # an identical hardcoded settings block (1080p, 9:16, see
+        # culturetoon_video.py / culturetoon_scene.py), but would need
+        # -filter_complex concat with per-input scale if that ever becomes
+        # configurable.
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+             "-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", stitched_path],
+            capture_output=True, text=True, timeout=_STITCH_TIMEOUT_SECONDS,
+        )
+        if result.returncode != 0:
+            raise StitchError(f"ffmpeg failed stitching video segments: {result.stderr[-1000:]}")
+
+        with open(stitched_path, "rb") as f:
+            return storage.upload(
+                f.read(), f"culturetoons/{episode.brand_id}/episodes/{episode.id}/final.mp4", "video/mp4"
+            )
+
+
 def stitch_episode(user_id, episode_id) -> None:
     from app.db import SessionLocal
     from app.models.toon_episode import ToonEpisode
     from app.models.toon import Toon
-    from app.media import storage
 
     session = SessionLocal()
     episode = None
@@ -63,46 +110,7 @@ def stitch_episode(user_id, episode_id) -> None:
         episode.generation_error = None
         session.commit()
 
-        with tempfile.TemporaryDirectory(prefix=f"episode-{episode_id}-") as tmp_dir:
-            segment_paths = []
-            for i, part in enumerate(parts):
-                resp = httpx.get(part.raw_video_url, timeout=120)
-                resp.raise_for_status()
-                seg_path = os.path.join(tmp_dir, f"part_{i}.mp4")
-                with open(seg_path, "wb") as f:
-                    f.write(resp.content)
-                segment_paths.append(seg_path)
-
-            list_path = os.path.join(tmp_dir, "concat_list.txt")
-            with open(list_path, "w", encoding="utf-8") as f:
-                for p in segment_paths:
-                    f.write(f"file '{p}'\n")
-
-            stitched_path = os.path.join(tmp_dir, "stitched.mp4")
-            # Re-encode rather than -c copy: parts come from separately
-            # issued Kling calls with no guaranteed identical codec/
-            # timebase, same category of ffmpeg gotcha
-            # culturetoon_clip_cutter.py already documents for its own
-            # re-encode choice. Known limitation: the concat demuxer
-            # doesn't normalize mismatched resolution/fps across inputs —
-            # currently safe because every part is generated with an
-            # identical hardcoded settings block (1080p, 9:16, see
-            # culturetoon_video.py), but would need -filter_complex concat
-            # with per-input scale if that ever becomes configurable.
-            result = subprocess.run(
-                ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
-                 "-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", stitched_path],
-                capture_output=True, text=True, timeout=_STITCH_TIMEOUT_SECONDS,
-            )
-            if result.returncode != 0:
-                raise StitchError(f"ffmpeg failed stitching episode parts: {result.stderr[-1000:]}")
-
-            with open(stitched_path, "rb") as f:
-                url = storage.upload(
-                    f.read(), f"culturetoons/{episode.brand_id}/episodes/{episode.id}/final.mp4", "video/mp4"
-                )
-            episode.final_video_url = url
-
+        episode.final_video_url = _stitch_video_urls(episode, [p.raw_video_url for p in parts])
         episode.status = "ready"
         session.commit()
         logger.info("Stitched episode %s from %d parts", episode_id, len(parts))
@@ -121,6 +129,62 @@ def stitch_episode(user_id, episode_id) -> None:
             episode.generation_error = f"Unexpected error: {exc}"[:2000]
             session.commit()
         logger.exception("Episode stitching failed unexpectedly for %s", episode_id)
+    finally:
+        session.close()
+
+
+def assemble_episode_from_scenes(user_id, episode_id) -> None:
+    """The Scene-based analogue of stitch_episode — concatenates every
+    "ready" ToonScene's video_url (scene_number order) into the episode's
+    final_video_url, instead of chaining whole Toon "parts". A scene left
+    in "idea"/"generating"/"failed" is skipped, not treated as a hard
+    blocker — regenerating one failed scene and re-assembling is the whole
+    point of this entity existing (see docs/culturix-character-studio-
+    upgrade.md §3), so assembly should work with whatever's ready rather
+    than refusing until every scene succeeds."""
+    from app.db import SessionLocal
+    from app.models.toon_episode import ToonEpisode
+    from app.models.toon_scene import ToonScene
+
+    session = SessionLocal()
+    episode = None
+    try:
+        episode = session.query(ToonEpisode).filter_by(id=_uuid.UUID(str(episode_id))).first()
+        if not episode:
+            return
+
+        scenes = (
+            session.query(ToonScene)
+            .filter_by(episode_id=episode.id, status="ready")
+            .order_by(ToonScene.scene_number.asc())
+            .all()
+        )
+        if len(scenes) < 1:
+            raise ValueError("No ready scenes to assemble — generate at least one scene's video first")
+
+        episode.status = "stitching"
+        episode.generation_error = None
+        session.commit()
+
+        episode.final_video_url = _stitch_video_urls(episode, [s.video_url for s in scenes])
+        episode.status = "ready"
+        session.commit()
+        logger.info("Assembled episode %s from %d scenes", episode_id, len(scenes))
+
+    except (ValueError, StitchError, httpx.HTTPError) as exc:
+        session.rollback()
+        if episode:
+            episode.status = "failed"
+            episode.generation_error = str(exc)[:2000]
+            session.commit()
+        logger.error("Episode scene assembly failed for %s: %s", episode_id, exc)
+    except Exception as exc:
+        session.rollback()
+        if episode:
+            episode.status = "failed"
+            episode.generation_error = f"Unexpected error: {exc}"[:2000]
+            session.commit()
+        logger.exception("Episode scene assembly failed unexpectedly for %s", episode_id)
     finally:
         session.close()
 

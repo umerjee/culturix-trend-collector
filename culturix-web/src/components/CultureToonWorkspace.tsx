@@ -109,6 +109,8 @@ export default function CultureToonWorkspace({
           initialEpisodes={initialEpisodes}
           initialToons={initialToons}
           variants={initialVariants}
+          scripts={initialScripts}
+          backgrounds={initialBackgrounds}
         />
       )}
       {tab === "usage" && <UsageBudgetPanel brand={brand} onBrandUpdated={onBrandUpdated} />}
