@@ -47,12 +47,15 @@ export default function CharacterImageBuilder({
           <select
             value={artStyle.value}
             onChange={(e) => artStyle.onChange(e.target.value as (typeof ART_STYLES)[number]["key"])}
-            className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs mb-2"
+            className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs"
           >
             {ART_STYLES.map((s) => (
               <option key={s.key} value={s.key}>{s.label}</option>
             ))}
           </select>
+          <p className="text-[11px] text-gray-400 mb-2 mt-1">
+            {ART_STYLES.find((s) => s.key === artStyle.value)?.hint}
+          </p>
         </>
       )}
 

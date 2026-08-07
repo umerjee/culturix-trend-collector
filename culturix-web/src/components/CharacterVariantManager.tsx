@@ -8,6 +8,7 @@ import { buildPersonalitySummary } from "@/lib/personalitySummary";
 import CharacterImageBuilder from "@/components/CharacterImageBuilder";
 import ExpressionUploadGrid from "@/components/ExpressionUploadGrid";
 import MemoryManager from "@/components/MemoryManager";
+import InfoTooltip from "@/components/InfoTooltip";
 
 interface Props {
   brandId: string;
@@ -544,6 +545,19 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
             friend) instead? That&apos;s a separate character — create it on this tab, then link the two on
             the <strong>Relationships</strong> tab.
           </p>
+
+          {characterVariants.length > 0 && (
+            <div className="flex items-center gap-1 text-[10px] text-gray-400 mb-2">
+              <CheckCircle2 className="h-3 w-3 text-emerald-500" /> ready to generate video
+              <span className="mx-1">·</span>
+              <Loader2 className="h-3 w-3 text-amber-500" /> registering
+              <span className="mx-1">·</span>
+              <XCircle className="h-3 w-3 text-red-500" /> registration failed
+              <span className="mx-1">·</span>
+              no icon = not registered yet
+              <InfoTooltip text="Registration is a one-time step (Step 3 below, per variant) that teaches Kling this character's face so future videos stay visually consistent — required before generating any video." />
+            </div>
+          )}
 
           <div className="flex flex-wrap items-center gap-2 mb-4">
             {characterVariants.map((v) => (

@@ -360,8 +360,12 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
       <div>
         <h3 className="text-sm font-semibold text-gray-900">Step 1 · Create an episode</h3>
         <p className="text-xs text-gray-400 mt-0.5">
-          A longer story stitched from several toons in order — generate each part as a normal
-          toon in the Toons tab first, then assemble them here.
+          Optional — a longer story stitched from multiple pieces. Two ways to build one, pick per
+          episode: <strong>Parts</strong> (below — generate each part as a normal toon in the Toons
+          tab first, then assemble them here) or <strong>Scenes</strong> (inside each episode card —
+          generate and regenerate each short beat independently, without redoing the whole story if
+          one goes wrong). Parts is simpler for a short story; Scenes is better once episodes get
+          longer or you expect to redo individual beats.
         </p>
       </div>
 
@@ -385,7 +389,12 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
 
       <div className="space-y-3">
         <h3 className="text-sm font-semibold text-gray-900">Step 2 · Your episodes</h3>
-        {episodes.length === 0 && <p className="text-xs text-gray-400">No episodes yet.</p>}
+        {episodes.length === 0 && (
+          <p className="text-xs text-gray-400">
+            No episodes yet — optional. Most toons work fine standalone; come back here once you want
+            to stitch a few of them (or independently-generated scenes) into a longer story.
+          </p>
+        )}
         {episodes.map((ep) => {
           const readyParts = ep.parts.filter((p) => p.has_raw_video).length;
           const canStitch = ep.parts.length >= 2 && readyParts === ep.parts.length && ep.status !== "stitching";
@@ -400,7 +409,11 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
               </div>
 
               <ol className="space-y-1.5">
-                {ep.parts.length === 0 && <p className="text-xs text-gray-400">No parts attached yet.</p>}
+                {ep.parts.length === 0 && (
+                  <p className="text-xs text-gray-400">
+                    No parts attached yet — attach an existing toon below, or use Scenes instead (further down this card).
+                  </p>
+                )}
                 {ep.parts.map((p, i) => (
                   <li key={p.toon_id} className="flex items-center gap-2 text-xs bg-gray-50 rounded-lg px-2.5 py-1.5">
                     <span className="text-gray-400 w-4 shrink-0">{i + 1}.</span>

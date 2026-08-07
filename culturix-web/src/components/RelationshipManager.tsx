@@ -4,6 +4,13 @@ import { useEffect, useState } from "react";
 import { Plus, Loader2, Trash2, X, History, ChevronDown, ChevronUp } from "lucide-react";
 import type { Character, CharacterRelationship, CharacterRelationshipEvent } from "@/lib/types";
 import { RELATIONSHIP_EVENT_TYPES } from "@/lib/types";
+import InfoTooltip from "@/components/InfoTooltip";
+
+const LEVEL_HINTS = {
+  affection: "How warmly they feel toward each other. Independent of trust — bickering siblings can be low-trust, high-affection.",
+  trust: "How much they rely on / believe each other. Independent of affection — you can trust a rival's word without liking them.",
+  conflict: "How often they clash or disagree. Can coexist with high affection (constant bickering) or low (mutual indifference).",
+};
 
 interface Props {
   brandId: string;
@@ -284,6 +291,10 @@ export default function RelationshipManager({ brandId }: Props) {
                               className="flex-1 min-w-[10rem] rounded-lg border border-gray-200 px-2.5 py-1 text-[11px]"
                             />
                           </div>
+                          <div className="flex items-center gap-1 text-[10px] text-gray-400">
+                            Optional: nudge the relationship&apos;s current levels by this event
+                            <InfoTooltip text="Applied once when you log this event, clamped to 0-10. Deleting the event later does not undo the change — it's a log, not an undo button." />
+                          </div>
                           <div className="flex gap-3 flex-wrap">
                             <label className="flex items-center gap-1.5 text-[10px] text-gray-500">
                               Affection Δ
@@ -355,18 +366,24 @@ export default function RelationshipManager({ brandId }: Props) {
               className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs resize-none"
             />
             <div className="flex gap-4 flex-wrap">
-              <label className="flex items-center gap-2 text-[11px] text-gray-500 flex-1 min-w-[8rem]">
-                Affection {affectionLevel}/10
-                <input type="range" min={0} max={10} value={affectionLevel} onChange={(e) => setAffectionLevel(parseInt(e.target.value))} className="flex-1" />
-              </label>
-              <label className="flex items-center gap-2 text-[11px] text-gray-500 flex-1 min-w-[8rem]">
-                Trust {trustLevel}/10
-                <input type="range" min={0} max={10} value={trustLevel} onChange={(e) => setTrustLevel(parseInt(e.target.value))} className="flex-1" />
-              </label>
-              <label className="flex items-center gap-2 text-[11px] text-gray-500 flex-1 min-w-[8rem]">
-                Conflict {conflictLevel}/10
-                <input type="range" min={0} max={10} value={conflictLevel} onChange={(e) => setConflictLevel(parseInt(e.target.value))} className="flex-1" />
-              </label>
+              <div className="flex-1 min-w-[8rem]">
+                <span className="flex items-center gap-1 text-[11px] text-gray-500">
+                  Affection {affectionLevel}/10 <InfoTooltip text={LEVEL_HINTS.affection} />
+                </span>
+                <input type="range" min={0} max={10} value={affectionLevel} onChange={(e) => setAffectionLevel(parseInt(e.target.value))} className="w-full" />
+              </div>
+              <div className="flex-1 min-w-[8rem]">
+                <span className="flex items-center gap-1 text-[11px] text-gray-500">
+                  Trust {trustLevel}/10 <InfoTooltip text={LEVEL_HINTS.trust} />
+                </span>
+                <input type="range" min={0} max={10} value={trustLevel} onChange={(e) => setTrustLevel(parseInt(e.target.value))} className="w-full" />
+              </div>
+              <div className="flex-1 min-w-[8rem]">
+                <span className="flex items-center gap-1 text-[11px] text-gray-500">
+                  Conflict {conflictLevel}/10 <InfoTooltip text={LEVEL_HINTS.conflict} />
+                </span>
+                <input type="range" min={0} max={10} value={conflictLevel} onChange={(e) => setConflictLevel(parseInt(e.target.value))} className="w-full" />
+              </div>
             </div>
             <div>
               <div className="space-y-1 mb-1.5">

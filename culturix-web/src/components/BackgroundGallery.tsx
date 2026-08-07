@@ -104,6 +104,12 @@ export default function BackgroundGallery({ brandId, initialBackgrounds }: Props
         time. Click a location to add extra reference angles (e.g. a second room, or a different view of the
         same street) alongside its primary image.
       </p>
+      {backgrounds.length === 0 && (
+        <p className="text-xs text-gray-400">
+          No locations yet — optional. Generate one below, or skip this and toons will just have no
+          background set (still fine).
+        </p>
+      )}
       <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-4">
         {backgrounds.map((bg) => (
           <div key={bg.id} className="flex flex-col items-center gap-1">
@@ -222,6 +228,7 @@ export default function BackgroundGallery({ brandId, initialBackgrounds }: Props
               Generate
             </button>
           </div>
+          <p className="text-[11px] text-gray-400">{ART_STYLES.find((s) => s.key === genStyle)?.hint}</p>
           {genError && <p className="text-[11px] text-red-500">{genError}</p>}
         </form>
       </div>

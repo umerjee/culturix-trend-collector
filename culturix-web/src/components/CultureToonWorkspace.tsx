@@ -10,6 +10,7 @@ import ScriptManager from "@/components/ScriptManager";
 import ToonManager from "@/components/ToonManager";
 import EpisodeManager from "@/components/EpisodeManager";
 import UsageBudgetPanel from "@/components/UsageBudgetPanel";
+import GettingStartedChecklist from "@/components/GettingStartedChecklist";
 
 interface Props {
   brand: CharacterBrand;
@@ -22,7 +23,7 @@ interface Props {
   onBrandUpdated: (brand: CharacterBrand) => void;
 }
 
-type Tab = "characters" | "relationships" | "backgrounds" | "scripts" | "toons" | "episodes" | "usage";
+export type Tab = "characters" | "relationships" | "backgrounds" | "scripts" | "toons" | "episodes" | "usage";
 
 const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: "characters", label: "Characters", icon: <Users className="h-3.5 w-3.5" /> },
@@ -58,6 +59,8 @@ export default function CultureToonWorkspace({
           {brand.description && <p className="text-xs text-gray-400 mt-0.5">{brand.description}</p>}
         </div>
       </div>
+
+      <GettingStartedChecklist brandId={brand.id} onNavigate={setTab} />
 
       <div className="flex items-center gap-1 border-b border-gray-100">
         {TABS.map((t) => (

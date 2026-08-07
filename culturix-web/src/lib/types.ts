@@ -410,13 +410,16 @@ export interface CharacterBrand {
   updated_at: string | null;
 }
 
-// Keep in sync with ART_STYLES in app/routers/culturetoons.py.
+// Keep in sync with ART_STYLES in app/routers/culturetoons.py. `hint`
+// is UI-only (not sent to the backend) — a one-line description shown as a
+// caption under the style picker so the label alone doesn't have to carry
+// the whole decision.
 export const ART_STYLES = [
-  { key: "cartoon_3d", label: "3D Pixar-style cartoon" },
-  { key: "anime", label: "2D anime style" },
-  { key: "flat_vector", label: "Flat vector illustration" },
-  { key: "claymation", label: "Claymation style" },
-  { key: "cinematic_cultural", label: "Cinematic cultural (painterly)" },
+  { key: "cartoon_3d", label: "3D Pixar-style cartoon", hint: "Bold, glossy, family-friendly — the default for characters." },
+  { key: "anime", label: "2D anime style", hint: "Flat cel-shaded line art, expressive anime features." },
+  { key: "flat_vector", label: "Flat vector illustration", hint: "Bold outlines, solid colors, modern mascot look." },
+  { key: "claymation", label: "Claymation style", hint: "Sculpted clay texture, stop-motion feel." },
+  { key: "cinematic_cultural", label: "Cinematic cultural (painterly)", hint: "Semi-realistic, warm lighting — the default for locations." },
 ] as const;
 
 // Character.personality's shape — see docs/culturix-comedy-architecture.md §3.2.

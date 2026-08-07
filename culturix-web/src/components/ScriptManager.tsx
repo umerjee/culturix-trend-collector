@@ -240,7 +240,11 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
     <div className="space-y-6">
       <div>
         <h3 className="text-sm font-semibold text-gray-900">Step 1 · Create a script</h3>
-        <p className="text-xs text-gray-400 mt-0.5">Pick any one of the three ways below.</p>
+        <p className="text-xs text-gray-400 mt-0.5">
+          Pick any one of the three ways below. Note: only the two AI-suggested options produce the
+          shot-by-shot breakdown video generation actually needs — a manually-written script is great
+          for keeping notes/ideas, but can&apos;t drive video generation on its own.
+        </p>
       </div>
 
       <div className="rounded-2xl bg-white border border-gray-100 p-4">
@@ -295,7 +299,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
             className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs resize-none focus:outline-none focus:ring-2 focus:ring-blue-200"
           />
           {variants.length === 0 ? (
-            <p className="text-xs text-gray-400">Add a character first.</p>
+            <p className="text-xs text-gray-400">Add a character first (Characters tab).</p>
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {variants.map((v) => (
@@ -346,7 +350,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
           <Sparkles className="h-4 w-4 text-blue-500" /> Suggest a script from a trend
         </h3>
         {variants.length === 0 ? (
-          <p className="text-xs text-gray-400 mb-3">Add a character first.</p>
+          <p className="text-xs text-gray-400 mb-3">Add a character first (Characters tab).</p>
         ) : (
           <div className="flex flex-wrap gap-1.5 mb-3">
             {variants.map((v) => (
@@ -490,6 +494,9 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
                           {generating ? "Regenerating…" : "Regenerate background"}
                         </button>
                       </div>
+                      <p className="text-[10px] text-gray-400 mt-1">
+                        {ART_STYLES.find((style) => style.key === (bgStyleByScript[s.id] ?? DEFAULT_BACKGROUND_STYLE))?.hint}
+                      </p>
                     </div>
                   </div>
                 ) : (
@@ -518,6 +525,9 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
                       {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImageIcon className="h-3.5 w-3.5" />}
                       Generate background
                     </button>
+                    <p className="w-full text-[10px] text-gray-400">
+                      {ART_STYLES.find((style) => style.key === (bgStyleByScript[s.id] ?? DEFAULT_BACKGROUND_STYLE))?.hint}
+                    </p>
                   </div>
                 )}
                 {bgErrors[s.id] && <p className="text-[11px] text-red-500 mt-1">{bgErrors[s.id]}</p>}

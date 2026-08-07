@@ -8,6 +8,7 @@ import {
 import type { Toon, ToonScript, CharacterVariant, ToonBackground, ConnectedAccount, ToonPost } from "@/lib/types";
 import { CONNECTABLE_PLATFORMS } from "@/lib/types";
 import ConnectedAccountsPanel from "@/components/ConnectedAccountsPanel";
+import InfoTooltip from "@/components/InfoTooltip";
 
 interface Props {
   brandId: string;
@@ -319,7 +320,11 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
 
       <div className="space-y-3">
         <h3 className="text-sm font-semibold text-gray-900">Step 3 · Your toons</h3>
-        {toons.length === 0 && <p className="text-xs text-gray-400">No toons planned yet.</p>}
+        {toons.length === 0 && (
+          <p className="text-xs text-gray-400">
+            No toons yet — pick a script and character above, then &quot;Add toon&quot; to plan your first one.
+          </p>
+        )}
         {toons.map((t) => {
           const script = scriptFor(t.script_id);
           const variant = variantFor(t.character_variant_id);
@@ -434,9 +439,12 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
                     <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-100 px-2.5 py-2 mt-1.5">
                       <AlertTriangle className="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" />
                       <div className="flex-1">
-                        <p className="text-xs text-amber-700">
-                          QA flagged this toon (overall {t.qa_results.overall_score}/100 — comedy {t.qa_results.comedy_score},
-                          cultural {t.qa_results.cultural_score}, technical {t.qa_results.technical_score}). Review before publishing:
+                        <p className="text-xs text-amber-700 flex items-start gap-1">
+                          <span>
+                            QA flagged this toon (overall {t.qa_results.overall_score}/100 — comedy {t.qa_results.comedy_score},
+                            cultural {t.qa_results.cultural_score}, technical {t.qa_results.technical_score}). Review before publishing:
+                          </span>
+                          <InfoTooltip text="Each score is 0-100. Technical checks things like resolution and duration automatically; comedy and cultural are AI-judged. Flagged just means 'review before posting' — you can still publish anyway if you disagree." />
                         </p>
                         {t.qa_results.issues.length > 0 && (
                           <ul className="mt-1 space-y-0.5">
