@@ -24,6 +24,14 @@ class Persona(Base):
     # Cross-day recurrence tracking (mirrors TrendTheme's shape/role) — see
     # app/pipeline/nodes/persona_tag_tracker.py.
     centroid_embedding = Column(JSON, nullable=True)
+    # Cached Voyage.ai embedding of this persona's own name+description,
+    # used ONLY for CultureToons' trend-relevance ranking (see
+    # app/services/culturetoon_trend_relevance.py) — deliberately a
+    # separate field from centroid_embedding above, which is a clustering
+    # centroid over many underlying trend signals, not a text embedding of
+    # this persona's own description; conflating the two would be wrong for
+    # both purposes.
+    relevance_embedding = Column(JSON, nullable=True)
     status = Column(String(10), nullable=False, default="pending")  # pending|active|dormant
     momentum = Column(String(10), nullable=True)  # up|down|neutral, same vocabulary as Cluster.momentum
     occurrence_count = Column(Integer, nullable=False, default=0)

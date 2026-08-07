@@ -266,6 +266,12 @@ async def lifespan(_):
             # See app/models/character_relationship_direction.py.
             "ALTER TABLE character_relationships ADD COLUMN IF NOT EXISTS relationship_type_label VARCHAR(80)",
             "ALTER TABLE character_relationships ADD COLUMN IF NOT EXISTS comedy_chemistry INTEGER",
+            # Trend-relevance targeting for CultureToons — see
+            # app/services/culturetoon_trend_relevance.py.
+            "ALTER TABLE character_brands ADD COLUMN IF NOT EXISTS trend_interests TEXT",
+            "ALTER TABLE character_brands ADD COLUMN IF NOT EXISTS trend_interests_embedding JSON",
+            "ALTER TABLE personas ADD COLUMN IF NOT EXISTS relevance_embedding JSON",
+            "ALTER TABLE clusters ADD COLUMN IF NOT EXISTS relevance_embedding JSON",
         ]:
             try:
                 _conn.execute(_text(_stmt))

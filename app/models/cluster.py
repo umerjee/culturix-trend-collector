@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, JSON
 
 from app.db import Base
 
@@ -14,6 +14,10 @@ class Cluster(Base):
     # Human-readable theme inferred from the cluster's trends
     theme = Column(String, nullable=True)
     summary = Column(Text, nullable=True)
+    # Cached Voyage.ai embedding of this cluster's own theme+summary, used
+    # ONLY for CultureToons' trend-relevance ranking — see
+    # app/services/culturetoon_trend_relevance.py.
+    relevance_embedding = Column(JSON, nullable=True)
     # Number of trends in this cluster
     size = Column(Integer, nullable=True)
     # Average cohesion score (optional quality metric)

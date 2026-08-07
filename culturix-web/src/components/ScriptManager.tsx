@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check } from "lucide-react";
+import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check, Target, Pencil } from "lucide-react";
 import type { ToonScript, CharacterVariant, ToonBackground } from "@/lib/types";
 import { TONE_OPTIONS, MAX_CHARACTERS_PER_VIDEO, ART_STYLES } from "@/lib/types";
 
@@ -35,6 +35,7 @@ interface Props {
   initialScripts: ToonScript[];
   variants: CharacterVariant[];
   backgrounds: ToonBackground[];
+  initialTrendInterests: string | null;
 }
 
 // Toggleable chip for picking a scene's cast — same visual pattern as
@@ -63,7 +64,7 @@ function scriptHasScene(s: ToonScript): boolean {
   return !!s.shots?.some((shot) => shot.action?.trim());
 }
 
-export default function ScriptManager({ brandId, initialScripts, variants, backgrounds }: Props) {
+export default function ScriptManager({ brandId, initialScripts, variants, backgrounds, initialTrendInterests }: Props) {
   const [scripts, setScripts] = useState(initialScripts);
   const [backgroundsState, setBackgroundsState] = useState(backgrounds);
   const [sourceType, setSourceType] = useState<"persona" | "cluster">("persona");
@@ -94,12 +95,38 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
   const [ideaLengthKey, setIdeaLengthKey] = useState<(typeof DURATION_PRESETS)[number]["key"]>("standard");
   const [suggestingFromIdea, setSuggestingFromIdea] = useState(false);
   const [ideaError, setIdeaError] = useState<string | null>(null);
+  const [trendsPersonalized, setTrendsPersonalized] = useState(false);
+  const [trendInterests, setTrendInterests] = useState(initialTrendInterests ?? "");
+  const [savingInterests, setSavingInterests] = useState(false);
+  const [interestsEditing, setInterestsEditing] = useState(false);
 
-  useEffect(() => {
-    fetch("/api/culturetoons/trend-sources", { cache: "no-store" })
-      .then((res) => (res.ok ? res.json() : { personas: [], clusters: [] }))
-      .then(setTrendSources);
-  }, []);
+  function loadTrendSources() {
+    fetch(`/api/culturetoons/trend-sources?brand_id=${brandId}`, { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : { personas: [], clusters: [], personalized: false }))
+      .then((data) => {
+        setTrendSources({ personas: data.personas ?? [], clusters: data.clusters ?? [] });
+        setTrendsPersonalized(!!data.personalized);
+      });
+  }
+
+  useEffect(loadTrendSources, [brandId]);
+
+  async function saveTrendInterests() {
+    setSavingInterests(true);
+    try {
+      const res = await fetch(`/api/culturetoons/brands/${brandId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trend_interests: trendInterests.trim() || null }),
+      });
+      if (res.ok) {
+        setInterestsEditing(false);
+        loadTrendSources();
+      }
+    } finally {
+      setSavingInterests(false);
+    }
+  }
 
   const sourceOptions = sourceType === "persona" ? trendSources.personas : trendSources.clusters;
 
@@ -346,9 +373,51 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
       </div>
 
       <div className="rounded-2xl bg-white border border-gray-100 p-4">
-        <h3 className="text-sm font-semibold text-gray-900 mb-3 flex items-center gap-1.5">
+        <h3 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-1.5">
           <Sparkles className="h-4 w-4 text-blue-500" /> Suggest a script from a trend
         </h3>
+
+        <div className="rounded-xl bg-gray-50 border border-gray-100 px-3 py-2 mb-3">
+          {interestsEditing ? (
+            <div className="flex flex-wrap gap-2 items-center">
+              <input
+                type="text"
+                value={trendInterests}
+                onChange={(e) => setTrendInterests(e.target.value)}
+                placeholder='e.g. "family comedy, workplace awkwardness, cultural misunderstandings"'
+                className="flex-1 min-w-[14rem] rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs"
+              />
+              <button
+                onClick={saveTrendInterests}
+                disabled={savingInterests}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium px-3 py-1.5 hover:bg-blue-700 transition-colors disabled:opacity-60"
+              >
+                {savingInterests ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                Save
+              </button>
+              <button onClick={() => { setInterestsEditing(false); setTrendInterests(initialTrendInterests ?? ""); }} className="text-xs text-gray-400 hover:text-gray-600">
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Target className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+              <p className="flex-1 text-[11px] text-gray-500">
+                {trendsPersonalized ? (
+                  <>Showing trends matched to: <span className="text-gray-700">{trendInterests}</span></>
+                ) : trendInterests ? (
+                  "Matching trends to your interests…"
+                ) : (
+                  "Showing the general trend feed — set what this brand's scripts should be about to personalize it."
+                )}
+              </p>
+              <button onClick={() => setInterestsEditing(true)} className="inline-flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-700 shrink-0">
+                <Pencil className="h-3 w-3" /> {trendInterests ? "Edit" : "Set interests"}
+              </button>
+            </div>
+          )}
+        </div>
+
         {variants.length === 0 ? (
           <p className="text-xs text-gray-400 mb-3">Add a character first (Characters tab).</p>
         ) : (

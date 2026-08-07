@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, Text, Boolean, ARRAY, Numeric
+from sqlalchemy import Column, String, Integer, DateTime, Text, Boolean, ARRAY, Numeric, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -32,6 +32,21 @@ class CharacterBrand(Base):
     # app/media/elevenlabs_voice.py). Encrypted via app/social/crypto.py's
     # existing helper, same pattern as ConnectedAccount's OAuth tokens.
     elevenlabs_api_key_encrypted = Column(Text, nullable=True)
+
+    # Free-text description of what trend-based scripts should be about for
+    # this specific toon account (e.g. "family comedy, workplace
+    # awkwardness, cultural misunderstandings") — without this, the Scripts
+    # tab's "Suggest a script from a trend" picker showed the same
+    # unfiltered global trend feed to every brand regardless of what it
+    # actually posts. NULL means "no preference set" — falls back to the
+    # old unfiltered behavior, not an empty result. See
+    # app/services/culturetoon_trend_relevance.py.
+    trend_interests = Column(Text, nullable=True)
+    # Cached Voyage.ai embedding of trend_interests (list[float] as JSON) —
+    # recomputed only when trend_interests changes (see update_brand),
+    # never on every request; Voyage's free tier is 3 req/min, so this
+    # can't be recomputed live on each Scripts-tab load.
+    trend_interests_embedding = Column(JSON, nullable=True)
 
     # Spend caps enforced by app/services/culturetoon_usage.py::check_budget
     # against generation_usage rows. NULL means no cap — budgets are opt-in

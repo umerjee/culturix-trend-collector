@@ -143,6 +143,47 @@ class TestBrand:
         assert "elevenlabs_api_key" not in updated
         assert "elevenlabs_api_key_encrypted" not in updated
 
+    def test_create_with_trend_interests(self, db, user_id):
+        created = culturetoons.create_brand({
+            "user_id": user_id, "name": "Funny Clips", "trend_interests": "family comedy, cultural misunderstandings",
+        })
+        assert created["trend_interests"] == "family comedy, cultural misunderstandings"
+
+    def test_update_trend_interests_clears_cached_embedding(self, db, user_id):
+        from app.models.character_brand import CharacterBrand
+        brand = culturetoons.create_brand({"user_id": user_id, "trend_interests": "original interests"})
+        session = db()
+        row = session.query(CharacterBrand).filter_by(id=uuid.UUID(brand["id"])).first()
+        row.trend_interests_embedding = [0.1, 0.2, 0.3]  # pretend it was already computed once
+        session.commit()
+        session.close()
+
+        updated = culturetoons.update_brand(brand["id"], {
+            "user_id": user_id, "trend_interests": "different interests now",
+        })
+        assert updated["trend_interests"] == "different interests now"
+
+        session = db()
+        row = session.query(CharacterBrand).filter_by(id=uuid.UUID(brand["id"])).first()
+        assert row.trend_interests_embedding is None  # stale cache invalidated
+        session.close()
+
+    def test_update_trend_interests_same_value_keeps_cache(self, db, user_id):
+        from app.models.character_brand import CharacterBrand
+        brand = culturetoons.create_brand({"user_id": user_id, "trend_interests": "family comedy"})
+        session = db()
+        row = session.query(CharacterBrand).filter_by(id=uuid.UUID(brand["id"])).first()
+        row.trend_interests_embedding = [0.1, 0.2, 0.3]
+        session.commit()
+        session.close()
+
+        culturetoons.update_brand(brand["id"], {"user_id": user_id, "trend_interests": "family comedy"})
+
+        session = db()
+        row = session.query(CharacterBrand).filter_by(id=uuid.UUID(brand["id"])).first()
+        assert row.trend_interests_embedding == [0.1, 0.2, 0.3]  # unchanged, no invalidation needed
+        session.close()
+
 
 class TestMultiBrand:
     def test_brands_dont_collide(self, db, user_id):
@@ -906,6 +947,70 @@ class TestBackgrounds:
         })
         assert result["visual_style"] == "flat_vector"
         assert result["country"] == "Switzerland"
+
+
+class TestTrendSources:
+    def _persona(self, db, name, description, status="active"):
+        session = db()
+        p = Persona(name=name, description=description, status=status)
+        session.add(p)
+        session.commit()
+        session.refresh(p)
+        session.close()
+        return p
+
+    def _cluster(self, db, theme, summary):
+        session = db()
+        c = Cluster(label=1, theme=theme, summary=summary)
+        session.add(c)
+        session.commit()
+        session.refresh(c)
+        session.close()
+        return c
+
+    def test_no_interests_returns_unfiltered_recent_feed(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        self._persona(db, "Solar Eclipse Watchers", "People tracking the August 2026 eclipse")
+        self._cluster(db, "Football players", "Recent football player news")
+
+        result = culturetoons.get_trend_sources(user_id, brand["id"])
+        assert result["personalized"] is False
+        assert len(result["personas"]) == 1
+        assert len(result["clusters"]) == 1
+
+    def test_inactive_personas_excluded(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        self._persona(db, "Dormant One", "Not active anymore", status="dormant")
+
+        result = culturetoons.get_trend_sources(user_id, brand["id"])
+        assert result["personas"] == []
+
+    def test_personalized_ranking_when_interests_set(self, db, user_id, mocker):
+        brand = culturetoons.create_brand({"user_id": user_id, "trend_interests": "family comedy"})
+        family = self._persona(db, "Chaotic Family Dinners", "Relatable family dinner chaos")
+        eclipse = self._persona(db, "Solar Eclipse Watchers", "People tracking an astronomical event")
+
+        def fake_embed_batch(texts):
+            # Family-comedy text embeds close to the brand's interests
+            # vector; the eclipse text embeds far from it.
+            return [[1.0, 0.0] if "Family" in t else [0.0, 1.0] for t in texts]
+
+        mocker.patch("app.embeddings.embed_text", return_value=[1.0, 0.0])
+        mocker.patch("app.embeddings.embed_batch", side_effect=fake_embed_batch)
+
+        result = culturetoons.get_trend_sources(user_id, brand["id"])
+        assert result["personalized"] is True
+        assert result["personas"][0]["id"] == family.id
+        assert result["personas"][-1]["id"] == eclipse.id
+
+    def test_embedding_failure_falls_back_to_unfiltered(self, db, user_id, mocker):
+        brand = culturetoons.create_brand({"user_id": user_id, "trend_interests": "family comedy"})
+        self._persona(db, "Some Trend", "A description")
+        mocker.patch("app.embeddings.embed_text", side_effect=RuntimeError("Voyage is down"))
+
+        result = culturetoons.get_trend_sources(user_id, brand["id"])
+        assert result["personalized"] is False
+        assert len(result["personas"]) == 1  # still returned, just unranked
 
 
 class TestScripts:

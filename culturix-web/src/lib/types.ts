@@ -403,6 +403,10 @@ export interface CharacterBrand {
   delivery_time: string;
   delivery_day_of_week: number;
   has_elevenlabs_key: boolean;
+  // Free text describing what trend-based scripts should be about for
+  // this brand — NULL means no preference set (falls back to the
+  // unfiltered global trend feed in the Scripts tab).
+  trend_interests: string | null;
   // NULL means no cap set — budgets are opt-in per brand, not a default limit.
   daily_budget: number | null;
   monthly_budget: number | null;

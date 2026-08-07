@@ -27,6 +27,7 @@ function PlatformChip({ label, selected, onClick }: { label: string; selected: b
 export default function CultureToonBrandForm({ onCreated }: Props) {
   const [name, setName] = useState("My CultureToons Brand");
   const [description, setDescription] = useState("");
+  const [trendInterests, setTrendInterests] = useState("");
   const [targetPlatforms, setTargetPlatforms] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +45,10 @@ export default function CultureToonBrandForm({ onCreated }: Props) {
       const res = await fetch("/api/culturetoons/brands", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, description, target_platforms: targetPlatforms }),
+        body: JSON.stringify({
+          name, description, target_platforms: targetPlatforms,
+          trend_interests: trendInterests.trim() || undefined,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -81,6 +85,20 @@ export default function CultureToonBrandForm({ onCreated }: Props) {
           rows={2}
           className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
         />
+        <label className="text-xs font-medium text-gray-500 mt-2">
+          What should trend-based scripts be about? (optional)
+        </label>
+        <textarea
+          value={trendInterests}
+          onChange={(e) => setTrendInterests(e.target.value)}
+          placeholder='e.g. "family comedy, workplace awkwardness, cultural misunderstandings"'
+          rows={2}
+          className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+        />
+        <p className="text-[11px] text-gray-400">
+          Narrows the trends this brand sees to what&apos;s actually relevant — leave blank to see everything
+          collected. You can change this later from the Scripts tab.
+        </p>
         <label className="text-xs font-medium text-gray-500 mt-2">Where will this account post?</label>
         <div className="flex flex-wrap gap-1.5">
           {CONNECTABLE_PLATFORMS.map((p) => (

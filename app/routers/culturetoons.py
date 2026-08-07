@@ -310,6 +310,7 @@ def _serialize_brand(b) -> dict:
         "delivery_freq": b.delivery_freq, "delivery_time": b.delivery_time,
         "delivery_day_of_week": b.delivery_day_of_week,
         "has_elevenlabs_key": bool(b.elevenlabs_api_key_encrypted),
+        "trend_interests": b.trend_interests,
         "daily_budget": float(b.daily_budget) if b.daily_budget is not None else None,
         "monthly_budget": float(b.monthly_budget) if b.monthly_budget is not None else None,
         "created_at": b.created_at.isoformat() if b.created_at else None,
@@ -545,6 +546,7 @@ def create_brand(body: dict):
             name=body.get("name", "My CultureToons Brand"),
             description=body.get("description"),
             target_platforms=body.get("target_platforms") or [],
+            trend_interests=(body.get("trend_interests") or "").strip() or None,
         )
         session.add(brand)
         session.commit()
@@ -593,6 +595,13 @@ def update_brand(brand_id: str, body: dict):
                       "delivery_freq", "delivery_time", "delivery_day_of_week"):
             if field in body:
                 setattr(brand, field, body[field])
+        if "trend_interests" in body:
+            new_value = (body["trend_interests"] or "").strip() or None
+            if new_value != brand.trend_interests:
+                # Stale cache would rank against the OLD interests text —
+                # clear it so get_interests_embedding recomputes on next use.
+                brand.trend_interests_embedding = None
+            brand.trend_interests = new_value
         for budget_field in ("daily_budget", "monthly_budget"):
             if budget_field in body:
                 value = body[budget_field]
@@ -611,6 +620,63 @@ def update_brand(brand_id: str, body: dict):
         session.commit()
         session.refresh(brand)
         return _serialize_brand(brand)
+    finally:
+        session.close()
+
+
+@router.get("/trend-sources")
+def get_trend_sources(user_id: str, brand_id: str):
+    """Personas/clusters for the Scripts tab's "Suggest a script from a
+    trend" picker — ranked by relevance to the brand's own trend_interests
+    when set (see app/services/culturetoon_trend_relevance.py), otherwise
+    the same recent unfiltered feed as before this existed. Replaces the
+    old approach of the Next.js proxy route aggregating the trend engine's
+    generic /personas and /clusters endpoints directly with no brand
+    awareness at all."""
+    from app.db import SessionLocal
+    from app.models.persona import Persona
+    from app.models.cluster import Cluster
+
+    session = SessionLocal()
+    try:
+        brand = _get_brand_owned(session, brand_id, user_id)
+        personas = (
+            session.query(Persona).filter(Persona.status == "active")
+            .order_by(Persona.updated_at.desc()).limit(50).all()
+        )
+        clusters = (
+            session.query(Cluster).order_by(Cluster.updated_at.desc()).limit(50).all()
+        )
+
+        personalized = False
+        if brand.trend_interests:
+            try:
+                from app.services.culturetoon_trend_relevance import get_interests_embedding, rank_by_relevance
+                interests_embedding = get_interests_embedding(brand)
+                personas = rank_by_relevance(
+                    session, personas, lambda p: f"{p.name}. {p.description}", interests_embedding,
+                )[:15]
+                clusters = rank_by_relevance(
+                    session, clusters, lambda c: f"{c.theme or ''}. {c.summary or ''}", interests_embedding,
+                )[:15]
+                personalized = True
+                session.commit()
+            except Exception:
+                session.rollback()
+                logging.getLogger("culturix.routers.culturetoons").warning(
+                    "Trend relevance ranking failed for brand %s, falling back to unfiltered list", brand_id, exc_info=True,
+                )
+                personas = personas[:15]
+                clusters = clusters[:15]
+        else:
+            personas = personas[:15]
+            clusters = clusters[:15]
+
+        return {
+            "personalized": personalized,
+            "personas": [{"id": p.id, "name": p.name, "description": p.description} for p in personas],
+            "clusters": [{"id": c.id, "name": c.theme or f"Cluster {c.id}", "description": c.summary} for c in clusters],
+        }
     finally:
         session.close()
 

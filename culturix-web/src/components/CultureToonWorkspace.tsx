@@ -93,6 +93,7 @@ export default function CultureToonWorkspace({
           initialScripts={initialScripts}
           variants={initialVariants}
           backgrounds={initialBackgrounds}
+          initialTrendInterests={brand.trend_interests}
         />
       )}
       {tab === "toons" && (
