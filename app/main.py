@@ -225,6 +225,9 @@ async def lifespan(_):
             # app/services/culturetoon_qa.py.
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS qa_results JSON",
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS publish_recommended BOOLEAN",
+            # Independent of trust_level (e.g. bickering siblings: low
+            # trust, high affection) — see CharacterRelationship's docstring.
+            "ALTER TABLE character_relationships ADD COLUMN IF NOT EXISTS affection_level INTEGER",
             # Structured personality — see docs/culturix-comedy-architecture.md
             # §3.2. Consumed by culturetoon_script.py's prompt builder.
             "ALTER TABLE characters ADD COLUMN IF NOT EXISTS personality JSON",

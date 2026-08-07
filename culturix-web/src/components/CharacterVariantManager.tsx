@@ -4,9 +4,9 @@ import { useEffect, useState } from "react";
 import { Plus, Loader2, CheckCircle2, XCircle, Sparkles, ChevronDown, ChevronRight, Pencil, Trash2, X } from "lucide-react";
 import type { Character, CharacterVariant, VoiceProvider, CharacterPersonality } from "@/lib/types";
 import { PERSONALITY_TRAITS } from "@/lib/types";
+import { buildPersonalitySummary } from "@/lib/personalitySummary";
 import CharacterImageBuilder from "@/components/CharacterImageBuilder";
 import ExpressionUploadGrid from "@/components/ExpressionUploadGrid";
-import RelationshipManager from "@/components/RelationshipManager";
 import MemoryManager from "@/components/MemoryManager";
 
 interface Props {
@@ -428,6 +428,12 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                 <span className="text-[10px] text-gray-400">Configured</span>
               )}
             </button>
+            {(() => {
+              const summary = buildPersonalitySummary(selectedCharacter.name, selectedCharacter.personality);
+              return summary ? (
+                <p className="px-3 pb-2.5 text-[11px] text-gray-500 italic">{summary}</p>
+              ) : null;
+            })()}
             {personalityOpen && (
               <div className="px-3 pb-3 space-y-4">
                 <p className="text-[11px] text-gray-400">
@@ -520,17 +526,23 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
         )}
       </div>
 
-      {selectedCharacter && (
-        <RelationshipManager brandId={brandId} characters={characters} />
-      )}
-
-      {/* Step 2 — cultural variants */}
+      {/* Step 2 — Variants & Related Characters. "Variants" (below) is
+          THIS character recast for a different context — same identity,
+          personality, and backstory, just a different cultural look.
+          "Related Characters" (a separate person, e.g. Kumar's wife or
+          neighbour, with their own personality) is deliberately NOT here —
+          see the Relationships tab, which links two independent Character
+          records instead of creating a variant of one. */}
       {selectedCharacter && (
         <div className="rounded-2xl bg-white border border-gray-100 p-4">
-          <h3 className="text-sm font-semibold text-gray-900 mb-1">Step 2 · Cultural variants of {selectedCharacter.name}</h3>
+          <h3 className="text-sm font-semibold text-gray-900 mb-1">Step 2 · Variants of {selectedCharacter.name}</h3>
           <p className="text-xs text-gray-400 mb-3">
-            Related characters for different scenarios — e.g. &quot;Wife&quot;, &quot;Aunty&quot;, &quot;Chinese version&quot;. Each one stays
-            visually connected to {selectedCharacter.name} unless it has its own reference photo.
+            The same character, recast for a different cultural context (e.g. &quot;Chinese version&quot;, &quot;Swiss
+            version&quot;) — same identity and personality, different look. Each one stays visually connected
+            to {selectedCharacter.name} unless it has its own reference photo. Looking for a{" "}
+            <strong>different</strong> person connected to {selectedCharacter.name} (a wife, a neighbour, a
+            friend) instead? That&apos;s a separate character — create it on this tab, then link the two on
+            the <strong>Relationships</strong> tab.
           </p>
 
           <div className="flex flex-wrap items-center gap-2 mb-4">

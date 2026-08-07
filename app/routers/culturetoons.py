@@ -354,6 +354,7 @@ def _serialize_relationship(r) -> dict:
         "relationship_type": r.relationship_type, "description": r.description,
         "emotional_dynamic": r.emotional_dynamic,
         "conflict_level": r.conflict_level, "trust_level": r.trust_level,
+        "affection_level": r.affection_level,
         "humor_dynamic": r.humor_dynamic, "behavioral_rules": r.behavioral_rules or [],
         "is_active": r.is_active,
         "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -800,7 +801,7 @@ def create_relationship(body: dict):
         brand = _get_brand_owned(session, brand_id, user_id)
         _get_character_owned(session, character_a_id, brand_id, user_id)
         _get_character_owned(session, character_b_id, brand_id, user_id)
-        for level_field in ("conflict_level", "trust_level"):
+        for level_field in ("conflict_level", "trust_level", "affection_level"):
             if body.get(level_field) is not None and not (0 <= int(body[level_field]) <= 10):
                 raise HTTPException(status_code=400, detail=f"{level_field} must be between 0 and 10")
         relationship = CharacterRelationship(
@@ -809,6 +810,7 @@ def create_relationship(body: dict):
             relationship_type=body.get("relationship_type"), description=body.get("description"),
             emotional_dynamic=body.get("emotional_dynamic"),
             conflict_level=body.get("conflict_level"), trust_level=body.get("trust_level"),
+            affection_level=body.get("affection_level"),
             humor_dynamic=body.get("humor_dynamic"), behavioral_rules=body.get("behavioral_rules"),
         )
         session.add(relationship)
@@ -858,11 +860,11 @@ def update_relationship(relationship_id: str, body: dict):
     session = SessionLocal()
     try:
         relationship = _get_relationship_owned(session, relationship_id, brand_id, user_id)
-        for level_field in ("conflict_level", "trust_level"):
+        for level_field in ("conflict_level", "trust_level", "affection_level"):
             if body.get(level_field) is not None and not (0 <= int(body[level_field]) <= 10):
                 raise HTTPException(status_code=400, detail=f"{level_field} must be between 0 and 10")
         for field in ("relationship_type", "description", "emotional_dynamic", "conflict_level",
-                      "trust_level", "humor_dynamic", "behavioral_rules", "is_active"):
+                      "trust_level", "affection_level", "humor_dynamic", "behavioral_rules", "is_active"):
             if field in body:
                 setattr(relationship, field, body[field])
         session.commit()

@@ -486,6 +486,9 @@ export interface CharacterRelationship {
   emotional_dynamic: string | null;
   conflict_level: number | null;
   trust_level: number | null;
+  // Independent of trust_level — e.g. bickering siblings can be
+  // low-trust but high-affection.
+  affection_level: number | null;
   humor_dynamic: string | null;
   behavioral_rules: string[];
   is_active: boolean;

@@ -194,6 +194,18 @@ def _relationship_context(relationships: Optional[list]) -> str:
             parts.append(r["relationship_type"].replace("_", " "))
         if r.get("description"):
             parts.append(r["description"])
+        # affection and trust are independent (e.g. bickering siblings can
+        # be low-trust but high-affection) — surface both when set rather
+        # than assuming one implies the other.
+        dynamics = []
+        if r.get("affection_level") is not None:
+            dynamics.append(f"affection {r['affection_level']}/10")
+        if r.get("trust_level") is not None:
+            dynamics.append(f"trust {r['trust_level']}/10")
+        if r.get("conflict_level") is not None:
+            dynamics.append(f"conflict {r['conflict_level']}/10")
+        if dynamics:
+            parts.append(", ".join(dynamics))
         if r.get("behavioral_rules"):
             parts.append("Rules: " + "; ".join(r["behavioral_rules"]))
         if parts:

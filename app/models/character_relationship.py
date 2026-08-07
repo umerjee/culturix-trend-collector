@@ -30,6 +30,8 @@ class CharacterRelationship(Base):
     emotional_dynamic = Column(Text, nullable=True)
     conflict_level = Column(Integer, nullable=True)   # 0-10, low=harmonious, high=combative
     trust_level = Column(Integer, nullable=True)       # 0-10, low=suspicious, high=trusting
+    affection_level = Column(Integer, nullable=True)   # 0-10, low=indifferent, high=affectionate — independent
+                                                         # of trust (e.g. bickering siblings: low trust, high affection)
     humor_dynamic = Column(Text, nullable=True)
     behavioral_rules = Column(ARRAY(Text), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)

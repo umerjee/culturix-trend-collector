@@ -235,6 +235,23 @@ class TestPersonalityAndRelationshipContext:
         assert "excessively rule-oriented" in sent_prompt
         assert "Kumar attempts to persuade Hans" in sent_prompt
 
+    def test_affection_trust_conflict_all_surfaced_independently(self, mocker):
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        kumar = mocker.Mock(); kumar.name = "Kumar"; kumar.description = None; kumar.culture_tag = None
+        hans = mocker.Mock(); hans.name = "Hans"; hans.description = None; hans.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(
+            cluster, variants=[kumar, hans], tone="funny",
+            relationships=[{"affection_level": 9, "trust_level": 2, "conflict_level": 6}],
+        )
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "affection 9/10" in sent_prompt
+        assert "trust 2/10" in sent_prompt
+        assert "conflict 6/10" in sent_prompt
+
     def test_no_relationships_no_extra_section(self, mocker):
         from app.models.cluster import Cluster
         cluster = Cluster(label=1, theme="X", summary="Y")

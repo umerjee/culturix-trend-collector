@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Users, Image as ImageIcon, FileText, Clapperboard, Film, Wallet } from "lucide-react";
+import { Users, Heart, Image as ImageIcon, FileText, Clapperboard, Film, Wallet } from "lucide-react";
 import type { CharacterBrand, Character, CharacterVariant, ToonBackground, ToonScript, Toon, ToonEpisode } from "@/lib/types";
 import CharacterVariantManager from "@/components/CharacterVariantManager";
+import RelationshipManager from "@/components/RelationshipManager";
 import BackgroundGallery from "@/components/BackgroundGallery";
 import ScriptManager from "@/components/ScriptManager";
 import ToonManager from "@/components/ToonManager";
@@ -21,10 +22,11 @@ interface Props {
   onBrandUpdated: (brand: CharacterBrand) => void;
 }
 
-type Tab = "characters" | "backgrounds" | "scripts" | "toons" | "episodes" | "usage";
+type Tab = "characters" | "relationships" | "backgrounds" | "scripts" | "toons" | "episodes" | "usage";
 
 const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: "characters", label: "Characters", icon: <Users className="h-3.5 w-3.5" /> },
+  { key: "relationships", label: "Relationships", icon: <Heart className="h-3.5 w-3.5" /> },
   { key: "backgrounds", label: "Backgrounds", icon: <ImageIcon className="h-3.5 w-3.5" /> },
   { key: "scripts", label: "Scripts", icon: <FileText className="h-3.5 w-3.5" /> },
   { key: "toons", label: "Toons", icon: <Clapperboard className="h-3.5 w-3.5" /> },
@@ -80,6 +82,7 @@ export default function CultureToonWorkspace({
           focusVariantId={focusVariantId}
         />
       )}
+      {tab === "relationships" && <RelationshipManager brandId={brand.id} />}
       {tab === "backgrounds" && <BackgroundGallery brandId={brand.id} initialBackgrounds={initialBackgrounds} />}
       {tab === "scripts" && (
         <ScriptManager

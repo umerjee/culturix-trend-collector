@@ -1721,11 +1721,12 @@ class TestCharacterRelationships:
             "character_a_id": character["id"], "character_b_id": hans["id"],
             "relationship_type": "friendly_rivalry",
             "description": "Kumar finds Hans excessively rule-oriented.",
-            "conflict_level": 4, "trust_level": 7,
+            "conflict_level": 4, "trust_level": 7, "affection_level": 8,
             "behavioral_rules": ["Kumar attempts to persuade Hans.", "Hans responds literally."],
         })
         assert created["relationship_type"] == "friendly_rivalry"
         assert created["conflict_level"] == 4
+        assert created["affection_level"] == 8
 
         listed = culturetoons.list_relationships(user_id, brand["id"])
         assert len(listed) == 1
@@ -1747,6 +1748,19 @@ class TestCharacterRelationships:
                 "conflict_level": 11,
             })
         assert exc_info.value.status_code == 400
+
+    def test_affection_independent_of_trust(self, db, user_id, brand_and_character):
+        # Bickering siblings: low trust, high affection — must be settable
+        # independently, not derived from one another.
+        brand, character, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"])
+        created = culturetoons.create_relationship({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_a_id": character["id"], "character_b_id": hans["id"],
+            "trust_level": 2, "affection_level": 9,
+        })
+        assert created["trust_level"] == 2
+        assert created["affection_level"] == 9
 
     def test_update_and_delete_archives(self, db, user_id, brand_and_character):
         brand, character, _variant = brand_and_character
