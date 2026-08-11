@@ -4,7 +4,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app.models.integration_health import IntegrationHealth
-from app.integration_health import check_edge_tts, check_twitter_proxy, run_all_health_checks
+from app.integration_health import check_edge_tts, check_twitter_proxy, check_google_trends, run_all_health_checks
 
 
 class TestCheckEdgeTts:
@@ -72,6 +72,43 @@ class TestCheckTwitterProxy:
         assert "connection reset" in error
 
 
+class TestCheckGoogleTrends:
+    def test_healthy_on_200_with_body(self, mocker):
+        resp = mocker.Mock(status_code=200, text="<rss>...</rss>")
+        mocker.patch("httpx.get", return_value=resp)
+
+        status, error = check_google_trends()
+
+        assert status == "healthy"
+        assert error is None
+
+    def test_unhealthy_on_non_200(self, mocker):
+        resp = mocker.Mock(status_code=503, text="")
+        mocker.patch("httpx.get", return_value=resp)
+
+        status, error = check_google_trends()
+
+        assert status == "unhealthy"
+        assert "503" in error
+
+    def test_unhealthy_on_empty_body(self, mocker):
+        resp = mocker.Mock(status_code=200, text="   ")
+        mocker.patch("httpx.get", return_value=resp)
+
+        status, error = check_google_trends()
+
+        assert status == "unhealthy"
+        assert "empty" in error
+
+    def test_unhealthy_on_request_exception(self, mocker):
+        mocker.patch("httpx.get", side_effect=Exception("connection reset"))
+
+        status, error = check_google_trends()
+
+        assert status == "unhealthy"
+        assert "connection reset" in error
+
+
 @pytest.fixture
 def health_db(mocker):
     engine = create_engine("sqlite:///:memory:")
@@ -107,3 +144,9 @@ class TestRunAllHealthChecks:
         assert by_name["edge_tts"].status == "healthy"
         assert by_name["twitter_proxy"].status == "unhealthy"
         assert by_name["twitter_proxy"].error == "boom"
+
+    def test_google_trends_is_registered_as_a_real_check(self):
+        # Not mocked — catches the case where a new check gets written but
+        # never actually added to _CHECKS.
+        from app.integration_health import _CHECKS
+        assert "google_trends" in _CHECKS

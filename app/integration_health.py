@@ -1,9 +1,12 @@
-"""Periodic health checks for this codebase's two unofficial/no-SLA
+"""Periodic health checks for this codebase's unofficial/no-SLA
 integrations — edge-tts (unofficial Microsoft Edge TTS client, app/media/
-voice.py) and the Twitter proxy (Jina-wrapped trends24.in scrape,
-app/collectors/twitter.py's fallback path). Both have no guaranteed uptime
-and can silently break on an upstream change; this makes that visible
-instead of only surfacing as a downstream failure days later.
+voice.py), the Twitter proxy (Jina-wrapped trends24.in scrape,
+app/collectors/twitter.py's fallback path), and the Google Trends RSS feed
+(app/collectors/google_trends.py — no third-party proxy in its chain, but
+still an undocumented feed Google could change or remove without notice).
+None have a guaranteed uptime SLA and can silently break on an upstream
+change; this makes that visible instead of only surfacing as a downstream
+failure days later.
 """
 import logging
 
@@ -36,9 +39,25 @@ def check_twitter_proxy() -> tuple[str, str | None]:
         return "unhealthy", str(e)[:500]
 
 
+def check_google_trends() -> tuple[str, str | None]:
+    try:
+        import httpx
+        from app.collectors.google_trends import _BASE, _HEADERS
+
+        resp = httpx.get(_BASE, params={"geo": "US"}, headers=_HEADERS, timeout=20.0)
+        if resp.status_code != 200:
+            return "unhealthy", f"HTTP {resp.status_code}"
+        if not resp.text.strip():
+            return "unhealthy", "empty response body"
+        return "healthy", None
+    except Exception as e:
+        return "unhealthy", str(e)[:500]
+
+
 _CHECKS = {
     "edge_tts": check_edge_tts,
     "twitter_proxy": check_twitter_proxy,
+    "google_trends": check_google_trends,
 }
 
 

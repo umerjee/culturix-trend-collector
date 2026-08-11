@@ -16,6 +16,7 @@ def _patch_all_collectors(mocker, **overrides):
         "app.collectors.wikipedia.store_wikipedia_trends": 0,
         "app.collectors.bluesky.store_bluesky_trends": 0,
         "app.collectors.instagram.store_instagram_trends": 0,
+        "app.collectors.google_trends.store_google_trends_trends": 0,
     }
     for target, default in targets.items():
         if target in overrides:
@@ -50,7 +51,7 @@ class TestRunAllCollectors:
 
         results = run_all_collectors()
 
-        for key in ("reddit", "tiktok", "youtube", "xhs", "twitter", "pinterest", "wikipedia", "bluesky", "instagram"):
+        for key in ("reddit", "tiktok", "youtube", "xhs", "twitter", "pinterest", "wikipedia", "bluesky", "instagram", "google_trends"):
             assert key in results
 
     def test_total_is_sum_of_all_individual_results(self, mocker):
@@ -80,6 +81,7 @@ class TestRunAllCollectors:
                 "app.collectors.wikipedia.store_wikipedia_trends": Exception("boom"),
                 "app.collectors.bluesky.store_bluesky_trends": Exception("boom"),
                 "app.collectors.instagram.store_instagram_trends": Exception("boom"),
+                "app.collectors.google_trends.store_google_trends_trends": Exception("boom"),
             },
         )
 

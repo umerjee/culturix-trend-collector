@@ -86,6 +86,16 @@ def run_all_collectors() -> dict:
         logger.error("Bluesky failed: %s", e)
         results["bluesky"] = 0
 
+    # Google Trends — free, no auth, no third-party proxy (unlike Twitter's
+    # fallback), but still an unofficial feed with no documented SLA
+    try:
+        from app.collectors.google_trends import store_google_trends_trends
+        results["google_trends"] = store_google_trends_trends()
+        logger.info("Google Trends: %d inserted", results["google_trends"])
+    except Exception as e:
+        logger.error("Google Trends failed: %s", e)
+        results["google_trends"] = 0
+
     # Instagram — hashtag search via ScrapeCreators, only runs if
     # SCRAPE_CREATORS_API_KEY is set (store_instagram_trends no-ops otherwise)
     try:
