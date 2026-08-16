@@ -47,7 +47,7 @@ export default function AppNav({ active, isSuperAdmin, product }: Props) {
     <header className="bg-white border-b border-gray-100 sticky top-0 z-10">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-2">
         <Link href="/dashboard" className="flex items-center gap-2 shrink-0">
-          <Zap className="h-5 w-5 text-blue-600" />
+          <Zap className="h-5 w-5 text-primary-600" />
           <span className="font-bold text-lg tracking-tight hidden sm:inline">Culturix</span>
         </Link>
 
@@ -65,7 +65,7 @@ export default function AppNav({ active, isSuperAdmin, product }: Props) {
               href={href}
               className={`inline-flex items-center gap-1.5 text-sm font-medium rounded-lg px-2 sm:px-3 py-2 shrink-0 transition-colors ${
                 active === key
-                  ? "bg-blue-50 text-blue-600"
+                  ? "bg-primary-50 text-primary-600"
                   : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
               }`}
             >
@@ -86,7 +86,7 @@ export default function AppNav({ active, isSuperAdmin, product }: Props) {
           {isSuperAdmin && (
             <Link
               href="/admin"
-              className="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 border border-indigo-200 rounded-lg px-2 sm:px-3 py-2 shrink-0 hover:bg-indigo-50 transition-colors ml-1"
+              className="inline-flex items-center gap-1.5 text-sm font-medium text-primary-600 border border-primary-200 rounded-lg px-2 sm:px-3 py-2 shrink-0 hover:bg-primary-50 transition-colors ml-1"
             >
               <ShieldCheck className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Admin</span>

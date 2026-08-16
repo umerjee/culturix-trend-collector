@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { Zap } from "lucide-react";
+import MarketingHeader from "@/components/marketing/MarketingHeader";
+import MarketingFooter from "@/components/marketing/MarketingFooter";
 
 export const metadata = {
   title: "Privacy Policy — Culturix",
@@ -19,17 +20,13 @@ export default function PrivacyPolicyPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-100 sticky top-0 z-10">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2">
-            <Zap className="h-5 w-5 text-blue-600" />
-            <span className="font-bold text-lg tracking-tight">Culturix</span>
-          </Link>
+      <MarketingHeader
+        rightSlot={
           <Link href="/terms" className="text-sm text-gray-500 hover:text-gray-700">
             Terms of Service
           </Link>
-        </div>
-      </header>
+        }
+      />
 
       <main className="max-w-3xl mx-auto px-4 sm:px-6 py-10">
         <h1 className="text-2xl font-bold text-gray-900 mb-1">Privacy Policy</h1>
@@ -87,7 +84,7 @@ export default function PrivacyPolicyPage() {
 
         <Section title="8. Contact">
           <p>Questions about this policy? Contact us at{" "}
-            <a href="mailto:umer.ali79@gmail.com" className="text-blue-600 hover:underline">umer.ali79@gmail.com</a>.
+            <a href="mailto:umer.ali79@gmail.com" className="text-primary-600 hover:underline">umer.ali79@gmail.com</a>.
           </p>
         </Section>
 
@@ -97,6 +94,8 @@ export default function PrivacyPolicyPage() {
           for your specific jurisdictions and user base.
         </p>
       </main>
+
+      <MarketingFooter />
     </div>
   );
 }

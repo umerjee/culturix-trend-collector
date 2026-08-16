@@ -2,17 +2,19 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { TrendingUp, Inbox, LayoutList, Sparkles } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
+import { isSuperAdminEmail } from "@/lib/admin/superadmin";
+import { RAILWAY_API_BASE } from "@/lib/config/api";
 import AppNav from "@/components/AppNav";
 import TrendIdeaCard from "@/components/TrendIdeaCard";
 import RefreshButton from "@/components/RefreshButton";
 import PublishingSetupStatus, { type PlatformStatus } from "@/components/PublishingSetupStatus";
 import PersonaAdvisory from "@/components/PersonaAdvisory";
+import StatTile from "@/components/ui/StatTile";
+import EmptyState from "@/components/ui/EmptyState";
 import { CONNECTABLE_PLATFORMS, type Digest, type ContentProfile, type ContentPost } from "@/lib/types";
 
-const RAILWAY = "https://culturix-trend-collector-production.up.railway.app";
-
 async function fetchDigest(userId: string, profileId?: string): Promise<Digest | null> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
+  const apiUrl = RAILWAY_API_BASE;
   try {
     const url = profileId
       ? `${apiUrl}/api/digest/${userId}?profile_id=${profileId}`
@@ -29,7 +31,7 @@ async function fetchDigest(userId: string, profileId?: string): Promise<Digest |
 }
 
 async function fetchProfiles(userId: string): Promise<ContentProfile[]> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
+  const apiUrl = RAILWAY_API_BASE;
   try {
     const res = await fetch(`${apiUrl}/users/${userId}/content-profiles`, { cache: "no-store" });
     if (!res.ok) return [];
@@ -42,7 +44,7 @@ async function fetchProfiles(userId: string): Promise<ContentProfile[]> {
 
 async function fetchProfileContentPosts(userId: string, profileId?: string): Promise<ContentPost[]> {
   if (!profileId) return [];
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
+  const apiUrl = RAILWAY_API_BASE;
   try {
     const res = await fetch(
       `${apiUrl}/api/content-posts?user_id=${userId}&content_profile_id=${profileId}`,
@@ -63,7 +65,7 @@ interface PersonaAdvisoryData {
 
 async function fetchPersonaAdvisory(userId: string, profileId?: string): Promise<PersonaAdvisoryData> {
   if (!profileId) return { declining: [], dormant: [] };
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
+  const apiUrl = RAILWAY_API_BASE;
   try {
     // Direct-to-Railway, not through the Next.js proxy route — this runs
     // server-side in the page itself, which doesn't have the browser's
@@ -88,7 +90,7 @@ interface RawConnectedAccount {
 }
 
 async function fetchConnectedAccounts(userId: string): Promise<RawConnectedAccount[]> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
+  const apiUrl = RAILWAY_API_BASE;
   try {
     const res = await fetch(`${apiUrl}/api/social/accounts?user_id=${userId}`, { cache: "no-store" });
     if (!res.ok) return [];
@@ -135,9 +137,9 @@ export default async function DashboardPage({
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/signup");
 
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
+  const apiUrl = RAILWAY_API_BASE;
 
-  const isSuperAdmin = user.email === "umer.ali79@gmail.com";
+  const isSuperAdmin = isSuperAdminEmail(user.email);
   let plan: "free" | "pro" = isSuperAdmin ? "pro" : "free";
   if (!isSuperAdmin) {
     try {
@@ -183,7 +185,7 @@ export default async function DashboardPage({
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <>
       <AppNav active="dashboard" isSuperAdmin={isSuperAdmin} product="posting-ideation" />
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
@@ -210,10 +212,7 @@ export default async function DashboardPage({
               { val: activeProfile?.target_platforms?.length ? String(activeProfile.target_platforms.length) : "5", label: "platforms" },
               { val: activeProfile?.industry_niche ? activeProfile.industry_niche.split(" ").slice(0, 2).join(" ") : "All niches", label: "niche" },
             ].map((s) => (
-              <div key={s.label} className="rounded-xl bg-white border border-gray-100 px-4 py-3">
-                <p className="text-xl font-bold text-indigo-600 leading-none">{s.val}</p>
-                <p className="text-xs text-gray-400 mt-1">{s.label}</p>
-              </div>
+              <StatTile key={s.label} value={s.val} label={s.label} />
             ))}
           </div>
         )}
@@ -232,8 +231,8 @@ export default async function DashboardPage({
                   href={`/dashboard?profile=${p.id}`}
                   className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
                     isActive
-                      ? "bg-blue-600 text-white"
-                      : "bg-white border border-gray-200 text-gray-600 hover:border-blue-300 hover:text-blue-600"
+                      ? "bg-primary-600 text-white"
+                      : "bg-white border border-gray-200 text-gray-600 hover:border-primary-300 hover:text-primary-600"
                   }`}
                 >
                   {p.name}
@@ -305,14 +304,11 @@ export default async function DashboardPage({
 
         {/* No data state */}
         {!digest && (
-          <div className="rounded-2xl border-2 border-dashed border-gray-200 py-20 text-center">
-            <Inbox className="h-10 w-10 text-gray-300 mx-auto mb-4" />
-            <h3 className="font-semibold text-gray-700 mb-2">Your first digest is on its way</h3>
-            <p className="text-sm text-gray-400 max-w-xs mx-auto">
-              The AI pipeline runs every morning at 7 AM. Your first personalized digest will arrive
-              tomorrow. Hit &ldquo;Refresh&rdquo; to generate one now.
-            </p>
-          </div>
+          <EmptyState
+            icon={Inbox}
+            title="Your first digest is on its way"
+            description={'The AI pipeline runs every morning at 7 AM. Your first personalized digest will arrive tomorrow. Hit "Refresh" to generate one now.'}
+          />
         )}
 
         {/* Trends + their connected content, side by side — the top 3 (most
@@ -325,7 +321,7 @@ export default async function DashboardPage({
         {digest?.clusters && digest.clusters.length > 0 && (
           <section>
             <div className="flex items-center gap-2 mb-4">
-              <TrendingUp className="h-4 w-4 text-blue-600" />
+              <TrendingUp className="h-4 w-4 text-primary-600" />
               <h2 className="text-base font-semibold text-gray-900">Trending right now</h2>
             </div>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
@@ -350,6 +346,6 @@ export default async function DashboardPage({
           </section>
         )}
       </main>
-    </div>
+    </>
   );
 }

@@ -3,7 +3,8 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Optional, List
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Depends
+from app.admin_auth import require_admin_secret
 
 logging.basicConfig(level=logging.INFO)
 
@@ -769,6 +770,57 @@ def list_regions():
     and vice versa. Preserves REGION_LABEL_TO_CODES's insertion order."""
     from app.regions import REGION_LABEL_TO_CODES
     return [{"label": label, "codes": sorted(codes)} for label, codes in REGION_LABEL_TO_CODES.items()]
+
+
+# ── Public sample content ────────────────────────────────────────────────────
+
+@app.get("/public/sample-ideas")
+def get_public_sample_ideas(limit: int = 2):
+    """Public, unauthenticated preview of real content ideas — powers the
+    marketing site's landing-page 'sample brief' section (culturix-web's `/`
+    page) so it shows genuine pipeline output instead of static mock copy.
+    Pulls from the most recent GeneratedContent row at or before yesterday
+    (falls further back if the previous day's run hasn't landed yet). No
+    user_id/content_profile_id or any other identifying field is returned —
+    only the idea text itself, which contains no PII."""
+    from app.db import SessionLocal
+    from app.models.generated_content import GeneratedContent
+    from datetime import date, timedelta
+
+    session = SessionLocal()
+    try:
+        yesterday = date.today() - timedelta(days=1)
+        candidates = (
+            session.query(GeneratedContent)
+            .filter(GeneratedContent.trend_date <= yesterday)
+            .order_by(GeneratedContent.trend_date.desc(), GeneratedContent.generated_at.desc())
+            .limit(20)
+            .all()
+        )
+
+        row = next((c for c in candidates if c.content_ideas), None)
+        if not row:
+            return {"trend_date": None, "ideas": []}
+
+        ideas = [
+            {
+                "hook": idea.get("hook"),
+                "caption": idea.get("caption"),
+                "cta": idea.get("cta"),
+                "music_mood": idea.get("music_mood"),
+                "platform": idea.get("platform"),
+                "trend_connection": idea.get("trend_connection"),
+                "format": idea.get("format"),
+                "viral_angle": idea.get("viral_angle"),
+                "posting_time": idea.get("posting_time"),
+                "hashtag_strategy": idea.get("hashtag_strategy"),
+            }
+            for idea in row.content_ideas
+            if idea.get("hook") and idea.get("caption")
+        ][:limit]
+        return {"trend_date": row.trend_date.isoformat() if row.trend_date else None, "ideas": ideas}
+    finally:
+        session.close()
 
 
 # ── Personas & Suggestions ────────────────────────────────────────────────────
@@ -2072,7 +2124,7 @@ def collect_all():
 
 # ── Admin endpoints (superadmin only — caller must verify identity) ────────────
 
-@app.get("/admin/trends")
+@app.get("/admin/trends", dependencies=[Depends(require_admin_secret)])
 def trends_recent(limit: int = 200, platform: Optional[str] = None, search: Optional[str] = None):
     from app.db import SessionLocal
     from app.models.trend import Trend
@@ -2129,7 +2181,7 @@ def trends_recent(limit: int = 20):
         session.close()
 
 
-@app.get("/admin/clusters")
+@app.get("/admin/clusters", dependencies=[Depends(require_admin_secret)])
 def clusters_recent(limit: int = 50):
     """
     trend_count is computed live (COUNT of trends actually pointing at this
@@ -2167,7 +2219,7 @@ def clusters_recent(limit: int = 50):
         session.close()
 
 
-@app.get("/admin/content-check-log")
+@app.get("/admin/content-check-log", dependencies=[Depends(require_admin_secret)])
 def content_check_log_recent(limit: int = 100):
     from app.db import SessionLocal
     from app.models.content_check_log import ContentCheckLog
@@ -2195,7 +2247,7 @@ def content_check_log_recent(limit: int = 100):
         session.close()
 
 
-@app.get("/admin/trend-validation-log")
+@app.get("/admin/trend-validation-log", dependencies=[Depends(require_admin_secret)])
 def trend_validation_log_recent(limit: int = 100):
     from app.db import SessionLocal
     from app.models.trend_validation_log import TrendValidationLog
@@ -2220,7 +2272,7 @@ def trend_validation_log_recent(limit: int = 100):
         session.close()
 
 
-@app.get("/admin/trend-history")
+@app.get("/admin/trend-history", dependencies=[Depends(require_admin_secret)])
 def trend_history_recent(limit: int = 100):
     from app.db import SessionLocal
     from app.models.trend_theme import TrendTheme
@@ -2251,7 +2303,7 @@ def trend_history_recent(limit: int = 100):
         session.close()
 
 
-@app.get("/admin/trend-history/{theme_id}/occurrences")
+@app.get("/admin/trend-history/{theme_id}/occurrences", dependencies=[Depends(require_admin_secret)])
 def trend_history_occurrences(theme_id: int, limit: int = 200):
     from app.db import SessionLocal
     from app.models.trend_occurrence import TrendOccurrence
@@ -2280,7 +2332,7 @@ def trend_history_occurrences(theme_id: int, limit: int = 200):
         session.close()
 
 
-@app.get("/admin/high-velocity-alerts")
+@app.get("/admin/high-velocity-alerts", dependencies=[Depends(require_admin_secret)])
 def high_velocity_alerts_recent(limit: int = 100):
     from app.db import SessionLocal
     from app.models.high_velocity_alert import HighVelocityAlert
@@ -2310,7 +2362,7 @@ def high_velocity_alerts_recent(limit: int = 100):
         session.close()
 
 
-@app.get("/admin/personas")
+@app.get("/admin/personas", dependencies=[Depends(require_admin_secret)])
 def personas_recent(limit: int = 50):
     from app.db import SessionLocal
     from app.models.persona import Persona
@@ -2348,7 +2400,7 @@ def personas_recent(limit: int = 50):
         session.close()
 
 
-@app.get("/admin/personas/{persona_id}/occurrences")
+@app.get("/admin/personas/{persona_id}/occurrences", dependencies=[Depends(require_admin_secret)])
 def persona_occurrences(persona_id: int, limit: int = 200):
     """Structural mirror of GET /admin/trend-history/{theme_id}/occurrences —
     feeds AdminDashboard.tsx's WeekdayBarChart/OccurrenceTimeline directly.
@@ -2383,7 +2435,7 @@ def persona_occurrences(persona_id: int, limit: int = 200):
         session.close()
 
 
-@app.get("/admin/digests")
+@app.get("/admin/digests", dependencies=[Depends(require_admin_secret)])
 def admin_digests(limit: int = 20):
     from app.db import SessionLocal
     from app.models.generated_content import GeneratedContent
@@ -2409,7 +2461,7 @@ def admin_digests(limit: int = 20):
         session.close()
 
 
-@app.get("/admin/stats")
+@app.get("/admin/stats", dependencies=[Depends(require_admin_secret)])
 def admin_stats():
     from app.db import SessionLocal
     from app.models.trend import Trend
@@ -2435,7 +2487,7 @@ def admin_stats():
         session.close()
 
 
-@app.get("/admin/integration-health")
+@app.get("/admin/integration-health", dependencies=[Depends(require_admin_secret)])
 def get_integration_health():
     """Latest health-check result per integration — see
     app/integration_health.py. Checked daily by the scheduler; use
@@ -2478,13 +2530,13 @@ def get_integration_health():
         session.close()
 
 
-@app.post("/admin/integration-health/check-now")
+@app.post("/admin/integration-health/check-now", dependencies=[Depends(require_admin_secret)])
 def check_integration_health_now():
     from app.integration_health import run_all_health_checks
     return run_all_health_checks()
 
 
-@app.post("/admin/collect")
+@app.post("/admin/collect", dependencies=[Depends(require_admin_secret)])
 def admin_collect():
     """
     Was hardcoded to just YouTube (4 regions) + Twitter-via-proxy (3 regions)
@@ -2508,7 +2560,7 @@ def admin_collect():
 
 # ── User approval endpoints ────────────────────────────────────────────────────
 
-@app.get("/admin/users")
+@app.get("/admin/users", dependencies=[Depends(require_admin_secret)])
 def admin_users():
     from app.db import SessionLocal
     from app.models.user_profile import UserProfile
@@ -2547,7 +2599,7 @@ def admin_users():
         session.close()
 
 
-@app.post("/admin/users/{user_id}/approve")
+@app.post("/admin/users/{user_id}/approve", dependencies=[Depends(require_admin_secret)])
 def approve_user(user_id: str):
     from app.db import SessionLocal
     from app.models.user_profile import UserProfile
@@ -2564,7 +2616,7 @@ def approve_user(user_id: str):
         session.close()
 
 
-@app.post("/admin/users/{user_id}/reject")
+@app.post("/admin/users/{user_id}/reject", dependencies=[Depends(require_admin_secret)])
 def reject_user(user_id: str):
     from app.db import SessionLocal
     from app.models.user_profile import UserProfile
@@ -2659,7 +2711,7 @@ async def billing_webhook(request: Request):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/admin/users/{user_id}/plan")
+@app.post("/admin/users/{user_id}/plan", dependencies=[Depends(require_admin_secret)])
 def set_user_plan(user_id: str, body: dict):
     from app.db import SessionLocal
     from app.models.user_profile import UserProfile

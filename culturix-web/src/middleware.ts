@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import type { CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isSuperAdminEmail } from "@/lib/admin/superadmin";
 
 // Supabase's free tier can pause the project after inactivity, and even when
 // awake, auth calls can occasionally be slow. Without a timeout, a hung
@@ -53,12 +54,17 @@ export async function middleware(request: NextRequest) {
   });
 
   const path = request.nextUrl.pathname;
+  const isAdmin = path.startsWith("/admin");
   const isProtected =
-    path.startsWith("/dashboard") || path.startsWith("/settings");
-  const isAuthPage = path === "/signup" || path === "/login";
+    path.startsWith("/dashboard") || path.startsWith("/settings") || path.startsWith("/onboarding") || isAdmin;
+  const isAuthPage = path === "/signup";
 
   if (!user && isProtected) {
     return NextResponse.redirect(new URL("/signup", request.url));
+  }
+
+  if (user && isAdmin && !isSuperAdminEmail(user.email)) {
+    return NextResponse.redirect(new URL("/dashboard", request.url));
   }
 
   if (user && isAuthPage) {
@@ -73,7 +79,7 @@ export const config = {
     "/dashboard/:path*",
     "/settings/:path*",
     "/signup",
-    "/login",
     "/onboarding/:path*",
+    "/admin/:path*",
   ],
 };

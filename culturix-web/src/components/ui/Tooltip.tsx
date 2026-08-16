@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Info } from "lucide-react";
+import { cn } from "@/lib/cn";
 
 interface Props {
   text: string;
@@ -9,22 +10,20 @@ interface Props {
 }
 
 // Click-to-toggle (works on touch, not just hover) info icon + popover —
-// no reusable tooltip primitive existed anywhere in this codebase before
-// this, every prior "hint" was either a static paragraph or a native
-// title="" attribute (no touch support, easy to miss). Self-contained, no
-// new dependency.
-export default function InfoTooltip({ text, className }: Props) {
+// relocated from the old InfoTooltip.tsx into the shared ui/ kit; same
+// behavior, just the primary color token updated.
+export default function Tooltip({ text, className }: Props) {
   const [open, setOpen] = useState(false);
 
   return (
-    <span className={`relative inline-flex ${className ?? ""}`}>
+    <span className={cn("relative inline-flex", className)}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         onMouseEnter={() => setOpen(true)}
         onMouseLeave={() => setOpen(false)}
         onBlur={() => setOpen(false)}
-        className="text-gray-300 hover:text-blue-500 transition-colors"
+        className="text-gray-300 hover:text-primary-500 transition-colors"
         aria-label="More info"
       >
         <Info className="h-3.5 w-3.5" />

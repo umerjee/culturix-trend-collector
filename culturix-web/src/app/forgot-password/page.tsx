@@ -5,8 +5,10 @@ export const dynamic = "force-dynamic";
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Zap, Loader2, ArrowLeft } from "lucide-react";
+import { Loader2, ArrowLeft } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import MarketingHeader from "@/components/marketing/MarketingHeader";
+import MarketingFooter from "@/components/marketing/MarketingFooter";
 
 export default function ForgotPasswordPage() {
   return (
@@ -50,13 +52,8 @@ function ForgotPasswordForm() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white flex flex-col">
-      <nav className="p-6">
-        <Link href="/" className="flex items-center gap-2 w-fit">
-          <Zap className="h-5 w-5 text-blue-600" />
-          <span className="font-bold text-lg tracking-tight">Culturix</span>
-        </Link>
-      </nav>
+    <div className="min-h-screen bg-gradient-to-b from-primary-50 to-white flex flex-col">
+      <MarketingHeader showCta={false} />
 
       <div className="flex-1 flex items-center justify-center px-4 py-12">
         <div className="w-full max-w-sm">
@@ -102,14 +99,14 @@ function ForgotPasswordForm() {
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="you@example.com"
-                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition"
+                    className="w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-primary-500 focus:ring-2 focus:ring-primary-100 outline-none transition"
                   />
                 </div>
 
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full bg-blue-600 text-white font-semibold py-3 rounded-xl hover:bg-blue-700 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
+                  className="w-full bg-primary-600 text-white font-semibold py-3 rounded-xl hover:bg-primary-700 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
                 >
                   {loading && <Loader2 className="h-4 w-4 animate-spin" />}
                   Send reset link
@@ -119,6 +116,8 @@ function ForgotPasswordForm() {
           )}
         </div>
       </div>
+
+      <MarketingFooter />
     </div>
   );
 }

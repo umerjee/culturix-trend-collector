@@ -25,13 +25,21 @@ interface Props {
 
 export type Tab = "characters" | "relationships" | "backgrounds" | "scripts" | "toons" | "episodes" | "usage";
 
-const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
+type TabDef = { key: Tab; label: string; icon: React.ReactNode };
+
+// Grouped so the 7-tab bar reads as "core production flow" vs. "supporting
+// setup" instead of one flat undifferentiated row — purely visual, the
+// underlying tab-switching state and every manager component is untouched.
+const PRIMARY_TABS: TabDef[] = [
   { key: "characters", label: "Characters", icon: <Users className="h-3.5 w-3.5" /> },
-  { key: "relationships", label: "Relationships", icon: <Heart className="h-3.5 w-3.5" /> },
-  { key: "backgrounds", label: "Locations", icon: <ImageIcon className="h-3.5 w-3.5" /> },
   { key: "scripts", label: "Scripts", icon: <FileText className="h-3.5 w-3.5" /> },
   { key: "toons", label: "Toons", icon: <Clapperboard className="h-3.5 w-3.5" /> },
   { key: "episodes", label: "Episodes", icon: <Film className="h-3.5 w-3.5" /> },
+];
+
+const ADVANCED_TABS: TabDef[] = [
+  { key: "relationships", label: "Relationships", icon: <Heart className="h-3.5 w-3.5" /> },
+  { key: "backgrounds", label: "Locations", icon: <ImageIcon className="h-3.5 w-3.5" /> },
   { key: "usage", label: "Usage & Budget", icon: <Wallet className="h-3.5 w-3.5" /> },
 ];
 
@@ -62,13 +70,26 @@ export default function CultureToonWorkspace({
 
       <GettingStartedChecklist brandId={brand.id} onNavigate={setTab} />
 
-      <div className="flex items-center gap-1 border-b border-gray-100">
-        {TABS.map((t) => (
+      <div className="flex items-center gap-1 border-b border-gray-100 overflow-x-auto">
+        {PRIMARY_TABS.map((t) => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
-            className={`inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 border-b-2 transition-colors ${
-              tab === t.key ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-800"
+            className={`inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 border-b-2 shrink-0 transition-colors ${
+              tab === t.key ? "border-primary-600 text-primary-600" : "border-transparent text-gray-500 hover:text-gray-800"
+            }`}
+          >
+            {t.icon} {t.label}
+          </button>
+        ))}
+        <span className="mx-1.5 h-5 w-px bg-gray-200 shrink-0" />
+        <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide shrink-0 pr-1">Advanced</span>
+        {ADVANCED_TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 border-b-2 shrink-0 transition-colors ${
+              tab === t.key ? "border-primary-600 text-primary-600" : "border-transparent text-gray-500 hover:text-gray-800"
             }`}
           >
             {t.icon} {t.label}

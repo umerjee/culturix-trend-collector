@@ -83,17 +83,17 @@ export default function ProductSwitcher({ product }: Props) {
               href={p.href}
               onClick={() => setOpen(false)}
               className={`flex items-start gap-2.5 px-3 py-2 transition-colors ${
-                p.key === product ? "bg-blue-50" : "hover:bg-gray-50"
+                p.key === product ? "bg-primary-50" : "hover:bg-gray-50"
               }`}
             >
-              <span className={`mt-0.5 ${p.key === product ? "text-blue-600" : "text-gray-400"}`}>{p.icon}</span>
+              <span className={`mt-0.5 ${p.key === product ? "text-primary-600" : "text-gray-400"}`}>{p.icon}</span>
               <span className="flex-1 min-w-0">
-                <span className={`block text-sm font-medium ${p.key === product ? "text-blue-600" : "text-gray-900"}`}>
+                <span className={`block text-sm font-medium ${p.key === product ? "text-primary-600" : "text-gray-900"}`}>
                   {p.label}
                 </span>
                 <span className="block text-xs text-gray-500">{p.description}</span>
               </span>
-              {p.key === product && <Check className="h-4 w-4 text-blue-600 mt-0.5" />}
+              {p.key === product && <Check className="h-4 w-4 text-primary-600 mt-0.5" />}
             </Link>
           ))}
         </div>

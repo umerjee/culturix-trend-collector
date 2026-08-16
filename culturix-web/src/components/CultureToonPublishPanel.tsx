@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, X, Link2, ShieldCheck, ShieldAlert, ArrowRight } from "lucide-react";
+import { X, Link2, ArrowRight } from "lucide-react";
 import type { ConnectedAccount } from "@/lib/types";
+import ConnectionTestPanel, { type ConnectionTestResult } from "@/components/publish/ConnectionTestPanel";
 
 type Step = "connect" | "test" | "done";
 
@@ -30,28 +31,16 @@ export default function CultureToonPublishPanel({
 }: Props) {
   const account = connectedAccounts.find((a) => a.platform === platform && a.status === "active");
   const [step, setStep] = useState<Step>(account ? "test" : "connect");
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ ok: boolean; reason?: string; platform_username?: string } | null>(null);
+  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
 
   useEffect(() => {
     if (account && step === "connect") setStep("test");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account]);
 
-  async function runTest() {
-    if (testing) return;
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const res = await fetch(`/api/culturetoons/social/${platform}/test?brand_id=${brandId}`, { method: "POST" });
-      const data = await res.json().catch(() => ({ ok: false }));
-      setTestResult(data);
-      onAccountsChanged();
-    } catch {
-      setTestResult({ ok: false, reason: "Network error — try again." });
-    } finally {
-      setTesting(false);
-    }
+  async function runConnectionTest(): Promise<ConnectionTestResult> {
+    const res = await fetch(`/api/culturetoons/social/${platform}/test?brand_id=${brandId}`, { method: "POST" });
+    return await res.json().catch(() => ({ ok: false }));
   }
 
   const activeStepIndex = STEPS.findIndex((s) => s.key === step);
@@ -72,7 +61,7 @@ export default function CultureToonPublishPanel({
         <div>
           <div className="flex items-center gap-1.5">
             {STEPS.map((s, i) => (
-              <div key={s.key} className={`h-1.5 flex-1 rounded-full ${activeStepIndex >= i ? "bg-blue-600" : "bg-gray-100"}`} />
+              <div key={s.key} className={`h-1.5 flex-1 rounded-full ${activeStepIndex >= i ? "bg-primary-600" : "bg-gray-100"}`} />
             ))}
           </div>
           <p className="text-xs font-medium text-gray-400 mt-1.5">{STEPS[activeStepIndex].label}</p>
@@ -85,7 +74,7 @@ export default function CultureToonPublishPanel({
             </p>
             <a
               href={`/api/culturetoons/social/${platform}/connect?brand_id=${brandId}`}
-              className="w-full flex items-center justify-center gap-2 rounded-xl bg-blue-600 text-white font-semibold py-3 hover:bg-blue-700 transition"
+              className="w-full flex items-center justify-center gap-2 rounded-xl bg-primary-600 text-white font-semibold py-3 hover:bg-primary-700 transition"
             >
               <Link2 className="h-4 w-4" /> Connect {platformLabel}
             </a>
@@ -94,40 +83,22 @@ export default function CultureToonPublishPanel({
 
         {step === "test" && (
           <div className="space-y-3">
-            <p className="text-sm text-gray-600">
-              Confirm this connection actually works before publishing to it.
-            </p>
-            {account?.last_tested_at && !testResult && (
-              <p className="text-xs text-gray-400">
-                Last tested {new Date(account.last_tested_at).toLocaleString()} —{" "}
-                {account.last_test_status === "ok" ? "passed" : "failed"}
-              </p>
-            )}
-            <button
-              onClick={runTest}
-              disabled={testing}
-              className="w-full flex items-center justify-center gap-2 rounded-xl border border-gray-200 py-3 text-sm font-semibold text-gray-700 hover:border-blue-300 hover:text-blue-600 disabled:opacity-60 transition"
-            >
-              {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-              {testing ? "Testing…" : testResult ? "Test again" : "Test connection"}
-            </button>
-            {testResult && (
-              <div className={`flex items-start gap-2 rounded-lg px-3 py-2.5 text-sm ${testResult.ok ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600"}`}>
-                {testResult.ok ? <ShieldCheck className="h-4 w-4 mt-0.5 shrink-0" /> : <ShieldAlert className="h-4 w-4 mt-0.5 shrink-0" />}
-                <span>
-                  {testResult.ok
-                    ? `Connected as @${testResult.platform_username ?? "your account"} — working.`
-                    : testResult.reason ?? "Could not verify this connection."}
-                </span>
-              </div>
-            )}
+            <ConnectionTestPanel
+              description="Confirm this connection actually works before publishing to it."
+              lastTestedAt={account?.last_tested_at}
+              lastTestStatus={account?.last_test_status}
+              testResult={testResult}
+              runTest={runConnectionTest}
+              onResult={setTestResult}
+              onTested={onAccountsChanged}
+            />
             <div className="flex items-center justify-between pt-1">
               <button onClick={() => setStep("connect")} className="text-xs text-gray-400 hover:text-gray-600">
                 Back
               </button>
               <button
                 onClick={() => setStep("done")}
-                className="inline-flex items-center gap-1 text-sm font-medium text-blue-600 hover:text-blue-700"
+                className="inline-flex items-center gap-1 text-sm font-medium text-primary-600 hover:text-primary-700"
               >
                 Continue <ArrowRight className="h-3.5 w-3.5" />
               </button>
@@ -140,7 +111,7 @@ export default function CultureToonPublishPanel({
             <p className="text-sm text-gray-600">
               You&apos;re set — this brand can now publish directly to {platformLabel} from the Toons tab.
             </p>
-            <button onClick={onClose} className="w-full rounded-xl bg-blue-600 text-white font-semibold py-3 hover:bg-blue-700 transition">
+            <button onClick={onClose} className="w-full rounded-xl bg-primary-600 text-white font-semibold py-3 hover:bg-primary-700 transition">
               Done
             </button>
           </div>

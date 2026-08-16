@@ -107,7 +107,7 @@ export default function PublishingSetupStatus(props: Props) {
                   key={p.key}
                   type="button"
                   onClick={() => props.onManagePlatform(p.key)}
-                  className="w-full flex items-center justify-between gap-2 rounded-lg border border-gray-100 px-3 py-2 hover:border-blue-200 transition-colors text-left"
+                  className="w-full flex items-center justify-between gap-2 rounded-lg border border-gray-100 px-3 py-2 hover:border-primary-200 transition-colors text-left"
                 >
                   <span className="flex items-center gap-2 text-sm text-gray-700">
                     {p.connected && p.verified ? (
@@ -128,7 +128,7 @@ export default function PublishingSetupStatus(props: Props) {
           <button
             type="button"
             onClick={props.onChangeMode}
-            className="w-full flex items-center justify-between gap-2 rounded-lg border border-gray-100 px-3 py-2 hover:border-blue-200 transition-colors text-left"
+            className="w-full flex items-center justify-between gap-2 rounded-lg border border-gray-100 px-3 py-2 hover:border-primary-200 transition-colors text-left"
           >
             <span className="flex items-center gap-2 text-sm text-gray-700">
               <Check className="h-4 w-4 text-green-500 shrink-0" />

@@ -1,7 +1,11 @@
 import Link from "next/link";
 import {
-  Zap, ArrowRight, ShoppingBag, Link2, RefreshCw, Sparkles, Clapperboard, ImageIcon,
+  ArrowRight, ShoppingBag, Link2, RefreshCw, Sparkles, Clapperboard, ImageIcon,
 } from "lucide-react";
+import MarketingHeader from "@/components/marketing/MarketingHeader";
+import MarketingFooter from "@/components/marketing/MarketingFooter";
+import Badge from "@/components/ui/Badge";
+import { buttonVariants } from "@/components/ui/Button";
 
 export const metadata = {
   title: "Shopify Reel Building — Culturix",
@@ -42,24 +46,14 @@ const STEPS = [
 export default function ShopifyProductPage() {
   return (
     <div className="min-h-screen bg-white">
-      <header className="bg-white border-b border-gray-100 sticky top-0 z-10">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2">
-            <Zap className="h-5 w-5 text-blue-600" />
-            <span className="font-bold text-lg tracking-tight">Culturix</span>
-          </Link>
-          <Link href="/signup" className="text-sm bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors font-medium">
-            Get started free
-          </Link>
-        </div>
-      </header>
+      <MarketingHeader />
 
       <main className="max-w-3xl mx-auto px-4 sm:px-6 py-14">
         <div className="text-center mb-14">
-          <div className="inline-flex items-center gap-2 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-600 text-xs font-semibold px-3 py-1.5 mb-6">
+          <Badge variant="warning" className="mb-6">
             <ShoppingBag className="h-3.5 w-3.5" />
             Now piloting
-          </div>
+          </Badge>
           <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-4">
             Shopify Reel Building
           </h1>
@@ -113,18 +107,17 @@ export default function ShopifyProductPage() {
 
         {/* CTA */}
         <section className="text-center">
-          <Link
-            href="/signup"
-            className="inline-flex items-center gap-2 bg-blue-600 text-white font-semibold px-8 py-4 rounded-xl hover:bg-blue-700 transition-colors"
-          >
+          <Link href="/signup" className={buttonVariants({ variant: "primary", size: "lg" })}>
             Connect your store <ArrowRight className="h-4 w-4" />
           </Link>
           <p className="text-xs text-gray-400 mt-4">
             Also want trend-driven content ideas or AI cartoon characters?{" "}
-            <Link href="/#products" className="text-blue-600 hover:underline">See all Culturix products</Link>
+            <Link href="/#products" className="text-primary-600 hover:underline">See all Culturix products</Link>
           </p>
         </section>
       </main>
+
+      <MarketingFooter />
     </div>
   );
 }

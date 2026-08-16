@@ -8,7 +8,7 @@ import {
 import type { Toon, ToonScript, CharacterVariant, ToonBackground, ConnectedAccount, ToonPost } from "@/lib/types";
 import { CONNECTABLE_PLATFORMS } from "@/lib/types";
 import ConnectedAccountsPanel from "@/components/ConnectedAccountsPanel";
-import InfoTooltip from "@/components/InfoTooltip";
+import InfoTooltip from "@/components/ui/Tooltip";
 
 interface Props {
   brandId: string;

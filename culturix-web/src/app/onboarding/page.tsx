@@ -1,9 +1,8 @@
 import { redirect } from "next/navigation";
 import { Zap } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
+import { RAILWAY_API_BASE } from "@/lib/config/api";
 import OnboardingWizard from "@/components/OnboardingWizard";
-
-const RAILWAY = "https://culturix-trend-collector-production.up.railway.app";
 
 export default async function OnboardingPage() {
   const supabase = createClient();
@@ -15,10 +14,9 @@ export default async function OnboardingPage() {
   // Settings, so a user who already has a profile has nothing left to do
   // here (this is what let a returning sign-in bounce them back into the
   // wizard every time before the redirect-target fix in signup/page.tsx).
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || RAILWAY;
   let hasProfile = false;
   try {
-    const res = await fetch(`${apiUrl}/users/${user.id}/content-profiles`, { cache: "no-store" });
+    const res = await fetch(`${RAILWAY_API_BASE}/users/${user.id}/content-profiles`, { cache: "no-store" });
     if (res.ok) {
       const profiles = await res.json();
       hasProfile = Array.isArray(profiles) && profiles.length > 0;
@@ -31,10 +29,10 @@ export default async function OnboardingPage() {
   if (hasProfile) redirect("/dashboard");
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white">
+    <div className="min-h-screen bg-gradient-to-b from-primary-50 to-white">
       <nav className="p-6">
         <div className="flex items-center gap-2">
-          <Zap className="h-5 w-5 text-blue-600" />
+          <Zap className="h-5 w-5 text-primary-600" />
           <span className="font-bold text-lg tracking-tight">Culturix</span>
         </div>
       </nav>

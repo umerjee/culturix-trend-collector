@@ -4,8 +4,29 @@ import {
   Clock, Target, Megaphone, Music, Film, History, RefreshCw,
   Lightbulb, ShoppingBag, Drama,
 } from "lucide-react";
+import { buttonVariants } from "@/components/ui/Button";
+import MarketingHeader from "@/components/marketing/MarketingHeader";
+import MarketingFooter from "@/components/marketing/MarketingFooter";
 
-const MOCK_IDEAS = [
+type SampleIdea = {
+  platform: string;
+  platformColor: string;
+  format: string;
+  viral_angle: string;
+  viralColor: string;
+  hook: string;
+  caption: string;
+  cta: string;
+  posting_time: string;
+  hashtags: string[];
+  trend_connection: string;
+  music_mood: string;
+};
+
+// Fallback only — used if the live /public/sample-ideas backend call fails
+// or hasn't produced any ideas yet (e.g. a fresh environment with no
+// pipeline history). See getSampleIdeas() below for the live path.
+const MOCK_IDEAS: SampleIdea[] = [
   {
     platform: "TikTok",
     platformColor: "bg-pink-100 text-pink-700",
@@ -36,6 +57,87 @@ const MOCK_IDEAS = [
   },
 ];
 
+const PLATFORM_COLORS: Record<string, string> = {
+  TikTok: "bg-pink-100 text-pink-700",
+  YouTube: "bg-red-100 text-red-700",
+  Instagram: "bg-purple-100 text-purple-700",
+  Xiaohongshu: "bg-rose-100 text-rose-700",
+  "X/Twitter": "bg-sky-100 text-sky-700",
+  Reddit: "bg-orange-100 text-orange-700",
+};
+
+const VIRAL_COLORS: [string, string][] = [
+  ["hot take", "bg-orange-50 text-orange-600 border-orange-200"],
+  ["myth", "bg-yellow-50 text-yellow-700 border-yellow-200"],
+  ["pov", "bg-indigo-50 text-indigo-600 border-indigo-200"],
+  ["transformation", "bg-emerald-50 text-emerald-600 border-emerald-200"],
+  ["duet", "bg-pink-50 text-pink-600 border-pink-200"],
+  ["challenge", "bg-blue-50 text-blue-600 border-blue-200"],
+  ["reaction", "bg-purple-50 text-purple-600 border-purple-200"],
+  ["tutorial", "bg-teal-50 text-teal-600 border-teal-200"],
+];
+
+function viralAngleClass(angle: string): string {
+  const lower = angle.toLowerCase();
+  const match = VIRAL_COLORS.find(([key]) => lower.includes(key));
+  return match ? match[1] : "bg-gray-50 text-gray-600 border-gray-200";
+}
+
+const RAILWAY =
+  process.env.NEXT_PUBLIC_API_URL ||
+  "https://culturix-trend-collector-production.up.railway.app";
+
+type RawSampleIdea = {
+  hook?: string;
+  caption?: string;
+  cta?: string;
+  music_mood?: string;
+  platform?: string;
+  trend_connection?: string;
+  format?: string;
+  viral_angle?: string;
+  posting_time?: string;
+  hashtag_strategy?: string;
+};
+
+// Fetches yesterday's real content ideas from the trend engine so the
+// landing page's "sample brief" shows genuine output, not frozen mock copy.
+// Revalidates hourly (new ideas land once/day); falls back to MOCK_IDEAS on
+// any failure, timeout, or empty result so the page never breaks on a
+// backend hiccup.
+async function getSampleIdeas(): Promise<{ ideas: SampleIdea[]; trendDate: string | null; live: boolean }> {
+  try {
+    const res = await fetch(`${RAILWAY}/public/sample-ideas?limit=2`, {
+      next: { revalidate: 3600 },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error(`sample-ideas ${res.status}`);
+    const data = await res.json();
+    const raw: RawSampleIdea[] = Array.isArray(data?.ideas) ? data.ideas : [];
+    const ideas: SampleIdea[] = raw
+      .filter((idea) => idea.hook && idea.caption)
+      .map((idea) => ({
+        platform: idea.platform ?? "TikTok",
+        platformColor: PLATFORM_COLORS[idea.platform ?? ""] ?? "bg-gray-100 text-gray-700",
+        format: idea.format ?? "video",
+        viral_angle: idea.viral_angle ?? "hot take",
+        viralColor: viralAngleClass(idea.viral_angle ?? ""),
+        hook: idea.hook!,
+        caption: idea.caption!,
+        cta: idea.cta ?? "",
+        posting_time: idea.posting_time ?? "",
+        hashtags: (idea.hashtag_strategy ?? "").split(/\s+/).filter((h) => h.startsWith("#")),
+        trend_connection: idea.trend_connection ?? "",
+        music_mood: idea.music_mood ?? "",
+      }));
+
+    if (ideas.length === 0) throw new Error("no live ideas yet");
+    return { ideas, trendDate: data?.trend_date ?? null, live: true };
+  } catch {
+    return { ideas: MOCK_IDEAS, trendDate: null, live: false };
+  }
+}
+
 const PLATFORMS = [
   { name: "TikTok", color: "bg-pink-500" },
   { name: "YouTube", color: "bg-red-500" },
@@ -51,7 +153,7 @@ const PRODUCTS = [
     status: "Live",
     statusColor: "bg-emerald-50 text-emerald-600 border-emerald-200",
     desc: "The engine on this page — trend-driven content ideas, personalized to your brand, delivered every morning.",
-    href: "#how-it-works",
+    href: "/products/posting-ideation",
     cta: "See how it works",
     accent: "text-indigo-500",
     bg: "bg-indigo-50",
@@ -178,7 +280,7 @@ const PLANS = [
   },
 ];
 
-function MockCard({ idea }: { idea: typeof MOCK_IDEAS[0] }) {
+function MockCard({ idea }: { idea: SampleIdea }) {
   return (
     <div className="rounded-2xl border border-gray-100 bg-white p-5 flex flex-col gap-3 shadow-sm text-left">
       <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -229,32 +331,16 @@ function MockCard({ idea }: { idea: typeof MOCK_IDEAS[0] }) {
   );
 }
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  const { ideas: sampleIdeas, trendDate, live } = await getSampleIdeas();
+  const heroIdea = sampleIdeas[0] ?? MOCK_IDEAS[0];
+  const sampleCaption = live
+    ? `Real ideas from Culturix's ${trendDate ?? "latest"} brief — regenerated daily`
+    : "Sample ideas generated for a fashion brand targeting Gen Z on TikTok + Instagram";
+
   return (
     <div className="min-h-screen bg-white">
-      {/* Nav */}
-      <nav className="fixed top-0 left-0 right-0 z-50 bg-slate-950/90 backdrop-blur-sm border-b border-white/10">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Zap className="h-5 w-5 text-indigo-400" />
-            <span className="font-bold text-lg tracking-tight text-white">Culturix</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <Link href="#products" className="hidden sm:inline text-sm text-gray-400 hover:text-white px-3 py-1.5 transition-colors">
-              Products
-            </Link>
-            <Link href="/signup" className="text-sm text-gray-400 hover:text-white px-3 py-1.5 transition-colors">
-              Sign in
-            </Link>
-            <Link
-              href="/signup"
-              className="text-sm bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-500 transition-colors font-medium"
-            >
-              Get started free
-            </Link>
-          </div>
-        </div>
-      </nav>
+      <MarketingHeader transparent />
 
       {/* Hero */}
       <section className="pt-32 pb-20 px-4 sm:px-6 bg-slate-950 relative overflow-hidden">
@@ -295,10 +381,7 @@ export default function LandingPage() {
               </div>
 
               <div className="flex flex-col sm:flex-row gap-3">
-                <Link
-                  href="/signup"
-                  className="inline-flex items-center justify-center gap-2 bg-indigo-600 text-white font-semibold px-8 py-4 rounded-xl hover:bg-indigo-500 transition-colors text-base"
-                >
+                <Link href="/signup" className={buttonVariants({ variant: "primary", size: "lg" })}>
                   Start free — no credit card <ArrowRight className="h-4 w-4" />
                 </Link>
                 <Link
@@ -315,7 +398,7 @@ export default function LandingPage() {
               <div className="relative">
                 <div className="absolute -inset-4 bg-gradient-to-r from-indigo-600/20 to-purple-600/20 rounded-3xl blur-xl" />
                 <div className="relative">
-                  <MockCard idea={MOCK_IDEAS[0]} />
+                  <MockCard idea={heroIdea} />
                 </div>
               </div>
             </div>
@@ -414,12 +497,12 @@ export default function LandingPage() {
             </p>
           </div>
           <div className="grid sm:grid-cols-2 gap-5">
-            {MOCK_IDEAS.map((idea, i) => (
+            {sampleIdeas.map((idea, i) => (
               <MockCard key={i} idea={idea} />
             ))}
           </div>
           <p className="text-center text-xs text-gray-400 mt-6">
-            Sample ideas generated for a fashion brand targeting Gen Z on TikTok + Instagram
+            {sampleCaption}
           </p>
         </div>
       </section>
@@ -505,32 +588,13 @@ export default function LandingPage() {
           <p className="text-gray-400 mb-8">
             Start with signals. Your first brief is free — no credit card required.
           </p>
-          <Link
-            href="/signup"
-            className="inline-flex items-center gap-2 bg-indigo-600 text-white font-semibold px-8 py-4 rounded-xl hover:bg-indigo-500 transition-colors"
-          >
+          <Link href="/signup" className={buttonVariants({ variant: "primary", size: "lg" })}>
             Get started free <ArrowRight className="h-4 w-4" />
           </Link>
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className="py-8 px-4 sm:px-6 border-t border-white/5 bg-slate-950">
-        <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-sm">
-          <div className="flex items-center gap-2">
-            <Zap className="h-4 w-4 text-indigo-400" />
-            <span className="font-semibold text-gray-300">Culturix</span>
-          </div>
-          <div className="flex flex-wrap items-center justify-center gap-4">
-            <Link href="/products/shopify" className="text-gray-500 hover:text-gray-300 transition-colors">Shopify Reel Building</Link>
-            <Link href="/products/culturetoons" className="text-gray-500 hover:text-gray-300 transition-colors">Character-Based Posting</Link>
-            <Link href="/how-it-works" className="text-gray-500 hover:text-gray-300 transition-colors">How Publishing Works</Link>
-            <Link href="/privacy" className="text-gray-500 hover:text-gray-300 transition-colors">Privacy Policy</Link>
-            <Link href="/terms" className="text-gray-500 hover:text-gray-300 transition-colors">Terms of Service</Link>
-          </div>
-          <p className="text-gray-600">© 2026 Culturix. All rights reserved.</p>
-        </div>
-      </footer>
+      <MarketingFooter />
     </div>
   );
 }

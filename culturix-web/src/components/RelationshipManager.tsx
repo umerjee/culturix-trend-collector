@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Plus, Loader2, Trash2, X, History, ChevronDown, ChevronUp, Sparkles, Pencil } from "lucide-react";
 import type { Character, CharacterRelationship, CharacterRelationshipEvent, RelationshipDraft } from "@/lib/types";
 import { RELATIONSHIP_EVENT_TYPES, RELATIONSHIP_TYPES } from "@/lib/types";
-import InfoTooltip from "@/components/InfoTooltip";
+import InfoTooltip from "@/components/ui/Tooltip";
 
 const LEVEL_HINTS = {
   affection: "How warmly they feel toward the other. Independent of trust — bickering siblings can be low-trust, high-affection.",

@@ -1,9 +1,12 @@
 import Link from "next/link";
-import { Zap, ArrowRight, Sparkles, Bell, Send, ShieldCheck } from "lucide-react";
+import { ArrowRight, Sparkles, Bell, Send, ShieldCheck } from "lucide-react";
 import {
   WHY_NOT_DIRECT_PUBLISH, HOW_IT_WORKS_STEPS, IOS_PUSH_NOTE, LAUNCH_DISCLAIMER,
   PUBLISH_MODE_DESCRIPTIONS, PUBLISH_MODE_LABELS,
 } from "@/content/publishingCopy";
+import MarketingHeader from "@/components/marketing/MarketingHeader";
+import MarketingFooter from "@/components/marketing/MarketingFooter";
+import { buttonVariants } from "@/components/ui/Button";
 
 export const metadata = {
   title: "How Publishing Works — Culturix",
@@ -15,17 +18,7 @@ const STEP_ICONS = [Sparkles, Bell, Send];
 export default function HowItWorksPage() {
   return (
     <div className="min-h-screen bg-white">
-      <header className="bg-white border-b border-gray-100 sticky top-0 z-10">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2">
-            <Zap className="h-5 w-5 text-blue-600" />
-            <span className="font-bold text-lg tracking-tight">Culturix</span>
-          </Link>
-          <Link href="/signup" className="text-sm bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors font-medium">
-            Get started free
-          </Link>
-        </div>
-      </header>
+      <MarketingHeader />
 
       <main className="max-w-3xl mx-auto px-4 sm:px-6 py-14">
         <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-4 text-center">
@@ -54,7 +47,7 @@ export default function HowItWorksPage() {
               const Icon = STEP_ICONS[i];
               return (
                 <div key={step.title} className="text-center">
-                  <div className="inline-flex items-center justify-center h-12 w-12 rounded-full bg-blue-50 text-blue-600 mb-4 mx-auto">
+                  <div className="inline-flex items-center justify-center h-12 w-12 rounded-full bg-primary-50 text-primary-600 mb-4 mx-auto">
                     <Icon className="h-5 w-5" />
                   </div>
                   <p className="text-xs font-semibold text-gray-400 mb-1">Step {i + 1}</p>
@@ -88,14 +81,13 @@ export default function HowItWorksPage() {
 
         {/* CTA */}
         <section className="text-center">
-          <Link
-            href="/signup"
-            className="inline-flex items-center gap-2 bg-blue-600 text-white font-semibold px-8 py-4 rounded-xl hover:bg-blue-700 transition-colors"
-          >
+          <Link href="/signup" className={buttonVariants({ variant: "primary", size: "lg" })}>
             Get started free <ArrowRight className="h-4 w-4" />
           </Link>
         </section>
       </main>
+
+      <MarketingFooter />
     </div>
   );
 }

@@ -18,31 +18,7 @@ import {
 } from "@/lib/types";
 import PersonaChips from "@/components/PersonaChips";
 import RegionChips from "@/components/RegionChips";
-
-function Chip({
-  label,
-  selected,
-  onClick,
-}: {
-  label: string;
-  selected: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
-        selected
-          ? "bg-blue-600 border-blue-600 text-white"
-          : "bg-white border-gray-200 text-gray-600 hover:border-blue-300 hover:text-blue-600"
-      }`}
-    >
-      {selected && <Check className="h-3 w-3" />}
-      {label}
-    </button>
-  );
-}
+import Chip from "@/components/ui/Chip";
 
 function ToneCard({
   label,

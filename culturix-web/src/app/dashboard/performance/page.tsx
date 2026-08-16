@@ -1,14 +1,16 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { isSuperAdminEmail } from "@/lib/admin/superadmin";
+import { RAILWAY_API_BASE } from "@/lib/config/api";
 import AppNav from "@/components/AppNav";
+import StatTile from "@/components/ui/StatTile";
+import EmptyState from "@/components/ui/EmptyState";
 import { Eye, Heart, MessageCircle, ExternalLink, BarChart3, Sparkles } from "lucide-react";
 import type { ContentPost } from "@/lib/types";
 
-const RAILWAY = process.env.NEXT_PUBLIC_API_URL || "https://culturix-trend-collector-production.up.railway.app";
-
 async function fetchContentPosts(userId: string): Promise<ContentPost[]> {
   try {
-    const res = await fetch(`${RAILWAY}/api/content-posts?user_id=${userId}`, { cache: "no-store" });
+    const res = await fetch(`${RAILWAY_API_BASE}/api/content-posts?user_id=${userId}`, { cache: "no-store" });
     if (!res.ok) return [];
     const data = await res.json();
     return Array.isArray(data) ? data : [];
@@ -42,7 +44,7 @@ export default async function PerformancePage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/signup");
 
-  const isSuperAdmin = user.email === "umer.ali79@gmail.com";
+  const isSuperAdmin = isSuperAdminEmail(user.email);
   const posts = await fetchContentPosts(user.id);
   const totalViews = posts.reduce((sum, p) => sum + (p.latest_views ?? 0), 0);
   const recentAutoPublished = posts
@@ -51,7 +53,7 @@ export default async function PerformancePage() {
     .slice(0, 5);
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <>
       <AppNav active="performance" isSuperAdmin={isSuperAdmin} product="posting-ideation" />
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
@@ -70,10 +72,7 @@ export default async function PerformancePage() {
               { val: String(posts.filter(p => p.created_via === "published").length), label: "published by Culturix" },
               { val: String(posts.filter(p => p.status === "tracked").length), label: "live & tracked" },
             ].map((s) => (
-              <div key={s.label} className="rounded-xl bg-white border border-gray-100 px-4 py-3">
-                <p className="text-xl font-bold text-indigo-600 leading-none">{s.val}</p>
-                <p className="text-xs text-gray-400 mt-1">{s.label}</p>
-              </div>
+              <StatTile key={s.label} value={s.val} label={s.label} />
             ))}
           </div>
         )}
@@ -81,7 +80,7 @@ export default async function PerformancePage() {
         {recentAutoPublished.length > 0 && (
           <div className="mb-6 rounded-2xl bg-white border border-gray-100 p-4">
             <div className="flex items-center gap-1.5 mb-3">
-              <Sparkles className="h-4 w-4 text-indigo-500" />
+              <Sparkles className="h-4 w-4 text-primary-500" />
               <h2 className="text-sm font-semibold text-gray-900">Recently auto-published</h2>
             </div>
             <div className="space-y-2">
@@ -102,7 +101,7 @@ export default async function PerformancePage() {
                     )}
                     <span>{formatDate(p.posted_at)}</span>
                     {p.post_url && (
-                      <a href={p.post_url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-600">
+                      <a href={p.post_url} target="_blank" rel="noopener noreferrer" className="text-primary-500 hover:text-primary-600">
                         <ExternalLink className="h-3.5 w-3.5" />
                       </a>
                     )}
@@ -114,14 +113,11 @@ export default async function PerformancePage() {
         )}
 
         {posts.length === 0 ? (
-          <div className="rounded-2xl border-2 border-dashed border-gray-200 py-20 text-center">
-            <BarChart3 className="h-10 w-10 text-gray-300 mx-auto mb-4" />
-            <h3 className="font-semibold text-gray-700 mb-2">No posts tracked yet</h3>
-            <p className="text-sm text-gray-400 max-w-sm mx-auto">
-              Connect an account in Settings, then mark an idea as posted or publish one directly from
-              your dashboard — results will show up here.
-            </p>
-          </div>
+          <EmptyState
+            icon={BarChart3}
+            title="No posts tracked yet"
+            description="Connect an account in Settings, then mark an idea as posted or publish one directly from your dashboard — results will show up here."
+          />
         ) : (
           <div className="rounded-2xl bg-white border border-gray-100 overflow-hidden">
             <div className="overflow-x-auto">
@@ -166,7 +162,7 @@ export default async function PerformancePage() {
                       <td className="px-4 py-3 text-xs text-gray-400">{STATUS_LABEL[p.status] ?? p.status}</td>
                       <td className="px-4 py-3">
                         {p.post_url && (
-                          <a href={p.post_url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-600">
+                          <a href={p.post_url} target="_blank" rel="noopener noreferrer" className="text-primary-500 hover:text-primary-600">
                             <ExternalLink className="h-3.5 w-3.5" />
                           </a>
                         )}
@@ -179,6 +175,6 @@ export default async function PerformancePage() {
           </div>
         )}
       </main>
-    </div>
+    </>
   );
 }

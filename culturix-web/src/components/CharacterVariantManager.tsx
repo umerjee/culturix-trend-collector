@@ -8,7 +8,7 @@ import { buildPersonalitySummary } from "@/lib/personalitySummary";
 import CharacterImageBuilder from "@/components/CharacterImageBuilder";
 import ExpressionUploadGrid from "@/components/ExpressionUploadGrid";
 import MemoryManager from "@/components/MemoryManager";
-import InfoTooltip from "@/components/InfoTooltip";
+import InfoTooltip from "@/components/ui/Tooltip";
 
 interface Props {
   brandId: string;

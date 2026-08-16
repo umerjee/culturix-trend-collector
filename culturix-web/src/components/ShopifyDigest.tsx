@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { RefreshCw, Loader2, Wand2, CheckCircle, XCircle, Clock } from "lucide-react";
 import type { ShopifyStore, ShopifyProduct } from "@/lib/types";
 import ShopifyProductCard from "@/components/ShopifyProductCard";
+import ProductSetupStatus, { type SetupStep } from "@/components/onboarding/ProductSetupStatus";
+
+type SetupAction = "sync" | "generate";
 
 interface Props {
   initialStore: ShopifyStore;
@@ -21,6 +24,9 @@ export default function ShopifyDigest({ initialStore, initialProducts }: Props) 
   const [syncing, setSyncing] = useState(false);
   const [generatingBulk, setGeneratingBulk] = useState(false);
   const [bulkMessage, setBulkMessage] = useState<string | null>(null);
+  const hasIdea = products.some((p) => !!p.idea);
+  const hasReel = products.some((p) => p.reel?.status === "done");
+  const [setupCollapsed, setSetupCollapsed] = useState(() => products.length > 0 && hasIdea && hasReel);
 
   // Poll while a sync is actively running so status/product count update
   // without the user having to manually refresh the page.
@@ -66,8 +72,39 @@ export default function ShopifyDigest({ initialStore, initialProducts }: Props) 
 
   const missingIdeaCount = products.filter((p) => !p.idea).length;
 
+  const setupSteps: SetupStep<SetupAction>[] = [
+    {
+      label: "Sync your catalog", action: "sync",
+      hint: "Pull in your recent products — titles, prices, and photos.",
+      done: products.length > 0,
+    },
+    {
+      label: "Generate a post idea", action: "generate",
+      hint: "AI writes a hook, caption, and hashtag strategy from a product's real details.",
+      done: hasIdea,
+    },
+    {
+      label: "Generate a reel", action: "generate",
+      hint: "Turn a product's real photo into a short-form AI video.",
+      done: hasReel,
+    },
+  ];
+
+  function handleSetupNavigate(action: SetupAction) {
+    if (action === "sync") triggerSync();
+    else generateBulk();
+  }
+
   return (
     <div className="space-y-6">
+      <ProductSetupStatus
+        title="Getting started"
+        steps={setupSteps}
+        collapsed={setupCollapsed}
+        onToggleCollapsed={() => setSetupCollapsed((c) => !c)}
+        onNavigate={handleSetupNavigate}
+      />
+
       <div className="rounded-2xl bg-white border border-gray-100 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -95,7 +132,7 @@ export default function ShopifyDigest({ initialStore, initialProducts }: Props) 
             <button
               onClick={triggerSync}
               disabled={syncing || store.last_sync_status === "running"}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:border-blue-300 hover:text-blue-600 transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:border-primary-300 hover:text-primary-600 transition-colors disabled:opacity-50"
             >
               {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
               Sync now
@@ -120,7 +157,7 @@ export default function ShopifyDigest({ initialStore, initialProducts }: Props) 
               <button
                 onClick={generateBulk}
                 disabled={generatingBulk}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium px-3 py-2 hover:bg-blue-700 transition-colors disabled:opacity-60"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 text-white text-xs font-medium px-3 py-2 hover:bg-primary-700 transition-colors disabled:opacity-60"
               >
                 {generatingBulk ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
                 Generate ideas for next 10
@@ -135,7 +172,7 @@ export default function ShopifyDigest({ initialStore, initialProducts }: Props) 
           )}
         </div>
       )}
-      {bulkMessage && <p className="text-xs text-blue-500">{bulkMessage}</p>}
+      {bulkMessage && <p className="text-xs text-primary-500">{bulkMessage}</p>}
 
       {products.length === 0 ? (
         <div className="rounded-2xl border-2 border-dashed border-gray-200 py-16 text-center">

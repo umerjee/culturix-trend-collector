@@ -1,15 +1,15 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { isSuperAdminEmail } from "@/lib/admin/superadmin";
+import { RAILWAY_API_BASE } from "@/lib/config/api";
 import AppNav from "@/components/AppNav";
 import ShopifyConnectForm from "@/components/ShopifyConnectForm";
 import ShopifyDigest from "@/components/ShopifyDigest";
 import type { ShopifyStore, ShopifyProduct } from "@/lib/types";
 
-const RAILWAY = process.env.NEXT_PUBLIC_API_URL || "https://culturix-trend-collector-production.up.railway.app";
-
 async function fetchStore(userId: string): Promise<ShopifyStore | null> {
   try {
-    const res = await fetch(`${RAILWAY}/api/shopify/store?user_id=${userId}`, { cache: "no-store" });
+    const res = await fetch(`${RAILWAY_API_BASE}/api/shopify/store?user_id=${userId}`, { cache: "no-store" });
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -19,7 +19,7 @@ async function fetchStore(userId: string): Promise<ShopifyStore | null> {
 
 async function fetchProducts(userId: string): Promise<ShopifyProduct[]> {
   try {
-    const res = await fetch(`${RAILWAY}/api/shopify/products?user_id=${userId}`, { cache: "no-store" });
+    const res = await fetch(`${RAILWAY_API_BASE}/api/shopify/products?user_id=${userId}`, { cache: "no-store" });
     if (!res.ok) return [];
     const data = await res.json();
     return Array.isArray(data) ? data : [];
@@ -33,12 +33,12 @@ export default async function ShopifyPage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/signup");
 
-  const isSuperAdmin = user.email === "umer.ali79@gmail.com";
+  const isSuperAdmin = isSuperAdminEmail(user.email);
   const store = await fetchStore(user.id);
   const products = store ? await fetchProducts(user.id) : [];
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <>
       <AppNav active="shopify" isSuperAdmin={isSuperAdmin} product="shopify" />
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
@@ -55,6 +55,6 @@ export default async function ShopifyPage() {
           <ShopifyConnectForm />
         )}
       </main>
-    </div>
+    </>
   );
 }

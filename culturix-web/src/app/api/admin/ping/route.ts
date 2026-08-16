@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
+import { requireSuperAdminApi } from "@/lib/admin/requireSuperAdminApi";
+import { adminApiHeaders } from "@/lib/admin/adminApiHeaders";
 
 export async function GET() {
+  const gate = await requireSuperAdminApi();
+  if (gate instanceof NextResponse) return gate;
+
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "";
 
   if (!apiUrl) {
@@ -12,7 +17,11 @@ export async function GET() {
 
   for (const ep of endpoints) {
     try {
-      const res = await fetch(`${apiUrl}${ep}`, { cache: "no-store", signal: AbortSignal.timeout(8000) });
+      const res = await fetch(`${apiUrl}${ep}`, {
+        cache: "no-store",
+        headers: adminApiHeaders(),
+        signal: AbortSignal.timeout(8000),
+      });
       results[ep] = { status: res.status, ok: res.ok };
     } catch (e) {
       results[ep] = { error: String(e) };

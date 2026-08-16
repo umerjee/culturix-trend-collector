@@ -14,10 +14,10 @@ import {
 } from "@/lib/types";
 import PublishingSetupStatus from "@/components/PublishingSetupStatus";
 import { IOS_PUSH_NOTE, PUBLISH_MODE_DESCRIPTIONS, PUBLISH_MODE_LABELS } from "@/content/publishingCopy";
+import Chip from "@/components/ui/Chip";
+import { RAILWAY_API_BASE as RAILWAY } from "@/lib/config/api";
 
 const ALL_FORMAT_KEYS = CONTENT_FORMATS.map((f) => f.key);
-
-const RAILWAY = process.env.NEXT_PUBLIC_API_URL || "https://culturix-trend-collector-production.up.railway.app";
 
 const EMPTY_PROFILE: Omit<ContentProfile, "id" | "user_id" | "created_at"> = {
   name: "",
@@ -39,21 +39,6 @@ const EMPTY_PROFILE: Omit<ContentProfile, "id" | "user_id" | "created_at"> = {
 
 const SUPPORTED_SOCIAL_PLATFORMS: { key: ConnectedAccount["platform"]; label: string; live: boolean }[] =
   CONNECTABLE_PLATFORMS.map((p) => ({ key: p.key as ConnectedAccount["platform"], label: p.label, live: true }));
-
-function Chip({ label, selected, onClick }: { label: string; selected: boolean; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
-        selected ? "bg-blue-600 border-blue-600 text-white" : "bg-white border-gray-200 text-gray-600 hover:border-blue-300"
-      }`}
-    >
-      {selected && <Check className="h-3 w-3" />}
-      {label}
-    </button>
-  );
-}
 
 interface Props {
   userId: string;

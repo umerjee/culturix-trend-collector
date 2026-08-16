@@ -1,21 +1,21 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { isSuperAdminEmail } from "@/lib/admin/superadmin";
+import { RAILWAY_API_BASE } from "@/lib/config/api";
 import AppNav from "@/components/AppNav";
 import CultureToonApp from "@/components/CultureToonApp";
 import type { CharacterBrand } from "@/lib/types";
-
-const RAILWAY = process.env.NEXT_PUBLIC_API_URL || "https://culturix-trend-collector-production.up.railway.app";
 
 export default async function CultureToonsPage() {
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/signup");
 
-  const isSuperAdmin = user.email === "umer.ali79@gmail.com";
+  const isSuperAdmin = isSuperAdminEmail(user.email);
 
   let brands: CharacterBrand[] = [];
   try {
-    const res = await fetch(`${RAILWAY}/api/culturetoons/brands?user_id=${user.id}`, { cache: "no-store" });
+    const res = await fetch(`${RAILWAY_API_BASE}/api/culturetoons/brands?user_id=${user.id}`, { cache: "no-store" });
     if (res.ok) {
       const data = await res.json();
       brands = Array.isArray(data) ? data : [];
@@ -25,7 +25,7 @@ export default async function CultureToonsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <>
       <AppNav active="culturetoons" isSuperAdmin={isSuperAdmin} product="culturetoons" />
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
@@ -40,6 +40,6 @@ export default async function CultureToonsPage() {
 
         <CultureToonApp initialBrands={brands} />
       </main>
-    </div>
+    </>
   );
 }

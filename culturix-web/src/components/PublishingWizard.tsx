@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, X, Link2, ShieldCheck, ShieldAlert, ArrowRight, Info } from "lucide-react";
+import { Loader2, X, Link2, ArrowRight, Info } from "lucide-react";
 import type { ContentProfile, ConnectedAccount, NextAutoPublish } from "@/lib/types";
 import { WHY_NOT_DIRECT_PUBLISH, IOS_PUSH_NOTE, PUBLISH_MODE_DESCRIPTIONS, PUBLISH_MODE_LABELS } from "@/content/publishingCopy";
+import ConnectionTestPanel, { type ConnectionTestResult } from "@/components/publish/ConnectionTestPanel";
 
 const RAILWAY = process.env.NEXT_PUBLIC_API_URL || "https://culturix-trend-collector-production.up.railway.app";
 
@@ -41,8 +42,7 @@ export default function PublishingWizard({
     a => a.platform === platform && a.status === "active" && a.content_profile_id === profile.id
   );
   const [step, setStep] = useState<Step>(account ? initialStep : "connect");
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ ok: boolean; reason?: string; platform_username?: string } | null>(null);
+  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [mode, setMode] = useState<"manual" | "review" | "auto">(profile.publish_mode ?? "manual");
   const [modeSaving, setModeSaving] = useState(false);
   const [nextPreview, setNextPreview] = useState<NextAutoPublish | null>(null);
@@ -55,23 +55,12 @@ export default function PublishingWizard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account]);
 
-  async function runTest() {
-    if (testing) return;
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const res = await fetch(
-        `${RAILWAY}/api/social/${platform}/test?user_id=${userId}&content_profile_id=${profile.id}`,
-        { method: "POST" }
-      );
-      const data = await res.json().catch(() => ({ ok: false }));
-      setTestResult(data);
-      onAccountsChanged();
-    } catch {
-      setTestResult({ ok: false, reason: "Network error — try again." });
-    } finally {
-      setTesting(false);
-    }
+  async function runConnectionTest(): Promise<ConnectionTestResult> {
+    const res = await fetch(
+      `${RAILWAY}/api/social/${platform}/test?user_id=${userId}&content_profile_id=${profile.id}`,
+      { method: "POST" }
+    );
+    return await res.json().catch(() => ({ ok: false }));
   }
 
   async function saveMode() {
@@ -118,7 +107,7 @@ export default function PublishingWizard({
             {STEPS.map((s, i) => (
               <div
                 key={s.key}
-                className={`h-1.5 flex-1 rounded-full ${activeStepIndex >= i ? "bg-blue-600" : "bg-gray-100"}`}
+                className={`h-1.5 flex-1 rounded-full ${activeStepIndex >= i ? "bg-primary-600" : "bg-gray-100"}`}
               />
             ))}
           </div>
@@ -140,7 +129,7 @@ export default function PublishingWizard({
             </p>
             <a
               href={`${RAILWAY}/api/social/${platform}/connect?user_id=${userId}&content_profile_id=${profile.id}`}
-              className="w-full flex items-center justify-center gap-2 rounded-xl bg-blue-600 text-white font-semibold py-3 hover:bg-blue-700 transition"
+              className="w-full flex items-center justify-center gap-2 rounded-xl bg-primary-600 text-white font-semibold py-3 hover:bg-primary-700 transition"
             >
               <Link2 className="h-4 w-4" /> Connect {platformLabel}
             </a>
@@ -149,47 +138,22 @@ export default function PublishingWizard({
 
         {step === "test" && (
           <div className="space-y-3">
-            <p className="text-sm text-gray-600">
-              Confirm this connection actually works before relying on it — a quick live check
-              against {platformLabel}.
-            </p>
-            {account?.last_tested_at && !testResult && (
-              <p className="text-xs text-gray-400">
-                Last tested {new Date(account.last_tested_at).toLocaleString()} —{" "}
-                {account.last_test_status === "ok" ? "passed" : "failed"}
-              </p>
-            )}
-            <button
-              onClick={runTest}
-              disabled={testing}
-              className="w-full flex items-center justify-center gap-2 rounded-xl border border-gray-200 py-3 text-sm font-semibold text-gray-700 hover:border-blue-300 hover:text-blue-600 disabled:opacity-60 transition"
-            >
-              {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-              {testing ? "Testing…" : testResult ? "Test again" : "Test connection"}
-            </button>
-            {testResult && (
-              <div
-                className={`flex items-start gap-2 rounded-lg px-3 py-2.5 text-sm ${
-                  testResult.ok ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600"
-                }`}
-              >
-                {testResult.ok
-                  ? <ShieldCheck className="h-4 w-4 mt-0.5 shrink-0" />
-                  : <ShieldAlert className="h-4 w-4 mt-0.5 shrink-0" />}
-                <span>
-                  {testResult.ok
-                    ? `Connected as @${testResult.platform_username ?? "your account"} — working.`
-                    : testResult.reason ?? "Could not verify this connection."}
-                </span>
-              </div>
-            )}
+            <ConnectionTestPanel
+              description={`Confirm this connection actually works before relying on it — a quick live check against ${platformLabel}.`}
+              lastTestedAt={account?.last_tested_at}
+              lastTestStatus={account?.last_test_status}
+              testResult={testResult}
+              runTest={runConnectionTest}
+              onResult={setTestResult}
+              onTested={onAccountsChanged}
+            />
             <div className="flex items-center justify-between pt-1">
               <button onClick={() => setStep("connect")} className="text-xs text-gray-400 hover:text-gray-600">
                 Back
               </button>
               <button
                 onClick={() => setStep("mode")}
-                className="inline-flex items-center gap-1 text-sm font-medium text-blue-600 hover:text-blue-700"
+                className="inline-flex items-center gap-1 text-sm font-medium text-primary-600 hover:text-primary-700"
               >
                 Continue <ArrowRight className="h-3.5 w-3.5" />
               </button>
@@ -201,7 +165,7 @@ export default function PublishingWizard({
           <div className="space-y-3">
             <p className="text-xs text-gray-500 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
               {WHY_NOT_DIRECT_PUBLISH}{" "}
-              <a href="/how-it-works" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline whitespace-nowrap">
+              <a href="/how-it-works" target="_blank" rel="noopener noreferrer" className="text-primary-600 hover:underline whitespace-nowrap">
                 Learn more →
               </a>
             </p>
@@ -218,10 +182,10 @@ export default function PublishingWizard({
                   type="button"
                   onClick={() => setMode(key)}
                   className={`text-left rounded-xl border-2 p-3 transition-all ${
-                    mode === key ? "border-blue-600 bg-blue-50" : "border-gray-200"
+                    mode === key ? "border-primary-600 bg-primary-50" : "border-gray-200"
                   }`}
                 >
-                  <p className={`text-xs font-semibold ${mode === key ? "text-blue-700" : "text-gray-700"}`}>{PUBLISH_MODE_LABELS[key]}</p>
+                  <p className={`text-xs font-semibold ${mode === key ? "text-primary-700" : "text-gray-700"}`}>{PUBLISH_MODE_LABELS[key]}</p>
                   <p className="text-xs text-gray-400 mt-1">{PUBLISH_MODE_DESCRIPTIONS[key]}</p>
                 </button>
               ))}
@@ -233,7 +197,7 @@ export default function PublishingWizard({
               <button
                 onClick={saveMode}
                 disabled={modeSaving}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white px-4 py-2 text-sm font-medium hover:bg-blue-700 disabled:opacity-60"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 text-white px-4 py-2 text-sm font-medium hover:bg-primary-700 disabled:opacity-60"
               >
                 {modeSaving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                 Save & continue
@@ -277,11 +241,11 @@ export default function PublishingWizard({
                     <Loader2 className="h-3.5 w-3.5 animate-spin" /> Checking next candidate…
                   </div>
                 ) : nextPreview?.candidate ? (
-                  <div className="rounded-lg bg-blue-50 border border-blue-100 px-3 py-2.5">
-                    <p className="text-xs font-semibold text-blue-700">
+                  <div className="rounded-lg bg-primary-50 border border-primary-100 px-3 py-2.5">
+                    <p className="text-xs font-semibold text-primary-700">
                       Next up: &ldquo;{nextPreview.candidate.hook}&rdquo;
                     </p>
-                    <p className="text-xs text-blue-500 mt-0.5">
+                    <p className="text-xs text-primary-500 mt-0.5">
                       on {nextPreview.candidate.platform} — {nextPreview.scheduled_for}
                     </p>
                     <p className="text-xs text-gray-400 mt-1">
@@ -298,7 +262,7 @@ export default function PublishingWizard({
             )}
             <button
               onClick={onClose}
-              className="w-full rounded-xl bg-blue-600 text-white font-semibold py-3 hover:bg-blue-700 transition"
+              className="w-full rounded-xl bg-primary-600 text-white font-semibold py-3 hover:bg-primary-700 transition"
             >
               Done
             </button>

@@ -100,7 +100,7 @@ export default function CultureToonApp({ initialBrands }: Props) {
         />
         <button
           onClick={() => { setSelectedBrandId(pendingConnectBrand.id); setPendingConnectBrand(null); }}
-          className="mt-5 w-full inline-flex items-center justify-center gap-1.5 rounded-xl bg-blue-600 text-white font-semibold py-3 hover:bg-blue-700 transition"
+          className="mt-5 w-full inline-flex items-center justify-center gap-1.5 rounded-xl bg-primary-600 text-white font-semibold py-3 hover:bg-primary-700 transition"
         >
           Continue to {pendingConnectBrand.name} <ArrowRight className="h-4 w-4" />
         </button>
@@ -119,8 +119,8 @@ export default function CultureToonApp({ initialBrands }: Props) {
             onClick={() => setSelectedBrandId(b.id)}
             className={`text-sm font-medium rounded-lg px-3 py-1.5 transition-colors ${
               b.id === selectedBrand.id
-                ? "bg-blue-600 text-white"
-                : "bg-white border border-gray-200 text-gray-600 hover:border-blue-300"
+                ? "bg-primary-600 text-white"
+                : "bg-white border border-gray-200 text-gray-600 hover:border-primary-300"
             }`}
           >
             {b.name}
@@ -128,7 +128,7 @@ export default function CultureToonApp({ initialBrands }: Props) {
         ))}
         <button
           onClick={() => setShowNewBrandForm(true)}
-          className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-blue-600 rounded-lg px-3 py-1.5 border border-dashed border-gray-200 transition-colors"
+          className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-primary-600 rounded-lg px-3 py-1.5 border border-dashed border-gray-200 transition-colors"
         >
           <Plus className="h-3.5 w-3.5" /> New brand
         </button>

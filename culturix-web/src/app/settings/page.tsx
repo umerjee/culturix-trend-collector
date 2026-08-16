@@ -1,11 +1,11 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { isSuperAdminEmail } from "@/lib/admin/superadmin";
+import { RAILWAY_API_BASE } from "@/lib/config/api";
 import AppNav from "@/components/AppNav";
 import SettingsForm from "@/components/SettingsForm";
 
 export const dynamic = "force-dynamic";
-
-const RAILWAY = process.env.NEXT_PUBLIC_API_URL || "https://culturix-trend-collector-production.up.railway.app";
 
 export default async function SettingsPage({
   searchParams,
@@ -16,11 +16,11 @@ export default async function SettingsPage({
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/signup");
 
-  const isSuperAdmin = user.email === "umer.ali79@gmail.com";
+  const isSuperAdmin = isSuperAdminEmail(user.email);
   let plan: "free" | "pro" = isSuperAdmin ? "pro" : "free";
   if (!isSuperAdmin) {
     try {
-      const approvalRes = await fetch(`${RAILWAY}/api/users/${user.id}/approved`, { cache: "no-store" });
+      const approvalRes = await fetch(`${RAILWAY_API_BASE}/api/users/${user.id}/approved`, { cache: "no-store" });
       if (approvalRes.ok) {
         const info = await approvalRes.json();
         if (info.plan === "pro") plan = "pro";
