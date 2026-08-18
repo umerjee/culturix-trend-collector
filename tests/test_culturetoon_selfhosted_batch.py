@@ -138,17 +138,14 @@ class TestRunSelfhostedVideoBatch:
         run_selfhosted_video_batch()
         mock_start.assert_not_called()
 
-    def test_generates_video_for_approved_script_and_stops_pod(self, db, user_id, monkeypatch, mocker):
+    def test_generates_video_via_serverless_endpoint(self, db, user_id, monkeypatch, mocker):
         brand = culturetoons.create_brand({"user_id": user_id})
         variant_id = _make_variant(db, user_id, brand["id"])
         script_id = _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
         monkeypatch.setenv("SELFHOSTED_VIDEO_BRAND_IDS", brand["id"])
-        monkeypatch.setenv("RUNPOD_POD_ID", "pod-123")
+        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-123")
 
-        mock_start = mocker.patch("app.media.runpod_client.start_pod")
-        mock_wait = mocker.patch("app.media.runpod_client.wait_for_pod_ready", return_value="http://host:8188")
-        mock_stop = mocker.patch("app.media.runpod_client.stop_pod")
-        mocker.patch(
+        mock_generate = mocker.patch(
             "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
             return_value=b"video-bytes",
         )
@@ -156,9 +153,7 @@ class TestRunSelfhostedVideoBatch:
 
         run_selfhosted_video_batch()
 
-        mock_start.assert_called_once_with("pod-123")
-        mock_wait.assert_called_once()
-        mock_stop.assert_called_once_with("pod-123")
+        assert mock_generate.call_args.args[2] == "endpoint-123"  # (script, variants, endpoint_id, ...)
 
         session = db()
         try:
@@ -173,31 +168,49 @@ class TestRunSelfhostedVideoBatch:
         finally:
             session.close()
 
-    def test_pod_is_stopped_even_when_generation_raises(self, db, user_id, monkeypatch, mocker):
+    def test_missing_endpoint_id_does_nothing(self, db, user_id, monkeypatch, mocker):
         brand = culturetoons.create_brand({"user_id": user_id})
         variant_id = _make_variant(db, user_id, brand["id"])
         _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
         monkeypatch.setenv("SELFHOSTED_VIDEO_BRAND_IDS", brand["id"])
-        monkeypatch.setenv("RUNPOD_POD_ID", "pod-123")
+        monkeypatch.delenv("RUNPOD_SERVERLESS_ENDPOINT_ID", raising=False)
 
-        mocker.patch("app.media.runpod_client.start_pod")
-        mocker.patch("app.media.runpod_client.wait_for_pod_ready", side_effect=RuntimeError("pod never came up"))
-        mock_stop = mocker.patch("app.media.runpod_client.stop_pod")
+        mock_generate = mocker.patch("app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted")
 
-        run_selfhosted_video_batch()  # must not raise — top-level try/except logs instead
+        run_selfhosted_video_batch()  # must not raise
 
-        mock_stop.assert_called_once_with("pod-123")
+        mock_generate.assert_not_called()
+
+    def test_one_script_failing_does_not_block_the_next(self, db, user_id, monkeypatch, mocker):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        variant_id = _make_variant(db, user_id, brand["id"])
+        script_fail_id = _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
+        script_ok_id = _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
+        monkeypatch.setenv("SELFHOSTED_VIDEO_BRAND_IDS", brand["id"])
+        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-123")
+
+        mocker.patch(
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
+            side_effect=[RuntimeError("serverless job failed"), b"video-bytes"],
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://example.com/video.mp4")
+
+        run_selfhosted_video_batch()
+
+        session = db()
+        try:
+            toons = {t.script_id: t for t in session.query(Toon).all()}
+            assert toons[script_fail_id].status == "failed"
+            assert toons[script_ok_id].status == "ready"
+        finally:
+            session.close()
 
     def test_character_not_lora_ready_marks_toon_failed_without_crashing_batch(self, db, user_id, monkeypatch, mocker):
         brand = culturetoons.create_brand({"user_id": user_id})
         variant_id = _make_variant(db, user_id, brand["id"], lora_status="none")
         script_id = _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
         monkeypatch.setenv("SELFHOSTED_VIDEO_BRAND_IDS", brand["id"])
-        monkeypatch.setenv("RUNPOD_POD_ID", "pod-123")
-
-        mocker.patch("app.media.runpod_client.start_pod")
-        mocker.patch("app.media.runpod_client.wait_for_pod_ready", return_value="http://host:8188")
-        mocker.patch("app.media.runpod_client.stop_pod")
+        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-123")
 
         run_selfhosted_video_batch()
 
@@ -215,11 +228,8 @@ class TestRunSelfhostedVideoBatch:
         variant_id = _make_variant(db, user_id, brand["id"])
         _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
         monkeypatch.setenv("SELFHOSTED_VIDEO_BRAND_IDS", brand["id"])
-        monkeypatch.setenv("RUNPOD_POD_ID", "pod-123")
+        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-123")
 
-        mocker.patch("app.media.runpod_client.start_pod")
-        mocker.patch("app.media.runpod_client.wait_for_pod_ready", return_value="http://host:8188")
-        mocker.patch("app.media.runpod_client.stop_pod")
         mock_generate = mocker.patch("app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted")
 
         run_selfhosted_video_batch()

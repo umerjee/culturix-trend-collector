@@ -11,11 +11,14 @@ trend, approved by the brand owner, is exactly the kind of "ToonScript with
 status=approved and no Toon yet" this batch job picks up — closing that loop
 end to end without a human ever clicking "Generate video."
 
-Pod lifecycle is managed once per whole batch window, not per-clip, since
-starting/stopping per clip would waste the pod's ~1-2 min boot time on every
-single job. The pod is guaranteed to stop even if a job hangs or raises
-(spec's hard cost-control requirement) via the try/finally around the whole
-window.
+Inference runs against a RunPod Serverless endpoint (see
+app/media/runpod_serverless_client.py), not a manually-managed pod — there
+is no pod start/stop lifecycle for this module to own; Serverless scales
+itself to zero when idle, which is the whole reason the Network-Volume
+architecture (see the plan this was revised from) replaced the earlier
+single-persistent-pod design. The wall-clock time budget below still
+applies (a real batch window, not unbounded), it just isn't tied to any
+GPU lifecycle of this module's own anymore.
 """
 import logging
 import os
@@ -73,7 +76,7 @@ def _script_duration(script) -> float:
     )
 
 
-def _process_brand(session, brand, comfyui_url: str, deadline: float) -> int:
+def _process_brand(session, brand, endpoint_id: str, deadline: float) -> int:
     from app.models.toon import Toon
     from app.media import storage
     from app.services.culturetoon_selfhosted_video import (
@@ -101,7 +104,7 @@ def _process_brand(session, brand, comfyui_url: str, deadline: float) -> int:
 
         try:
             video_bytes = generate_toon_video_selfhosted(
-                script, variants, comfyui_url, duration_seconds=duration,
+                script, variants, endpoint_id, duration_seconds=duration,
             )
             video_url = storage.upload(
                 video_bytes,
@@ -137,7 +140,7 @@ def _process_brand(session, brand, comfyui_url: str, deadline: float) -> int:
     return generated
 
 
-def _process_pilot_brands(pilot_brand_ids: list, comfyui_url: str, deadline: float) -> int:
+def _process_pilot_brands(pilot_brand_ids: list, endpoint_id: str, deadline: float) -> int:
     from app.db import SessionLocal
     from app.models.character_brand import CharacterBrand
 
@@ -151,7 +154,7 @@ def _process_pilot_brands(pilot_brand_ids: list, comfyui_url: str, deadline: flo
             if time.time() > deadline:
                 logger.warning("Self-hosted video batch hit its time budget — stopping early")
                 break
-            generated += _process_brand(session, brand, comfyui_url, deadline)
+            generated += _process_brand(session, brand, endpoint_id, deadline)
         return generated
     finally:
         session.close()
@@ -169,23 +172,15 @@ def run_selfhosted_video_batch() -> None:
             logger.info("SELFHOSTED_VIDEO_BRAND_IDS is empty — nothing to do")
             return
 
-        pod_id = os.getenv("RUNPOD_POD_ID", "")
+        endpoint_id = os.getenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "")
+        if not endpoint_id:
+            logger.warning("RUNPOD_SERVERLESS_ENDPOINT_ID is not set — nothing to do")
+            return
+
         max_minutes = float(os.getenv("SELFHOSTED_BATCH_MAX_MINUTES", "60"))
         deadline = time.time() + max_minutes * 60
-        generated = 0
 
-        from app.media import runpod_client
-        try:
-            runpod_client.start_pod(pod_id)
-            comfyui_url = runpod_client.wait_for_pod_ready(pod_id)
-            generated = _process_pilot_brands(pilot_brand_ids, comfyui_url, deadline)
-        finally:
-            # Guaranteed to fire on any exception or early time-budget
-            # break above — a hung job can never leave the pod (and its
-            # billing) running. See runpod_client.stop_pod's own
-            # swallow-and-log behavior for why this can't itself raise.
-            if pod_id:
-                runpod_client.stop_pod(pod_id)
+        generated = _process_pilot_brands(pilot_brand_ids, endpoint_id, deadline)
 
         logger.info("Self-hosted video batch done: %d videos generated", generated)
     except Exception as e:

@@ -1,22 +1,35 @@
 """Per-CharacterVariant LoRA training for the self-hosted (RunPod+ComfyUI+
 LTX-2) video path's character-consistency mechanism — see
 CharacterVariant.lora_path's docstring and
-app/services/culturetoon_selfhosted_video.py. Training itself runs via
-ltx-trainer on the RunPod pod, triggered remotely over SSH
-(app/media/runpod_ssh.py) — manual-to-*start* (a human calls
-POST /variants/{id}/train-lora when they want a new character trained) but
-fully automated once started, no separate script to run by hand on the pod.
+app/services/culturetoon_selfhosted_video.py.
+
+Runs against an EPHEMERAL, on-demand training pod (A100/H100-class —
+LTX-2's training path needs bf16/more VRAM than the 4090-class inference
+tier comfortably provides), created fresh per run and fully terminated when
+done — not a fixed, standing pod. The pod mounts the same Network Volume
+the Serverless inference endpoint reads from, so the trained LoRA never
+needs to be copied anywhere: ltx-trainer writes it directly into the
+volume's ComfyUI/models/loras/ directory, and lora_path just records the
+filename ComfyUI's LoraLoader node resolves it by (not a URL — there's
+nothing to upload/download here, unlike the pre-Network-Volume version of
+this module).
+
+Manual-to-*start* (a human calls POST /variants/{id}/train-lora when they
+want a new character trained) but fully automated once started via SSH
+(app/media/runpod_ssh.py) — no separate script to run by hand on the pod.
 
 Exact ltx-trainer CLI flags below are the one piece of this path most
 likely to need adjustment after the first real run — verify against
-ltx-trainer's own docs/--help once it's installed on the pod."""
+ltx-trainer's own docs/--help once it's installed on the training image."""
 import logging
-import os
 
 logger = logging.getLogger("culturix.services.culturetoon_lora")
 
 MIN_LORA_TRAINING_IMAGES = 10
 _TRAINING_TIMEOUT_SECONDS = 3600  # ~1hr ceiling for one character's LoRA run
+# RunPod's documented default Network Volume mount point inside a pod.
+_VOLUME_MOUNT = "/runpod-volume"
+_VOLUME_LORA_DIR = f"{_VOLUME_MOUNT}/ComfyUI/models/loras"
 
 
 class LoraTrainingError(Exception):
@@ -31,17 +44,18 @@ def add_training_images(variant, urls: list) -> None:
 
 
 def train_character_lora(variant) -> None:
-    """Synchronous end-to-end training run: starts the pod (if not already
-    running), stages the variant's training images on it, runs
-    ltx-trainer over SSH, retrieves the resulting LoRA file via SFTP,
-    uploads it to Supabase storage, and sets lora_path/lora_status.
-    Mutates `variant` in place — caller owns the session commit, same
-    convention as every other CultureToons service function. Raises
-    LoraTrainingError on any failure (also setting lora_status="failed"
-    first, so a failed attempt is visible even if the caller doesn't
-    handle the exception specially)."""
+    """Synchronous end-to-end training run: creates a fresh ephemeral
+    training pod, stages the variant's training images on it, runs
+    ltx-trainer over SSH writing directly into the shared Network Volume's
+    LoRA directory, verifies the file landed, and sets
+    lora_path (a bare filename, not a URL)/lora_status. Mutates `variant`
+    in place — caller owns the session commit, same convention as every
+    other CultureToons service function. Raises LoraTrainingError on any
+    failure (also setting lora_status="failed" first, so a failed attempt
+    is visible even if the caller doesn't handle the exception specially).
+    The training pod is always terminated, success or failure — it's
+    ephemeral by design, never worth keeping around."""
     from app.media import runpod_client, runpod_ssh
-    from app.media import storage
 
     images = variant.lora_training_image_urls or []
     if len(images) < MIN_LORA_TRAINING_IMAGES:
@@ -50,12 +64,11 @@ def train_character_lora(variant) -> None:
         )
 
     variant.lora_status = "training"
-    pod_id = os.getenv("RUNPOD_POD_ID", "")
+    pod_id = None
 
     try:
-        runpod_client.start_pod(pod_id)
-        runpod_client.wait_for_pod_ready(pod_id)
-        host, port = runpod_client.get_pod_ssh_info(pod_id)
+        pod_id = runpod_client.create_training_pod()
+        host, port = runpod_client.wait_for_ssh_ready(pod_id)
 
         work_dir = f"/workspace/lora_training/{variant.id}"
         download_cmds = " && ".join(
@@ -67,9 +80,10 @@ def train_character_lora(variant) -> None:
         if exit_code != 0:
             raise LoraTrainingError(f"Failed to stage training images on the pod: {stderr[-2000:]}")
 
-        output_path = f"{work_dir}/output/{variant.id}.safetensors"
+        lora_filename = f"{variant.id}.safetensors"
+        output_path = f"{_VOLUME_LORA_DIR}/{lora_filename}"
         train_cmd = (
-            f"cd /workspace/LTX-Video && "
+            f"mkdir -p {_VOLUME_LORA_DIR} && cd /workspace/LTX-Video && "
             f"python -m ltx_trainer.train --images_dir {work_dir} --output {output_path} "
             f"--character_name '{variant.name}'"
         )
@@ -79,11 +93,15 @@ def train_character_lora(variant) -> None:
         if exit_code != 0:
             raise LoraTrainingError(f"ltx-trainer failed: {stderr[-2000:]}")
 
-        lora_bytes = runpod_ssh.download_file(host, port, output_path)
-        lora_url = storage.upload(
-            lora_bytes, f"culturetoons/loras/{variant.id}.safetensors", "application/octet-stream",
+        exit_code, _stdout, _stderr = runpod_ssh.run_remote_command(
+            host, port, f"test -f {output_path}", timeout_seconds=30,
         )
-        variant.lora_path = lora_url
+        if exit_code != 0:
+            raise LoraTrainingError(
+                f"ltx-trainer reported success but {output_path} is not on the Network Volume"
+            )
+
+        variant.lora_path = lora_filename
         variant.lora_status = "ready"
         logger.info("LoRA training complete for variant %s", variant.id)
     except LoraTrainingError as exc:
@@ -96,7 +114,7 @@ def train_character_lora(variant) -> None:
         raise LoraTrainingError(str(exc)) from exc
     finally:
         if pod_id:
-            runpod_client.stop_pod(pod_id)
+            runpod_client.terminate_pod(pod_id)
 
 
 def run_lora_training(variant_id) -> None:

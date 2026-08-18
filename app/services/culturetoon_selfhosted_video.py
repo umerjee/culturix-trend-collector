@@ -1,7 +1,9 @@
-"""Self-hosted (RunPod + ComfyUI + LTX-2) counterpart to
+"""Self-hosted (RunPod Serverless + ComfyUI + LTX-2) counterpart to
 app/services/culturetoon_video.py's Kling Omni path. Builds one LTX prompt
-from a ToonScript's shots and resolves the cast's trained LoRA; DB writes,
-pod lifecycle, and error handling live in
+from a ToonScript's shots and resolves the cast's trained LoRA, then
+submits the workflow to the RunPod Serverless inference endpoint
+(app/media/runpod_serverless_client.py) — no pod lifecycle to manage here,
+Serverless scales itself. DB writes and error handling live in
 app/services/culturetoon_selfhosted_batch.py, the only caller.
 
 Known simplification vs. the Kling Omni path: there's no equivalent to
@@ -56,13 +58,13 @@ def resolve_ready_lora(variants: list) -> str:
     return variants[0].lora_path
 
 
-def generate_toon_video_selfhosted(script, variants: list, comfyui_url: str,
+def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
                                     duration_seconds: Optional[float] = None) -> bytes:
     """Returns raw video bytes for the caller to persist via
     app.media.storage.upload(). Raises SelfHostedVideoGenerationError (cast
-    not ready) or whatever app.media.comfyui_client/ltx_workflow raise on
-    a ComfyUI-side failure."""
-    from app.media import comfyui_client, ltx_workflow
+    not ready) or whatever app.media.runpod_serverless_client/ltx_workflow
+    raise on a Serverless-side failure."""
+    from app.media import ltx_workflow, runpod_serverless_client
 
     lora_path = resolve_ready_lora(variants)
     prompt_text = build_prompt_from_script(script)
@@ -74,6 +76,4 @@ def generate_toon_video_selfhosted(script, variants: list, comfyui_url: str,
     )
 
     workflow = ltx_workflow.build_workflow(prompt_text, total_duration, lora_path=lora_path)
-    prompt_id = comfyui_client.submit_workflow(comfyui_url, workflow)
-    history_entry = comfyui_client.wait_for_completion(comfyui_url, prompt_id)
-    return comfyui_client.download_output(comfyui_url, history_entry)
+    return runpod_serverless_client.run_inference_job(endpoint_id, workflow)

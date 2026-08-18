@@ -494,9 +494,9 @@ def run_selfhosted_video_batch():
     """DORMANT by default — only registered when ENABLE_SELFHOSTED_VIDEO is
     truthy (see start()), same gating pattern as run_auto_publish/
     ENABLE_DIRECT_PUBLISH. Generates video for CultureToons' self-hosted
-    (RunPod+ComfyUI+LTX-2) pilot brands (SELFHOSTED_VIDEO_BRAND_IDS) — see
-    app/services/culturetoon_selfhosted_batch.py for the full batch-window/
-    pod-lifecycle logic; this wrapper only logs and isolates the job the
+    (RunPod Serverless+ComfyUI+LTX-2) pilot brands (SELFHOSTED_VIDEO_BRAND_IDS)
+    — see app/services/culturetoon_selfhosted_batch.py for the full
+    batch-window logic; this wrapper only logs and isolates the job the
     same way every other job in this file does."""
     logger.info("Self-hosted video batch dispatch starting...")
     try:

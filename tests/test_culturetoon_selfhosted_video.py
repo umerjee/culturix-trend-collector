@@ -61,21 +61,20 @@ class TestResolveReadyLora:
 
 
 class TestGenerateToonVideoSelfhosted:
-    def test_raises_before_calling_comfyui_when_cast_not_ready(self, mocker):
-        mock_submit = mocker.patch("app.media.comfyui_client.submit_workflow")
+    def test_raises_before_calling_runpod_when_cast_not_ready(self, mocker):
+        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job")
         script = _script(mocker, hook_line="hi", shots=[])
         variants = [_variant(mocker, lora_status="none")]
         with pytest.raises(SelfHostedVideoGenerationError):
-            generate_toon_video_selfhosted(script, variants, "http://host:8188")
-        mock_submit.assert_not_called()
+            generate_toon_video_selfhosted(script, variants, "endpoint-1")
+        mock_run.assert_not_called()
 
     def test_full_success_path(self, mocker):
         mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch("app.media.comfyui_client.submit_workflow", return_value="prompt-1")
-        mocker.patch("app.media.comfyui_client.wait_for_completion", return_value={"outputs": {}})
-        mocker.patch("app.media.comfyui_client.download_output", return_value=b"video-bytes")
+        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-bytes")
 
         script = _script(mocker, hook_line="hi", shots=[], total_duration_seconds=8)
         variants = [_variant(mocker)]
-        result = generate_toon_video_selfhosted(script, variants, "http://host:8188")
+        result = generate_toon_video_selfhosted(script, variants, "endpoint-1")
         assert result == b"video-bytes"
+        mock_run.assert_called_once_with("endpoint-1", {"1": {}})
