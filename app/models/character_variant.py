@@ -1,5 +1,5 @@
 from sqlalchemy import Column, String, Integer, DateTime, Text, Boolean, ARRAY
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from datetime import datetime
 import uuid
 from app.db import Base
@@ -71,7 +71,17 @@ class CharacterVariant(Base):
     # LoraLoader node resolves it by.
     lora_path = Column(Text, nullable=True)
     lora_status = Column(String(12), nullable=False, default="none")  # none|training|ready|failed
-    lora_training_image_urls = Column(ARRAY(Text), nullable=True)
+    # List of {"url": str, "caption": str} — NOT a bare URL array. A LoRA
+    # trained on identically-captioned images overfits to whatever's
+    # constant across them (a pose, a background) instead of learning the
+    # character's actual identity; ltx-trainer's own dataset format is
+    # video+caption pairs (see culturetoon_lora.py's module docstring), so
+    # each image needs its own real caption of what's actually in THAT
+    # image, not a repeated character name. Captioned automatically at
+    # upload time (culturetoon_lora.py::caption_training_image) so this
+    # data is ready before /train-lora is ever called, not discovered
+    # missing at training time.
+    lora_training_images = Column(JSONB, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

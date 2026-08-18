@@ -344,7 +344,7 @@ def _serialize_variant(v) -> dict:
         "element_error": v.element_error,
         "voice_provider": v.voice_provider, "elevenlabs_voice_id": v.elevenlabs_voice_id,
         "lora_path": v.lora_path, "lora_status": v.lora_status,
-        "lora_training_image_urls": v.lora_training_image_urls or [],
+        "lora_training_images": v.lora_training_images or [],
         "created_at": v.created_at.isoformat() if v.created_at else None,
         "updated_at": v.updated_at.isoformat() if v.updated_at else None,
     }
@@ -1947,7 +1947,7 @@ async def upload_lora_training_images(variant_id: str, user_id: str = Form(...),
         uploaded_urls = []
         for i, file in enumerate(files):
             data = await file.read()
-            existing_count = len(variant.lora_training_image_urls or []) + i
+            existing_count = len(variant.lora_training_images or []) + i
             path = f"culturetoons/{variant.character_id}/{variant.id}/lora-training/{existing_count}.png"
             try:
                 uploaded_urls.append(save_image(data, file.content_type, path))
@@ -1978,7 +1978,7 @@ def train_variant_lora(variant_id: str, body: dict, background_tasks: Background
     session = SessionLocal()
     try:
         variant = _get_variant_owned(session, variant_id, brand_id, user_id)
-        image_count = len(variant.lora_training_image_urls or [])
+        image_count = len(variant.lora_training_images or [])
         if image_count < MIN_LORA_TRAINING_IMAGES:
             raise HTTPException(
                 status_code=400,

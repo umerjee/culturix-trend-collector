@@ -327,18 +327,20 @@ class TestLoraTrainingEndpoints:
     def test_upload_training_images_accumulates_across_calls(self, db, user_id, brand_and_character, mocker):
         brand, _character, variant = brand_and_character
         mocker.patch("app.media.storage.upload", side_effect=lambda data, path, ct: f"https://example.com/{path}")
+        mocker.patch("app.services.culturetoon_lora.caption_training_image", return_value="a caption")
 
         result = _run(culturetoons.upload_lora_training_images(
             variant["id"], user_id=user_id, brand_id=brand["id"],
             files=[_FakeUploadFile(b"img1", "image/png")],
         ))
-        assert len(result["lora_training_image_urls"]) == 1
+        assert len(result["lora_training_images"]) == 1
+        assert result["lora_training_images"][0]["caption"] == "a caption"
 
         result = _run(culturetoons.upload_lora_training_images(
             variant["id"], user_id=user_id, brand_id=brand["id"],
             files=[_FakeUploadFile(b"img2", "image/png"), _FakeUploadFile(b"img3", "image/png")],
         ))
-        assert len(result["lora_training_image_urls"]) == 3
+        assert len(result["lora_training_images"]) == 3
 
     def test_upload_training_images_rejects_bad_content_type(self, db, user_id, brand_and_character):
         brand, _character, variant = brand_and_character
@@ -362,7 +364,7 @@ class TestLoraTrainingEndpoints:
         brand, _character, variant = brand_and_character
         session = db()
         row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
-        row.lora_training_image_urls = [f"url{i}" for i in range(10)]
+        row.lora_training_images = [{"url": f"url{i}", "caption": f"caption {i}"} for i in range(10)]
         session.commit()
         session.close()
 

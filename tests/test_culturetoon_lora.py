@@ -1,11 +1,12 @@
-"""Tests for app/services/culturetoon_lora.py — LoRA training bookkeeping
-and the remote-training orchestration against an ephemeral training pod,
-mocked at the runpod_client/runpod_ssh/runpod_s3 boundary (paramiko/
-boto3/RunPod's real APIs are never touched)."""
+"""Tests for app/services/culturetoon_lora.py — training-image captioning,
+LoRA training bookkeeping, and the remote-training orchestration against an
+ephemeral training pod, mocked at the runpod_client/runpod_ssh/runpod_s3
+boundary (paramiko/boto3/RunPod's real APIs are never touched)."""
 import pytest
 
 from app.services.culturetoon_lora import (
-    add_training_images, train_character_lora, MIN_LORA_TRAINING_IMAGES, LoraTrainingError,
+    add_training_images, caption_training_image, train_character_lora,
+    MIN_LORA_TRAINING_IMAGES, LoraTrainingError,
 )
 
 _FOUND_CHECKPOINT = "/workspace/lora_training/variant-1/output/checkpoints/lora_weights_step_001000.safetensors"
@@ -15,10 +16,17 @@ def _variant(mocker, name="Kumar", training_images=None):
     v = mocker.Mock()
     v.id = "variant-1"
     v.name = name
-    v.lora_training_image_urls = training_images
+    v.lora_training_images = training_images
     v.lora_status = "none"
     v.lora_path = None
     return v
+
+
+def _entries(n, captioned=True):
+    return [
+        {"url": f"url{i}", "caption": f"Kumar waving, shot {i}" if captioned else ""}
+        for i in range(n)
+    ]
 
 
 def _fake_run_remote_command(fail_on_substring=None, fail_result=(1, "", "boom")):
@@ -36,16 +44,100 @@ def _fake_run_remote_command(fail_on_substring=None, fail_result=(1, "", "boom")
     return fake
 
 
+class TestCaptionTrainingImage:
+    def _fake_qwen_response(self, mocker, text):
+        message = mocker.Mock()
+        message.content = text
+        choice = mocker.Mock()
+        choice.message = message
+        response = mocker.Mock()
+        response.choices = [choice]
+        return response
+
+    def test_uses_qwen_vision_when_available(self, mocker, monkeypatch):
+        monkeypatch.setenv("QWEN_API_KEY", "test-key")
+        client = mocker.Mock()
+        client.chat.completions.create.return_value = self._fake_qwen_response(mocker, "Kumar smiling in a kitchen")
+        mocker.patch("openai.OpenAI", return_value=client)
+
+        caption = caption_training_image("https://example.com/img.png", "Kumar")
+
+        assert caption == "Kumar smiling in a kitchen"
+        call_kwargs = client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["model"] == "qwen-vl-max"
+        content = call_kwargs["messages"][0]["content"]
+        assert content[0] == {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}
+
+    def test_falls_back_to_claude_vision_when_no_qwen_key(self, mocker, monkeypatch):
+        monkeypatch.delenv("QWEN_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        mocker.patch("httpx.get", return_value=mocker.Mock(
+            content=b"fake-bytes", headers={"content-type": "image/png"}, raise_for_status=mocker.Mock(),
+        ))
+        text_block = mocker.Mock()
+        text_block.text = "Kumar waving on a rooftop"
+        message = mocker.Mock()
+        message.content = [text_block]
+        client = mocker.Mock()
+        client.messages.create.return_value = message
+        mocker.patch("anthropic.Anthropic", return_value=client)
+
+        caption = caption_training_image("https://example.com/img.png", "Kumar")
+
+        assert caption == "Kumar waving on a rooftop"
+        assert client.messages.create.call_args.kwargs["model"] == "claude-haiku-4-5-20251001"
+
+    def test_falls_back_to_bare_name_on_any_error(self, mocker, monkeypatch):
+        monkeypatch.setenv("QWEN_API_KEY", "test-key")
+        mocker.patch("openai.OpenAI", side_effect=RuntimeError("rate limited"))
+
+        caption = caption_training_image("https://example.com/img.png", "Kumar")
+
+        assert caption == "Kumar"
+
+    def test_empty_model_response_falls_back_to_bare_name(self, mocker, monkeypatch):
+        monkeypatch.setenv("QWEN_API_KEY", "test-key")
+        client = mocker.Mock()
+        client.chat.completions.create.return_value = self._fake_qwen_response(mocker, "")
+        mocker.patch("openai.OpenAI", return_value=client)
+
+        assert caption_training_image("https://example.com/img.png", "Kumar") == "Kumar"
+
+
 class TestAddTrainingImages:
-    def test_appends_to_empty_list(self, mocker):
+    def test_appends_to_empty_list_with_per_image_captions(self, mocker):
+        mocker.patch("app.services.culturetoon_lora.caption_training_image", side_effect=lambda url, name: f"{name} at {url}")
         variant = _variant(mocker, training_images=None)
+
         add_training_images(variant, ["url1", "url2"])
-        assert variant.lora_training_image_urls == ["url1", "url2"]
+
+        assert variant.lora_training_images == [
+            {"url": "url1", "caption": "Kumar at url1"},
+            {"url": "url2", "caption": "Kumar at url2"},
+        ]
 
     def test_appends_to_existing_list(self, mocker):
-        variant = _variant(mocker, training_images=["url1"])
-        add_training_images(variant, ["url2", "url3"])
-        assert variant.lora_training_image_urls == ["url1", "url2", "url3"]
+        mocker.patch("app.services.culturetoon_lora.caption_training_image", return_value="a caption")
+        variant = _variant(mocker, training_images=[{"url": "url1", "caption": "existing"}])
+
+        add_training_images(variant, ["url2"])
+
+        assert variant.lora_training_images == [
+            {"url": "url1", "caption": "existing"},
+            {"url": "url2", "caption": "a caption"},
+        ]
+
+    def test_captioning_failure_for_one_image_does_not_block_the_others(self, mocker):
+        # caption_training_image itself fails open (see TestCaptionTrainingImage) —
+        # this just confirms add_training_images doesn't add its own
+        # try/except on top that could double-swallow or re-raise.
+        mocker.patch("app.services.culturetoon_lora.caption_training_image", return_value="Kumar")
+        variant = _variant(mocker, training_images=None)
+
+        add_training_images(variant, ["url1", "url2"])
+
+        assert len(variant.lora_training_images) == 2
+        assert all(e["caption"] == "Kumar" for e in variant.lora_training_images)
 
 
 class TestTrainCharacterLora:
@@ -62,12 +154,12 @@ class TestTrainCharacterLora:
         mocker.patch("app.media.runpod_s3.verify_exists", return_value=True)
         return mock_terminate, mock_run, mock_upload
 
-    def _training_variant(self, mocker):
-        return _variant(mocker, training_images=[f"url{i}" for i in range(MIN_LORA_TRAINING_IMAGES)])
+    def _training_variant(self, mocker, captioned=True):
+        return _variant(mocker, training_images=_entries(MIN_LORA_TRAINING_IMAGES, captioned=captioned))
 
     def test_too_few_images_raises_without_creating_a_pod(self, mocker):
         mock_create = mocker.patch("app.media.runpod_client.create_training_pod")
-        variant = _variant(mocker, training_images=["url1", "url2"])
+        variant = _variant(mocker, training_images=_entries(2))
         with pytest.raises(LoraTrainingError, match=str(MIN_LORA_TRAINING_IMAGES)):
             train_character_lora(variant)
         mock_create.assert_not_called()
@@ -85,6 +177,28 @@ class TestTrainCharacterLora:
         # even though the file passes through this backend on its way
         # there via SFTP+S3.
         assert variant.lora_path == "variant-1.safetensors"
+
+    def test_uses_each_image_own_caption_in_the_dataset_manifest(self, mocker):
+        _, mock_run, _ = self._mock_success(mocker)
+        variant = self._training_variant(mocker)
+
+        train_character_lora(variant)
+
+        dataset_write_calls = [c for c in mock_run.call_args_list if "dataset.json" in c.args[2] and c.args[2].startswith("cat >")]
+        assert len(dataset_write_calls) == 1
+        written = dataset_write_calls[0].args[2]
+        assert "Kumar waving, shot 0" in written
+        assert "Kumar waving, shot 9" in written
+
+    def test_blank_caption_falls_back_to_variant_name(self, mocker):
+        _, mock_run, _ = self._mock_success(mocker)
+        variant = self._training_variant(mocker, captioned=False)
+
+        train_character_lora(variant)
+
+        dataset_write_calls = [c for c in mock_run.call_args_list if "dataset.json" in c.args[2] and c.args[2].startswith("cat >")]
+        written = dataset_write_calls[0].args[2]
+        assert '"caption": "Kumar"' in written
 
     def test_uploads_downloaded_bytes_to_the_expected_volume_key(self, mocker):
         _, _, mock_upload = self._mock_success(mocker)
@@ -130,7 +244,7 @@ class TestTrainCharacterLora:
         # too-few-images case: fails before create_training_pod is ever
         # called, so there's no pod id to terminate.
         mock_terminate = mocker.patch("app.media.runpod_client.terminate_pod")
-        variant = _variant(mocker, training_images=["url1"])
+        variant = _variant(mocker, training_images=_entries(1))
         with pytest.raises(LoraTrainingError):
             train_character_lora(variant)
         mock_terminate.assert_not_called()

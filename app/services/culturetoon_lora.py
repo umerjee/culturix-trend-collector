@@ -91,15 +91,83 @@ _CHECKPOINT_FILE = os.getenv("LTX_TRAINING_CHECKPOINT_FILE", "ltx-2.3-22b-dev.sa
 _TEXT_ENCODER_REPO = os.getenv("LTX_TRAINING_TEXT_ENCODER_REPO", "google/gemma-3-12b-it")
 
 
+_CAPTION_PROMPT_TEMPLATE = (
+    "This is a reference image of a cartoon character named {name}. Write ONE short "
+    "caption (under 25 words) describing ONLY what's actually visible in THIS image: "
+    "the character's pose, facial expression, camera framing, and background/setting. "
+    "Start the caption with \"{name}\". Do not describe the character's appearance/"
+    "design itself (that's constant across all their reference images) — only what "
+    "varies in this specific shot. Return ONLY the caption text, nothing else."
+)
+
+
 class LoraTrainingError(Exception):
     pass
 
 
+def caption_training_image(image_url: str, character_name: str) -> str:
+    """Vision-LLM caption for a single training image, describing what
+    varies (pose, expression, framing, background) while keeping the
+    character's name as a fixed leading token — the standard trigger-word
+    + variable-description convention for identity LoRA training. Without
+    this, every training clip would get the same caption (just the
+    character's name), which teaches the LoRA that whatever's IDENTICAL
+    across every image — a pose, a background, a camera angle — is part of
+    the character's identity, not incidental; the model overfits to a
+    single look instead of learning what's actually invariant (see
+    CharacterVariant.lora_training_images's docstring). Same Qwen-max
+    primary / Claude Haiku fallback pattern as culturetoon_relationship.py,
+    using each provider's vision-capable variant. Fails open to a bare
+    character-name caption on any error (network, rate limit, bad
+    response) — a missing/weak caption shouldn't block an image upload."""
+    prompt = _CAPTION_PROMPT_TEMPLATE.format(name=character_name)
+    try:
+        if os.getenv("QWEN_API_KEY"):
+            from openai import OpenAI
+            client = OpenAI(api_key=os.environ["QWEN_API_KEY"], base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+            response = client.chat.completions.create(
+                model="qwen-vl-max",
+                messages=[{"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                    {"type": "text", "text": prompt},
+                ]}],
+            )
+            caption = (response.choices[0].message.content or "").strip()
+        else:
+            import base64
+            import httpx
+            import anthropic
+            resp = httpx.get(image_url, timeout=30)
+            resp.raise_for_status()
+            media_type = resp.headers.get("content-type", "image/png").split(";")[0]
+            image_b64 = base64.b64encode(resp.content).decode("ascii")
+            client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+            message = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=100,
+                messages=[{"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_b64}},
+                    {"type": "text", "text": prompt},
+                ]}],
+            )
+            caption = (message.content[0].text or "").strip()
+        return caption or character_name
+    except Exception:
+        logger.exception("Training-image captioning failed for %s — falling back to a bare name caption", image_url)
+        return character_name
+
+
 def add_training_images(variant, urls: list) -> None:
-    """Appends newly-uploaded image URLs to the variant's training set.
-    Caller (the router) owns save_image()/storage.upload() for each file
-    and the session commit — this just does the list bookkeeping."""
-    variant.lora_training_image_urls = (variant.lora_training_image_urls or []) + list(urls)
+    """Appends newly-uploaded images to the variant's training set, each
+    captioned individually via caption_training_image() at upload time —
+    deliberately preemptive, so real per-image captions already exist by
+    the time /train-lora is ever called instead of being discovered
+    missing at training time. Caller (the router) owns save_image()/
+    storage.upload() for each file and the session commit — this does the
+    captioning + list bookkeeping."""
+    existing = variant.lora_training_images or []
+    new_entries = [{"url": url, "caption": caption_training_image(url, variant.name)} for url in urls]
+    variant.lora_training_images = existing + new_entries
 
 
 def _run(runpod_ssh, host, port, command, timeout_seconds, error_prefix):
@@ -128,10 +196,10 @@ def train_character_lora(variant) -> None:
     never worth keeping around."""
     from app.media import runpod_client, runpod_ssh, runpod_s3
 
-    images = variant.lora_training_image_urls or []
-    if len(images) < MIN_LORA_TRAINING_IMAGES:
+    training_images = variant.lora_training_images or []
+    if len(training_images) < MIN_LORA_TRAINING_IMAGES:
         raise LoraTrainingError(
-            f"Need at least {MIN_LORA_TRAINING_IMAGES} training images, have {len(images)}"
+            f"Need at least {MIN_LORA_TRAINING_IMAGES} training images, have {len(training_images)}"
         )
 
     variant.lora_status = "training"
@@ -159,9 +227,15 @@ def train_character_lora(variant) -> None:
              _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training text encoder")
 
         # Stage each reference image, then loop it into a short static clip
-        # — see module docstring's open question #1 on why.
+        # — see module docstring's open question #1 on why. Each clip keeps
+        # its own real caption (from add_training_images/
+        # caption_training_image) rather than a repeated character name —
+        # see CharacterVariant.lora_training_images's docstring for why a
+        # flat repeated caption would actively hurt training quality.
         clip_entries = []
-        for i, url in enumerate(images):
+        for i, entry in enumerate(training_images):
+            url = entry["url"]
+            caption = (entry.get("caption") or "").strip() or variant.name
             img_path = f"{work_dir}/img_{i:03d}.png"
             clip_path = f"{work_dir}/clip_{i:03d}.mp4"
             width, height, frames = _RESOLUTION_BUCKET.split("x")
@@ -171,7 +245,7 @@ def train_character_lora(variant) -> None:
                 f"-vf scale={width}:{height} {clip_path}"
             )
             _run(runpod_ssh, host, port, stage_cmd, 120, f"Failed to stage/convert training image {i}")
-            clip_entries.append({"caption": variant.name, "video": clip_path})
+            clip_entries.append({"caption": caption, "video": clip_path})
 
         dataset_json = json.dumps(clip_entries)
         dataset_path = f"{work_dir}/dataset.json"

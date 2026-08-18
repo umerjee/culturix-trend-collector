@@ -249,7 +249,10 @@ async def lifespan(_):
             # CharacterVariant.lora_path's docstring.
             "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS lora_path TEXT",
             "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS lora_status VARCHAR(12) NOT NULL DEFAULT 'none'",
-            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS lora_training_image_urls TEXT[] DEFAULT '{}'",
+            # Replaces the earlier lora_training_image_urls TEXT[] (never
+            # shipped to real users) with url+caption pairs — see
+            # CharacterVariant.lora_training_images's docstring.
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS lora_training_images JSONB DEFAULT '[]'",
             # Which video path generated a Toon — see Toon.video_provider's
             # docstring.
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS video_provider VARCHAR(20)",
