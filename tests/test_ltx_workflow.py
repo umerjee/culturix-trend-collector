@@ -11,10 +11,10 @@ from app.media.ltx_workflow import build_workflow, load_workflow_template, LTXWo
 def fixture_workflow_path(tmp_path):
     workflow = {
         "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "ltx.safetensors"}},
-        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["1", 1]}},
-        "3": {"class_type": "CLIPTextEncode", "inputs": {"text": "blurry, low quality", "clip": ["1", 1]}},
-        "4": {"class_type": "EmptyLTXVLatentVideo", "inputs": {"width": 768, "height": 1360, "length": 121, "batch_size": 1}},
-        "5": {"class_type": "LoraLoader", "inputs": {"model": ["1", 0], "clip": ["1", 1], "lora_name": "", "strength_model": 1.0, "strength_clip": 1.0}},
+        "2": {"class_type": "CLIPTextEncode", "_meta": {"title": "Positive prompt"}, "inputs": {"text": "", "clip": ["1", 1]}},
+        "3": {"class_type": "CLIPTextEncode", "_meta": {"title": "Negative prompt"}, "inputs": {"text": "blurry, low quality", "clip": ["1", 1]}},
+        "4": {"class_type": "EmptyLTXVLatentVideo", "inputs": {"width": 720, "height": 1280, "length": 121, "batch_size": 1}},
+        "5": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["1", 0], "lora_name": "", "strength_model": 1.0}},
         "6": {"class_type": "KSampler", "inputs": {"model": ["5", 0], "positive": ["2", 0], "negative": ["3", 0], "latent_image": ["4", 0], "seed": 0, "steps": 30, "cfg": 3.0}},
     }
     path = tmp_path / "workflow.json"
@@ -81,3 +81,38 @@ class TestBuildWorkflow:
         monkeypatch.setenv("LTX_WORKFLOW_PATH", str(path))
         with pytest.raises(LTXWorkflowError):
             build_workflow("prompt", duration_seconds=5, lora_path="x.safetensors")
+
+    def test_title_based_selection_wins_even_when_both_nodes_have_text(self, tmp_path, monkeypatch):
+        # Regression test: the real official LTX-2.3 template ships both its
+        # positive AND negative CLIPTextEncode nodes with non-empty
+        # placeholder text, which would defeat an empty-text-only heuristic.
+        workflow = {
+            "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "ltx.safetensors"}},
+            "2": {"class_type": "CLIPTextEncode", "_meta": {"title": "Positive Prompt"}, "inputs": {"text": "placeholder positive"}},
+            "3": {"class_type": "CLIPTextEncode", "_meta": {"title": "Negative Prompt"}, "inputs": {"text": "placeholder negative"}},
+        }
+        path = tmp_path / "titled.json"
+        path.write_text(json.dumps(workflow))
+        monkeypatch.setenv("LTX_WORKFLOW_PATH", str(path))
+
+        result = build_workflow("a character waves hello", duration_seconds=5)
+
+        assert result["2"]["inputs"]["text"] == "a character waves hello"
+        assert result["3"]["inputs"]["text"] == "placeholder negative"
+
+    def test_injects_seed_into_random_noise_when_present(self, tmp_path, monkeypatch):
+        workflow = {
+            "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "ltx.safetensors"}},
+            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": ""}},
+            "9": {"class_type": "RandomNoise", "inputs": {"noise_seed": 0, "control_after_generate": "fixed"}},
+            "6": {"class_type": "KSampler", "inputs": {"seed": 0}},
+        }
+        path = tmp_path / "random_noise.json"
+        path.write_text(json.dumps(workflow))
+        monkeypatch.setenv("LTX_WORKFLOW_PATH", str(path))
+
+        result = build_workflow("prompt", duration_seconds=5, seed=99)
+
+        assert result["9"]["inputs"]["noise_seed"] == 99
+        # RandomNoise takes priority — KSampler.seed is left untouched.
+        assert result["6"]["inputs"]["seed"] == 0

@@ -1,8 +1,8 @@
 {
   "1": {
     "class_type": "CheckpointLoaderSimple",
-    "_meta": { "title": "Load LTX-2 checkpoint" },
-    "inputs": { "ckpt_name": "ltx-2-19b-dev-fp8.safetensors" }
+    "_meta": { "title": "Load LTX-2.3 checkpoint" },
+    "inputs": { "ckpt_name": "ltx-2.3-22b-dev.safetensors" }
   },
   "2": {
     "class_type": "CLIPTextEncode",
@@ -17,12 +17,12 @@
   "4": {
     "class_type": "EmptyLTXVLatentVideo",
     "_meta": { "title": "Video canvas (length injected by ltx_workflow.py)" },
-    "inputs": { "width": 768, "height": 1360, "length": 121, "batch_size": 1 }
+    "inputs": { "width": 720, "height": 1280, "length": 121, "batch_size": 1 }
   },
   "5": {
-    "class_type": "LoraLoader",
+    "class_type": "LoraLoaderModelOnly",
     "_meta": { "title": "Character LoRA (lora_name injected by ltx_workflow.py, skipped if none)" },
-    "inputs": { "model": ["1", 0], "clip": ["1", 1], "lora_name": "", "strength_model": 1.0, "strength_clip": 1.0 }
+    "inputs": { "model": ["1", 0], "lora_name": "", "strength_model": 1.0 }
   },
   "6": {
     "class_type": "KSampler",
