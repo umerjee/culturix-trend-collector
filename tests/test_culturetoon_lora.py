@@ -1,25 +1,63 @@
 """Tests for app/services/culturetoon_lora.py — training-image captioning,
-LoRA training bookkeeping, and the remote-training orchestration against an
-ephemeral training pod, mocked at the runpod_client/runpod_ssh/runpod_s3
-boundary (paramiko/boto3/RunPod's real APIs are never touched)."""
+Culturix's own auto-curation of the training set, LoRA training bookkeeping,
+and the remote-training orchestration against an ephemeral training pod,
+mocked at the runpod_client/runpod_ssh/runpod_s3 boundary (paramiko/
+boto3/RunPod's real APIs are never touched)."""
+import uuid
+
 import pytest
 
 from app.services.culturetoon_lora import (
-    add_training_images, caption_training_image, train_character_lora,
-    MIN_LORA_TRAINING_IMAGES, LoraTrainingError,
+    add_training_images, caption_training_image, curate_training_images,
+    train_character_lora, MIN_LORA_TRAINING_IMAGES, LoraTrainingError,
 )
 
-_FOUND_CHECKPOINT = "/workspace/lora_training/variant-1/output/checkpoints/lora_weights_step_001000.safetensors"
+_VARIANT_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
+_FOUND_CHECKPOINT = f"/workspace/lora_training/{_VARIANT_ID}/output/checkpoints/lora_weights_step_001000.safetensors"
 
 
-def _variant(mocker, name="Kumar", training_images=None):
+def _variant(mocker, name="Kumar", training_images=None, image_url=None):
     v = mocker.Mock()
-    v.id = "variant-1"
+    v.id = _VARIANT_ID
     v.name = name
+    v.image_url = image_url
     v.lora_training_images = training_images
     v.lora_status = "none"
     v.lora_path = None
     return v
+
+
+def _expression(mocker, name, image_url):
+    e = mocker.Mock()
+    e.name = name
+    e.image_url = image_url
+    return e
+
+
+def _fake_session(mocker, expressions):
+    """A minimal session stand-in for curate_training_images()'s
+    session.query(Expression).filter_by(...).order_by(...).all() chain."""
+    session = mocker.Mock()
+    query = mocker.Mock()
+    session.query.return_value = query
+    query.filter_by.return_value = query
+    query.order_by.return_value = query
+    query.all.return_value = expressions
+    return session
+
+
+def _train(mocker, variant):
+    """TestTrainCharacterLora's own tests exercise orchestration, not
+    curation (which has its own dedicated TestCurateTrainingImages) — so
+    curate_training_images is patched to just surface whatever the fixture
+    variant's lora_training_images already holds, and a bare Mock stands
+    in for the session param (train_character_lora only threads it through
+    to curate_training_images, which is patched out here)."""
+    mocker.patch(
+        "app.services.culturetoon_lora.curate_training_images",
+        return_value=variant.lora_training_images or [],
+    )
+    return train_character_lora(variant, mocker.Mock())
 
 
 def _entries(n, captioned=True):
@@ -140,6 +178,68 @@ class TestAddTrainingImages:
         assert all(e["caption"] == "Kumar" for e in variant.lora_training_images)
 
 
+class TestCurateTrainingImages:
+    def test_builds_entries_from_portrait_and_expressions_with_deterministic_captions(self, mocker):
+        variant = _variant(mocker, image_url="https://example.com/portrait.png")
+        expressions = [
+            _expression(mocker, "Happy", "https://example.com/happy.png"),
+            _expression(mocker, "Angry", "https://example.com/angry.png"),
+        ]
+        session = _fake_session(mocker, expressions)
+
+        entries = curate_training_images(session, variant)
+
+        assert entries == [
+            {"url": "https://example.com/portrait.png", "caption": "Kumar, neutral reference pose"},
+            {"url": "https://example.com/happy.png", "caption": "Kumar, happy expression"},
+            {"url": "https://example.com/angry.png", "caption": "Kumar, angry expression"},
+        ]
+
+    def test_skips_expressions_with_no_image_yet(self, mocker):
+        variant = _variant(mocker, image_url=None)
+        expressions = [
+            _expression(mocker, "Happy", "https://example.com/happy.png"),
+            _expression(mocker, "Angry", None),  # not generated yet
+        ]
+        session = _fake_session(mocker, expressions)
+
+        entries = curate_training_images(session, variant)
+
+        assert len(entries) == 1
+        assert entries[0]["url"] == "https://example.com/happy.png"
+
+    def test_merges_manual_supplemental_entries_keeping_their_own_captions(self, mocker):
+        variant = _variant(
+            mocker, image_url="https://example.com/portrait.png",
+            training_images=[{"url": "https://example.com/manual.png", "caption": "a real photo, outdoors"}],
+        )
+        session = _fake_session(mocker, [])
+
+        entries = curate_training_images(session, variant)
+
+        assert {"url": "https://example.com/manual.png", "caption": "a real photo, outdoors"} in entries
+
+    def test_deduplicates_by_url_preferring_the_curated_caption(self, mocker):
+        # A manual upload that happens to be the same URL as the portrait
+        # (e.g. re-added) shouldn't produce two training-set entries.
+        variant = _variant(
+            mocker, image_url="https://example.com/portrait.png",
+            training_images=[{"url": "https://example.com/portrait.png", "caption": "manual caption"}],
+        )
+        session = _fake_session(mocker, [])
+
+        entries = curate_training_images(session, variant)
+
+        assert len(entries) == 1
+        assert entries[0]["caption"] == "Kumar, neutral reference pose"
+
+    def test_empty_when_nothing_generated_or_uploaded_yet(self, mocker):
+        variant = _variant(mocker, image_url=None, training_images=None)
+        session = _fake_session(mocker, [])
+
+        assert curate_training_images(session, variant) == []
+
+
 class TestTrainCharacterLora:
     def _mock_success(self, mocker, fail_on_substring=None, fail_result=(1, "", "boom")):
         mocker.patch("app.media.runpod_client.create_training_pod", return_value="pod-123")
@@ -161,7 +261,7 @@ class TestTrainCharacterLora:
         mock_create = mocker.patch("app.media.runpod_client.create_training_pod")
         variant = _variant(mocker, training_images=_entries(2))
         with pytest.raises(LoraTrainingError, match=str(MIN_LORA_TRAINING_IMAGES)):
-            train_character_lora(variant)
+            _train(mocker, variant)
         mock_create.assert_not_called()
         assert variant.lora_status == "none"  # unchanged — never even attempted
 
@@ -169,20 +269,20 @@ class TestTrainCharacterLora:
         self._mock_success(mocker)
         variant = self._training_variant(mocker)
 
-        train_character_lora(variant)
+        _train(mocker, variant)
 
         assert variant.lora_status == "ready"
         # A bare filename resolvable by ComfyUI's LoraLoaderModelOnly
         # relative to the Network Volume's models/loras/ dir — not a URL,
         # even though the file passes through this backend on its way
         # there via SFTP+S3.
-        assert variant.lora_path == "variant-1.safetensors"
+        assert variant.lora_path == f"{_VARIANT_ID}.safetensors"
 
     def test_uses_each_image_own_caption_in_the_dataset_manifest(self, mocker):
         _, mock_run, _ = self._mock_success(mocker)
         variant = self._training_variant(mocker)
 
-        train_character_lora(variant)
+        _train(mocker, variant)
 
         dataset_write_calls = [c for c in mock_run.call_args_list if "dataset.json" in c.args[2] and c.args[2].startswith("cat >")]
         assert len(dataset_write_calls) == 1
@@ -194,7 +294,7 @@ class TestTrainCharacterLora:
         _, mock_run, _ = self._mock_success(mocker)
         variant = self._training_variant(mocker, captioned=False)
 
-        train_character_lora(variant)
+        _train(mocker, variant)
 
         dataset_write_calls = [c for c in mock_run.call_args_list if "dataset.json" in c.args[2] and c.args[2].startswith("cat >")]
         written = dataset_write_calls[0].args[2]
@@ -204,16 +304,16 @@ class TestTrainCharacterLora:
         _, _, mock_upload = self._mock_success(mocker)
         variant = self._training_variant(mocker)
 
-        train_character_lora(variant)
+        _train(mocker, variant)
 
-        mock_upload.assert_called_once_with(b"lora-bytes", "ComfyUI/models/loras/variant-1.safetensors")
+        mock_upload.assert_called_once_with(b"lora-bytes", f"ComfyUI/models/loras/{_VARIANT_ID}.safetensors")
 
     def test_downloads_the_located_checkpoint_via_sftp(self, mocker):
         self._mock_success(mocker)
         mock_download = mocker.patch("app.media.runpod_ssh.download_file", return_value=b"lora-bytes")
         variant = self._training_variant(mocker)
 
-        train_character_lora(variant)
+        _train(mocker, variant)
 
         mock_download.assert_called_once_with("1.2.3.4", 2222, _FOUND_CHECKPOINT)
 
@@ -223,7 +323,7 @@ class TestTrainCharacterLora:
         mocker.patch("app.media.runpod_client.wait_for_ssh_ready", return_value=("1.2.3.4", 2222))
         variant = self._training_variant(mocker)
 
-        train_character_lora(variant)
+        _train(mocker, variant)
 
         mock_create.assert_called_once()
         mock_terminate.assert_called_once_with("pod-123")
@@ -235,7 +335,7 @@ class TestTrainCharacterLora:
         variant = self._training_variant(mocker)
 
         with pytest.raises(LoraTrainingError):
-            train_character_lora(variant)
+            _train(mocker, variant)
 
         mock_terminate.assert_called_once_with("pod-123")
         assert variant.lora_status == "failed"
@@ -246,7 +346,7 @@ class TestTrainCharacterLora:
         mock_terminate = mocker.patch("app.media.runpod_client.terminate_pod")
         variant = _variant(mocker, training_images=_entries(1))
         with pytest.raises(LoraTrainingError):
-            train_character_lora(variant)
+            _train(mocker, variant)
         mock_terminate.assert_not_called()
 
     def test_checkpoint_download_failure_sets_failed_status(self, mocker):
@@ -254,7 +354,7 @@ class TestTrainCharacterLora:
         variant = self._training_variant(mocker)
 
         with pytest.raises(LoraTrainingError, match="404 not found"):
-            train_character_lora(variant)
+            _train(mocker, variant)
 
         assert variant.lora_status == "failed"
 
@@ -263,7 +363,7 @@ class TestTrainCharacterLora:
         variant = self._training_variant(mocker)
 
         with pytest.raises(LoraTrainingError):
-            train_character_lora(variant)
+            _train(mocker, variant)
 
         assert variant.lora_status == "failed"
 
@@ -272,7 +372,7 @@ class TestTrainCharacterLora:
         variant = self._training_variant(mocker)
 
         with pytest.raises(LoraTrainingError, match="CUDA out of memory"):
-            train_character_lora(variant)
+            _train(mocker, variant)
 
         assert variant.lora_status == "failed"
 
@@ -289,7 +389,7 @@ class TestTrainCharacterLora:
         variant = self._training_variant(mocker)
 
         with pytest.raises(LoraTrainingError, match="Could not find a trained LoRA checkpoint"):
-            train_character_lora(variant)
+            _train(mocker, variant)
 
         assert variant.lora_status == "failed"
 
@@ -301,7 +401,7 @@ class TestTrainCharacterLora:
         variant = self._training_variant(mocker)
 
         with pytest.raises(LoraTrainingError, match="connection refused"):
-            train_character_lora(variant)
+            _train(mocker, variant)
 
         assert variant.lora_status == "failed"
 
@@ -311,6 +411,6 @@ class TestTrainCharacterLora:
         variant = self._training_variant(mocker)
 
         with pytest.raises(LoraTrainingError, match="Network Volume"):
-            train_character_lora(variant)
+            _train(mocker, variant)
 
         assert variant.lora_status == "failed"

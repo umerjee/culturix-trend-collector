@@ -29,6 +29,16 @@ Manual-to-*start* (a human calls POST /variants/{id}/train-lora when they
 want a new character trained) but fully automated once started via SSH
 (app/media/runpod_ssh.py) — no separate script to run by hand on the pod.
 
+Training DATA is not manual, though — curate_training_images() decides
+what goes in automatically, from the variant's own already-generated
+Expression images (deterministically captioned from each Expression's own
+`name`) plus its canonical portrait, not from a user-sourced upload.
+add_training_images()/POST /variants/{id}/lora-training-images still
+exists for supplemental extras but is no longer the primary path to
+MIN_LORA_TRAINING_IMAGES — most variants reach it purely by having a
+complete Expression set, which is already a normal part of character
+setup.
+
 ltx-trainer's real CLI (confirmed against Lightricks/LTX-2's own docs,
 2026-08-18 — this replaces an earlier version of this file that guessed at
 a single `python -m ltx_trainer.train --images_dir ... --output ...`
@@ -158,16 +168,80 @@ def caption_training_image(image_url: str, character_name: str) -> str:
 
 
 def add_training_images(variant, urls: list) -> None:
-    """Appends newly-uploaded images to the variant's training set, each
-    captioned individually via caption_training_image() at upload time —
-    deliberately preemptive, so real per-image captions already exist by
-    the time /train-lora is ever called instead of being discovered
-    missing at training time. Caller (the router) owns save_image()/
+    """Appends manually-uploaded SUPPLEMENTAL images to the variant's
+    training set, each captioned individually via caption_training_image()
+    at upload time. Not the primary source of training data — see
+    curate_training_images() below, which Culturix builds automatically
+    from the character's own already-generated Expression images and
+    rarely needs any manual upload at all. This exists for the cases that
+    still benefit from it (e.g. a specific real reference photo the brand
+    owner wants blended in), merged into curate_training_images()'s output
+    rather than replacing it. Caller (the router) owns save_image()/
     storage.upload() for each file and the session commit — this does the
     captioning + list bookkeeping."""
     existing = variant.lora_training_images or []
     new_entries = [{"url": url, "caption": caption_training_image(url, variant.name)} for url in urls]
     variant.lora_training_images = existing + new_entries
+
+
+def curate_training_images(session, variant) -> list:
+    """Builds the LoRA training set Culturix decides on, not the user.
+    Primary source: every one of this variant's already-generated
+    Expression images (up to 10, one per EXPRESSION_NAMES entry — see
+    app/models/expression.py — each a distinct AI-rendered pose already in
+    the character's own illustrated art style) plus the variant's own
+    canonical portrait. Captions are deterministic, not vision-LLM-guessed
+    — we already know exactly what each Expression image depicts from its
+    own `name` column, which is both free and more reliable than
+    caption_training_image()'s best-effort guess.
+
+    This beats asking a brand owner to source their own reference photos:
+    real photos would be a different art style/medium than what the
+    character actually needs reproduced, and generating a full Expression
+    set is already something most variants go through as a normal part of
+    character setup (see CharacterVariant's docstring on Expressions) — so
+    for most variants, meaningful LoRA training data exists with zero
+    separate curation step. Falls short of MIN_LORA_TRAINING_IMAGES only
+    when a variant's own Expression set is still incomplete, which is a
+    real and correct signal to surface (finish generating expressions
+    first) rather than something to paper over.
+
+    Deduplicated by URL and merged with any manually-uploaded supplemental
+    images (add_training_images) — those keep their own vision-LLM
+    captions rather than being recaptioned here. Read-only against the
+    session (no writes) — safe to call from both the /train-lora
+    pre-check and train_character_lora() itself."""
+    from app.models.expression import Expression
+    import uuid as _uuid
+
+    entries = []
+    seen_urls = set()
+
+    if variant.image_url and variant.image_url not in seen_urls:
+        entries.append({"url": variant.image_url, "caption": f"{variant.name}, neutral reference pose"})
+        seen_urls.add(variant.image_url)
+
+    expressions = (
+        session.query(Expression)
+        .filter_by(character_variant_id=_uuid.UUID(str(variant.id)))
+        .order_by(Expression.name.asc())
+        .all()
+    )
+    for expression in expressions:
+        if expression.image_url and expression.image_url not in seen_urls:
+            entries.append({
+                "url": expression.image_url,
+                "caption": f"{variant.name}, {expression.name.lower()} expression",
+            })
+            seen_urls.add(expression.image_url)
+
+    for manual_entry in (variant.lora_training_images or []):
+        url = manual_entry.get("url")
+        if url and url not in seen_urls:
+            entries.append(manual_entry)
+            seen_urls.add(url)
+
+    return entries
 
 
 def _run(runpod_ssh, host, port, command, timeout_seconds, error_prefix):
@@ -176,11 +250,13 @@ def _run(runpod_ssh, host, port, command, timeout_seconds, error_prefix):
         raise LoraTrainingError(f"{error_prefix}: {stderr[-2000:]}")
 
 
-def train_character_lora(variant) -> None:
-    """Synchronous end-to-end training run: creates a fresh ephemeral
-    training pod, downloads that pod's own copy of the training-variant
-    checkpoint/text-encoder (it doesn't mount the Network Volume, see
-    module docstring), stages the variant's training images and converts
+def train_character_lora(variant, session) -> None:
+    """Synchronous end-to-end training run: curates the training set
+    (curate_training_images() — Culturix's own already-generated Expression
+    images by default, not a manually-uploaded set), creates a fresh
+    ephemeral training pod, downloads that pod's own copy of the
+    training-variant checkpoint/text-encoder (it doesn't mount the Network
+    Volume, see module docstring), stages the curated images and converts
     each into a short static clip (ltx-trainer's dataset format is
     video+caption pairs, not bare stills — see module docstring's open
     question #1), preprocesses + runs ltx-trainer's real two-stage CLI over
@@ -189,6 +265,8 @@ def train_character_lora(variant) -> None:
     upload landed before setting lora_path (a bare filename, not a URL)/
     lora_status. Mutates `variant` in place — caller owns the session
     commit, same convention as every other CultureToons service function.
+    `session` is needed to query this variant's Expression rows
+    (curate_training_images() reads them) — not otherwise written to here.
     Raises LoraTrainingError on any failure (also setting
     lora_status="failed" first, so a failed attempt is visible even if the
     caller doesn't handle the exception specially). The training pod is
@@ -196,7 +274,7 @@ def train_character_lora(variant) -> None:
     never worth keeping around."""
     from app.media import runpod_client, runpod_ssh, runpod_s3
 
-    training_images = variant.lora_training_images or []
+    training_images = curate_training_images(session, variant)
     if len(training_images) < MIN_LORA_TRAINING_IMAGES:
         raise LoraTrainingError(
             f"Need at least {MIN_LORA_TRAINING_IMAGES} training images, have {len(training_images)}"
@@ -343,7 +421,7 @@ def run_lora_training(variant_id) -> None:
         if not variant:
             return
         try:
-            train_character_lora(variant)
+            train_character_lora(variant, session)
         except LoraTrainingError:
             pass  # already logged + lora_status="failed" set by train_character_lora
         session.commit()

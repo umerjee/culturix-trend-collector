@@ -1969,7 +1969,7 @@ def train_variant_lora(variant_id: str, body: dict, background_tasks: Background
     the UI sees the state flip immediately, same pattern as
     register_variant_element's element_status='pending'."""
     from app.db import SessionLocal
-    from app.services.culturetoon_lora import MIN_LORA_TRAINING_IMAGES, run_lora_training
+    from app.services.culturetoon_lora import MIN_LORA_TRAINING_IMAGES, run_lora_training, curate_training_images
 
     user_id, brand_id = body.get("user_id"), body.get("brand_id")
     if not user_id or not brand_id:
@@ -1978,11 +1978,19 @@ def train_variant_lora(variant_id: str, body: dict, background_tasks: Background
     session = SessionLocal()
     try:
         variant = _get_variant_owned(session, variant_id, brand_id, user_id)
-        image_count = len(variant.lora_training_images or [])
+        # Culturix decides the training set (curate_training_images) —
+        # this variant's own Expression images by default, not just
+        # whatever's been manually uploaded — so this count reflects what
+        # will actually be trained on, not a raw upload tally.
+        image_count = len(curate_training_images(session, variant))
         if image_count < MIN_LORA_TRAINING_IMAGES:
             raise HTTPException(
                 status_code=400,
-                detail=f"Need at least {MIN_LORA_TRAINING_IMAGES} training images, have {image_count}",
+                detail=(
+                    f"Need at least {MIN_LORA_TRAINING_IMAGES} training images, have {image_count}. "
+                    "Generate this variant's remaining Expressions to reach the minimum automatically, "
+                    "or upload supplemental reference images."
+                ),
             )
         variant.lora_status = "training"
         session.commit()

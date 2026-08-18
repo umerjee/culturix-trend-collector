@@ -378,6 +378,28 @@ class TestLoraTrainingEndpoints:
         updated = culturetoons.get_variant(variant["id"], user_id, brand["id"])
         assert updated["lora_status"] == "training"
 
+    def test_train_lora_reaches_minimum_from_generated_expressions_alone(self, db, user_id, brand_and_character):
+        # The whole point of curate_training_images: a variant with a
+        # complete Expression set (generated as a normal part of character
+        # setup, nothing LoRA-specific) should reach MIN_LORA_TRAINING_IMAGES
+        # with zero manual uploads to POST /lora-training-images.
+        brand, _character, variant = brand_and_character
+        session = db()
+        variant_id = uuid.UUID(variant["id"])
+        row = session.query(CharacterVariant).filter_by(id=variant_id).first()
+        row.image_url = "https://example.com/portrait.png"
+        for i, name in enumerate(culturetoons.EXPRESSION_NAMES):
+            session.add(Expression(character_variant_id=variant_id, name=name, image_url=f"https://example.com/{i}.png"))
+        assert row.lora_training_images is None  # confirms nothing was manually uploaded
+        session.commit()
+        session.close()
+
+        bg = BackgroundTasks()
+        result = culturetoons.train_variant_lora(
+            variant["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=bg,
+        )
+        assert result == {"status": "training_started"}
+
     def test_train_lora_unknown_variant_404s(self, db, user_id):
         brand = culturetoons.create_brand({"user_id": user_id})
         with pytest.raises(HTTPException) as exc_info:
