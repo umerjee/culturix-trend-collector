@@ -42,6 +42,18 @@ from app.models.toon_shot import ToonShot
 from app.routers import culturetoons
 
 
+import base64
+
+# A real, minimal (1x1 transparent pixel) valid PNG — save_image() now
+# decodes upload bytes with Pillow to confirm they're an actual image, not
+# just trusting the declared content_type, so tests exercising the
+# success path need real image bytes rather than an arbitrary placeholder
+# string.
+_TINY_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
 class _FakeUploadFile:
     def __init__(self, data: bytes, content_type: str):
         self._data = data
@@ -331,14 +343,14 @@ class TestLoraTrainingEndpoints:
 
         result = _run(culturetoons.upload_lora_training_images(
             variant["id"], user_id=user_id, brand_id=brand["id"],
-            files=[_FakeUploadFile(b"img1", "image/png")],
+            files=[_FakeUploadFile(_TINY_PNG_BYTES, "image/png")],
         ))
         assert len(result["lora_training_images"]) == 1
         assert result["lora_training_images"][0]["caption"] == "a caption"
 
         result = _run(culturetoons.upload_lora_training_images(
             variant["id"], user_id=user_id, brand_id=brand["id"],
-            files=[_FakeUploadFile(b"img2", "image/png"), _FakeUploadFile(b"img3", "image/png")],
+            files=[_FakeUploadFile(_TINY_PNG_BYTES, "image/png"), _FakeUploadFile(_TINY_PNG_BYTES, "image/png")],
         ))
         assert len(result["lora_training_images"]) == 3
 
@@ -421,7 +433,7 @@ class TestCharacterImageGeneration:
         brand, character, _variant = brand_and_character
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-jpeg", content_type="image/jpeg"),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/jpeg"),
         )
         mock_upload = mocker.patch("app.media.storage.upload", return_value="https://supabase/char-gen.jpg")
 
@@ -452,7 +464,7 @@ class TestCharacterImageGeneration:
 
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/char-gen.png")
 
@@ -479,7 +491,7 @@ class TestCharacterImageGeneration:
 
         result = _run(culturetoons.upload_character_reference_image(
             character["id"], user_id=user_id, brand_id=brand["id"],
-            file=_FakeUploadFile(b"fake-png", "image/png"),
+            file=_FakeUploadFile(_TINY_PNG_BYTES, "image/png"),
         ))
         assert result["reference_image_url"] == "https://supabase/char-ref.png"
         assert result["base_image_url"] is None
@@ -504,7 +516,7 @@ class TestCharacterImageGeneration:
         brand, character, _variant = brand_and_character
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/char-gen.png")
 
@@ -562,7 +574,7 @@ class TestVariantImageGeneration:
         )
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/variant-gen.png")
 
@@ -592,7 +604,7 @@ class TestVariantImageGeneration:
         mock_expand = mocker.patch("app.routers.culturetoons._expand_variant_visual_description")
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/variant-gen.png")
 
@@ -643,7 +655,7 @@ class TestVariantImageGeneration:
         )
         mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/variant-gen.png")
 
@@ -660,7 +672,7 @@ class TestVariantImageGeneration:
         brand, _character, variant = brand_and_character
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/variant-gen.png")
 
@@ -697,7 +709,7 @@ class TestVariantImageGeneration:
         )
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/variant-gen.png")
 
@@ -718,7 +730,7 @@ class TestVariantImageGeneration:
 
         result = _run(culturetoons.upload_variant_reference_image(
             variant["id"], user_id=user_id, brand_id=brand["id"],
-            file=_FakeUploadFile(b"fake-png", "image/png"),
+            file=_FakeUploadFile(_TINY_PNG_BYTES, "image/png"),
         ))
         assert result["reference_image_url"] == "https://supabase/variant-ref.png"
         assert result["image_url"] is None
@@ -868,7 +880,7 @@ class TestVariantsAndExpressions:
 
         result = _run(culturetoons.upload_expression_image(
             variant["id"], "Angry", user_id=user_id, brand_id=brand["id"],
-            file=_FakeUploadFile(b"fake-png", "image/png"),
+            file=_FakeUploadFile(_TINY_PNG_BYTES, "image/png"),
         ))
         assert result["name"] == "Angry"
         assert result["image_url"] == "https://supabase/expr.png"
@@ -876,7 +888,7 @@ class TestVariantsAndExpressions:
 
         _run(culturetoons.upload_expression_image(
             variant["id"], "Angry", user_id=user_id, brand_id=brand["id"],
-            file=_FakeUploadFile(b"fake-png-2", "image/png"),
+            file=_FakeUploadFile(_TINY_PNG_BYTES, "image/png"),
         ))
         expressions = culturetoons.list_expressions(variant["id"], user_id, brand["id"])
         assert len(expressions) == 1
@@ -886,7 +898,7 @@ class TestVariantsAndExpressions:
         with pytest.raises(HTTPException) as exc_info:
             _run(culturetoons.upload_expression_image(
                 variant["id"], "Bored", user_id=user_id, brand_id=brand["id"],
-                file=_FakeUploadFile(b"x", "image/png"),
+                file=_FakeUploadFile(_TINY_PNG_BYTES, "image/png"),
             ))
         assert exc_info.value.status_code == 400
 
@@ -917,7 +929,7 @@ class TestVariantsAndExpressions:
 
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/expr-angry.png")
 
@@ -1066,12 +1078,12 @@ class TestBackgrounds:
             "https://supabase/house-angle-1.png", "https://supabase/house-angle-2.png",
         ])
         result = _run(culturetoons.upload_background_reference_image(
-            bg["id"], user_id=user_id, brand_id=brand["id"], file=_FakeUploadFile(b"fake-png-1", "image/png"),
+            bg["id"], user_id=user_id, brand_id=brand["id"], file=_FakeUploadFile(_TINY_PNG_BYTES, "image/png"),
         ))
         assert result["reference_image_urls"] == ["https://supabase/house-angle-1.png"]
 
         result = _run(culturetoons.upload_background_reference_image(
-            bg["id"], user_id=user_id, brand_id=brand["id"], file=_FakeUploadFile(b"fake-png-2", "image/png"),
+            bg["id"], user_id=user_id, brand_id=brand["id"], file=_FakeUploadFile(_TINY_PNG_BYTES, "image/png"),
         ))
         assert result["reference_image_urls"] == [
             "https://supabase/house-angle-1.png", "https://supabase/house-angle-2.png",
@@ -1089,7 +1101,7 @@ class TestBackgrounds:
         brand = culturetoons.create_brand({"user_id": user_id})
         mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png", cost_usd=0.1),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png", cost_usd=0.1),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/generated.png")
 
@@ -1474,7 +1486,7 @@ class TestGenerateScriptBackground:
         })
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/bg-gen.png")
 
@@ -1509,7 +1521,7 @@ class TestGenerateScriptBackground:
 
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/bg-gen.png")
 
@@ -1528,7 +1540,7 @@ class TestGenerateScriptBackground:
         })
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/bg-gen.png")
 
@@ -1549,7 +1561,7 @@ class TestGenerateScriptBackground:
         })
         mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/bg-gen.png")
 
@@ -1576,7 +1588,7 @@ class TestGenerateBackground:
         brand, _character, _variant = brand_and_character
         mock_generate = mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png"),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/bg-gen.png")
 
@@ -3125,7 +3137,7 @@ class TestBudgetEnforcement:
 
         mocker.patch(
             "app.media.image_hybrid.HybridImageProvider.generate",
-            return_value=MediaResult(asset_bytes=b"fake-png", content_type="image/png", cost_usd=0.1),
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png", cost_usd=0.1),
         )
         mocker.patch("app.media.storage.upload", return_value="https://supabase/char-gen.png")
 

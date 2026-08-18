@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -13,7 +14,7 @@ export async function POST(req: Request) {
   const baseUrl = new URL(req.url).origin;
   const res = await fetch(`${RAILWAY}/api/billing/create-checkout-session`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: internalApiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ user_id: user.id, email: user.email, base_url: baseUrl }),
     signal: AbortSignal.timeout(15000),
   });

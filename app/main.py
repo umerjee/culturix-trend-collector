@@ -4,7 +4,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Depends
-from app.admin_auth import require_admin_secret
+from app.admin_auth import require_admin_secret, require_internal_secret
 
 logging.basicConfig(level=logging.INFO)
 
@@ -421,7 +421,7 @@ app.add_middleware(
 )
 
 from app.routers.culturetoons import router as culturetoons_router
-app.include_router(culturetoons_router)
+app.include_router(culturetoons_router, dependencies=[Depends(require_internal_secret)])
 
 
 @app.get("/health")
@@ -431,19 +431,19 @@ def health():
 
 # ── Collectors ────────────────────────────────────────────────────────────────
 
-@app.post("/collect/reddit")
+@app.post("/collect/reddit", dependencies=[Depends(require_admin_secret)])
 def collect_reddit():
     from app.collectors.reddit import store_reddit_trends
     return {"inserted": store_reddit_trends()}
 
 
-@app.post("/collect/tiktok")
+@app.post("/collect/tiktok", dependencies=[Depends(require_admin_secret)])
 def collect_tiktok(region: str = "US"):
     from app.collectors.tiktok import store_tiktok_trends
     return {"inserted": store_tiktok_trends(region=region)}
 
 
-@app.post("/collect/youtube")
+@app.post("/collect/youtube", dependencies=[Depends(require_admin_secret)])
 def collect_youtube(region: str = "US"):
     from app.collectors.youtube import store_youtube_trends, fetch_youtube_trending
     items = fetch_youtube_trending(region, limit=1)
@@ -459,7 +459,7 @@ def collect_youtube(region: str = "US"):
     }
 
 
-@app.post("/collect/twitter")
+@app.post("/collect/twitter", dependencies=[Depends(require_admin_secret)])
 def collect_twitter(region: str = "global"):
     """Same Apify-primary/proxy-fallback path the scheduled orchestrator uses
     (app.collectors.twitter.store_twitter_trends). `region` only affects the
@@ -473,7 +473,7 @@ def collect_twitter(region: str = "global"):
 
 # ── Processing ────────────────────────────────────────────────────────────────
 
-@app.post("/process/translations")
+@app.post("/process/translations", dependencies=[Depends(require_admin_secret)])
 def run_translations(limit: int = 1000):
     from app.db import SessionLocal
     from app.models.trend import Trend
@@ -500,7 +500,7 @@ def run_translations(limit: int = 1000):
         session.close()
 
 
-@app.post("/process/embeddings")
+@app.post("/process/embeddings", dependencies=[Depends(require_admin_secret)])
 def run_embeddings(limit: int = 500):
     from app.embedding_processor import process_embeddings
     return {"embedded": process_embeddings(limit)}
@@ -509,17 +509,17 @@ def run_embeddings(limit: int = 500):
 # Both routes below are superseded by app/pipeline/nodes/persona_tag_tracker.py's
 # map_persona_tags, which runs live in the daily pipeline — kept only for
 # manual backfill/debugging, not called from anywhere else.
-@app.post("/process/personas")
+@app.post("/process/personas", dependencies=[Depends(require_admin_secret)])
 def process_personas():
     return generate_personas_for_recent_trends(limit=50)
 
 
-@app.post("/process/personas/clustered")
+@app.post("/process/personas/clustered", dependencies=[Depends(require_admin_secret)])
 def process_clustered_personas():
     return generate_clustered_personas(limit=200, min_cluster_size=5)
 
 
-@app.post("/process/cluster")
+@app.post("/process/cluster", dependencies=[Depends(require_admin_secret)])
 def process_cluster(limit: int = 500, min_cluster_size: int = 5):
     from app.clustering_service import run_clustering
     return run_clustering(limit=limit, min_cluster_size=min_cluster_size)
@@ -957,7 +957,7 @@ def refresh_suggestions(persona_id: int):
 
 # ── Workstream 1 — User Profiles & Digest ─────────────────────────────────────
 
-@app.post("/api/users/profile")
+@app.post("/api/users/profile", dependencies=[Depends(require_internal_secret)])
 def save_user_profile(profile: dict):
     from app.db import SessionLocal
     from app.models.user_profile import UserProfile
@@ -1005,7 +1005,7 @@ def save_user_profile(profile: dict):
         session.close()
 
 
-@app.get("/api/users/profile")
+@app.get("/api/users/profile", dependencies=[Depends(require_internal_secret)])
 def get_user_profile(user_id: str):
     from app.db import SessionLocal
     from app.models.user_profile import UserProfile
@@ -1032,7 +1032,7 @@ def get_user_profile(user_id: str):
         session.close()
 
 
-@app.get("/api/digest/{user_id}")
+@app.get("/api/digest/{user_id}", dependencies=[Depends(require_internal_secret)])
 def get_digest(user_id: str, profile_id: Optional[str] = None):
     from app.db import SessionLocal
     from app.models.generated_content import GeneratedContent
@@ -1066,7 +1066,7 @@ def get_digest(user_id: str, profile_id: Optional[str] = None):
         session.close()
 
 
-@app.post("/api/generate-idea")
+@app.post("/api/generate-idea", dependencies=[Depends(require_internal_secret)])
 def generate_idea_for_trend(body: dict):
     """On-demand content generation for a single trend — the dashboard proactively
     generates one idea for each user's top 3 (most relevant) trends at digest-build
@@ -1162,7 +1162,7 @@ def generate_idea_for_trend(body: dict):
         session.close()
 
 
-@app.post("/api/generate")
+@app.post("/api/generate", dependencies=[Depends(require_internal_secret)])
 def trigger_generation(body: dict):
     user_id = body.get("user_id")
     if not user_id:
@@ -1181,7 +1181,7 @@ def trigger_generation(body: dict):
     return {"status": "pipeline_started", "user_id": user_id}
 
 
-@app.post("/api/generate-media")
+@app.post("/api/generate-media", dependencies=[Depends(require_internal_secret)])
 def request_generate_media(body: dict, background_tasks: BackgroundTasks):
     """
     Body: {
@@ -1324,7 +1324,7 @@ def request_generate_media(body: dict, background_tasks: BackgroundTasks):
     return {"status": "queued", "media_ids": created_ids}
 
 
-@app.get("/api/generate-media/{generated_content_id}")
+@app.get("/api/generate-media/{generated_content_id}", dependencies=[Depends(require_internal_secret)])
 def list_generated_media(generated_content_id: str, idea_index: Optional[int] = None):
     """Poll endpoint — returns all generated_media rows for a content digest."""
     from app.db import SessionLocal
@@ -1383,16 +1383,18 @@ def social_connect(platform: str, user_id: str, content_profile_id: Optional[str
     """Redirects to the platform's OAuth consent screen. `state` carries the
     user_id (and, when connecting a niche's own dedicated "avatar account",
     the content_profile_id or character_brand_id to bind it to) through the
-    round trip so the callback knows who's connecting and to which scope —
-    this app has no server-side session of its own (auth lives in the
-    frontend's Supabase session), so, consistent with every other endpoint
-    here trusting a passed-in user_id (e.g. GET /users/{user_id}/content-profiles),
-    it isn't cryptographically signed. Worst case of tampering is a connection
-    landing on the wrong user_id/scope, not a security bypass of anything
-    sensitive. Callers pass at most one of content_profile_id/character_brand_id."""
+    round trip so the callback knows who's connecting and to which scope.
+    HMAC-signed (app/oauth_state.py) before being handed to the provider —
+    without this, anyone could call this endpoint directly with
+    user_id=<victim>, complete their OWN real OAuth consent, and have their
+    account attached to the victim's, hijacking that user's publishing
+    pipeline; signing means only this server can produce a state value the
+    callback will accept. Callers pass at most one of
+    content_profile_id/character_brand_id."""
     from fastapi.responses import RedirectResponse
+    from app.oauth_state import sign
     provider = _get_social_provider(platform)
-    state = f"{user_id}:{content_profile_id or ''}:{character_brand_id or ''}"
+    state = sign(f"{user_id}:{content_profile_id or ''}:{character_brand_id or ''}")
     return RedirectResponse(provider.get_authorize_url(state=state))
 
 
@@ -1410,6 +1412,13 @@ def social_callback(platform: str, code: Optional[str] = None, state: Optional[s
     if not code or not state:
         return RedirectResponse(f"{frontend_base}/settings?social_error=missing_code")
 
+    from app.oauth_state import verify_and_unwrap, OAuthStateError
+    try:
+        state = verify_and_unwrap(state)
+    except OAuthStateError as e:
+        logging.error("Social OAuth callback rejected — invalid state (%s): %s", platform, e)
+        return RedirectResponse(f"{frontend_base}/settings?social_error=invalid_state")
+
     provider = _get_social_provider(platform)
     try:
         result = provider.exchange_code(code)
@@ -1423,7 +1432,8 @@ def social_callback(platform: str, code: Optional[str] = None, state: Optional[s
             # state = "{user_id}:{content_profile_id}:{character_brand_id}" (the
             # latter two may be empty — a legacy/user-wide connect not bound to
             # any one niche/toon-account). UUIDs never contain ":", so a simple
-            # partition is safe.
+            # partition is safe. Already verify_and_unwrap()-ed above, so this
+            # is the original unsigned payload, not the raw query param.
             raw_user_id, _, rest = state.partition(":")
             user_id = _uuid.UUID(raw_user_id)
             raw_profile_id, _, raw_brand_id = rest.partition(":")
@@ -1477,7 +1487,7 @@ def social_callback(platform: str, code: Optional[str] = None, state: Optional[s
     return RedirectResponse(f"{frontend_base}/settings?connected={platform}")
 
 
-@app.delete("/api/social/{platform}/disconnect")
+@app.delete("/api/social/{platform}/disconnect", dependencies=[Depends(require_internal_secret)])
 def social_disconnect(platform: str, user_id: str, content_profile_id: Optional[str] = None,
                        character_brand_id: Optional[str] = None):
     from app.db import SessionLocal
@@ -1503,7 +1513,7 @@ def social_disconnect(platform: str, user_id: str, content_profile_id: Optional[
         session.close()
 
 
-@app.get("/api/social/accounts")
+@app.get("/api/social/accounts", dependencies=[Depends(require_internal_secret)])
 def list_connected_accounts(user_id: str, content_profile_id: Optional[str] = None,
                              character_brand_id: Optional[str] = None):
     from app.db import SessionLocal
@@ -1535,7 +1545,7 @@ def list_connected_accounts(user_id: str, content_profile_id: Optional[str] = No
         session.close()
 
 
-@app.post("/api/social/{platform}/test")
+@app.post("/api/social/{platform}/test", dependencies=[Depends(require_internal_secret)])
 def test_social_connection(platform: str, user_id: str, content_profile_id: Optional[str] = None,
                             character_brand_id: Optional[str] = None):
     """Live 'does this connection actually work' probe — a single cheap
@@ -1571,15 +1581,19 @@ def shopify_connect(user_id: str, shop_domain: str):
     """Redirects to Shopify's OAuth consent screen for the given store —
     custom distribution, so this only works for stores that have accepted
     this app's install invitation from the Shopify Dev Dashboard (see
-    app/shopify/oauth.py's module docstring). No server-side session here
-    (auth lives in the frontend's Supabase session), so `state` carries the
-    user_id through the round trip untrusted, same convention as
-    social_connect()'s state param above — the difference is Shopify signs
-    the whole callback with an HMAC of our client secret, so a forged
-    callback can't actually forge a working state value either."""
+    app/shopify/oauth.py's module docstring). `state` carries the user_id
+    through the round trip, HMAC-signed (app/oauth_state.py) before being
+    handed to Shopify. Shopify's own callback HMAC (verify_hmac below)
+    proves the callback really came from Shopify, but says nothing about
+    who was ALLOWED to request it with user_id=<victim> in the first
+    place — without signing state ourselves, anyone could call this
+    endpoint with a victim's user_id, complete Shopify's real consent
+    screen for their OWN store, and have that store attached to the
+    victim's account instead."""
     from fastapi.responses import RedirectResponse
     from app.shopify.oauth import get_authorize_url, is_valid_shop_domain
     from app.shopify.service import normalize_domain
+    from app.oauth_state import sign
 
     domain = normalize_domain(shop_domain)
     if not is_valid_shop_domain(domain):
@@ -1588,7 +1602,7 @@ def shopify_connect(user_id: str, shop_domain: str):
     backend_base = os.getenv("BACKEND_BASE_URL", "https://culturix-trend-collector-production.up.railway.app")
     redirect_uri = f"{backend_base}/api/shopify/callback"
     try:
-        return RedirectResponse(get_authorize_url(domain, redirect_uri, state=user_id))
+        return RedirectResponse(get_authorize_url(domain, redirect_uri, state=sign(user_id)))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -1603,15 +1617,22 @@ def shopify_callback(request: Request, background_tasks: BackgroundTasks):
     params = dict(request.query_params)
     shop = params.get("shop", "")
     code = params.get("code")
-    user_id = params.get("state")
+    signed_state = params.get("state")
 
-    if not code or not shop or not user_id:
+    if not code or not shop or not signed_state:
         return RedirectResponse(f"{frontend_base}/settings?shopify_error=missing_params")
     if not is_valid_shop_domain(shop):
         return RedirectResponse(f"{frontend_base}/settings?shopify_error=invalid_shop")
     if not verify_hmac(params):
         logging.error("Shopify OAuth callback failed HMAC verification for shop %s", shop)
         return RedirectResponse(f"{frontend_base}/settings?shopify_error=invalid_signature")
+
+    from app.oauth_state import verify_and_unwrap, OAuthStateError
+    try:
+        user_id = verify_and_unwrap(signed_state)
+    except OAuthStateError as e:
+        logging.error("Shopify OAuth callback rejected — invalid state for shop %s: %s", shop, e)
+        return RedirectResponse(f"{frontend_base}/settings?shopify_error=invalid_state")
 
     try:
         access_token = exchange_code(shop, code)
@@ -1624,7 +1645,7 @@ def shopify_callback(request: Request, background_tasks: BackgroundTasks):
     return RedirectResponse(f"{frontend_base}/settings?shopify_connected=1")
 
 
-@app.get("/api/shopify/store")
+@app.get("/api/shopify/store", dependencies=[Depends(require_internal_secret)])
 def shopify_get_store(user_id: str):
     from app.shopify.service import get_store
     store = get_store(user_id)
@@ -1633,7 +1654,7 @@ def shopify_get_store(user_id: str):
     return store
 
 
-@app.post("/api/shopify/sync")
+@app.post("/api/shopify/sync", dependencies=[Depends(require_internal_secret)])
 def shopify_sync(body: dict, background_tasks: BackgroundTasks):
     user_id = body.get("user_id")
     if not user_id:
@@ -1646,20 +1667,20 @@ def shopify_sync(body: dict, background_tasks: BackgroundTasks):
     return {"status": "sync_started"}
 
 
-@app.get("/api/shopify/products")
+@app.get("/api/shopify/products", dependencies=[Depends(require_internal_secret)])
 def shopify_list_products(user_id: str, active_only: bool = True):
     from app.shopify.service import list_products
     return list_products(user_id, active_only=active_only)
 
 
-@app.delete("/api/shopify/disconnect")
+@app.delete("/api/shopify/disconnect", dependencies=[Depends(require_internal_secret)])
 def shopify_disconnect(user_id: str):
     from app.shopify.service import disconnect_store
     disconnect_store(user_id)
     return {"status": "disconnected"}
 
 
-@app.post("/api/shopify/products/{product_id}/generate-idea")
+@app.post("/api/shopify/products/{product_id}/generate-idea", dependencies=[Depends(require_internal_secret)])
 def shopify_generate_product_idea(product_id: str, body: dict):
     """Synchronous — a single LLM call, and the caller (the digest UI) needs
     the result immediately to render the new hook/caption on that one card."""
@@ -1676,7 +1697,7 @@ def shopify_generate_product_idea(product_id: str, body: dict):
         raise HTTPException(status_code=502, detail=f"Idea generation failed: {e}")
 
 
-@app.post("/api/shopify/generate-ideas")
+@app.post("/api/shopify/generate-ideas", dependencies=[Depends(require_internal_secret)])
 def shopify_generate_ideas_bulk(body: dict, background_tasks: BackgroundTasks):
     """Backgrounded — generates ideas for up to `limit` products missing one
     (capped server-side, see service.py), which is multiple sequential LLM
@@ -1693,7 +1714,7 @@ def shopify_generate_ideas_bulk(body: dict, background_tasks: BackgroundTasks):
     return {"status": "generation_started"}
 
 
-@app.post("/api/shopify/products/{product_id}/generate-reel")
+@app.post("/api/shopify/products/{product_id}/generate-reel", dependencies=[Depends(require_internal_secret)])
 def shopify_generate_product_reel(product_id: str, body: dict, background_tasks: BackgroundTasks):
     """Backgrounded — Kling image-to-video can take up to ~6 minutes, so this
     can't be a synchronous request/response like idea generation is. The
@@ -1710,7 +1731,7 @@ def shopify_generate_product_reel(product_id: str, body: dict, background_tasks:
     return {"status": "generation_started"}
 
 
-@app.post("/api/content-posts")
+@app.post("/api/content-posts", dependencies=[Depends(require_internal_secret)])
 def create_content_post(body: dict, background_tasks: BackgroundTasks):
     """Manual tracking — user posted this idea themselves somewhere and is
     pasting the link. Still requires a connected account for that platform,
@@ -1767,7 +1788,7 @@ def create_content_post(body: dict, background_tasks: BackgroundTasks):
         session.close()
 
 
-@app.post("/api/content-posts/publish")
+@app.post("/api/content-posts/publish", dependencies=[Depends(require_internal_secret)])
 def publish_content_post(body: dict, background_tasks: BackgroundTasks):
     """DORMANT unless ENABLE_DIRECT_PUBLISH is set — one-click / autonomous
     publish, where Culturix posts the idea's finished video directly via the
@@ -1837,7 +1858,7 @@ def publish_content_post(body: dict, background_tasks: BackgroundTasks):
         session.close()
 
 
-@app.post("/api/content-posts/stage")
+@app.post("/api/content-posts/stage", dependencies=[Depends(require_internal_secret)])
 def stage_content_post(body: dict, background_tasks: BackgroundTasks):
     """Default publish action — prepares the idea's video+caption and
     notifies the user to publish it themselves (see app/notifications/
@@ -1902,7 +1923,7 @@ def stage_content_post(body: dict, background_tasks: BackgroundTasks):
         session.close()
 
 
-@app.get("/api/content-posts/{content_post_id}/stage")
+@app.get("/api/content-posts/{content_post_id}/stage", dependencies=[Depends(require_internal_secret)])
 def get_stage_info(content_post_id: str):
     """Payload for the 1-click launch landing page (culturix-web's
     /publish/[postId]). Keyed by ContentPost.id itself — the id carried in
@@ -1937,7 +1958,7 @@ def get_stage_info(content_post_id: str):
         session.close()
 
 
-@app.post("/api/content-posts/{content_post_id}/confirm-posted")
+@app.post("/api/content-posts/{content_post_id}/confirm-posted", dependencies=[Depends(require_internal_secret)])
 def confirm_content_post_posted(content_post_id: str, body: dict, background_tasks: BackgroundTasks):
     """User published the staged content themselves and pastes the link —
     hands the row off into the existing manual-tracking pipeline
@@ -1970,7 +1991,7 @@ def confirm_content_post_posted(content_post_id: str, body: dict, background_tas
         session.close()
 
 
-@app.get("/api/content-posts/{generated_content_id}")
+@app.get("/api/content-posts/{generated_content_id}", dependencies=[Depends(require_internal_secret)])
 def list_content_posts(generated_content_id: str, idea_index: Optional[int] = None):
     """Poll endpoint — same shape as GET /api/generate-media/{id}, used by
     both the manual-tracking and publish frontend flows."""
@@ -1989,14 +2010,14 @@ def list_content_posts(generated_content_id: str, idea_index: Optional[int] = No
         session.close()
 
 
-@app.post("/api/content-posts/{content_post_id}/refresh")
+@app.post("/api/content-posts/{content_post_id}/refresh", dependencies=[Depends(require_internal_secret)])
 def refresh_content_post(content_post_id: str, background_tasks: BackgroundTasks):
     from app.social.service import fetch_and_record
     background_tasks.add_task(fetch_and_record, content_post_id=content_post_id)
     return {"status": "queued"}
 
 
-@app.get("/api/content-posts")
+@app.get("/api/content-posts", dependencies=[Depends(require_internal_secret)])
 def list_all_content_posts(user_id: str, content_profile_id: Optional[str] = None):
     """Aggregate feed for the Performance page — every tracked/published post
     across all of a user's content profiles, latest metrics, views desc.
@@ -2058,7 +2079,7 @@ def _serialize_content_post(r) -> dict:
     }
 
 
-@app.post("/api/webhooks/delivery")
+@app.post("/api/webhooks/delivery", dependencies=[Depends(require_admin_secret)])
 def webhook_delivery():
     import threading
     def _run():
@@ -2125,13 +2146,13 @@ def high_velocity_trend_webhook(body: dict):
 
 # ── Workstream 2 — New Collectors ─────────────────────────────────────────────
 
-@app.post("/collect/xhs")
+@app.post("/collect/xhs", dependencies=[Depends(require_admin_secret)])
 def collect_xhs(keywords: list[str] | None = None):
     from app.collectors.xiaohongshu import store_xhs_signals
     return {"inserted": store_xhs_signals(keywords)}
 
 
-@app.post("/collect/all")
+@app.post("/collect/all", dependencies=[Depends(require_admin_secret)])
 def collect_all():
     from app.collectors.orchestrator import run_all_collectors
     return run_all_collectors()
@@ -2648,7 +2669,7 @@ def reject_user(user_id: str):
         session.close()
 
 
-@app.get("/api/users/{user_id}/approved")
+@app.get("/api/users/{user_id}/approved", dependencies=[Depends(require_internal_secret)])
 def check_user_approved(user_id: str):
     """Called by the frontend to gate dashboard access."""
     from app.db import SessionLocal
@@ -2667,7 +2688,7 @@ def check_user_approved(user_id: str):
 
 # ── Billing (Stripe) ───────────────────────────────────────────────────────────
 
-@app.post("/api/billing/create-checkout-session")
+@app.post("/api/billing/create-checkout-session", dependencies=[Depends(require_internal_secret)])
 def billing_create_checkout_session(body: dict):
     user_id = body.get("user_id")
     email = body.get("email")
@@ -2687,7 +2708,7 @@ def billing_create_checkout_session(body: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/billing/create-portal-session")
+@app.post("/api/billing/create-portal-session", dependencies=[Depends(require_internal_secret)])
 def billing_create_portal_session(body: dict):
     user_id = body.get("user_id")
     base_url = body.get("base_url") or os.getenv("NEXT_PUBLIC_SITE_URL", "https://culturix-web.vercel.app")
@@ -2751,7 +2772,7 @@ def set_user_plan(user_id: str, body: dict):
 PLAN_PROFILE_LIMITS = {"free": 1, "pro": 10}
 
 
-@app.get("/users/{user_id}/content-profiles")
+@app.get("/users/{user_id}/content-profiles", dependencies=[Depends(require_internal_secret)])
 def list_content_profiles(user_id: str):
     from app.db import SessionLocal
     from app.models.content_profile import ContentProfile
@@ -2769,7 +2790,7 @@ def list_content_profiles(user_id: str):
         session.close()
 
 
-@app.post("/users/{user_id}/content-profiles")
+@app.post("/users/{user_id}/content-profiles", dependencies=[Depends(require_internal_secret)])
 def create_content_profile(user_id: str, body: dict):
     from app.db import SessionLocal
     from app.models.content_profile import ContentProfile
@@ -2813,7 +2834,7 @@ def create_content_profile(user_id: str, body: dict):
         session.close()
 
 
-@app.put("/users/{user_id}/content-profiles/{profile_id}")
+@app.put("/users/{user_id}/content-profiles/{profile_id}", dependencies=[Depends(require_internal_secret)])
 def update_content_profile(user_id: str, profile_id: str, body: dict):
     from app.db import SessionLocal
     from app.models.content_profile import ContentProfile
@@ -2838,7 +2859,7 @@ def update_content_profile(user_id: str, profile_id: str, body: dict):
         session.close()
 
 
-@app.post("/users/{user_id}/content-profiles/{profile_id}/account-suggestions")
+@app.post("/users/{user_id}/content-profiles/{profile_id}/account-suggestions", dependencies=[Depends(require_internal_secret)])
 def get_account_suggestions(user_id: str, profile_id: str):
     """Ephemeral, regenerate-on-demand suggestions for a NEW dedicated social
     account (platform fit + name/handle ideas) for this profile's niche —
@@ -2874,7 +2895,7 @@ def get_account_suggestions(user_id: str, profile_id: str):
         session.close()
 
 
-@app.get("/users/{user_id}/content-profiles/{profile_id}/next-auto-publish")
+@app.get("/users/{user_id}/content-profiles/{profile_id}/next-auto-publish", dependencies=[Depends(require_internal_secret)])
 def next_auto_publish(user_id: str, profile_id: str):
     """Read-only preview of what run_auto_publish() would post next for this
     profile — shares its exact selection logic (select_auto_publish_candidate)
@@ -2915,7 +2936,7 @@ def next_auto_publish(user_id: str, profile_id: str):
         session.close()
 
 
-@app.get("/users/{user_id}/content-profiles/{profile_id}/persona-advisory")
+@app.get("/users/{user_id}/content-profiles/{profile_id}/persona-advisory", dependencies=[Depends(require_internal_secret)])
 def persona_advisory(user_id: str, profile_id: str):
     """Read-only: which of this profile's persona_tags currently need
     attention. Matches by Persona.name against the profile's persona_tags
@@ -2949,7 +2970,7 @@ def persona_advisory(user_id: str, profile_id: str):
         session.close()
 
 
-@app.delete("/users/{user_id}/content-profiles/{profile_id}")
+@app.delete("/users/{user_id}/content-profiles/{profile_id}", dependencies=[Depends(require_internal_secret)])
 def delete_content_profile(user_id: str, profile_id: str):
     from app.db import SessionLocal
     from app.models.content_profile import ContentProfile

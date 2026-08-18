@@ -80,9 +80,13 @@ against a real character:**
 The training pod does NOT mount the Network Volume (see module docstring
 above), so it downloads its own copy of these on every run — real disk/
 time cost, on top of GPU-hours, worth watching once real numbers exist."""
+import ipaddress
 import json
 import logging
 import os
+import shlex
+import socket
+from urllib.parse import urlparse
 
 logger = logging.getLogger("culturix.services.culturetoon_lora")
 
@@ -113,6 +117,30 @@ _CAPTION_PROMPT_TEMPLATE = (
 
 class LoraTrainingError(Exception):
     pass
+
+
+def _is_safe_external_url(url: str) -> bool:
+    """SSRF guard for caption_training_image()'s Claude-vision fallback,
+    which fetches `url` server-side via httpx.get() — every caller today
+    only ever passes our own Supabase Storage URLs (see
+    add_training_images()), but this function accepts an arbitrary string
+    by signature, so it defends itself rather than relying on callers to
+    stay that way forever. Resolves the hostname and rejects anything that
+    lands on a private/loopback/link-local/reserved/multicast address —
+    blocks the classic SSRF targets (localhost, RunPod/Docker-internal
+    hosts, the 169.254.169.254 cloud-metadata endpoint) without needing an
+    allowlist of specific external hosts."""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return False
+        for family, _type, _proto, _canon, sockaddr in socket.getaddrinfo(parsed.hostname, None):
+            ip = ipaddress.ip_address(sockaddr[0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                return False
+        return True
+    except Exception:
+        return False
 
 
 def caption_training_image(image_url: str, character_name: str) -> str:
@@ -287,21 +315,32 @@ def train_character_lora(variant, session) -> None:
         pod_id = runpod_client.create_training_pod()
         host, port = runpod_client.wait_for_ssh_ready(pod_id)
 
+        # Every value interpolated into a shell command below is passed
+        # through shlex.quote(), including ones built purely from a UUID/
+        # loop index that are safe under every caller reachable today
+        # (curate_training_images() only ever surfaces our own storage
+        # URLs — see that function's docstring) — this is defense in
+        # depth, not a response to a currently-exploitable path, since a
+        # future caller or storage-layer bug could otherwise turn an
+        # unescaped `curl '{url}'` into command injection on a pod holding
+        # live SSH/S3 credentials.
+        q = shlex.quote
+
         work_dir = f"/workspace/lora_training/{variant.id}"
         models_dir = f"{work_dir}/models"
         output_dir = f"{work_dir}/output"
         _run(runpod_ssh, host, port,
-             f"mkdir -p {work_dir} {models_dir}/checkpoint {models_dir}/text_encoder {output_dir}",
+             f"mkdir -p {q(work_dir)} {q(models_dir + '/checkpoint')} {q(models_dir + '/text_encoder')} {q(output_dir)}",
              120, "Failed to set up the training pod's working directory")
 
         # This pod's own model copy — the Network Volume isn't mounted here.
         checkpoint_path = f"{models_dir}/checkpoint/{_CHECKPOINT_FILE}"
         _run(runpod_ssh, host, port,
-             f"hf download {_CHECKPOINT_REPO} {_CHECKPOINT_FILE} --local-dir {models_dir}/checkpoint",
+             f"hf download {q(_CHECKPOINT_REPO)} {q(_CHECKPOINT_FILE)} --local-dir {q(models_dir + '/checkpoint')}",
              _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training checkpoint")
         text_encoder_dir = f"{models_dir}/text_encoder"
         _run(runpod_ssh, host, port,
-             f"hf download {_TEXT_ENCODER_REPO} --local-dir {text_encoder_dir}",
+             f"hf download {q(_TEXT_ENCODER_REPO)} --local-dir {q(text_encoder_dir)}",
              _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training text encoder")
 
         # Stage each reference image, then loop it into a short static clip
@@ -318,26 +357,34 @@ def train_character_lora(variant, session) -> None:
             clip_path = f"{work_dir}/clip_{i:03d}.mp4"
             width, height, frames = _RESOLUTION_BUCKET.split("x")
             stage_cmd = (
-                f"curl -sL --fail '{url}' -o {img_path} && "
-                f"ffmpeg -y -loop 1 -i {img_path} -t 2 -r 24 -pix_fmt yuv420p "
-                f"-vf scale={width}:{height} {clip_path}"
+                f"curl -sL --fail {q(url)} -o {q(img_path)} && "
+                f"ffmpeg -y -loop 1 -i {q(img_path)} -t 2 -r 24 -pix_fmt yuv420p "
+                f"-vf scale={width}:{height} {q(clip_path)}"
             )
             _run(runpod_ssh, host, port, stage_cmd, 120, f"Failed to stage/convert training image {i}")
             clip_entries.append({"caption": caption, "video": clip_path})
 
         dataset_json = json.dumps(clip_entries)
         dataset_path = f"{work_dir}/dataset.json"
+        # Heredoc body content isn't a command argument, so shlex.quote()
+        # doesn't apply here — the relevant protection is the QUOTED
+        # delimiter ('CULTURIX_EOF', not CULTURIX_EOF), which disables
+        # variable/command substitution inside the body entirely. The one
+        # remaining risk (body content containing a bare line that exactly
+        # matches the delimiter, prematurely closing it) can't happen here
+        # since json.dumps() with no `indent` never emits a literal
+        # newline byte — the whole payload is always a single line.
         _run(runpod_ssh, host, port,
-             f"cat > {dataset_path} << 'CULTURIX_EOF'\n{dataset_json}\nCULTURIX_EOF",
+             f"cat > {q(dataset_path)} << 'CULTURIX_EOF'\n{dataset_json}\nCULTURIX_EOF",
              30, "Failed to write dataset.json on the training pod")
 
         precomputed_dir = f"{work_dir}/.precomputed"
         preprocess_cmd = (
             f"cd /workspace/LTX-2/packages/ltx-trainer && "
-            f"python scripts/process_dataset.py {dataset_path} "
-            f"--resolution-buckets '{_RESOLUTION_BUCKET}' "
-            f"--model-path {checkpoint_path} --text-encoder-path {text_encoder_dir} "
-            f"--output-dir {precomputed_dir}"
+            f"python scripts/process_dataset.py {q(dataset_path)} "
+            f"--resolution-buckets {q(_RESOLUTION_BUCKET)} "
+            f"--model-path {q(checkpoint_path)} --text-encoder-path {q(text_encoder_dir)} "
+            f"--output-dir {q(precomputed_dir)}"
         )
         _run(runpod_ssh, host, port, preprocess_cmd, _TRAINING_TIMEOUT_SECONDS, "ltx-trainer dataset preprocessing failed")
 
@@ -359,18 +406,24 @@ def train_character_lora(variant, session) -> None:
             f"  preprocessed_data_root: \"{precomputed_dir}\"\n"
         )
         config_path = f"{work_dir}/config.yaml"
+        # Same heredoc reasoning as dataset.json above — every interpolated
+        # value here is a path built purely from variant.id (a UUID), never
+        # user text, so there's no bare-delimiter-line risk either.
         _run(runpod_ssh, host, port,
-             f"cat > {config_path} << 'CULTURIX_EOF'\n{config_yaml}\nCULTURIX_EOF",
+             f"cat > {q(config_path)} << 'CULTURIX_EOF'\n{config_yaml}\nCULTURIX_EOF",
              30, "Failed to write training config on the training pod")
 
-        train_cmd = f"cd /workspace/LTX-2/packages/ltx-trainer && python scripts/train.py {config_path}"
+        train_cmd = f"cd /workspace/LTX-2/packages/ltx-trainer && python scripts/train.py {q(config_path)}"
         _run(runpod_ssh, host, port, train_cmd, _TRAINING_TIMEOUT_SECONDS, "ltx-trainer training run failed")
 
         # The final checkpoint's exact step-count suffix isn't known ahead
-        # of time — find the highest-numbered one ltx-trainer wrote.
+        # of time — find the highest-numbered one ltx-trainer wrote. The
+        # glob suffix is deliberately left outside shlex.quote() (quoting
+        # it would defeat shell glob expansion); only the safe, UUID-built
+        # output_dir prefix is quoted.
         exit_code, stdout, stderr = runpod_ssh.run_remote_command(
             host, port,
-            f"ls -1 {output_dir}/checkpoints/lora_weights_step_*.safetensors 2>/dev/null | sort | tail -n 1",
+            f"ls -1 {q(output_dir)}/checkpoints/lora_weights_step_*.safetensors 2>/dev/null | sort | tail -n 1",
             timeout_seconds=30,
         )
         local_output_path = (stdout or "").strip()

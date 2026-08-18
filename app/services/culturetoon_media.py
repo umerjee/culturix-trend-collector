@@ -21,5 +21,18 @@ def save_image(data: bytes, content_type: str, path: str) -> str:
     if len(data) > _MAX_BYTES:
         raise ImageUploadError("Image exceeds 10MB limit")
 
+    # content_type above is just the client-supplied header — trusting it
+    # alone would let arbitrary bytes (e.g. an SVG-with-script or a
+    # polyglot file) get stored and later served back under an image
+    # content-type just because the upload request claimed to be one.
+    # Actually decoding the bytes confirms it's a real, intact image.
+    import io
+    from PIL import Image, UnidentifiedImageError
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            img.verify()
+    except (UnidentifiedImageError, OSError, ValueError):
+        raise ImageUploadError("File is not a valid image")
+
     from app.media import storage
     return storage.upload(data, path, content_type)
