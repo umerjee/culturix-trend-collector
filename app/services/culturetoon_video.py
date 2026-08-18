@@ -147,6 +147,7 @@ def generate_video_for_toon(user_id, toon_id) -> None:
 
         toon.status = "animating"
         toon.generation_error = None
+        toon.video_provider = "kling_omni"
         session.commit()
 
         element_names = {str(v.id): v.kling_element_name for v in variants}

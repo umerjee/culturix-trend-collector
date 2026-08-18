@@ -244,6 +244,15 @@ async def lifespan(_):
             # The anchor character a brand's cast/story is built around — see
             # Character.is_main's docstring.
             "ALTER TABLE characters ADD COLUMN IF NOT EXISTS is_main BOOLEAN NOT NULL DEFAULT FALSE",
+            # Self-hosted (RunPod+ComfyUI+LTX-2) video generation's own
+            # character-consistency mechanism — see
+            # CharacterVariant.lora_path's docstring.
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS lora_path TEXT",
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS lora_status VARCHAR(12) NOT NULL DEFAULT 'none'",
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS lora_training_image_urls TEXT[] DEFAULT '{}'",
+            # Which video path generated a Toon — see Toon.video_provider's
+            # docstring.
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS video_provider VARCHAR(20)",
             # Portrait regeneration history, same pattern/reasoning as
             # Toon.previous_video_urls above — see
             # docs/culturix-comedy-architecture.md §3.3.

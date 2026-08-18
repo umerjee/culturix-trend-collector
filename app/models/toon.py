@@ -66,6 +66,13 @@ class Toon(Base):
     publish_recommended = Column(Boolean, nullable=True)
     kling_task_id = Column(String(64), nullable=True)
     generation_error = Column(Text, nullable=True)         # mirrors ShopifyProduct.reel_error's pattern
+    # Which video path actually generated this Toon — "kling_omni" (the
+    # default, existing manual "Generate video" flow) or "self_hosted" (the
+    # RunPod+ComfyUI+LTX-2 scheduled batch path, see
+    # app/services/culturetoon_selfhosted_batch.py). NULL for toons
+    # generated before this column existed. Purely for cost/debug
+    # attribution — does not change how the toon is displayed/played.
+    video_provider = Column(String(20), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

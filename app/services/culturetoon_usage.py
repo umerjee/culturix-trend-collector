@@ -18,10 +18,18 @@ COST FIGURES — two confidence tiers, do not treat them as equally reliable:
     (app/media/video.py, $0.084/sec) as the best available anchor — Kling
     Omni is a different API surface and its actual price has not been
     independently confirmed. ELEVENLABS_COST_PER_CHAR and
-    KLING_ELEMENT_REGISTRATION_COST_USD are rough ballparks. Budget
-    enforcement built on these numbers is directionally useful, not
-    invoiced-accurate, until they're replaced with real figures from each
-    provider's billing dashboard.
+    KLING_ELEMENT_REGISTRATION_COST_USD are rough ballparks.
+    RUNPOD_GPU_COST_PER_SECOND is an RTX 4090's ~$0.50/hr Community Cloud
+    rate divided by 3600 — the real per-clip cost also depends on actual
+    generation wall-clock time, which isn't tracked yet (this estimates
+    against the clip's requested duration_seconds, not how long the GPU
+    actually ran). Budget enforcement/cost tracking built on any of these
+    numbers is directionally useful, not invoiced-accurate, until they're
+    replaced with real figures from each provider's billing dashboard.
+    RunPod usage here is recorded for Culturix's own cost visibility, not
+    per-brand budget enforcement — see
+    app/services/culturetoon_selfhosted_batch.py's docstring for why this
+    is platform infrastructure, not a user-facing spend cap.
 """
 import logging
 import uuid as _uuid
@@ -34,6 +42,7 @@ logger = logging.getLogger("culturix.services.culturetoon_usage")
 KLING_OMNI_COST_PER_SECOND = Decimal("0.084")          # PLACEHOLDER, see module docstring
 ELEVENLABS_COST_PER_CHAR = Decimal("0.00003")           # PLACEHOLDER
 KLING_ELEMENT_REGISTRATION_COST_USD = Decimal("0.10")   # PLACEHOLDER
+RUNPOD_GPU_COST_PER_SECOND = Decimal("0.00014")         # PLACEHOLDER — see module docstring ($0.50/hr / 3600)
 
 # Budget thresholds — matches the architecture doc's spec-derived example
 # (80%/90% warning, 100% hard stop).
@@ -48,6 +57,10 @@ def estimate_video_cost(duration_seconds: float) -> Decimal:
 
 def estimate_voice_cost(char_count: int) -> Decimal:
     return (ELEVENLABS_COST_PER_CHAR * char_count).quantize(Decimal("0.0001"))
+
+
+def estimate_selfhosted_video_cost(duration_seconds: float) -> Decimal:
+    return (RUNPOD_GPU_COST_PER_SECOND * Decimal(str(duration_seconds))).quantize(Decimal("0.0001"))
 
 
 def record_usage(session, *, user_id, brand_id, generation_type: str, provider: str,

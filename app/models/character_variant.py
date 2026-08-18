@@ -54,5 +54,17 @@ class CharacterVariant(Base):
     voice_provider = Column(String(12), nullable=False, default="kling")  # kling|elevenlabs
     elevenlabs_voice_id = Column(String(64), nullable=True)  # only meaningful when voice_provider="elevenlabs"
 
+    # Self-hosted (RunPod + ComfyUI + LTX-2) video generation's own
+    # character-consistency mechanism — a trained LoRA, analogous to
+    # kling_element_id/element_status above but for the self-hosted path
+    # instead of Kling Omni. See app/services/culturetoon_lora.py /
+    # app/services/culturetoon_selfhosted_video.py. Independent of the Kling
+    # Element fields — a variant can have either, both, or neither ready,
+    # since the two video paths are separate and this is the self-hosted
+    # one's own identity mechanism.
+    lora_path = Column(Text, nullable=True)
+    lora_status = Column(String(12), nullable=False, default="none")  # none|training|ready|failed
+    lora_training_image_urls = Column(ARRAY(Text), nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -43,3 +43,6 @@ pillow
 # CultureToons image uploads (POST .../image routes use FastAPI's UploadFile,
 # which needs python-multipart to parse multipart/form-data)
 python-multipart
+# Self-hosted video generation (RunPod+ComfyUI+LTX-2) — remote LoRA-training
+# trigger over SSH into the RunPod pod. See app/media/runpod_ssh.py.
+paramiko

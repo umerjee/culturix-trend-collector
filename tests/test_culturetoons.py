@@ -323,6 +323,68 @@ class TestGenerateCast:
         assert exc_info.value.status_code == 404
 
 
+class TestLoraTrainingEndpoints:
+    def test_upload_training_images_accumulates_across_calls(self, db, user_id, brand_and_character, mocker):
+        brand, _character, variant = brand_and_character
+        mocker.patch("app.media.storage.upload", side_effect=lambda data, path, ct: f"https://example.com/{path}")
+
+        result = _run(culturetoons.upload_lora_training_images(
+            variant["id"], user_id=user_id, brand_id=brand["id"],
+            files=[_FakeUploadFile(b"img1", "image/png")],
+        ))
+        assert len(result["lora_training_image_urls"]) == 1
+
+        result = _run(culturetoons.upload_lora_training_images(
+            variant["id"], user_id=user_id, brand_id=brand["id"],
+            files=[_FakeUploadFile(b"img2", "image/png"), _FakeUploadFile(b"img3", "image/png")],
+        ))
+        assert len(result["lora_training_image_urls"]) == 3
+
+    def test_upload_training_images_rejects_bad_content_type(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            _run(culturetoons.upload_lora_training_images(
+                variant["id"], user_id=user_id, brand_id=brand["id"],
+                files=[_FakeUploadFile(b"not an image", "text/plain")],
+            ))
+        assert exc_info.value.status_code == 400
+
+    def test_train_lora_requires_minimum_images(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.train_variant_lora(
+                variant["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=BackgroundTasks(),
+            )
+        assert exc_info.value.status_code == 400
+        assert "10" in exc_info.value.detail
+
+    def test_train_lora_sets_training_status_and_queues_background_task(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        session = db()
+        row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        row.lora_training_image_urls = [f"url{i}" for i in range(10)]
+        session.commit()
+        session.close()
+
+        bg = BackgroundTasks()
+        result = culturetoons.train_variant_lora(
+            variant["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=bg,
+        )
+        assert result == {"status": "training_started"}
+        assert len(bg.tasks) == 1
+
+        updated = culturetoons.get_variant(variant["id"], user_id, brand["id"])
+        assert updated["lora_status"] == "training"
+
+    def test_train_lora_unknown_variant_404s(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.train_variant_lora(
+                str(uuid.uuid4()), {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=BackgroundTasks(),
+            )
+        assert exc_info.value.status_code == 404
+
+
 class TestCharacterImageGeneration:
     def test_generate_image_requires_description(self, db, user_id, brand_and_character):
         brand, character, _variant = brand_and_character

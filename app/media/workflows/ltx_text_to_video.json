@@ -1,0 +1,46 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": { "title": "Load LTX-2 checkpoint" },
+    "inputs": { "ckpt_name": "ltx-2-19b-dev-fp8.safetensors" }
+  },
+  "2": {
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "Positive prompt (injected by ltx_workflow.py)" },
+    "inputs": { "text": "", "clip": ["1", 1] }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "Negative prompt (static)" },
+    "inputs": { "text": "blurry, low quality, distorted, deformed, watermark, text overlay", "clip": ["1", 1] }
+  },
+  "4": {
+    "class_type": "EmptyLTXVLatentVideo",
+    "_meta": { "title": "Video canvas (length injected by ltx_workflow.py)" },
+    "inputs": { "width": 768, "height": 1360, "length": 121, "batch_size": 1 }
+  },
+  "5": {
+    "class_type": "LoraLoader",
+    "_meta": { "title": "Character LoRA (lora_name injected by ltx_workflow.py, skipped if none)" },
+    "inputs": { "model": ["1", 0], "clip": ["1", 1], "lora_name": "", "strength_model": 1.0, "strength_clip": 1.0 }
+  },
+  "6": {
+    "class_type": "KSampler",
+    "_meta": { "title": "Sampler" },
+    "inputs": {
+      "model": ["5", 0], "positive": ["2", 0], "negative": ["3", 0],
+      "latent_image": ["4", 0], "seed": 0, "steps": 30, "cfg": 3.0,
+      "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0
+    }
+  },
+  "7": {
+    "class_type": "VAEDecode",
+    "_meta": { "title": "Decode to frames" },
+    "inputs": { "samples": ["6", 0], "vae": ["1", 2] }
+  },
+  "8": {
+    "class_type": "SaveVideo",
+    "_meta": { "title": "Output" },
+    "inputs": { "images": ["7", 0], "fps": 24, "filename_prefix": "culturix_toon" }
+  }
+}

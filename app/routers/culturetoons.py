@@ -343,6 +343,8 @@ def _serialize_variant(v) -> dict:
         "kling_voice_id": v.kling_voice_id, "element_status": v.element_status,
         "element_error": v.element_error,
         "voice_provider": v.voice_provider, "elevenlabs_voice_id": v.elevenlabs_voice_id,
+        "lora_path": v.lora_path, "lora_status": v.lora_status,
+        "lora_training_image_urls": v.lora_training_image_urls or [],
         "created_at": v.created_at.isoformat() if v.created_at else None,
         "updated_at": v.updated_at.isoformat() if v.updated_at else None,
     }
@@ -1925,6 +1927,70 @@ def register_variant_element(variant_id: str, body: dict, background_tasks: Back
     if budget_warning:
         response["budget_warning"] = budget_warning
     return response
+
+
+@router.post("/variants/{variant_id}/lora-training-images")
+async def upload_lora_training_images(variant_id: str, user_id: str = Form(...), brand_id: str = Form(...),
+                                       files: list[UploadFile] = File(...)):
+    """Uploads one or more reference images for this variant's self-hosted
+    (RunPod+ComfyUI+LTX-2) LoRA training set — see
+    app/services/culturetoon_lora.py. Accumulates across multiple calls
+    (doesn't replace the existing set) so a user can build up toward
+    MIN_LORA_TRAINING_IMAGES incrementally."""
+    from app.db import SessionLocal
+    from app.services.culturetoon_media import save_image, ImageUploadError
+    from app.services.culturetoon_lora import add_training_images
+
+    session = SessionLocal()
+    try:
+        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
+        uploaded_urls = []
+        for i, file in enumerate(files):
+            data = await file.read()
+            existing_count = len(variant.lora_training_image_urls or []) + i
+            path = f"culturetoons/{variant.character_id}/{variant.id}/lora-training/{existing_count}.png"
+            try:
+                uploaded_urls.append(save_image(data, file.content_type, path))
+            except ImageUploadError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+        add_training_images(variant, uploaded_urls)
+        session.commit()
+        session.refresh(variant)
+        return _serialize_variant(variant)
+    finally:
+        session.close()
+
+
+@router.post("/variants/{variant_id}/train-lora")
+def train_variant_lora(variant_id: str, body: dict, background_tasks: BackgroundTasks):
+    """Backgrounded — a full ltx-trainer run over SSH can take up to an
+    hour (see culturetoon_lora.py's _TRAINING_TIMEOUT_SECONDS), far past any
+    HTTP gateway timeout. Sets lora_status to 'training' synchronously so
+    the UI sees the state flip immediately, same pattern as
+    register_variant_element's element_status='pending'."""
+    from app.db import SessionLocal
+    from app.services.culturetoon_lora import MIN_LORA_TRAINING_IMAGES, run_lora_training
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+
+    session = SessionLocal()
+    try:
+        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
+        image_count = len(variant.lora_training_image_urls or [])
+        if image_count < MIN_LORA_TRAINING_IMAGES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Need at least {MIN_LORA_TRAINING_IMAGES} training images, have {image_count}",
+            )
+        variant.lora_status = "training"
+        session.commit()
+    finally:
+        session.close()
+
+    background_tasks.add_task(run_lora_training, variant_id=variant_id)
+    return {"status": "training_started"}
 
 
 # ── expressions ───────────────────────────────────────────────────────────

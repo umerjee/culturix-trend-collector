@@ -490,8 +490,29 @@ def run_stage_and_notify():
         logger.error("Stage-and-notify failed: %s", e)
 
 
+def run_selfhosted_video_batch():
+    """DORMANT by default — only registered when ENABLE_SELFHOSTED_VIDEO is
+    truthy (see start()), same gating pattern as run_auto_publish/
+    ENABLE_DIRECT_PUBLISH. Generates video for CultureToons' self-hosted
+    (RunPod+ComfyUI+LTX-2) pilot brands (SELFHOSTED_VIDEO_BRAND_IDS) — see
+    app/services/culturetoon_selfhosted_batch.py for the full batch-window/
+    pod-lifecycle logic; this wrapper only logs and isolates the job the
+    same way every other job in this file does."""
+    logger.info("Self-hosted video batch dispatch starting...")
+    try:
+        from app.services.culturetoon_selfhosted_batch import run_selfhosted_video_batch as _run
+        _run()
+        logger.info("Self-hosted video batch dispatch done")
+    except Exception as e:
+        logger.error("Self-hosted video batch dispatch failed: %s", e)
+
+
 def _direct_publish_enabled() -> bool:
     return os.getenv("ENABLE_DIRECT_PUBLISH", "").lower() in ("1", "true", "yes")
+
+
+def _selfhosted_video_enabled() -> bool:
+    return os.getenv("ENABLE_SELFHOSTED_VIDEO", "").lower() in ("1", "true", "yes")
 
 
 def start():
@@ -527,14 +548,23 @@ def start():
     scheduler.add_job(run_culturetoon_trend_dispatch, CronTrigger(minute="*/15"), id="culturetoon_trend_dispatch")
     # Integration health check — once daily, 12:00 UTC (after the other morning jobs)
     scheduler.add_job(run_integration_health_check, CronTrigger(hour=12, minute=0), id="integration_health_check")
+    # Self-hosted (RunPod+ComfyUI+LTX-2) video batch — dormant unless
+    # ENABLE_SELFHOSTED_VIDEO is set, same pattern as ENABLE_DIRECT_PUBLISH
+    # above. A real batch window (once/day), not a tight loop like the jobs
+    # above, since this one starts billed GPU compute.
+    selfhosted_video_job_desc = "disabled"
+    if _selfhosted_video_enabled():
+        window_hour = int(os.getenv("SELFHOSTED_VIDEO_WINDOW_HOUR", "3"))
+        scheduler.add_job(run_selfhosted_video_batch, CronTrigger(hour=window_hour, minute=0), id="selfhosted_video_batch")
+        selfhosted_video_job_desc = f"enabled at {window_hour:02d}:00 UTC"
     scheduler.start()
     logger.info(
         "Scheduler started — collection at 01:00/07:00/13:00/19:00 UTC, "
         "full pipeline at 07:00 UTC, content check at 09:00 UTC, "
         "post metrics refresh at 10:00 UTC, %s, "
         "digest dispatch every 15 min, culturetoon trend dispatch every 15 min, "
-        "integration health check at 12:00 UTC",
-        publish_job_desc,
+        "integration health check at 12:00 UTC, self-hosted video batch %s",
+        publish_job_desc, selfhosted_video_job_desc,
     )
 
 
