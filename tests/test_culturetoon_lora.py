@@ -8,6 +8,8 @@ from app.services.culturetoon_lora import (
     add_training_images, train_character_lora, MIN_LORA_TRAINING_IMAGES, LoraTrainingError,
 )
 
+_FOUND_CHECKPOINT = "/workspace/lora_training/variant-1/output/checkpoints/lora_weights_step_001000.safetensors"
+
 
 def _variant(mocker, name="Kumar", training_images=None):
     v = mocker.Mock()
@@ -17,6 +19,21 @@ def _variant(mocker, name="Kumar", training_images=None):
     v.lora_status = "none"
     v.lora_path = None
     return v
+
+
+def _fake_run_remote_command(fail_on_substring=None, fail_result=(1, "", "boom")):
+    """Builds a run_remote_command side_effect that succeeds for every step
+    except one identified by a substring of the command (e.g. "ffmpeg" or
+    "process_dataset.py"), and always answers the final "find the trained
+    checkpoint" `ls` lookup with a realistic path so later steps (SFTP
+    download, S3 push) have something to act on."""
+    def fake(host, port, command, timeout_seconds=1800):
+        if fail_on_substring and fail_on_substring in command:
+            return fail_result
+        if command.strip().startswith("ls -1") and "lora_weights_step_" in command:
+            return (0, f"{_FOUND_CHECKPOINT}\n", "")
+        return (0, "", "")
+    return fake
 
 
 class TestAddTrainingImages:
@@ -32,21 +49,21 @@ class TestAddTrainingImages:
 
 
 class TestTrainCharacterLora:
-    def _mock_success(self, mocker):
+    def _mock_success(self, mocker, fail_on_substring=None, fail_result=(1, "", "boom")):
         mocker.patch("app.media.runpod_client.create_training_pod", return_value="pod-123")
         mock_terminate = mocker.patch("app.media.runpod_client.terminate_pod")
         mocker.patch("app.media.runpod_client.wait_for_ssh_ready", return_value=("1.2.3.4", 2222))
-        # Two successful remote commands, in order: stage images, run
-        # ltx-trainer. The trained file is then SFTP-downloaded and pushed
-        # to the volume via S3, not verified over SSH anymore.
         mock_run = mocker.patch(
             "app.media.runpod_ssh.run_remote_command",
-            side_effect=[(0, "", ""), (0, "", "")],
+            side_effect=_fake_run_remote_command(fail_on_substring, fail_result),
         )
         mocker.patch("app.media.runpod_ssh.download_file", return_value=b"lora-bytes")
         mock_upload = mocker.patch("app.media.runpod_s3.upload_lora")
         mocker.patch("app.media.runpod_s3.verify_exists", return_value=True)
         return mock_terminate, mock_run, mock_upload
+
+    def _training_variant(self, mocker):
+        return _variant(mocker, training_images=[f"url{i}" for i in range(MIN_LORA_TRAINING_IMAGES)])
 
     def test_too_few_images_raises_without_creating_a_pod(self, mocker):
         mock_create = mocker.patch("app.media.runpod_client.create_training_pod")
@@ -58,29 +75,39 @@ class TestTrainCharacterLora:
 
     def test_success_sets_lora_path_to_bare_filename_and_ready_status(self, mocker):
         self._mock_success(mocker)
-        variant = _variant(mocker, training_images=[f"url{i}" for i in range(MIN_LORA_TRAINING_IMAGES)])
+        variant = self._training_variant(mocker)
 
         train_character_lora(variant)
 
         assert variant.lora_status == "ready"
-        # A bare filename resolvable by ComfyUI's LoraLoader relative to the
-        # Network Volume's models/loras/ dir — not a URL, even though the
-        # file passes through this backend on its way there via SFTP+S3.
+        # A bare filename resolvable by ComfyUI's LoraLoaderModelOnly
+        # relative to the Network Volume's models/loras/ dir — not a URL,
+        # even though the file passes through this backend on its way
+        # there via SFTP+S3.
         assert variant.lora_path == "variant-1.safetensors"
 
     def test_uploads_downloaded_bytes_to_the_expected_volume_key(self, mocker):
         _, _, mock_upload = self._mock_success(mocker)
-        variant = _variant(mocker, training_images=[f"url{i}" for i in range(MIN_LORA_TRAINING_IMAGES)])
+        variant = self._training_variant(mocker)
 
         train_character_lora(variant)
 
         mock_upload.assert_called_once_with(b"lora-bytes", "ComfyUI/models/loras/variant-1.safetensors")
 
+    def test_downloads_the_located_checkpoint_via_sftp(self, mocker):
+        self._mock_success(mocker)
+        mock_download = mocker.patch("app.media.runpod_ssh.download_file", return_value=b"lora-bytes")
+        variant = self._training_variant(mocker)
+
+        train_character_lora(variant)
+
+        mock_download.assert_called_once_with("1.2.3.4", 2222, _FOUND_CHECKPOINT)
+
     def test_pod_created_and_terminated_on_success(self, mocker):
         mock_terminate, _, _ = self._mock_success(mocker)
         mock_create = mocker.patch("app.media.runpod_client.create_training_pod", return_value="pod-123")
         mocker.patch("app.media.runpod_client.wait_for_ssh_ready", return_value=("1.2.3.4", 2222))
-        variant = _variant(mocker, training_images=[f"url{i}" for i in range(MIN_LORA_TRAINING_IMAGES)])
+        variant = self._training_variant(mocker)
 
         train_character_lora(variant)
 
@@ -91,7 +118,7 @@ class TestTrainCharacterLora:
         mocker.patch("app.media.runpod_client.create_training_pod", return_value="pod-123")
         mocker.patch("app.media.runpod_client.wait_for_ssh_ready", side_effect=RuntimeError("boom"))
         mock_terminate = mocker.patch("app.media.runpod_client.terminate_pod")
-        variant = _variant(mocker, training_images=[f"url{i}" for i in range(MIN_LORA_TRAINING_IMAGES)])
+        variant = self._training_variant(mocker)
 
         with pytest.raises(LoraTrainingError):
             train_character_lora(variant)
@@ -108,30 +135,46 @@ class TestTrainCharacterLora:
             train_character_lora(variant)
         mock_terminate.assert_not_called()
 
+    def test_checkpoint_download_failure_sets_failed_status(self, mocker):
+        self._mock_success(mocker, fail_on_substring="hf download", fail_result=(1, "", "404 not found"))
+        variant = self._training_variant(mocker)
+
+        with pytest.raises(LoraTrainingError, match="404 not found"):
+            train_character_lora(variant)
+
+        assert variant.lora_status == "failed"
+
+    def test_image_conversion_failure_sets_failed_status(self, mocker):
+        self._mock_success(mocker, fail_on_substring="ffmpeg", fail_result=(1, "", "curl: 404"))
+        variant = self._training_variant(mocker)
+
+        with pytest.raises(LoraTrainingError):
+            train_character_lora(variant)
+
+        assert variant.lora_status == "failed"
+
     def test_training_command_failure_sets_failed_status(self, mocker):
-        mocker.patch("app.media.runpod_client.create_training_pod", return_value="pod-123")
-        mocker.patch("app.media.runpod_client.terminate_pod")
-        mocker.patch("app.media.runpod_client.wait_for_ssh_ready", return_value=("1.2.3.4", 2222))
-        # First call (staging images) succeeds, second (ltx-trainer) fails.
-        mocker.patch(
-            "app.media.runpod_ssh.run_remote_command",
-            side_effect=[(0, "", ""), (1, "", "CUDA out of memory")],
-        )
-        variant = _variant(mocker, training_images=[f"url{i}" for i in range(MIN_LORA_TRAINING_IMAGES)])
+        self._mock_success(mocker, fail_on_substring="scripts/train.py", fail_result=(1, "", "CUDA out of memory"))
+        variant = self._training_variant(mocker)
 
         with pytest.raises(LoraTrainingError, match="CUDA out of memory"):
             train_character_lora(variant)
 
         assert variant.lora_status == "failed"
 
-    def test_image_staging_failure_sets_failed_status(self, mocker):
+    def test_missing_output_checkpoint_sets_failed_status(self, mocker):
         mocker.patch("app.media.runpod_client.create_training_pod", return_value="pod-123")
         mocker.patch("app.media.runpod_client.terminate_pod")
         mocker.patch("app.media.runpod_client.wait_for_ssh_ready", return_value=("1.2.3.4", 2222))
-        mocker.patch("app.media.runpod_ssh.run_remote_command", return_value=(1, "", "curl: 404"))
-        variant = _variant(mocker, training_images=[f"url{i}" for i in range(MIN_LORA_TRAINING_IMAGES)])
 
-        with pytest.raises(LoraTrainingError):
+        def fake_run(host, port, command, timeout_seconds=1800):
+            if command.strip().startswith("ls -1") and "lora_weights_step_" in command:
+                return (0, "", "")  # nothing found
+            return (0, "", "")
+        mocker.patch("app.media.runpod_ssh.run_remote_command", side_effect=fake_run)
+        variant = self._training_variant(mocker)
+
+        with pytest.raises(LoraTrainingError, match="Could not find a trained LoRA checkpoint"):
             train_character_lora(variant)
 
         assert variant.lora_status == "failed"
@@ -139,15 +182,9 @@ class TestTrainCharacterLora:
     def test_s3_upload_failure_sets_failed_status(self, mocker):
         from app.media.runpod_s3 import RunPodS3Error
 
-        mocker.patch("app.media.runpod_client.create_training_pod", return_value="pod-123")
-        mocker.patch("app.media.runpod_client.terminate_pod")
-        mocker.patch("app.media.runpod_client.wait_for_ssh_ready", return_value=("1.2.3.4", 2222))
-        mocker.patch(
-            "app.media.runpod_ssh.run_remote_command", side_effect=[(0, "", ""), (0, "", "")],
-        )
-        mocker.patch("app.media.runpod_ssh.download_file", return_value=b"lora-bytes")
+        self._mock_success(mocker)
         mocker.patch("app.media.runpod_s3.upload_lora", side_effect=RunPodS3Error("connection refused"))
-        variant = _variant(mocker, training_images=[f"url{i}" for i in range(MIN_LORA_TRAINING_IMAGES)])
+        variant = self._training_variant(mocker)
 
         with pytest.raises(LoraTrainingError, match="connection refused"):
             train_character_lora(variant)
@@ -155,16 +192,9 @@ class TestTrainCharacterLora:
         assert variant.lora_status == "failed"
 
     def test_s3_verify_failure_after_upload_sets_failed_status(self, mocker):
-        mocker.patch("app.media.runpod_client.create_training_pod", return_value="pod-123")
-        mocker.patch("app.media.runpod_client.terminate_pod")
-        mocker.patch("app.media.runpod_client.wait_for_ssh_ready", return_value=("1.2.3.4", 2222))
-        mocker.patch(
-            "app.media.runpod_ssh.run_remote_command", side_effect=[(0, "", ""), (0, "", "")],
-        )
-        mocker.patch("app.media.runpod_ssh.download_file", return_value=b"lora-bytes")
-        mocker.patch("app.media.runpod_s3.upload_lora")
+        self._mock_success(mocker)
         mocker.patch("app.media.runpod_s3.verify_exists", return_value=False)
-        variant = _variant(mocker, training_images=[f"url{i}" for i in range(MIN_LORA_TRAINING_IMAGES)])
+        variant = self._training_variant(mocker)
 
         with pytest.raises(LoraTrainingError, match="Network Volume"):
             train_character_lora(variant)

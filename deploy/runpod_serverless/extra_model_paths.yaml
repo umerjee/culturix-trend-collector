@@ -1,0 +1,18 @@
+# Extends the base runpod/worker-comfyui image's own extra_model_paths.yaml
+# (which is missing text_encoders — LTX-2's Gemma text encoder needs it,
+# confirmed via the live pod validation, where the model landed in
+# ComfyUI/models/text_encoders/). base_path matches RunPod's documented
+# Serverless Network Volume mount point.
+runpod_worker_comfy:
+  base_path: /runpod-volume
+  checkpoints: models/checkpoints/
+  clip: models/clip/
+  clip_vision: models/clip_vision/
+  configs: models/configs/
+  controlnet: models/controlnet/
+  embeddings: models/embeddings/
+  loras: models/loras/
+  upscale_models: models/upscale_models/
+  vae: models/vae/
+  unet: models/unet/
+  text_encoders: models/text_encoders/

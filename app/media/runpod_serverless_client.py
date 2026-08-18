@@ -10,14 +10,20 @@ GET /status/{id} -> {status, output}) is platform-stable and documented at
 https://docs.runpod.io/serverless/endpoints/job-operations — that outer
 contract is what this module builds against with confidence.
 
-UNVERIFIED: the `input`/`output` payload SHAPE inside that envelope is
-specific to whichever ComfyUI-on-Serverless handler image is actually
-deployed (the spec names artokun/comfyui-runpod as the reference). This
-module assumes `input: {"workflow": <ComfyUI API-format JSON>}` and looks
-for output video bytes at `output["video_base64"]` (base64-encoded) or
-`output["video_url"]` (a fetchable URL), trying both — confirm against
-your actual deployed handler's README/source once it's live and adjust
-_extract_output_bytes() if the real keys differ.
+The `input`/`output` payload shape inside that envelope is our own
+choice, not a guess: the official runpod/worker-comfyui image's stock
+handler only collects `images` node outputs and silently drops
+`videos`/`gifs` (confirmed by reading its source, 2026-08-18) — not usable
+for our SaveVideo-terminated LTX workflow. deploy/runpod_serverless/ builds
+a custom image on that base with our own handler.py instead, deliberately
+returning `{"video_base64": "<bytes>"}` to match what this module already
+expects below — see that handler's own header comment for the full
+rationale. `input: {"workflow": <ComfyUI API-format JSON>}` matches
+app/media/ltx_workflow.py::build_workflow()'s output directly, unchanged.
+`output["video_url"]` is kept as a secondary fallback in case a future
+version of our handler switches to uploading to storage and returning a
+URL instead of inlining base64 (e.g. for very large files) — not currently
+emitted by deploy/runpod_serverless/handler.py.
 """
 import base64
 import logging
