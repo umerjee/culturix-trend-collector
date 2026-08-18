@@ -241,6 +241,9 @@ async def lifespan(_):
             # Structured personality — see docs/culturix-comedy-architecture.md
             # §3.2. Consumed by culturetoon_script.py's prompt builder.
             "ALTER TABLE characters ADD COLUMN IF NOT EXISTS personality JSON",
+            # The anchor character a brand's cast/story is built around — see
+            # Character.is_main's docstring.
+            "ALTER TABLE characters ADD COLUMN IF NOT EXISTS is_main BOOLEAN NOT NULL DEFAULT FALSE",
             # Portrait regeneration history, same pattern/reasoning as
             # Toon.previous_video_urls above — see
             # docs/culturix-comedy-architecture.md §3.3.

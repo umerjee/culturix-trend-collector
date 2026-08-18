@@ -325,7 +325,7 @@ def _serialize_character(c) -> dict:
         "reference_image_url": c.reference_image_url,
         "previous_image_urls": c.previous_image_urls or [],
         "art_style": c.art_style, "personality": c.personality,
-        "is_active": c.is_active,
+        "is_active": c.is_active, "is_main": c.is_main,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }
@@ -749,9 +749,15 @@ def create_character(body: dict):
         art_style = body.get("art_style") or DEFAULT_ART_STYLE
         if art_style not in ART_STYLES:
             raise HTTPException(status_code=400, detail=f"Unknown art_style: {art_style}")
+        # The brand's first character automatically becomes its main
+        # character — no user action required. Reassignable afterward via
+        # PUT /characters/{id} — see Character.is_main's docstring.
+        has_existing_character = session.query(Character.id).filter(
+            Character.brand_id == brand.id, Character.is_active.is_(True),
+        ).first() is not None
         character = Character(
             brand_id=brand.id, name=body["name"], description=body.get("description"),
-            art_style=art_style,
+            art_style=art_style, is_main=not has_existing_character,
         )
         session.add(character)
         session.commit()
@@ -774,6 +780,39 @@ def create_character(body: dict):
         session.refresh(default_variant)
 
         return {**_serialize_character(character), "default_variant": _serialize_variant(default_variant)}
+    finally:
+        session.close()
+
+
+@router.post("/brands/{brand_id}/cast/generate")
+def generate_cast(brand_id: str, body: dict):
+    """AI-drafts a whole cast (characters + the relationships between them)
+    from one free-text description of the show — see
+    app/services/culturetoon_cast.py. Returns a draft only, never
+    persisted — CastPlanWizard.tsx lets the user edit/exclude before
+    actually creating anything via the existing POST /characters, PUT
+    /characters/{id}, and POST /relationships routes."""
+    from app.db import SessionLocal
+    from app.models.character import Character
+    from app.services.culturetoon_cast import generate_cast_plan, CastGenerationError
+
+    user_id = body.get("user_id")
+    plan_description = body.get("plan_description")
+    if not user_id or not plan_description:
+        raise HTTPException(status_code=400, detail="user_id and plan_description are required")
+
+    session = SessionLocal()
+    try:
+        brand = _get_brand_owned(session, brand_id, user_id)
+        existing_names = [
+            name for (name,) in session.query(Character.name).filter(
+                Character.brand_id == brand.id, Character.is_active.is_(True),
+            ).all()
+        ]
+        try:
+            return generate_cast_plan(plan_description, existing_character_names=existing_names)
+        except CastGenerationError as exc:
+            raise HTTPException(status_code=502, detail=f"Cast generation failed: {exc}")
     finally:
         session.close()
 
@@ -807,7 +846,15 @@ def update_character(character_id: str, body: dict):
             raise HTTPException(status_code=400, detail=f"Unknown art_style: {body['art_style']}")
         if "personality" in body and body["personality"] is not None:
             _validate_personality(body["personality"])
-        for field in ("name", "description", "is_active", "art_style", "personality"):
+        if body.get("is_main"):
+            # At most one main character per brand — reassigning clears the
+            # flag on whichever character had it before, enforced here
+            # rather than trusted from the frontend.
+            from app.models.character import Character
+            session.query(Character).filter(
+                Character.brand_id == character.brand_id, Character.id != character.id,
+            ).update({"is_main": False})
+        for field in ("name", "description", "is_active", "art_style", "personality", "is_main"):
             if field in body:
                 setattr(character, field, body[field])
         session.commit()

@@ -21,7 +21,7 @@ const EVENT_TYPE_LABELS: Record<(typeof RELATIONSHIP_EVENT_TYPES)[number], strin
   betrayal: "Betrayal", reconciliation: "Reconciliation", milestone: "Milestone", general: "General",
 };
 
-interface DirectionDraft {
+export interface DirectionDraft {
   affection_level: number;
   trust_level: number;
   conflict_level: number;
@@ -29,13 +29,16 @@ interface DirectionDraft {
   behavior_rules: string[];
 }
 
-const EMPTY_DIRECTION: DirectionDraft = {
+export const EMPTY_DIRECTION: DirectionDraft = {
   affection_level: 5, trust_level: 5, conflict_level: 5, perspective_description: "", behavior_rules: [],
 };
 
 // One direction's editor — rendered twice (A->B and B->A) since
 // personality toward another character isn't necessarily symmetrical.
-function DirectionEditor({
+// Exported so CharacterCreationWizard.tsx/CastPlanWizard.tsx can reuse it
+// for their own relationship-draft review steps without duplicating this
+// slider/rule-list markup.
+export function DirectionEditor({
   title, direction, onChange, newRule, onNewRuleChange, onAddRule, onRemoveRule,
 }: {
   title: string;

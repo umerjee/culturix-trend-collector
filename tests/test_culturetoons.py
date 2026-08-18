@@ -258,6 +258,71 @@ class TestCharactersRequireBrand:
         assert archived[0]["is_active"] is False
 
 
+class TestMainCharacter:
+    def test_first_character_auto_becomes_main(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        character = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Kumar"})
+        assert character["is_main"] is True
+
+    def test_second_character_is_not_main(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Kumar"})
+        second = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Priya"})
+        assert second["is_main"] is False
+
+    def test_reassigning_main_clears_the_previous_one(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        first = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Kumar"})
+        second = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Priya"})
+        third = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Arjun"})
+        assert first["is_main"] is True
+
+        culturetoons.update_character(second["id"], {"user_id": user_id, "brand_id": brand["id"], "is_main": True})
+
+        listed = {c["id"]: c["is_main"] for c in culturetoons.list_characters(user_id, brand["id"])}
+        assert listed[first["id"]] is False
+        assert listed[second["id"]] is True
+        assert listed[third["id"]] is False
+
+
+class TestGenerateCast:
+    def test_returns_draft_without_persisting_anything(self, db, user_id, mocker):
+        import json
+        brand = culturetoons.create_brand({"user_id": user_id})
+        fake_message = mocker.Mock()
+        fake_message.content = json.dumps({
+            "characters": [
+                {"name": "Kumar", "description": "Dad.", "suggested_main": True, "personality": {}},
+                {"name": "Priya", "description": "Mom.", "suggested_main": False, "personality": {}},
+            ],
+            "relationships": [],
+        })
+        fake_choice = mocker.Mock()
+        fake_choice.message = fake_message
+        fake_response = mocker.Mock()
+        fake_response.choices = [fake_choice]
+        fake_client = mocker.Mock()
+        fake_client.chat.completions.create.return_value = fake_response
+        mocker.patch("app.services.culturetoon_cast._get_qwen_client", return_value=fake_client)
+        os.environ["QWEN_API_KEY"] = "test-key"
+
+        draft = culturetoons.generate_cast(brand["id"], {"user_id": user_id, "plan_description": "A family sitcom."})
+
+        assert len(draft["characters"]) == 2
+        assert culturetoons.list_characters(user_id, brand["id"]) == []
+
+    def test_missing_plan_description_400s(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_cast(brand["id"], {"user_id": user_id})
+        assert exc_info.value.status_code == 400
+
+    def test_unknown_brand_404s(self, db, user_id):
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_cast(str(uuid.uuid4()), {"user_id": user_id, "plan_description": "A show."})
+        assert exc_info.value.status_code == 404
+
+
 class TestCharacterImageGeneration:
     def test_generate_image_requires_description(self, db, user_id, brand_and_character):
         brand, character, _variant = brand_and_character

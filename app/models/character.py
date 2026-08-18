@@ -39,5 +39,11 @@ class Character(Base):
     # the LLM each time — see docs/culturix-comedy-architecture.md §3.2.
     personality = Column(JSON, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
+    # At most one per brand — the anchor character a story/cast is built
+    # around. Auto-set on a brand's first character (see create_character),
+    # reassignable afterward via PUT /characters/{id}. Enforced server-side,
+    # not by a DB constraint (this codebase has no migration framework for
+    # cross-row constraints — see app/main.py's lifespan()).
+    is_main = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

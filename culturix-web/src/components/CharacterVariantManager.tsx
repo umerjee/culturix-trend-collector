@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Loader2, CheckCircle2, XCircle, Sparkles, ChevronDown, ChevronRight, Pencil, Trash2, X } from "lucide-react";
+import { Plus, Loader2, CheckCircle2, XCircle, Sparkles, ChevronDown, ChevronRight, Pencil, Trash2, Star } from "lucide-react";
 import type { Character, CharacterVariant, VoiceProvider, CharacterPersonality } from "@/lib/types";
-import { PERSONALITY_TRAITS } from "@/lib/types";
 import { buildPersonalitySummary } from "@/lib/personalitySummary";
 import CharacterImageBuilder from "@/components/CharacterImageBuilder";
 import ExpressionUploadGrid from "@/components/ExpressionUploadGrid";
 import MemoryManager from "@/components/MemoryManager";
+import PersonalityFieldsEditor from "@/components/PersonalityFieldsEditor";
+import CharacterCreationWizard from "@/components/CharacterCreationWizard";
+import CastPlanWizard from "@/components/CastPlanWizard";
 import InfoTooltip from "@/components/ui/Tooltip";
 
 interface Props {
@@ -46,8 +48,6 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusVariantId]);
 
-  const [newCharacterName, setNewCharacterName] = useState("");
-  const [creatingCharacter, setCreatingCharacter] = useState(false);
   const [descriptionDraft, setDescriptionDraft] = useState("");
   const [artStyleDraft, setArtStyleDraft] = useState<Character["art_style"]>("cartoon_3d");
   const [generatingImage, setGeneratingImage] = useState(false);
@@ -60,8 +60,6 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   const [traits, setTraits] = useState<Record<string, number>>({});
   const [behavioralRules, setBehavioralRules] = useState<string[]>([]);
   const [speechRules, setSpeechRules] = useState<string[]>([]);
-  const [newBehavioralRule, setNewBehavioralRule] = useState("");
-  const [newSpeechRule, setNewSpeechRule] = useState("");
   const [savingPersonality, setSavingPersonality] = useState(false);
   const [personalityHint, setPersonalityHint] = useState("");
   const [generatingPersonality, setGeneratingPersonality] = useState(false);
@@ -107,8 +105,6 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     setTraits(selectedCharacter?.personality?.traits ?? {});
     setBehavioralRules(selectedCharacter?.personality?.behavioral_rules ?? []);
     setSpeechRules(selectedCharacter?.personality?.speech_rules ?? []);
-    setNewBehavioralRule("");
-    setNewSpeechRule("");
   }, [selectedCharacterId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -120,32 +116,31 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     setVariantNameDraft(selectedVariant?.name ?? "");
   }, [selectedVariantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function addCharacter(e: React.FormEvent) {
-    e.preventDefault();
-    if (!newCharacterName.trim()) return;
-    setCreatingCharacter(true);
-    try {
-      const res = await fetch("/api/culturetoons/characters", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brand_id: brandId, name: newCharacterName.trim() }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        // The backend auto-creates a variant named after the character
-        // (default_variant) — without this, a character with zero variants
-        // has no "Register for video" step reachable anywhere (that step
-        // only exists per-variant), which left a real user stuck with no
-        // way to register their base character at all.
-        const { default_variant, ...character } = data;
-        setCharacters((prev) => [...prev, character as Character]);
-        if (default_variant) setVariants((prev) => [...prev, default_variant as CharacterVariant]);
-        setSelectedCharacterId(character.id);
-        setSelectedVariantId(default_variant?.id ?? null);
-        setNewCharacterName("");
-      }
-    } finally {
-      setCreatingCharacter(false);
+  function handleCharacterCreated(character: Character, defaultVariant: CharacterVariant | null) {
+    setCharacters((prev) => [...prev, character]);
+    if (defaultVariant) setVariants((prev) => [...prev, defaultVariant]);
+    setSelectedCharacterId(character.id);
+    setSelectedVariantId(defaultVariant?.id ?? null);
+  }
+
+  function handleCastCreated(newCharacters: Character[], newVariants: CharacterVariant[]) {
+    setCharacters((prev) => [...prev, ...newCharacters]);
+    setVariants((prev) => [...prev, ...newVariants]);
+    if (newCharacters[0]) {
+      setSelectedCharacterId(newCharacters[0].id);
+      setSelectedVariantId(newVariants.find((v) => v.character_id === newCharacters[0].id)?.id ?? null);
+    }
+  }
+
+  async function makeMainCharacter(characterId: string) {
+    const res = await fetch(`/api/culturetoons/characters/${characterId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brand_id: brandId, is_main: true }),
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      setCharacters((prev) => prev.map((c) => (c.id === characterId ? (updated as Character) : { ...c, is_main: false })));
     }
   }
 
@@ -303,18 +298,6 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     }
   }
 
-  function addBehavioralRule() {
-    if (!newBehavioralRule.trim()) return;
-    setBehavioralRules((prev) => [...prev, newBehavioralRule.trim()]);
-    setNewBehavioralRule("");
-  }
-
-  function addSpeechRule() {
-    if (!newSpeechRule.trim()) return;
-    setSpeechRules((prev) => [...prev, newSpeechRule.trim()]);
-    setNewSpeechRule("");
-  }
-
   async function archiveCharacter() {
     if (!selectedCharacter) return;
     setArchivingCharacter(true);
@@ -371,7 +354,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
         <h3 className="text-sm font-semibold text-gray-900 mb-1">Step 1 · Base character</h3>
         <p className="text-xs text-gray-400 mb-3">Name it, describe how it should look, pick an art style, then generate.</p>
 
-        <div className="flex flex-wrap items-center gap-2 mb-4">
+        <div className="flex flex-wrap items-center gap-2 mb-3">
           {characters.map((c) => (
             <button
               key={c.id}
@@ -380,25 +363,23 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                 c.id === selectedCharacterId ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
               }`}
             >
+              {c.is_main && <Star className="h-3 w-3 fill-current" />}
               {c.name}
             </button>
           ))}
-          <form onSubmit={addCharacter} className="flex gap-1">
-            <input
-              type="text"
-              value={newCharacterName}
-              onChange={(e) => setNewCharacterName(e.target.value)}
-              placeholder="New character name"
-              className="rounded-full border border-gray-200 px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 w-40"
-            />
-            <button
-              type="submit"
-              disabled={creatingCharacter || !newCharacterName.trim()}
-              className="inline-flex items-center justify-center rounded-full bg-blue-600 text-white h-7 w-7 hover:bg-blue-700 transition-colors disabled:opacity-60 shrink-0"
-            >
-              {creatingCharacter ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-            </button>
-          </form>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <CharacterCreationWizard
+            brandId={brandId}
+            characters={characters}
+            onCreated={handleCharacterCreated}
+          />
+          <CastPlanWizard
+            brandId={brandId}
+            characters={characters}
+            onCreated={handleCastCreated}
+          />
         </div>
 
         {selectedCharacter ? (
@@ -414,6 +395,16 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                 className="flex-1 min-w-[8rem] rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
               />
               {savingName && <Loader2 className="h-3.5 w-3.5 text-gray-400 animate-spin shrink-0" />}
+              {!selectedCharacter.is_main && (
+                <button
+                  onClick={() => makeMainCharacter(selectedCharacter.id)}
+                  title="Make this the main character this brand's cast/story is built around"
+                  className="inline-flex items-center gap-1 rounded-lg border border-gray-200 text-gray-500 hover:text-amber-600 hover:border-amber-200 text-xs px-2.5 py-1.5 transition-colors shrink-0"
+                >
+                  <Star className="h-3.5 w-3.5" />
+                  Make main
+                </button>
+              )}
               <button
                 onClick={archiveCharacter}
                 disabled={archivingCharacter}
@@ -493,73 +484,11 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                   {personalityGenError && <p className="text-[11px] text-red-500">{personalityGenError}</p>}
                 </div>
 
-                <div>
-                  <p className="text-[11px] font-medium text-gray-500 mb-2">Traits</p>
-                  <div className="space-y-2">
-                    {PERSONALITY_TRAITS.map((trait) => (
-                      <div key={trait} className="flex items-center gap-2">
-                        <span className="text-xs text-gray-600 w-28 capitalize shrink-0">{trait.replace("_", " ")}</span>
-                        <input
-                          type="range" min={0} max={1} step={0.05}
-                          value={traits[trait] ?? 0.5}
-                          onChange={(e) => setTraits((prev) => ({ ...prev, [trait]: parseFloat(e.target.value) }))}
-                          className="flex-1"
-                        />
-                        <span className="text-[11px] text-gray-400 w-8 text-right">{(traits[trait] ?? 0.5).toFixed(2)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <p className="text-[11px] font-medium text-gray-500 mb-2">Behavioral rules</p>
-                  <div className="space-y-1 mb-2">
-                    {behavioralRules.map((rule, i) => (
-                      <div key={i} className="flex items-center gap-1.5 text-xs text-gray-600 bg-gray-50 rounded-lg px-2 py-1.5">
-                        <span className="flex-1">{rule}</span>
-                        <button onClick={() => setBehavioralRules((prev) => prev.filter((_, idx) => idx !== i))} className="text-gray-400 hover:text-red-500">
-                          <X className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex gap-1.5">
-                    <input
-                      type="text" value={newBehavioralRule} onChange={(e) => setNewBehavioralRule(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addBehavioralRule(); } }}
-                      placeholder="e.g. tries to negotiate when prices seem high"
-                      className="flex-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
-                    />
-                    <button onClick={addBehavioralRule} className="rounded-lg bg-gray-100 text-gray-600 px-2.5 hover:bg-gray-200 transition-colors">
-                      <Plus className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <p className="text-[11px] font-medium text-gray-500 mb-2">Speech rules</p>
-                  <div className="space-y-1 mb-2">
-                    {speechRules.map((rule, i) => (
-                      <div key={i} className="flex items-center gap-1.5 text-xs text-gray-600 bg-gray-50 rounded-lg px-2 py-1.5">
-                        <span className="flex-1">{rule}</span>
-                        <button onClick={() => setSpeechRules((prev) => prev.filter((_, idx) => idx !== i))} className="text-gray-400 hover:text-red-500">
-                          <X className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex gap-1.5">
-                    <input
-                      type="text" value={newSpeechRule} onChange={(e) => setNewSpeechRule(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addSpeechRule(); } }}
-                      placeholder="e.g. uses short sentences"
-                      className="flex-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
-                    />
-                    <button onClick={addSpeechRule} className="rounded-lg bg-gray-100 text-gray-600 px-2.5 hover:bg-gray-200 transition-colors">
-                      <Plus className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
+                <PersonalityFieldsEditor
+                  traits={traits} onTraitsChange={setTraits}
+                  behavioralRules={behavioralRules} onBehavioralRulesChange={setBehavioralRules}
+                  speechRules={speechRules} onSpeechRulesChange={setSpeechRules}
+                />
 
                 <button
                   onClick={savePersonality}
