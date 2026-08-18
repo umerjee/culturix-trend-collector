@@ -691,7 +691,7 @@ export interface ToonScript {
   shots: ToonScriptShot[] | null;
   total_duration_seconds: number | null;
   background_id: string | null;
-  generation_source: "manual" | "ai";
+  generation_source: "manual" | "ai" | "ai_auto";
   status: "draft" | "approved" | "archived";
   created_at: string | null;
   updated_at: string | null;

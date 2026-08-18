@@ -150,4 +150,24 @@ class TestGenerateRelationshipDynamic:
         assert "speaks fast" in sent_prompt
         assert "indian" in sent_prompt
         assert "swiss" in sent_prompt
+
+    def test_hint_is_included_in_prompt_when_provided(self, mocker):
+        kumar = _character(mocker, "Kumar")
+        hans = _character(mocker, "Hans")
+        fake_client = _mock_qwen_response(mocker, {"relationship_type": "coworkers", "a_to_b": {}, "b_to_a": {}})
+
+        generate_relationship_dynamic(kumar, hans, hint="they're rivals for the same promotion")
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "they're rivals for the same promotion" in sent_prompt
+
+    def test_no_hint_omits_guidance_line(self, mocker):
+        kumar = _character(mocker, "Kumar")
+        hans = _character(mocker, "Hans")
+        fake_client = _mock_qwen_response(mocker, {"relationship_type": "coworkers", "a_to_b": {}, "b_to_a": {}})
+
+        generate_relationship_dynamic(kumar, hans)
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "Additional guidance from the creator" not in sent_prompt
         assert "Kumar" in sent_prompt and "Hans" in sent_prompt

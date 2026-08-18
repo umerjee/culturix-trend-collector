@@ -817,6 +817,33 @@ def update_character(character_id: str, body: dict):
         session.close()
 
 
+@router.post("/characters/{character_id}/personality/generate")
+def generate_character_personality_draft(character_id: str, body: dict):
+    """AI-drafts traits/behavioral_rules/speech_rules from the character's
+    existing name/description/art_style plus an optional free-text hint —
+    see app/services/culturetoon_personality.py. Returns a draft only, never
+    persisted, so the user can review/tweak the pre-filled sliders before
+    saving via the existing PUT /characters/{id} — same never-silently-
+    overwrite contract as POST /relationships/generate."""
+    from app.db import SessionLocal
+    from app.services.culturetoon_personality import generate_character_personality, PersonalityGenerationError
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    hint = body.get("hint") or ""
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+
+    session = SessionLocal()
+    try:
+        character = _get_character_owned(session, character_id, brand_id, user_id)
+        try:
+            return generate_character_personality(character, hint=hint)
+        except PersonalityGenerationError as exc:
+            raise HTTPException(status_code=502, detail=f"Personality generation failed: {exc}")
+    finally:
+        session.close()
+
+
 @router.delete("/characters/{character_id}")
 def delete_character(character_id: str, user_id: str, brand_id: str):
     """Soft-delete, same pattern as delete_background: flips is_active off
@@ -1098,6 +1125,7 @@ def generate_relationship(body: dict):
 
     user_id, brand_id = body.get("user_id"), body.get("brand_id")
     character_a_id, character_b_id = body.get("character_a_id"), body.get("character_b_id")
+    hint = body.get("hint") or ""
     if not user_id or not brand_id or not character_a_id or not character_b_id:
         raise HTTPException(status_code=400, detail="user_id, brand_id, character_a_id and character_b_id are required")
     if character_a_id == character_b_id:
@@ -1121,6 +1149,7 @@ def generate_relationship(body: dict):
             return generate_relationship_dynamic(
                 character_a, character_b,
                 culture_a=_culture_summary(character_a.id), culture_b=_culture_summary(character_b.id),
+                hint=hint,
             )
         except RelationshipGenerationError as exc:
             raise HTTPException(status_code=502, detail=f"Relationship generation failed: {exc}")

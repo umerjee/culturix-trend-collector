@@ -119,16 +119,21 @@ def _normalize_direction(raw: dict) -> dict:
     }
 
 
-def generate_relationship_dynamic(character_a, character_b, culture_a: str = "", culture_b: str = "") -> dict:
+def generate_relationship_dynamic(character_a, character_b, culture_a: str = "", culture_b: str = "",
+                                   hint: str = "") -> dict:
     """character_a/character_b: Character ORM objects. culture_a/culture_b:
     optional free text summarizing that character's cultural context
     (caller resolves from CharacterVariant.culture_tag — see
-    app/routers/culturetoons.py::generate_relationship). Returns a draft
-    dict: relationship_type, relationship_type_label, description,
-    comedy_chemistry, a_to_b, b_to_a — never persisted here."""
+    app/routers/culturetoons.py::generate_relationship). hint: optional
+    free-text steering from the user (e.g. "they're rivals for the same
+    promotion") — without it, this infers purely from each character's own
+    personality/culture data with zero user input into the dynamic itself.
+    Returns a draft dict: relationship_type, relationship_type_label,
+    description, comedy_chemistry, a_to_b, b_to_a — never persisted here."""
     name_a, name_b = character_a.name, character_b.name
     context_a = _character_context(character_a) + (f"\nCultural context: {culture_a}" if culture_a else "")
     context_b = _character_context(character_b) + (f"\nCultural context: {culture_b}" if culture_b else "")
+    hint = (hint or "").strip()
 
     prompt = f"""You are designing a persistent relationship dynamic between two recurring comedy
 characters for a series of short character-based videos. Base your answer on who these
@@ -140,6 +145,7 @@ Character A — {name_a}:
 
 Character B — {name_b}:
 {context_b}
+{f"{chr(10)}Additional guidance from the creator: {hint}" if hint else ""}
 
 Design a believable, comedically rich relationship between them. Personality toward another
 character is not necessarily symmetrical — {name_a}'s feelings about {name_b} can differ from

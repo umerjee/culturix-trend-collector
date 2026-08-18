@@ -63,6 +63,9 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   const [newBehavioralRule, setNewBehavioralRule] = useState("");
   const [newSpeechRule, setNewSpeechRule] = useState("");
   const [savingPersonality, setSavingPersonality] = useState(false);
+  const [personalityHint, setPersonalityHint] = useState("");
+  const [generatingPersonality, setGeneratingPersonality] = useState(false);
+  const [personalityGenError, setPersonalityGenError] = useState<string | null>(null);
 
   const [newVariantName, setNewVariantName] = useState("");
   const [creatingVariant, setCreatingVariant] = useState(false);
@@ -277,6 +280,29 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     }
   }
 
+  async function generatePersonalityDraft() {
+    if (!selectedCharacter) return;
+    setGeneratingPersonality(true);
+    setPersonalityGenError(null);
+    try {
+      const res = await fetch(`/api/culturetoons/characters/${selectedCharacter.id}/personality/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, hint: personalityHint.trim() || undefined }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setPersonalityGenError(typeof data.detail === "string" ? data.detail : "Personality generation failed");
+        return;
+      }
+      setTraits(data.traits ?? {});
+      setBehavioralRules(data.behavioral_rules ?? []);
+      setSpeechRules(data.speech_rules ?? []);
+    } finally {
+      setGeneratingPersonality(false);
+    }
+  }
+
   function addBehavioralRule() {
     if (!newBehavioralRule.trim()) return;
     setBehavioralRules((prev) => [...prev, newBehavioralRule.trim()]);
@@ -441,6 +467,31 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                   Drives future script generation so {selectedCharacter.name}&apos;s personality stays consistent
                   across episodes instead of being reinvented by the AI each time.
                 </p>
+
+                <div className="rounded-lg bg-blue-50 border border-blue-100 p-2.5 space-y-2">
+                  <div className="flex items-center gap-1.5 text-[11px] font-medium text-blue-700">
+                    <Sparkles className="h-3.5 w-3.5" /> Let AI draft a personality
+                  </div>
+                  <div className="flex gap-1.5">
+                    <input
+                      type="text" value={personalityHint} onChange={(e) => setPersonalityHint(e.target.value)}
+                      placeholder="Optional: e.g. &quot;sarcastic older brother who loves cricket&quot;"
+                      className="flex-1 rounded-lg border border-blue-200 bg-white px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
+                    />
+                    <button
+                      onClick={generatePersonalityDraft}
+                      disabled={generatingPersonality}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium px-3 py-1.5 hover:bg-blue-700 transition-colors disabled:opacity-60 shrink-0"
+                    >
+                      {generatingPersonality ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                      Generate
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-blue-600/70">
+                    Fills in the traits and rules below from {selectedCharacter.name}&apos;s description — review and adjust before saving.
+                  </p>
+                  {personalityGenError && <p className="text-[11px] text-red-500">{personalityGenError}</p>}
+                </div>
 
                 <div>
                   <p className="text-[11px] font-medium text-gray-500 mb-2">Traits</p>

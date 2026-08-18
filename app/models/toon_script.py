@@ -15,11 +15,18 @@ class ToonScript(Base):
 
     hook_line/dialogue/scene_direction are the original flat shape, still
     used verbatim by the manual-authoring path (POST /scripts). AI-suggested
-    scripts (POST /scripts/suggest) instead populate hook_line (as a
+    scripts (POST /scripts/suggest, generation_source="ai") and scheduler-
+    generated auto-drafts (app.scheduler::run_culturetoon_trend_dispatch,
+    generation_source="ai_auto") instead populate hook_line (as a
     human-readable summary) plus tone/shots/total_duration_seconds — the
     shot-structured shape needed to drive Kling's multi-shot video
     generation (see app/services/culturetoon_script.py's build_kling_prompt).
-    dialogue/scene_direction are left NULL for AI-suggested scripts."""
+    dialogue/scene_direction are left NULL for both AI-suggested and
+    ai_auto scripts. generation_source="ai_auto" additionally means the
+    user never asked for this specific draft — it was proactively created
+    from a trending Persona/Cluster on the brand's own delivery cadence
+    (CharacterBrand.delivery_freq/delivery_time/delivery_day_of_week), and
+    starts life at status="draft" for the user to Approve or Dismiss."""
     __tablename__ = "toon_scripts"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -68,7 +75,7 @@ class ToonScript(Base):
     # script defaults to inheriting it rather than picking one blind.
     background_id = Column(UUID(as_uuid=True), nullable=True)
 
-    generation_source = Column(String(10), nullable=False, default="manual")  # manual|ai
+    generation_source = Column(String(10), nullable=False, default="manual")  # manual|ai|ai_auto
     status = Column(String(12), nullable=False, default="draft")  # draft|approved|archived
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

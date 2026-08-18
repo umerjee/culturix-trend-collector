@@ -176,6 +176,126 @@ def run_digest_dispatch(now=None):
         logger.error("Digest dispatch failed: %s", e)
 
 
+def run_culturetoon_trend_dispatch(now=None):
+    """Auto-drafts one trend-grounded ToonScript per due CharacterBrand,
+    gated on that brand's own delivery_freq/delivery_time/delivery_day_of_week
+    (previously unread by any automation loop — see CharacterBrand's
+    docstring) — same cadence-gating shape as run_digest_dispatch, just for
+    CultureToons instead of the trend-engine digest. Runs every 15 minutes so
+    delivery_time is honored reasonably closely, same reasoning as digest
+    dispatch.
+
+    Script generation only — never generates video, never spends
+    Kling/ElevenLabs budget. The draft lands as ToonScript(status="draft",
+    generation_source="ai_auto") for a human to Approve or Dismiss in the
+    Scripts tab, exactly like a user-clicked "Suggest" draft except the user
+    never had to ask for it.
+
+    Idempotent per brand per day: skipped if this brand already has an
+    ai_auto script created today (UTC). Skipped entirely (not an error) if
+    the brand has no active characters to cast or no trend to draw on.
+
+    `now` is an optional injected datetime (UTC) for deterministic tests;
+    defaults to the real current time in production."""
+    logger.info("CultureToons trend dispatch starting...")
+    try:
+        from datetime import datetime
+        from app.db import SessionLocal
+        from app.models.character_brand import CharacterBrand
+        from app.models.character import Character
+        from app.models.character_variant import CharacterVariant
+        from app.models.toon_script import ToonScript
+        from app.services.culturetoon_script import (
+            generate_toon_script, ToonScriptGenerationError, select_trend_for_brand,
+        )
+        from app.services.culturetoon_video import MAX_CHARACTERS_PER_VIDEO
+        from app.routers.culturetoons import _gather_script_generation_context
+
+        now = now or datetime.utcnow()
+        today = now.date()
+
+        session = SessionLocal()
+        drafted = 0
+        try:
+            brands = session.query(CharacterBrand).filter_by(is_active=True).all()
+            for brand in brands:
+                try:
+                    if brand.delivery_freq == "weekly" and now.weekday() != brand.delivery_day_of_week:
+                        continue
+                    if now.strftime("%H:%M") < (brand.delivery_time or "07:00"):
+                        continue
+
+                    already_today = (
+                        session.query(ToonScript.id)
+                        .filter(
+                            ToonScript.brand_id == brand.id,
+                            ToonScript.generation_source == "ai_auto",
+                            ToonScript.created_at >= datetime(today.year, today.month, today.day),
+                        )
+                        .first()
+                    )
+                    if already_today:
+                        continue
+
+                    variants = (
+                        session.query(CharacterVariant)
+                        .join(Character, CharacterVariant.character_id == Character.id)
+                        .filter(Character.brand_id == brand.id, Character.is_active.is_(True), CharacterVariant.is_active.is_(True))
+                        .order_by(CharacterVariant.created_at.asc())
+                        .limit(MAX_CHARACTERS_PER_VIDEO)
+                        .all()
+                    )
+                    if not variants:
+                        continue
+
+                    selected = select_trend_for_brand(session, brand)
+                    if not selected:
+                        continue
+                    source_type, source_id, source = selected
+
+                    source_query_text = getattr(source, "description", None) or getattr(source, "summary", None) or getattr(source, "theme", None) or ""
+                    character_personalities, relationships, memories, cultures, performance_context = _gather_script_generation_context(
+                        session, str(brand.id), variants, source_query_text
+                    )
+
+                    try:
+                        idea = generate_toon_script(
+                            source, variants, tone="funny",
+                            character_personalities=character_personalities,
+                            relationships=relationships,
+                            memories=memories,
+                            cultures=cultures,
+                            performance_context=performance_context,
+                        )
+                    except ToonScriptGenerationError as exc:
+                        logger.warning("Trend-dispatch script generation failed for brand %s: %s", brand.id, exc)
+                        continue
+
+                    script = ToonScript(
+                        brand_id=brand.id,
+                        character_variant_id=variants[0].id,
+                        character_variant_ids=[str(v.id) for v in variants],
+                        source_type=source_type,
+                        source_id=source_id,
+                        hook_line=idea.get("hook_line"),
+                        tone=idea.get("tone"),
+                        shots=idea.get("shots"),
+                        total_duration_seconds=idea.get("total_duration_seconds"),
+                        generation_source="ai_auto",
+                        status="draft",
+                    )
+                    session.add(script)
+                    session.commit()
+                    drafted += 1
+                except Exception as e:
+                    session.rollback()
+                    logger.error("Trend dispatch failed for brand %s: %s", brand.id, e)
+        finally:
+            session.close()
+        logger.info("CultureToons trend dispatch done: %d scripts drafted", drafted)
+    except Exception as e:
+        logger.error("CultureToons trend dispatch failed: %s", e)
+
 
 # idea.get("platform") (an LLM-suggested display value, e.g. "YouTube") to
 # the internal provider key app.social.service._PROVIDERS is keyed by.
@@ -400,6 +520,11 @@ def start():
     # Digest email dispatch — every 15 min, per-profile delivery_freq/delivery_time/
     # delivery_day_of_week gating (decoupled from the shared 07:00 UTC generation run)
     scheduler.add_job(run_digest_dispatch, CronTrigger(minute="*/15"), id="digest_dispatch")
+    # CultureToons trend-to-script auto-drafting — every 15 min, per-brand
+    # delivery_freq/delivery_time/delivery_day_of_week gating, same shape as
+    # digest dispatch above. Script drafts only, never video — see
+    # run_culturetoon_trend_dispatch's own docstring.
+    scheduler.add_job(run_culturetoon_trend_dispatch, CronTrigger(minute="*/15"), id="culturetoon_trend_dispatch")
     # Integration health check — once daily, 12:00 UTC (after the other morning jobs)
     scheduler.add_job(run_integration_health_check, CronTrigger(hour=12, minute=0), id="integration_health_check")
     scheduler.start()
@@ -407,7 +532,8 @@ def start():
         "Scheduler started — collection at 01:00/07:00/13:00/19:00 UTC, "
         "full pipeline at 07:00 UTC, content check at 09:00 UTC, "
         "post metrics refresh at 10:00 UTC, %s, "
-        "digest dispatch every 15 min, integration health check at 12:00 UTC",
+        "digest dispatch every 15 min, culturetoon trend dispatch every 15 min, "
+        "integration health check at 12:00 UTC",
         publish_job_desc,
     )
 

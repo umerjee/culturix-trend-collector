@@ -238,6 +238,18 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
     }
   }
 
+  async function updateScriptStatus(scriptId: string, status: "approved" | "archived") {
+    const res = await fetch(`/api/culturetoons/scripts/${scriptId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brand_id: brandId, status }),
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      setScripts((prev) => prev.map((s) => (s.id === scriptId ? updated : s)));
+    }
+  }
+
   async function generateBackground(scriptId: string) {
     setGeneratingBgFor(scriptId);
     setBgErrors((prev) => ({ ...prev, [scriptId]: "" }));
@@ -502,6 +514,12 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
                       {s.source_type === "idea" ? "From your idea" : "AI-suggested"}
                     </span>
                   )}
+                  {s.generation_source === "ai_auto" && (
+                    <span className="ml-2 inline-flex items-center gap-1 text-amber-600 bg-amber-50 rounded-full px-2 py-0.5">
+                      <Sparkles className="h-3 w-3" />
+                      Trending now — no one asked for this one
+                    </span>
+                  )}
                   {s.tone && (
                     <span className="ml-2 inline-flex items-center capitalize text-gray-400 bg-gray-50 rounded-full px-2 py-0.5">
                       {s.tone}
@@ -510,6 +528,22 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
                 </span>
                 <span className="text-[10px] uppercase tracking-wide text-gray-400">{s.status}</span>
               </div>
+              {s.generation_source === "ai_auto" && s.status === "draft" && (
+                <div className="flex gap-2 mb-2">
+                  <button
+                    onClick={() => updateScriptStatus(s.id, "approved")}
+                    className="inline-flex items-center gap-1 rounded-lg bg-gray-900 text-white text-[11px] font-medium px-2.5 py-1 hover:bg-gray-800 transition-colors"
+                  >
+                    <Check className="h-3 w-3" /> Approve
+                  </button>
+                  <button
+                    onClick={() => updateScriptStatus(s.id, "archived")}
+                    className="text-[11px] text-gray-400 hover:text-gray-600 px-2 py-1"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
               {s.hook_line && <p className="text-sm font-medium text-gray-900">&quot;{s.hook_line}&quot;</p>}
               {s.dialogue && <p className="text-sm text-gray-600 mt-1">{s.dialogue}</p>}
               {s.scene_direction && <p className="text-xs text-gray-400 mt-1 italic">{s.scene_direction}</p>}

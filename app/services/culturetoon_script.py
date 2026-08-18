@@ -14,11 +14,20 @@ app/media/kling_omni.py / app/services/culturetoon_element.py).
 import json
 import logging
 import os
+from datetime import datetime, timedelta
+from itertools import zip_longest
 from typing import Optional
 
 from app.models.persona import Persona
+from app.models.cluster import Cluster
 
 logger = logging.getLogger("culturix.services.culturetoon_script")
+
+# How far back to look, per brand, when deciding whether a ranked trend has
+# already been used for a script — keeps run_culturetoon_trend_dispatch (see
+# app/scheduler.py) from redrafting the exact same Persona/Cluster every time
+# it runs for a brand.
+TREND_DEDUP_LOOKBACK_DAYS = 14
 
 # Duplicated from app/routers/culturetoons.py's EXPRESSION_NAMES rather than
 # imported — a service importing from a router would run the dependency
@@ -74,6 +83,82 @@ def _source_type_and_context(persona_or_cluster) -> tuple[str, str]:
         f"Trend theme: {c.theme or 'n/a'}\n"
         f"Summary: {c.summary or 'n/a'}"
     )
+
+
+def select_trend_for_brand(session, brand):
+    """Picks the best real-world trend to ground an auto-drafted script in,
+    for run_culturetoon_trend_dispatch (app/scheduler.py). Same candidate
+    pool and ranking as GET /trend-sources (app/routers/culturetoons.py):
+    active Personas + recent Clusters, ranked by relevance to
+    brand.trend_interests when set, else left in recency order — fails open
+    to unranked on any embedding error, same convention as the endpoint.
+
+    Personas and Clusters are two independently-ranked lists (relevance
+    scores aren't comparable across the two without re-deriving raw cosine
+    values, which rank_by_relevance intentionally doesn't expose), so
+    they're interleaved best-of-each rather than merged by score — a simple,
+    defensible way to avoid one type systematically crowding out the other.
+
+    Filters out any (source_type, source_id) this brand already has a
+    ToonScript for within TREND_DEDUP_LOOKBACK_DAYS, so the same trend isn't
+    redrafted every dispatch run. If every ranked candidate has already been
+    used, falls back to the single top-ranked one anyway (a repeat is better
+    than no draft at all).
+
+    Returns (source_type, source_id, source_obj), or None if the brand has
+    no active Personas/Clusters to draw on at all."""
+    from app.models.toon_script import ToonScript
+
+    personas = (
+        session.query(Persona).filter(Persona.status == "active")
+        .order_by(Persona.updated_at.desc()).limit(50).all()
+    )
+    clusters = (
+        session.query(Cluster).order_by(Cluster.updated_at.desc()).limit(50).all()
+    )
+
+    if brand.trend_interests:
+        try:
+            from app.services.culturetoon_trend_relevance import get_interests_embedding, rank_by_relevance
+            interests_embedding = get_interests_embedding(brand)
+            personas = rank_by_relevance(session, personas, lambda p: f"{p.name}. {p.description}", interests_embedding)
+            clusters = rank_by_relevance(session, clusters, lambda c: f"{c.theme or ''}. {c.summary or ''}", interests_embedding)
+            session.commit()
+        except Exception:
+            session.rollback()
+            logger.warning(
+                "Trend relevance ranking failed for brand %s auto-dispatch, falling back to recency", brand.id, exc_info=True,
+            )
+
+    candidates = []
+    for p, c in zip_longest(personas, clusters):
+        if p is not None:
+            candidates.append(("persona", p.id, p))
+        if c is not None:
+            candidates.append(("cluster", c.id, c))
+    if not candidates:
+        return None
+
+    cutoff = datetime.utcnow() - timedelta(days=TREND_DEDUP_LOOKBACK_DAYS)
+    used = set(
+        session.query(ToonScript.source_type, ToonScript.source_id)
+        .filter(
+            ToonScript.brand_id == brand.id,
+            ToonScript.created_at >= cutoff,
+            ToonScript.source_type.isnot(None),
+        )
+        .all()
+    )
+
+    for source_type, source_id, source_obj in candidates:
+        if (source_type, source_id) not in used:
+            return source_type, source_id, source_obj
+
+    logger.info(
+        "All ranked trends already used by brand %s within %dd, repeating top choice",
+        brand.id, TREND_DEDUP_LOOKBACK_DAYS,
+    )
+    return candidates[0]
 
 
 def _personality_line(v, character_personalities: Optional[dict]) -> str:

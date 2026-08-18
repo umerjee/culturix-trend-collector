@@ -131,6 +131,7 @@ export default function RelationshipManager({ brandId }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  const [relationshipHint, setRelationshipHint] = useState("");
 
   // History (events) — loaded lazily per relationship, not eagerly for
   // every relationship on mount.
@@ -171,7 +172,7 @@ export default function RelationshipManager({ brandId }: Props) {
     setRelationshipType(""); setRelationshipTypeLabel("");
     setDescription(""); setComedyChemistry(5);
     setDirections({ a_to_b: { ...EMPTY_DIRECTION }, b_to_a: { ...EMPTY_DIRECTION } });
-    setError(null); setGenerateError(null);
+    setError(null); setGenerateError(null); setRelationshipHint("");
     setFormOpen(true);
   }
 
@@ -189,7 +190,7 @@ export default function RelationshipManager({ brandId }: Props) {
       perspective_description: d.perspective_description ?? "", behavior_rules: d.behavior_rules,
     } : { ...EMPTY_DIRECTION };
     setDirections({ a_to_b: toDraft(aToB), b_to_a: toDraft(bToA) });
-    setError(null); setGenerateError(null);
+    setError(null); setGenerateError(null); setRelationshipHint("");
     setFormOpen(true);
     if (!eventsByRelationship[r.id]) loadEvents(r.id);
     setHistoryOpen((prev) => ({ ...prev, [r.id]: true }));
@@ -215,7 +216,10 @@ export default function RelationshipManager({ brandId }: Props) {
       const res = await fetch("/api/culturetoons/relationships/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brand_id: brandId, character_a_id: characterAId, character_b_id: characterBId }),
+        body: JSON.stringify({
+          brand_id: brandId, character_a_id: characterAId, character_b_id: characterBId,
+          hint: relationshipHint.trim() || undefined,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -479,12 +483,19 @@ export default function RelationshipManager({ brandId }: Props) {
                   <option value="">Character B</option>
                   {characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
+                <input
+                  type="text"
+                  value={relationshipHint}
+                  onChange={(e) => setRelationshipHint(e.target.value)}
+                  placeholder="Optional steer, e.g. &quot;rivals for the same promotion&quot;"
+                  className="flex-1 min-w-[12rem] rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200"
+                />
                 <button
                   type="button"
                   onClick={generateDraft}
                   disabled={generating || !characterAId || !characterBId || characterAId === characterBId}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 text-blue-600 text-xs font-medium px-3 py-1.5 hover:bg-blue-50 transition-colors disabled:opacity-60"
-                  title="Drafts a type, description, comedy chemistry, and both directions' dynamics from these two characters' existing personality/culture/speech/behavioral DNA — editable before saving, nothing is saved automatically."
+                  title="Drafts a type, description, comedy chemistry, and both directions' dynamics from these two characters' existing personality/culture/speech/behavioral DNA (plus your optional steer above) — editable before saving, nothing is saved automatically."
                 >
                   {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                   ✨ Generate relationship
