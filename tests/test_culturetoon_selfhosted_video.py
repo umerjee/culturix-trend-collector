@@ -78,3 +78,19 @@ class TestGenerateToonVideoSelfhosted:
         result = generate_toon_video_selfhosted(script, variants, "endpoint-1")
         assert result == b"video-bytes"
         mock_run.assert_called_once_with("endpoint-1", {"1": {}})
+
+    def test_use_allocation_retry_routes_through_the_retrying_client_call(self, mocker):
+        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mock_plain = mocker.patch("app.media.runpod_serverless_client.run_inference_job")
+        mock_retry = mocker.patch(
+            "app.media.runpod_serverless_client.run_inference_job_with_allocation_retry",
+            return_value=b"video-bytes",
+        )
+
+        script = _script(mocker, hook_line="hi", shots=[], total_duration_seconds=8)
+        variants = [_variant(mocker)]
+        result = generate_toon_video_selfhosted(script, variants, "endpoint-1", use_allocation_retry=True)
+
+        assert result == b"video-bytes"
+        mock_retry.assert_called_once_with("endpoint-1", {"1": {}})
+        mock_plain.assert_not_called()

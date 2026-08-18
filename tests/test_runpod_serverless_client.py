@@ -10,7 +10,9 @@ os.environ.setdefault("RUNPOD_API_KEY", "test-key")
 
 import pytest
 
-from app.media.runpod_serverless_client import run_inference_job, RunPodServerlessError
+from app.media.runpod_serverless_client import (
+    run_inference_job, run_inference_job_with_allocation_retry, RunPodServerlessError,
+)
 
 
 def _mock_response(mocker, status_code=200, json_data=None, content=b""):
@@ -101,3 +103,55 @@ class TestRunInferenceJob:
         monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
         with pytest.raises(RuntimeError):
             run_inference_job("endpoint-1", {"1": {}})
+
+
+class TestRunInferenceJobWithAllocationRetry:
+    def test_succeeds_on_first_try_without_retrying(self, mocker):
+        mock_job = mocker.patch(
+            "app.media.runpod_serverless_client.run_inference_job", return_value=b"video-bytes",
+        )
+        mock_sleep = mocker.patch("time.sleep")
+
+        result = run_inference_job_with_allocation_retry("endpoint-1", {"1": {}}, max_retries=1, backoff_seconds=1)
+
+        assert result == b"video-bytes"
+        mock_job.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    def test_retries_once_after_allocation_failure_then_succeeds(self, mocker):
+        mock_job = mocker.patch(
+            "app.media.runpod_serverless_client.run_inference_job",
+            side_effect=[TimeoutError("no worker available"), b"video-bytes"],
+        )
+        mock_sleep = mocker.patch("time.sleep")
+
+        result = run_inference_job_with_allocation_retry("endpoint-1", {"1": {}}, max_retries=1, backoff_seconds=45)
+
+        assert result == b"video-bytes"
+        assert mock_job.call_count == 2
+        mock_sleep.assert_called_once_with(45)
+
+    def test_raises_after_exhausting_retries(self, mocker):
+        mocker.patch(
+            "app.media.runpod_serverless_client.run_inference_job",
+            side_effect=RunPodServerlessError("no capacity"),
+        )
+        mocker.patch("time.sleep")
+
+        with pytest.raises(RunPodServerlessError, match="no capacity"):
+            run_inference_job_with_allocation_retry("endpoint-1", {"1": {}}, max_retries=1, backoff_seconds=1)
+
+    def test_reads_retry_config_from_env_when_not_passed(self, mocker, monkeypatch):
+        monkeypatch.setenv("RUNPOD_ALLOCATION_MAX_RETRIES", "2")
+        monkeypatch.setenv("RUNPOD_ALLOCATION_BACKOFF_SECONDS", "5")
+        mock_job = mocker.patch(
+            "app.media.runpod_serverless_client.run_inference_job",
+            side_effect=[TimeoutError("x"), TimeoutError("x"), b"video-bytes"],
+        )
+        mock_sleep = mocker.patch("time.sleep")
+
+        result = run_inference_job_with_allocation_retry("endpoint-1", {"1": {}})
+
+        assert result == b"video-bytes"
+        assert mock_job.call_count == 3
+        mock_sleep.assert_called_with(5.0)

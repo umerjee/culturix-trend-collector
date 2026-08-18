@@ -10,8 +10,12 @@ Two distinct uses as of the Network-Volume architecture revision:
     the Serverless endpoint).
   - create_training_pod/wait_for_ssh_ready/terminate_pod: an EPHEMERAL pod
     created fresh per LoRA training run (app/services/culturetoon_lora.py),
-    mounting the shared Network Volume, fully deleted (not just stopped)
-    when training finishes — see that module's docstring.
+    fully deleted (not just stopped) when training finishes. Does NOT mount
+    the Network Volume — A100 PCIe training capacity and RTX 4090 inference
+    capacity frequently aren't available in the same RunPod region, so the
+    trained LoRA is pushed to the volume afterward via its S3-compatible
+    API (app/media/runpod_s3.py) instead of a filesystem write. See that
+    module and culturetoon_lora.py's docstrings.
 
 RunPod's Pods management surface is a GraphQL API at
 https://api.runpod.io/graphql, not plain REST — verify this against RunPod's
@@ -19,12 +23,13 @@ current docs when setting up credentials, since it hasn't been exercised
 against a live account here.
 
 Requires env vars:
-  RUNPOD_API_KEY            (RunPod console -> Settings -> API Keys)
-  RUNPOD_POD_ID             (manual-testing pod only — see above)
-  RUNPOD_TRAINING_GPU_TYPE_ID  (training pod only, e.g. "NVIDIA A100 80GB PCIe")
+  RUNPOD_API_KEY               (RunPod console -> Settings -> API Keys)
+  RUNPOD_POD_ID                (manual-testing pod only — see above)
+  RUNPOD_TRAINING_GPU_TYPE_ID  (training pod only — request "A100 80GB PCIe"
+                                 specifically, not SXM; PCIe is the more
+                                 broadly available form factor)
   RUNPOD_TRAINING_IMAGE        (training pod only — a container image with
                                  ltx-trainer installed)
-  RUNPOD_NETWORK_VOLUME_ID     (training pod only — the shared volume to mount)
 """
 import logging
 import os
@@ -170,21 +175,25 @@ def wait_for_pod_ready(pod_id: Optional[str] = None, comfyui_port: int = _DEFAUL
 
 
 def create_training_pod() -> str:
-    """Creates a fresh, ephemeral training pod (A100/H100-class — LTX-2's
-    training path needs bf16/more VRAM than the 4090-class inference tier
-    comfortably provides), mounting the shared Network Volume so
-    ltx-trainer's output lands where the Serverless inference endpoint can
-    read it directly. Returns the new pod's id. Caller (culturetoon_lora.py)
-    is responsible for terminate_pod()-ing it when done, success or
-    failure — this is meant to exist only for the duration of one training
-    run, not as standing infrastructure."""
+    """Creates a fresh, ephemeral training pod — A100 80GB **PCIe**
+    specifically, not SXM (SXM lives in dedicated NVLink/HGX chassis that
+    rarely co-locate in the same region as RTX 4090 stock; PCIe is the more
+    broadly available form factor). LTX-2's training path needs bf16/more
+    VRAM than the 4090-class inference tier comfortably provides.
+
+    Does NOT mount the Network Volume — training-capacity and
+    inference-capacity regions frequently don't overlap for the reason
+    above, so this pod writes ltx-trainer's output to its own local
+    container disk, and the resulting file is pushed to the volume
+    afterward via the S3-compatible API (app/media/runpod_s3.py) instead of
+    a filesystem write. Returns the new pod's id. Caller
+    (culturetoon_lora.py) is responsible for terminate_pod()-ing it when
+    done, success or failure — this is meant to exist only for the
+    duration of one training run, not as standing infrastructure."""
     gpu_type_id = os.getenv("RUNPOD_TRAINING_GPU_TYPE_ID", "")
     image_name = os.getenv("RUNPOD_TRAINING_IMAGE", "")
-    volume_id = os.getenv("RUNPOD_NETWORK_VOLUME_ID", "")
-    if not gpu_type_id or not image_name or not volume_id:
-        raise RuntimeError(
-            "RUNPOD_TRAINING_GPU_TYPE_ID, RUNPOD_TRAINING_IMAGE, and RUNPOD_NETWORK_VOLUME_ID must all be set"
-        )
+    if not gpu_type_id or not image_name:
+        raise RuntimeError("RUNPOD_TRAINING_GPU_TYPE_ID and RUNPOD_TRAINING_IMAGE must both be set")
     data = _graphql(
         """mutation deployPod($input: PodFindAndDeployOnDemandInput!) {
             podFindAndDeployOnDemand(input: $input) { id desiredStatus }
@@ -193,7 +202,6 @@ def create_training_pod() -> str:
             "cloudType": "SECURE",
             "gpuTypeId": gpu_type_id,
             "imageName": image_name,
-            "networkVolumeId": volume_id,
             "name": "culturix-lora-training",
             "ports": "22/tcp",
         }},

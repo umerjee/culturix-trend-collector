@@ -19,13 +19,77 @@ architecture (see the plan this was revised from) replaced the earlier
 single-persistent-pod design. The wall-clock time budget below still
 applies (a real batch window, not unbounded), it just isn't tied to any
 GPU lifecycle of this module's own anymore.
+
+**Allocation-failure handling (first job of the window only):** the
+Network Volume's inference region has shown only "medium" RTX 4090
+availability on RunPod, not "high," so a cold Serverless endpoint
+occasionally failing to allocate a worker on the very first request of a
+window is a real, expected failure mode — not hypothetical. The FIRST
+Serverless job of a run goes through
+generate_toon_video_selfhosted(..., use_allocation_retry=True), which
+retries with backoff (RUNPOD_ALLOCATION_MAX_RETRIES/
+RUNPOD_ALLOCATION_BACKOFF_SECONDS) specifically around that allocation
+step. If it still fails after retrying, that's treated as symptomatic of
+the whole endpoint being unavailable this run — rather than repeatedly
+failing every remaining script identically, the rest of the window is
+skipped, an alert email is sent (OPS_ALERT_EMAIL), and the failure is
+logged with enough context (brand, endpoint, timestamp, error) to act on
+without digging through logs. Every job AFTER the first one uses the plain
+(non-retrying) call and relies on the existing per-script try/except below
+— once a worker is warm, an individual clip failing is an ordinary,
+isolated failure, not a sign the whole endpoint is down.
 """
 import logging
 import os
 import time
 import uuid as _uuid
+from datetime import datetime
 
 logger = logging.getLogger("culturix.services.culturetoon_selfhosted_batch")
+
+
+class _AllocationAbort(Exception):
+    """Internal signal only — raised out of _process_brand when the
+    window's first Serverless job fails to allocate even after retrying,
+    caught in _process_pilot_brands to stop processing the rest of the
+    window and send the ops alert. Never escapes run_selfhosted_video_batch."""
+    def __init__(self, brand, original_exception):
+        self.brand = brand
+        self.original_exception = original_exception
+        super().__init__(str(original_exception))
+
+
+def _send_allocation_failure_alert(brand, endpoint_id: str, exc: Exception) -> None:
+    """Best-effort email alert so a dead/out-of-capacity Serverless
+    endpoint is visible without digging through logs — same Resend
+    call pattern as app/pipeline/nodes/digest_writer.py::_send_email.
+    Fails open (logs, doesn't raise) since a notification failure must
+    never mask the underlying allocation failure it's trying to surface."""
+    to = os.getenv("OPS_ALERT_EMAIL", "")
+    resend_key = os.getenv("RESEND_API_KEY", "")
+    if not to or not resend_key:
+        logger.warning("OPS_ALERT_EMAIL/RESEND_API_KEY not set — skipping allocation-failure alert email")
+        return
+    try:
+        import resend
+        resend.api_key = resend_key
+        resend.Emails.send({
+            "from": "alerts@culturixcloud.com",
+            "to": to,
+            "subject": f"Culturix: self-hosted video batch could not allocate a worker ({brand.name})",
+            "html": (
+                f"<p>The self-hosted video batch for brand <b>{brand.name}</b> "
+                f"(id {brand.id}) could not allocate a RunPod Serverless worker on "
+                f"endpoint <code>{endpoint_id}</code> after retrying.</p>"
+                f"<p>Time: {datetime.utcnow().isoformat()}Z</p>"
+                f"<p>Error: {exc}</p>"
+                f"<p>The rest of this scheduled window was skipped rather than "
+                f"repeatedly failing against the same unavailable endpoint.</p>"
+            ),
+        })
+        logger.info("Allocation-failure alert emailed to %s", to)
+    except Exception:
+        logger.exception("Failed to send allocation-failure alert email to %s", to)
 
 
 def _pilot_brand_ids() -> list:
@@ -76,9 +140,10 @@ def _script_duration(script) -> float:
     )
 
 
-def _process_brand(session, brand, endpoint_id: str, deadline: float) -> int:
+def _process_brand(session, brand, endpoint_id: str, deadline: float, job_tracker: dict) -> int:
     from app.models.toon import Toon
     from app.media import storage
+    from app.media.runpod_serverless_client import RunPodServerlessError
     from app.services.culturetoon_selfhosted_video import (
         generate_toon_video_selfhosted, SelfHostedVideoGenerationError,
     )
@@ -102,9 +167,15 @@ def _process_brand(session, brand, endpoint_id: str, deadline: float) -> int:
         session.add(toon)
         session.commit()
 
+        # Only the very first Serverless call of the whole window gets the
+        # allocation-retry treatment — see this module's own docstring.
+        is_first_job = not job_tracker["attempted"]
+        job_tracker["attempted"] = True
+
         try:
             video_bytes = generate_toon_video_selfhosted(
                 script, variants, endpoint_id, duration_seconds=duration,
+                use_allocation_retry=is_first_job,
             )
             video_url = storage.upload(
                 video_bytes,
@@ -115,6 +186,19 @@ def _process_brand(session, brand, endpoint_id: str, deadline: float) -> int:
             toon.final_video_url = video_url
             toon.status = "ready"
             generated += 1
+        except (RunPodServerlessError, TimeoutError) as exc:
+            session.rollback()
+            toon.status = "failed"
+            toon.generation_error = str(exc)[:2000]
+            if is_first_job:
+                # `finally` below still runs (records usage, commits the
+                # failed toon) before this propagates up to
+                # _process_pilot_brands, which stops the rest of the
+                # window and sends the ops alert — see this module's
+                # docstring on why the first job's allocation failure is
+                # treated differently from an ordinary per-clip failure.
+                raise _AllocationAbort(brand, exc) from exc
+            logger.warning("Self-hosted generation failed for toon %s: %s", toon.id, exc)
         except SelfHostedVideoGenerationError as exc:
             session.rollback()
             toon.status = "failed"
@@ -144,6 +228,7 @@ def _process_pilot_brands(pilot_brand_ids: list, endpoint_id: str, deadline: flo
     from app.db import SessionLocal
     from app.models.character_brand import CharacterBrand
 
+    job_tracker = {"attempted": False}
     session = SessionLocal()
     try:
         brands = session.query(CharacterBrand).filter(
@@ -154,7 +239,16 @@ def _process_pilot_brands(pilot_brand_ids: list, endpoint_id: str, deadline: flo
             if time.time() > deadline:
                 logger.warning("Self-hosted video batch hit its time budget — stopping early")
                 break
-            generated += _process_brand(session, brand, endpoint_id, deadline)
+            try:
+                generated += _process_brand(session, brand, endpoint_id, deadline, job_tracker)
+            except _AllocationAbort as abort:
+                logger.error(
+                    "Self-hosted video batch aborted — endpoint %s failed to allocate a worker for brand %s "
+                    "(%s) even after retrying: %s",
+                    endpoint_id, abort.brand.name, abort.brand.id, abort.original_exception,
+                )
+                _send_allocation_failure_alert(abort.brand, endpoint_id, abort.original_exception)
+                break
         return generated
     finally:
         session.close()

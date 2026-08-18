@@ -22,7 +22,6 @@ class TestCreateTrainingPod:
     def test_missing_config_raises_without_calling_runpod(self, mocker, monkeypatch):
         monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
         monkeypatch.delenv("RUNPOD_TRAINING_IMAGE", raising=False)
-        monkeypatch.delenv("RUNPOD_NETWORK_VOLUME_ID", raising=False)
         mock_post = mocker.patch("httpx.post")
         with pytest.raises(RuntimeError):
             create_training_pod()
@@ -31,16 +30,29 @@ class TestCreateTrainingPod:
     def test_success_returns_pod_id(self, mocker, monkeypatch):
         monkeypatch.setenv("RUNPOD_TRAINING_GPU_TYPE_ID", "NVIDIA A100 80GB PCIe")
         monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        monkeypatch.setenv("RUNPOD_NETWORK_VOLUME_ID", "vol-1")
         mocker.patch("httpx.post", return_value=_mock_graphql_response(
             mocker, data={"podFindAndDeployOnDemand": {"id": "pod-new", "desiredStatus": "RUNNING"}},
         ))
         assert create_training_pod() == "pod-new"
 
+    def test_does_not_request_a_network_volume_mount(self, mocker, monkeypatch):
+        # The training pod (A100 PCIe) and the Network Volume's inference
+        # region (RTX 4090) frequently aren't the same region — see
+        # app/services/culturetoon_lora.py's docstring — so pod creation
+        # must not request a volume mount at all.
+        monkeypatch.setenv("RUNPOD_TRAINING_GPU_TYPE_ID", "NVIDIA A100 80GB PCIe")
+        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
+        monkeypatch.delenv("RUNPOD_NETWORK_VOLUME_ID", raising=False)
+        mock_post = mocker.patch("httpx.post", return_value=_mock_graphql_response(
+            mocker, data={"podFindAndDeployOnDemand": {"id": "pod-new", "desiredStatus": "RUNNING"}},
+        ))
+        create_training_pod()
+        sent_variables = mock_post.call_args.kwargs["json"]["variables"]
+        assert "networkVolumeId" not in sent_variables["input"]
+
     def test_no_pod_returned_raises(self, mocker, monkeypatch):
         monkeypatch.setenv("RUNPOD_TRAINING_GPU_TYPE_ID", "NVIDIA A100 80GB PCIe")
         monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        monkeypatch.setenv("RUNPOD_NETWORK_VOLUME_ID", "vol-1")
         mocker.patch("httpx.post", return_value=_mock_graphql_response(
             mocker, data={"podFindAndDeployOnDemand": None},
         ))
@@ -50,7 +62,6 @@ class TestCreateTrainingPod:
     def test_graphql_error_raises(self, mocker, monkeypatch):
         monkeypatch.setenv("RUNPOD_TRAINING_GPU_TYPE_ID", "NVIDIA A100 80GB PCIe")
         monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        monkeypatch.setenv("RUNPOD_NETWORK_VOLUME_ID", "vol-1")
         mocker.patch("httpx.post", return_value=_mock_graphql_response(
             mocker, errors=[{"message": "insufficient GPU availability"}],
         ))

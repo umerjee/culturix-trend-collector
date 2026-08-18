@@ -59,11 +59,19 @@ def resolve_ready_lora(variants: list) -> str:
 
 
 def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
-                                    duration_seconds: Optional[float] = None) -> bytes:
+                                    duration_seconds: Optional[float] = None,
+                                    use_allocation_retry: bool = False) -> bytes:
     """Returns raw video bytes for the caller to persist via
     app.media.storage.upload(). Raises SelfHostedVideoGenerationError (cast
     not ready) or whatever app.media.runpod_serverless_client/ltx_workflow
-    raise on a Serverless-side failure."""
+    raise on a Serverless-side failure.
+
+    use_allocation_retry: set by the batch runner for only the first job of
+    a scheduled window (app/services/culturetoon_selfhosted_batch.py) —
+    routes through run_inference_job_with_allocation_retry instead of the
+    plain call, since a cold Serverless endpoint failing to allocate a
+    worker is a distinct failure mode from an individual clip's own
+    generation failing."""
     from app.media import ltx_workflow, runpod_serverless_client
 
     lora_path = resolve_ready_lora(variants)
@@ -76,4 +84,6 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
     )
 
     workflow = ltx_workflow.build_workflow(prompt_text, total_duration, lora_path=lora_path)
+    if use_allocation_retry:
+        return runpod_serverless_client.run_inference_job_with_allocation_retry(endpoint_id, workflow)
     return runpod_serverless_client.run_inference_job(endpoint_id, workflow)

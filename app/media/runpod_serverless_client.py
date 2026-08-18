@@ -31,6 +31,14 @@ logger = logging.getLogger("culturix.media.runpod_serverless_client")
 _API_BASE = "https://api.runpod.ai/v2"
 _POLL_INTERVAL = 10  # seconds
 _TERMINAL_STATUSES = {"COMPLETED", "FAILED"}
+# Defaults for run_inference_job_with_allocation_retry — overridable via
+# RUNPOD_ALLOCATION_MAX_RETRIES/RUNPOD_ALLOCATION_BACKOFF_SECONDS so the
+# retry count/backoff can be tuned once real-world allocation-failure rates
+# are known, without a code change (the Network Volume's inference region
+# has shown only "medium" RTX 4090 availability, not "high," so this isn't
+# a hypothetical case).
+_DEFAULT_ALLOCATION_MAX_RETRIES = 1
+_DEFAULT_ALLOCATION_BACKOFF_SECONDS = 45
 
 
 class RunPodServerlessError(Exception):
@@ -94,3 +102,41 @@ def run_inference_job(endpoint_id: str, workflow_json: dict, timeout_seconds: in
         time.sleep(poll_interval)
 
     raise TimeoutError(f"Serverless job {job_id} did not complete within {timeout_seconds}s")
+
+
+def run_inference_job_with_allocation_retry(endpoint_id: str, workflow_json: dict, timeout_seconds: int = 600,
+                                             poll_interval: int = _POLL_INTERVAL,
+                                             max_retries: int = None, backoff_seconds: float = None) -> bytes:
+    """Wraps run_inference_job with a retry specifically around allocation
+    failures — RunPod couldn't spin up a worker in time, surfaced here as
+    either an explicit FAILED status (RunPodServerlessError) or the job
+    never reaching a terminal status at all (TimeoutError). Intended for
+    use on only the FIRST job submission of a scheduled batch window (see
+    app/services/culturetoon_selfhosted_batch.py) — once a worker is warm,
+    subsequent jobs in the same window go through run_inference_job
+    directly and rely on the batch runner's own existing per-clip error
+    handling instead, not this retry.
+
+    max_retries/backoff_seconds default from RUNPOD_ALLOCATION_MAX_RETRIES/
+    RUNPOD_ALLOCATION_BACKOFF_SECONDS env vars when not passed explicitly."""
+    if max_retries is None:
+        max_retries = int(os.getenv("RUNPOD_ALLOCATION_MAX_RETRIES", str(_DEFAULT_ALLOCATION_MAX_RETRIES)))
+    if backoff_seconds is None:
+        backoff_seconds = float(os.getenv("RUNPOD_ALLOCATION_BACKOFF_SECONDS", str(_DEFAULT_ALLOCATION_BACKOFF_SECONDS)))
+
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return run_inference_job(endpoint_id, workflow_json, timeout_seconds=timeout_seconds, poll_interval=poll_interval)
+        except (RunPodServerlessError, TimeoutError) as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                logger.warning(
+                    "Serverless allocation attempt %d/%d failed for endpoint %s: %s — retrying in %ss",
+                    attempt + 1, max_retries + 1, endpoint_id, exc, backoff_seconds,
+                )
+                time.sleep(backoff_seconds)
+
+    raise RunPodServerlessError(
+        f"Serverless endpoint {endpoint_id} failed to allocate a worker after {max_retries + 1} attempt(s): {last_exc}"
+    ) from last_exc

@@ -46,3 +46,7 @@ python-multipart
 # Self-hosted video generation (RunPod+ComfyUI+LTX-2) — remote LoRA-training
 # trigger over SSH into the RunPod pod. See app/media/runpod_ssh.py.
 paramiko
+# Pushes a trained LoRA to a RunPod Network Volume via its S3-compatible
+# API — the training pod and the volume often aren't in the same region
+# (see app/media/runpod_s3.py), so this isn't a filesystem write.
+boto3
