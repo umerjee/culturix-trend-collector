@@ -21,10 +21,15 @@ Keeping the push backend-side avoids that entirely, at the cost of one
 extra SFTP hop, which is negligible next to the training job's own runtime.
 
 Requires env vars (RunPod console -> Storage -> Network Volumes -> your
-volume -> S3 API access):
+volume -> S3 API access; endpoint/region pairs are listed at
+https://docs.runpod.io/storage/s3-api — one fixed URL per datacenter, e.g.
+EU-RO-1 -> https://s3api-eu-ro-1.runpod.io):
   RUNPOD_S3_ACCESS_KEY_ID
   RUNPOD_S3_SECRET_ACCESS_KEY
   RUNPOD_S3_ENDPOINT_URL   (region-specific — matches wherever the volume lives)
+  RUNPOD_S3_REGION         (the datacenter ID, e.g. "EU-RO-1" — RunPod's docs
+                             pass this as boto3's region_name; omitting it
+                             isn't just cosmetic, requests fail without it)
   RUNPOD_S3_BUCKET         (the network volume itself acts as the bucket)
 """
 import logging
@@ -34,7 +39,7 @@ logger = logging.getLogger("culturix.media.runpod_s3")
 
 _REQUIRED_ENV_VARS = (
     "RUNPOD_S3_ACCESS_KEY_ID", "RUNPOD_S3_SECRET_ACCESS_KEY",
-    "RUNPOD_S3_ENDPOINT_URL", "RUNPOD_S3_BUCKET",
+    "RUNPOD_S3_ENDPOINT_URL", "RUNPOD_S3_REGION", "RUNPOD_S3_BUCKET",
 )
 
 
@@ -53,6 +58,7 @@ def _client():
         aws_access_key_id=os.environ["RUNPOD_S3_ACCESS_KEY_ID"],
         aws_secret_access_key=os.environ["RUNPOD_S3_SECRET_ACCESS_KEY"],
         endpoint_url=os.environ["RUNPOD_S3_ENDPOINT_URL"],
+        region_name=os.environ["RUNPOD_S3_REGION"],
     )
 
 
@@ -60,7 +66,14 @@ def upload_lora(data: bytes, key: str) -> None:
     """key: the path within the volume, e.g.
     "ComfyUI/models/loras/<variant-id>.safetensors" — same directory
     ComfyUI's LoraLoader node reads from, so nothing further needs to move
-    the file once it's here."""
+    the file once it's here.
+
+    Uses a single PutObject call, capped at 500MB by RunPod's S3-compatible
+    API (https://docs.runpod.io/storage/s3-api) — larger files need
+    multipart upload instead. A single character's LoRA is expected to be
+    well under that, but this isn't enforced here; if ltx-trainer ever
+    produces something larger, put_object will just fail with a clear
+    error rather than silently truncating."""
     client = _client()
     try:
         client.put_object(Bucket=os.environ["RUNPOD_S3_BUCKET"], Key=key, Body=data)
