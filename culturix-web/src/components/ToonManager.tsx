@@ -361,7 +361,14 @@ export default function ToonManager({ brandId, brandName, toons, setToons, scrip
         {toons.map((t) => {
           const script = scriptFor(t.script_id);
           const variant = variantFor(t.character_variant_id);
-          const canGenerate = !!script?.shots?.length && variant?.element_status === "ready";
+          // Matches the backend's own auto-pick in POST .../generate-video:
+          // self-hosted wins when its LoRA is ready, else falls back to
+          // Kling if that's registered instead. Either one is enough to
+          // generate — see CharacterVariantManager.tsx for where each
+          // readiness state actually gets set.
+          const readyProvider: "self_hosted" | "kling_omni" | null =
+            variant?.lora_status === "ready" ? "self_hosted" : variant?.element_status === "ready" ? "kling_omni" : null;
+          const canGenerate = !!script?.shots?.length && !!readyProvider;
           const generating = generatingId === t.id || t.status === "animating";
           const advancedOpen = advancedOpenId === t.id;
           return (
@@ -395,7 +402,14 @@ export default function ToonManager({ brandId, brandName, toons, setToons, scrip
 
               <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 mt-1">
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-semibold text-gray-700">AI video generation</span>
+                  <div>
+                    <span className="text-xs font-semibold text-gray-700">AI video generation</span>
+                    {canGenerate && (
+                      <span className="ml-1.5 text-[10px] text-gray-400">
+                        via {readyProvider === "self_hosted" ? "self-hosted" : "Kling Omni"}
+                      </span>
+                    )}
+                  </div>
                   <button
                     onClick={() => generateVideo(t.id)}
                     disabled={!canGenerate || generating}
@@ -416,14 +430,15 @@ export default function ToonManager({ brandId, brandName, toons, setToons, scrip
                     ) : (
                       <div className="flex-1">
                         <p className="text-xs text-amber-700">
-                          {variantName(t.character_variant_id)} isn&apos;t registered with Kling yet — that&apos;s a
-                          required one-time step before any video can be generated for this character.
+                          {variantName(t.character_variant_id)} isn&apos;t ready for either video path yet — register
+                          it as a Kling character or train its self-hosted visual identity (both in the Characters
+                          tab) before generating.
                         </p>
                         <button
                           onClick={() => onJumpToVariant(t.character_variant_id)}
                           className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 hover:text-amber-900 mt-1"
                         >
-                          Register {variantName(t.character_variant_id)} now <ArrowRight className="h-3 w-3" />
+                          Set up {variantName(t.character_variant_id)} now <ArrowRight className="h-3 w-3" />
                         </button>
                       </div>
                     )}

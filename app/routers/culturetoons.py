@@ -3086,14 +3086,39 @@ def delete_toon(toon_id: str, user_id: str, brand_id: str):
         session.close()
 
 
+def _resolve_script_cast(session, script, toon):
+    from app.models.character_variant import CharacterVariant
+    cast_ids = [str(v) for v in (script.character_variant_ids or [])]
+    if not cast_ids and script.character_variant_id:
+        cast_ids = [str(script.character_variant_id)]
+    if not cast_ids:
+        cast_ids = [str(toon.character_variant_id)]
+    variants_by_id = {
+        str(v.id): v for v in session.query(CharacterVariant).filter(
+            CharacterVariant.id.in_([_uuid.UUID(v) for v in cast_ids])
+        ).all()
+    }
+    return [variants_by_id[vid] for vid in cast_ids if vid in variants_by_id]
+
+
 @router.post("/toons/{toon_id}/generate-video")
 def generate_toon_video(toon_id: str, body: dict, background_tasks: BackgroundTasks):
-    """Backgrounded — Kling Omni multi-shot generation is a heavier version
-    of exactly the scenario app/shopify/reels.py already solved with
-    backgrounding (its Kling call runs up to ~6 min); running this
-    synchronously would risk any HTTP gateway timeout in front of it."""
+    """Backgrounded — both providers' generation calls run well past any
+    HTTP gateway timeout (Kling Omni up to ~6 min, self-hosted's RunPod
+    Serverless call is comparably slow on a cold worker).
+
+    provider ("kling_omni" | "self_hosted") is optional — when omitted,
+    auto-picks self_hosted if the toon's own character variant already has
+    a ready LoRA, else falls back to kling_omni (today's only behavior,
+    unchanged for every variant that hasn't been through Phase 1's LoRA
+    training yet). The Kling readiness check stays exactly as before
+    (the toon's own variant only) — self-hosted's readiness check covers
+    the script's FULL cast instead, since generate_toon_video_selfhosted's
+    resolve_ready_lora requires every cast member to have a trained LoRA
+    even though only the primary one is visually grounded."""
     from app.db import SessionLocal
     from app.services.culturetoon_video import generate_video_for_toon
+    from app.services.culturetoon_selfhosted_video import generate_video_for_toon_selfhosted
 
     user_id, brand_id = body.get("user_id"), body.get("brand_id")
     if not user_id or not brand_id:
@@ -3110,8 +3135,21 @@ def generate_toon_video(toon_id: str, body: dict, background_tasks: BackgroundTa
         variant = session.query(CharacterVariant).filter_by(id=toon.character_variant_id).first()
         if not script or not script.shots:
             raise HTTPException(status_code=400, detail="Toon's script has no shot data — generate/select a shot-structured script first")
-        if not variant or variant.element_status != "ready":
-            raise HTTPException(status_code=400, detail="Character variant is not a ready Kling element — register it first")
+        if not variant:
+            raise HTTPException(status_code=400, detail="Character variant not found")
+
+        provider = body.get("provider") or ("self_hosted" if variant.lora_status == "ready" else "kling_omni")
+        if provider == "self_hosted":
+            cast = _resolve_script_cast(session, script, toon)
+            not_ready = [v.name for v in cast if v.lora_status != "ready"]
+            if not cast or not_ready:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Character(s) not ready for self-hosted generation (no trained LoRA): {', '.join(not_ready) or 'unknown'}",
+                )
+        else:
+            if variant.element_status != "ready":
+                raise HTTPException(status_code=400, detail="Character variant is not a ready Kling element — register it first")
 
         toon.status = "animating"
         toon.generation_error = None
@@ -3119,8 +3157,11 @@ def generate_toon_video(toon_id: str, body: dict, background_tasks: BackgroundTa
     finally:
         session.close()
 
-    background_tasks.add_task(generate_video_for_toon, user_id=user_id, toon_id=toon_id)
-    response = {"status": "generation_started"}
+    if provider == "self_hosted":
+        background_tasks.add_task(generate_video_for_toon_selfhosted, user_id=user_id, toon_id=toon_id)
+    else:
+        background_tasks.add_task(generate_video_for_toon, user_id=user_id, toon_id=toon_id)
+    response = {"status": "generation_started", "provider": provider}
     if budget_warning:
         response["budget_warning"] = budget_warning
     return response

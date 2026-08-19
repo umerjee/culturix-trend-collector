@@ -3,8 +3,7 @@ app/services/culturetoon_video.py's Kling Omni path. Builds one LTX prompt
 from a ToonScript's shots and resolves the cast's trained LoRA, then
 submits the workflow to the RunPod Serverless inference endpoint
 (app/media/runpod_serverless_client.py) — no pod lifecycle to manage here,
-Serverless scales itself. DB writes and error handling live in
-app/services/culturetoon_selfhosted_batch.py, the only caller.
+Serverless scales itself.
 
 Known simplification vs. the Kling Omni path: there's no equivalent to
 Kling's multi-shot DSL (build_kling_prompt) here, so a script's shots are
@@ -14,8 +13,20 @@ generation, so a multi-character script's video is only grounded in the
 PRIMARY (first-listed) cast member's trained identity; the rest are
 described in the prompt text only, not visually locked in the way Kling
 Omni's per-character Elements allow.
+
+Two callers, two different DB-write shapes: app/services/
+culturetoon_selfhosted_batch.py creates a brand-new Toon per approved
+script (the scheduled/pilot-brand path); generate_video_for_toon_selfhosted
+below instead operates on an EXISTING Toon, the interactive "Generate
+video" button's self-hosted branch (app/routers/culturetoons.py's
+generate_toon_video, dispatching here instead of
+culturetoon_video.generate_video_for_toon when the toon's primary cast
+member has a ready LoRA). No QA run here yet (unlike the Kling path) —
+out of scope for wiring the button; QA parity for self-hosted can follow
+separately.
 """
 import logging
+import uuid as _uuid
 from typing import Optional
 
 logger = logging.getLogger("culturix.services.culturetoon_selfhosted_video")
@@ -87,3 +98,112 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
     if use_allocation_retry:
         return runpod_serverless_client.run_inference_job_with_allocation_retry(endpoint_id, workflow)
     return runpod_serverless_client.run_inference_job(endpoint_id, workflow)
+
+
+def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
+    """Interactive-button counterpart to culturetoon_video.py's
+    generate_video_for_toon, called the same way (backgrounded from
+    POST /toons/{id}/generate-video) but against the self-hosted path.
+    Owns the whole existing-Toon DB-write lifecycle itself, unlike
+    generate_toon_video_selfhosted() above which just returns bytes —
+    every call here is a single ad-hoc click, not a batch window, so it
+    always uses the allocation-retry client (a cold Serverless endpoint
+    can't be assumed warm the way the batch runner can assume for jobs
+    after its own first one)."""
+    from app.db import SessionLocal
+    from app.models.toon import Toon
+    from app.models.toon_script import ToonScript
+    from app.models.character_variant import CharacterVariant
+    from app.media import storage, runpod_serverless_client
+    from app.services.culturetoon_usage import record_usage, estimate_selfhosted_video_cost
+    import os
+
+    session = SessionLocal()
+    toon = None
+    duration = 0
+    try:
+        toon = session.query(Toon).filter_by(id=_uuid.UUID(str(toon_id))).first()
+        if not toon:
+            return
+
+        script = session.query(ToonScript).filter_by(id=toon.script_id).first()
+        if not script:
+            raise ValueError("Toon's script is missing")
+
+        cast_ids = [str(v) for v in (script.character_variant_ids or [])]
+        if not cast_ids and script.character_variant_id:
+            cast_ids = [str(script.character_variant_id)]
+        if not cast_ids:
+            cast_ids = [str(toon.character_variant_id)]
+        variants = session.query(CharacterVariant).filter(
+            CharacterVariant.id.in_([_uuid.UUID(v) for v in cast_ids])
+        ).all()
+        variants_by_id = {str(v.id): v for v in variants}
+        missing = [vid for vid in cast_ids if vid not in variants_by_id]
+        if missing:
+            raise ValueError(f"Character variant(s) not found: {missing}")
+        # Preserve script cast order (resolve_ready_lora treats index 0 as
+        # primary/visually-grounded) rather than whatever order the DB
+        # query happened to return.
+        variants = [variants_by_id[vid] for vid in cast_ids]
+
+        endpoint_id = os.getenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "")
+        if not endpoint_id:
+            raise ValueError("RUNPOD_SERVERLESS_ENDPOINT_ID is not configured")
+
+        toon.status = "animating"
+        toon.generation_error = None
+        toon.video_provider = "self_hosted"
+        session.commit()
+
+        duration = (
+            script.total_duration_seconds
+            or sum(s.get("duration_seconds", 0) for s in (script.shots or []))
+            or 5
+        )
+        video_bytes = generate_toon_video_selfhosted(
+            script, variants, endpoint_id, duration_seconds=duration, use_allocation_retry=True,
+        )
+
+        video_url = storage.upload(
+            video_bytes, f"culturetoons/{toon.brand_id}/toons/{toon.id}/raw-{_uuid.uuid4().hex[:8]}.mp4", "video/mp4",
+        )
+        # Same "archive, don't discard" fix as the Kling path — regenerating
+        # an existing toon (only possible from the interactive button, the
+        # batch runner never regenerates) used to silently lose whatever
+        # take was there before.
+        previous_url = toon.final_video_url or toon.raw_video_url
+        if previous_url:
+            toon.previous_video_urls = (toon.previous_video_urls or []) + [previous_url]
+        toon.raw_video_url = video_url
+        toon.final_video_url = video_url
+        toon.status = "ready"
+        session.commit()
+        logger.info("Self-hosted video generation complete for toon %s", toon_id)
+
+    except (ValueError, SelfHostedVideoGenerationError, runpod_serverless_client.RunPodServerlessError, TimeoutError) as exc:
+        session.rollback()
+        if toon:
+            toon.status = "failed"
+            toon.generation_error = str(exc)[:2000]
+            session.commit()
+        logger.warning("Self-hosted generation failed for toon %s: %s", toon_id, exc)
+    except Exception as exc:
+        session.rollback()
+        if toon:
+            toon.status = "failed"
+            toon.generation_error = f"Unexpected error: {exc}"[:2000]
+            session.commit()
+        logger.exception("Self-hosted generation failed unexpectedly for toon %s", toon_id)
+    finally:
+        if toon:
+            # Recorded regardless of outcome, same reasoning as the batch
+            # runner's own record_usage call — a failed generation still
+            # burns GPU time.
+            record_usage(
+                session, user_id=user_id, brand_id=toon.brand_id, toon_id=toon.id,
+                provider="runpod_ltx", generation_type="toon_video_selfhosted",
+                output_units=int(duration), cost_usd=estimate_selfhosted_video_cost(duration),
+            )
+            session.commit()
+        session.close()

@@ -1717,6 +1717,59 @@ class TestToons:
             )
         assert exc_info.value.status_code == 400
 
+    def test_generate_video_auto_picks_selfhosted_when_lora_ready(self, db, user_id, brand_and_character, mocker):
+        brand, _character, variant = brand_and_character
+        session = db()
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        variant_row.lora_status = "ready"
+        session.commit()
+        session.close()
+        script = culturetoons.create_script({"user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"]})
+        session = db()
+        script_row = session.query(ToonScript).filter_by(id=uuid.UUID(script["id"])).first()
+        script_row.shots = [{"shot_number": 1, "duration_seconds": 4, "action": "waves", "expression": "Happy", "dialogue": None}]
+        session.commit()
+        session.close()
+        toon = culturetoons.create_toon({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_variant_id": variant["id"], "script_id": script["id"],
+        })
+
+        mock_selfhosted = mocker.patch("app.services.culturetoon_selfhosted_video.generate_video_for_toon_selfhosted")
+        bg = BackgroundTasks()
+        result = culturetoons.generate_toon_video(toon["id"], {"user_id": user_id, "brand_id": brand["id"]}, bg)
+        assert result["provider"] == "self_hosted"
+        # add_task only queues the call — BackgroundTasks doesn't run it
+        # synchronously — so check which callable got queued rather than
+        # whether the mock was invoked.
+        assert len(bg.tasks) == 1
+        assert bg.tasks[0].func is mock_selfhosted
+
+    def test_generate_video_self_hosted_requires_ready_lora_for_whole_cast(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        session = db()
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        variant_row.lora_status = "none"
+        session.commit()
+        session.close()
+        script = culturetoons.create_script({"user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"]})
+        session = db()
+        script_row = session.query(ToonScript).filter_by(id=uuid.UUID(script["id"])).first()
+        script_row.shots = [{"shot_number": 1, "duration_seconds": 4, "action": "waves", "expression": "Happy", "dialogue": None}]
+        session.commit()
+        session.close()
+        toon = culturetoons.create_toon({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_variant_id": variant["id"], "script_id": script["id"],
+        })
+
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_toon_video(
+                toon["id"], {"user_id": user_id, "brand_id": brand["id"], "provider": "self_hosted"}, BackgroundTasks(),
+            )
+        assert exc_info.value.status_code == 400
+        assert "trained LoRA" in exc_info.value.detail
+
 
 class TestPublishToon:
     def _make_ready_toon(self, user_id, brand_id, variant_id):
