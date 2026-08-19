@@ -44,12 +44,17 @@ RUN pip install --upgrade comfy-kitchen
 # that file's own header) so ComfyUI picks up the LTX checkpoint/LoRA/text
 # encoder from the attached Network Volume instead of expecting them baked
 # into the image.
-COPY extra_model_paths.yaml /comfyui/extra_model_paths.yaml
+#
+# Paths below are repo-root-relative, not relative to this Dockerfile's own
+# folder — RunPod's "deploy from a GitHub repository" build only takes a
+# single Dockerfile-path field (no separate build-context field), so it
+# builds with the whole repo as context rather than just this directory.
+COPY deploy/runpod_serverless/extra_model_paths.yaml /comfyui/extra_model_paths.yaml
 
 # Replaces the base image's own /handler.py (image-only outputs) with ours
 # (video/gif-aware, matches app/media/runpod_serverless_client.py's
 # existing video_base64 contract).
-COPY handler.py /handler.py
+COPY deploy/runpod_serverless/handler.py /handler.py
 
 # CMD is inherited from the base image (/start.sh — launches ComfyUI in the
 # background on 127.0.0.1:8188, then execs /handler.py in the foreground).
