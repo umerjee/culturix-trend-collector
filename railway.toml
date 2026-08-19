@@ -4,7 +4,15 @@ builder = "nixpacks"
 [deploy]
 startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/health"
-healthcheckTimeout = 30
+# Measured live 2026-08-19: real startup (the lifespan()-run ALTER TABLE
+# migration list, now dozens of statements accumulated over the project's
+# life, each a real round-trip to the Supabase-hosted Postgres) takes
+# 133s end to end. The prior 30s value meant EVERY deploy was failing its
+# health check regardless of whether the actual code changed anything —
+# confirmed by running the exact lifespan() the container runs against the
+# real database directly and timing it. 300s leaves real margin above the
+# measured figure rather than just clearing it exactly.
+healthcheckTimeout = 300
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
 
