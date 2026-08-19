@@ -38,18 +38,22 @@ class SelfHostedVideoGenerationError(Exception):
 
 def build_prompt_from_script(script) -> str:
     """script: a ToonScript ORM object (shots/hook_line already populated).
-    Folds hook_line + each shot's action/dialogue into one descriptive
-    prompt string for a single continuous LTX generation."""
+    Folds hook_line + each shot's visual/action/dialogue into one
+    descriptive prompt string for a single continuous LTX generation."""
     parts = []
     if script.hook_line:
         parts.append(script.hook_line.strip())
     for shot in script.shots or []:
+        visual = (shot.get("visual") or "").strip()
         action = (shot.get("action") or "").strip()
         dialogue = (shot.get("dialogue") or "").strip()
+        delivery = (shot.get("dialogue_delivery") or "").strip()
+        if visual:
+            parts.append(visual)
         if action:
             parts.append(action)
         if dialogue:
-            parts.append(f'saying "{dialogue}"')
+            parts.append(f'saying "{dialogue}"' + (f" ({delivery} delivery)" if delivery else ""))
     return ". ".join(p for p in parts if p) or "A character reacts to their day."
 
 

@@ -697,9 +697,17 @@ export const TONE_OPTIONS = ["funny", "dramatic", "satiric", "sad", "wholesome",
 export interface ToonScriptShot {
   shot_number: number;
   duration_seconds: number;
+  // Staging/props/positioning — separate from `action` (the character's
+  // own physical performance) so a shot can be genuinely specific about
+  // both instead of one vague merged description. Optional/absent on
+  // scripts generated before this field existed.
+  visual?: string | null;
   action: string;
   expression: (typeof EXPRESSION_NAMES)[number] | null;
   dialogue: string | null;
+  // Short delivery-style tag (e.g. "Loud & Hyped", "Deadpan / Robotic") —
+  // null/absent when dialogue is null.
+  dialogue_delivery?: string | null;
   speaker_variant_id?: string | null;
 }
 

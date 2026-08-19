@@ -380,20 +380,45 @@ social video, grounded in the {source_type} below. The tone must be: {tone}.
 Aim for around {num_shots} shots totaling about {target_duration_seconds} seconds, though you
 may adjust within the hard limits below if it better serves the joke.
 
+Comedy craft — the single biggest thing separating a flat skit from a genuinely funny one:
+- SPECIFICITY over generality. Never write a generic statement a real person might mildly
+  say ("we celebrate with a big feast") — write the hyper-specific, concrete version instead
+  (named props, exact numbers, absurd particulars: "a 500-person feast, 4 days of Bollywood
+  dancing, and 12 aunties fighting over who holds him first"). If a line could apply to any
+  character in any skit, rewrite it until it could only be THIS character.
+- ESCALATE, don't parallel. Each character's beat should top the one before it, not just add
+  a same-size data point next to it — the skit should feel like it's building to something,
+  not listing options.
+- COMMIT to the bit. Push each character's reaction to its absurd logical extreme rather than
+  a safe, believable, "wholesome" version of it — even skits toned "wholesome" or "sad" should
+  still be built from vivid, specific, committed beats rather than generic ones.
+- Use the cast's personality/culture/relationship context above aggressively, not just as
+  flavor text — a character with an established trait should take that trait to a comedic
+  extreme, not just gently reference it.
+
 Requirements:
 - Between {MIN_SHOTS} and {MAX_SHOTS} shots. shot_number must be 1, 2, 3... with no gaps.
 - Each shot's duration_seconds is a whole number >= 1. The SUM of all shots'
   duration_seconds must be between {MIN_TOTAL_SECONDS} and {MAX_TOTAL_SECONDS} (hard limits).
-- "action" describes what the character visually does in that shot (max ~20 words).
+- "visual" describes the staging: props, environment, positioning, what's physically in frame
+  (max ~20 words) — e.g. "holding a massive drum, confetti mid-air, a family tree scroll unrolled
+  across the floor," not a vague scene description.
+- "action" describes the character's specific physical performance/movement in that shot (max
+  ~15 words) — a concrete, exaggerated physical beat (e.g. "sweating, dancing manically" or
+  "aggressively taps a stopwatch"), not a generic verb like "gestures" or "reacts."
 - "expression" is one of exactly these values, or null if not relevant: {EXPRESSION_NAMES}.
 - "dialogue" is what the character says out loud in that shot, or null for a
-  silent/reaction-only beat.
+  silent/reaction-only beat. Give it real voice — specific, escalating, in-character, not a
+  generic informative sentence.
+- "dialogue_delivery" is a short (2-4 word) delivery-style tag for how the line is performed
+  (e.g. "Loud & Hyped", "Deadpan / Robotic", "Whispered, intense") — null when dialogue is null.
 - hook_line is a punchy, stand-alone opening line/on-screen text summarizing the skit (max 15 words).{speaker_field}
 
 Return ONLY valid JSON with exactly these keys:
 - hook_line: string
 - shots: array of objects, each with exactly: shot_number (int), duration_seconds (int),
-  action (string), expression (string or null), dialogue (string or null){speaker_key}
+  visual (string), action (string), expression (string or null), dialogue (string or null),
+  dialogue_delivery (string or null){speaker_key}
 
 Return ONLY the JSON object, no other text."""
 
@@ -603,6 +628,9 @@ def build_kling_prompt(shots: list, element_names) -> str:
         element_name = element_map.get(speaker_variant_id, default_element) if element_map else default_element
 
         parts = [f"@{element_name}"]
+        visual = (shot.get("visual") or "").strip()
+        if visual:
+            parts.append(visual)
         action = (shot.get("action") or "").strip()
         if action:
             parts.append(action)
@@ -611,7 +639,8 @@ def build_kling_prompt(shots: list, element_names) -> str:
             parts.append(f"{expression.lower()} expression")
         dialogue = shot.get("dialogue")
         if dialogue:
-            parts.append(f'saying "{dialogue}"')
+            delivery = (shot.get("dialogue_delivery") or "").strip()
+            parts.append(f'saying "{dialogue}"' + (f" ({delivery} delivery)" if delivery else ""))
 
         text = ", ".join(parts) + "."
         if len(text) > _MAX_SHOT_PROMPT_CHARS:

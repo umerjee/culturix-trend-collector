@@ -777,16 +777,30 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
               {s.dialogue && <p className="text-sm text-gray-600 mt-1">{s.dialogue}</p>}
               {s.scene_direction && <p className="text-xs text-gray-400 mt-1 italic">{s.scene_direction}</p>}
               {s.shots && s.shots.length > 0 && (
-                <ol className="mt-2 space-y-1">
+                <ol className="mt-2 space-y-2">
                   {s.shots.map((shot) => (
                     <li key={shot.shot_number} className="text-xs text-gray-600">
-                      <span className="text-gray-400">Shot {shot.shot_number} ({shot.duration_seconds}s):</span>{" "}
-                      {(s.character_variant_ids?.length ?? 0) > 1 && shot.speaker_variant_id && (
-                        <span className="font-medium text-gray-700">{variantName(shot.speaker_variant_id)}: </span>
+                      <span className="text-gray-400">
+                        Shot {shot.shot_number} ({shot.duration_seconds}s)
+                        {(s.character_variant_ids?.length ?? 0) > 1 && shot.speaker_variant_id && (
+                          <> — <span className="font-medium text-gray-700">{variantName(shot.speaker_variant_id)}</span></>
+                        )}
+                      </span>
+                      {shot.visual && (
+                        <p className="mt-0.5"><span className="text-gray-400">Visual:</span> {shot.visual}</p>
                       )}
-                      {shot.action}
-                      {shot.expression && <span className="text-gray-400"> · {shot.expression}</span>}
-                      {shot.dialogue && <span> — &quot;{shot.dialogue}&quot;</span>}
+                      <p className="mt-0.5">
+                        <span className="text-gray-400">Action:</span> {shot.action}
+                        {shot.expression && <span className="text-gray-400"> · {shot.expression}</span>}
+                      </p>
+                      {shot.dialogue && (
+                        <p className="mt-0.5">
+                          <span className="text-gray-400">
+                            Dialogue{shot.dialogue_delivery ? ` (${shot.dialogue_delivery})` : ""}:
+                          </span>{" "}
+                          &quot;{shot.dialogue}&quot;
+                        </p>
+                      )}
                     </li>
                   ))}
                 </ol>

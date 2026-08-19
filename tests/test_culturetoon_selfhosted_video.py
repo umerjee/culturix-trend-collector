@@ -53,6 +53,19 @@ class TestBuildPromptFromScript:
         assert 'saying "You didn\'t eat?!"' in prompt
         assert "already reaching for a pan" in prompt
 
+    def test_includes_visual_and_dialogue_delivery_when_present(self, mocker):
+        script = _script(
+            mocker, hook_line="H",
+            shots=[{
+                "visual": "holding a massive drum, confetti mid-air",
+                "action": "dancing manically", "dialogue": "500-person feast!",
+                "dialogue_delivery": "Loud & Hyped",
+            }],
+        )
+        prompt = build_prompt_from_script(script)
+        assert "holding a massive drum, confetti mid-air" in prompt
+        assert 'saying "500-person feast!" (Loud & Hyped delivery)' in prompt
+
     def test_no_content_falls_back_to_generic_prompt(self, mocker):
         script = _script(mocker, hook_line=None, shots=[])
         assert build_prompt_from_script(script) == "A character reacts to their day."

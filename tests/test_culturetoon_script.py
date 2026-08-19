@@ -141,6 +141,26 @@ class TestGenerateToonScript:
         assert "do not invent any other" in sent_prompt.lower()
         assert "speaker_name" in sent_prompt
 
+    def test_prompt_pushes_toward_specific_escalating_comedy(self, mocker):
+        # Confirmed live: with no exaggeration/specificity direction, output
+        # came back mild ("we just... sleep. A lot.") instead of committed,
+        # escalating, hyper-specific comedy. These directives — and the new
+        # visual/dialogue_delivery schema fields — are what fix that.
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        variant = mocker.Mock(); variant.name = "Kumar"; variant.description = "loud"; variant.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(cluster, variants=[variant], tone="funny")
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"].lower()
+        assert "specificity" in sent_prompt
+        assert "escalat" in sent_prompt
+        assert "commit" in sent_prompt
+        assert '"visual"' in sent_prompt
+        assert '"dialogue_delivery"' in sent_prompt
+        assert "visual (string), action (string)" in sent_prompt
+
     def test_multiple_variants_maps_speaker_name_to_speaker_variant_id(self, mocker):
         from app.models.cluster import Cluster
         import uuid as _uuid
@@ -431,6 +451,23 @@ class TestBuildKlingPrompt:
         shots = [{"shot_number": 1, "duration_seconds": 20, "action": "x", "expression": None, "dialogue": None}]
         with pytest.raises(ToonScriptGenerationError, match="between 3 and 15"):
             build_kling_prompt(shots, "Mom")
+
+    def test_visual_and_dialogue_delivery_included_when_present(self):
+        shots = [{
+            "shot_number": 1, "duration_seconds": 4,
+            "visual": "holding a massive drum, confetti mid-air",
+            "action": "dancing manically", "expression": "Happy",
+            "dialogue": "500-person feast!", "dialogue_delivery": "Loud & Hyped",
+        }]
+        prompt = build_kling_prompt(shots, "Kumar")
+        assert "holding a massive drum, confetti mid-air" in prompt
+        assert "dancing manically" in prompt
+        assert 'saying "500-person feast!" (Loud & Hyped delivery)' in prompt
+
+    def test_visual_and_dialogue_delivery_optional(self):
+        # Scripts generated before these fields existed shouldn't break.
+        prompt = build_kling_prompt(_VALID_SHOTS, "Mom")
+        assert "delivery)" not in prompt
 
     def test_dialogue_free_shot_omits_saying_clause(self):
         shots = [{"shot_number": 1, "duration_seconds": 5, "action": "waves", "expression": None, "dialogue": None}]
