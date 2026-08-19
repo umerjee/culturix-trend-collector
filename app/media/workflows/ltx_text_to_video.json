@@ -41,6 +41,11 @@
   "8": {
     "class_type": "SaveVideo",
     "_meta": { "title": "Output" },
-    "inputs": { "images": ["7", 0], "fps": 24, "filename_prefix": "culturix_toon" }
+    "inputs": { "video": ["9", 0], "filename_prefix": "culturix_toon", "format": "mp4", "codec": "h264" }
+  },
+  "9": {
+    "class_type": "CreateVideo",
+    "_meta": { "title": "Mux frames into a VIDEO object (fps injected by ltx_workflow.py, kept in sync with EmptyLTXVLatentVideo's frame count)" },
+    "inputs": { "images": ["7", 0], "fps": 24 }
   }
 }

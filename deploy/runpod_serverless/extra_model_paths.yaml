@@ -1,10 +1,18 @@
 # Extends the base runpod/worker-comfyui image's own extra_model_paths.yaml
 # (which is missing text_encoders — LTX-2's Gemma text encoder needs it,
 # confirmed via the live pod validation, where the model landed in
-# ComfyUI/models/text_encoders/). base_path matches RunPod's documented
-# Serverless Network Volume mount point.
+# ComfyUI/models/text_encoders/). base_path is the Serverless Network
+# Volume mount point (/runpod-volume, RunPod-documented and confirmed live
+# in the console) PLUS a ComfyUI/ prefix — confirmed live 2026-08-19 via a
+# real S3 listing of the volume that everything (checkpoints, text
+# encoders) actually landed under ComfyUI/models/..., matching the same
+# convention app/services/culturetoon_lora.py already uses for LoRA
+# uploads (_VOLUME_LORA_KEY_PREFIX = "ComfyUI/models/loras"). An earlier
+# version of this file used a bare /runpod-volume base_path with no
+# ComfyUI/ prefix, which meant ComfyUI's model dropdowns were always empty
+# no matter what was actually on the volume.
 runpod_worker_comfy:
-  base_path: /runpod-volume
+  base_path: /runpod-volume/ComfyUI
   checkpoints: models/checkpoints/
   clip: models/clip/
   clip_vision: models/clip_vision/
