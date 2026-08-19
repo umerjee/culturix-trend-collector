@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -15,6 +16,7 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
   if (!brandId) return NextResponse.json({ detail: "brand_id is required" }, { status: 400 });
 
   const res = await fetch(`${RAILWAY}/api/culturetoons/relationship-events/${params.id}?user_id=${user.id}&brand_id=${brandId}`, {
+    headers: internalApiHeaders(),
     method: "DELETE",
     signal: AbortSignal.timeout(15000),
   });

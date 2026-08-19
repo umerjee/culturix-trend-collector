@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -13,6 +14,7 @@ export async function POST(req: Request) {
 
   const { content_post_id } = await req.json();
   const res = await fetch(`${RAILWAY}/api/content-posts/${content_post_id}/refresh`, {
+    headers: internalApiHeaders(),
     method: "POST",
     signal: AbortSignal.timeout(15000),
   });

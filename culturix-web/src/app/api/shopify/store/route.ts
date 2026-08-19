@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -11,6 +12,7 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const res = await fetch(`${RAILWAY}/api/shopify/store?user_id=${user.id}`, {
+    headers: internalApiHeaders(),
     cache: "no-store",
     signal: AbortSignal.timeout(15000),
   });

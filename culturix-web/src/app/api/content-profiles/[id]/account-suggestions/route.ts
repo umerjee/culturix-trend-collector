@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -13,7 +14,7 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
 
   const res = await fetch(
     `${RAILWAY}/users/${user.id}/content-profiles/${params.id}/account-suggestions`,
-    { method: "POST" }
+    { headers: internalApiHeaders(), method: "POST" }
   );
   const data = await res.json().catch(() => ({}));
   return NextResponse.json(data, { status: res.status });

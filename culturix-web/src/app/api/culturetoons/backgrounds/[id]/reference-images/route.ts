@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -22,6 +23,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   forward.set("file", file);
 
   const res = await fetch(`${RAILWAY}/api/culturetoons/backgrounds/${params.id}/reference-images`, {
+    headers: internalApiHeaders(),
     method: "POST",
     body: forward,
     signal: AbortSignal.timeout(30000),
@@ -43,6 +45,7 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
 
   const qs = new URLSearchParams({ user_id: user.id, brand_id: brandId, image_url: imageUrl });
   const res = await fetch(`${RAILWAY}/api/culturetoons/backgrounds/${params.id}/reference-images?${qs.toString()}`, {
+    headers: internalApiHeaders(),
     method: "DELETE",
     signal: AbortSignal.timeout(15000),
   });

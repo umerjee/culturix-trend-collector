@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -15,7 +16,7 @@ export async function POST(req: Request) {
   const body = await req.json();
   const res = await fetch(`${RAILWAY}/api/generate-idea`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: internalApiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(30000),
   });

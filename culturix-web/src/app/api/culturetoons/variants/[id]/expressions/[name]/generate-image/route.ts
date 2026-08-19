@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -15,7 +16,7 @@ export async function POST(req: Request, { params }: { params: { id: string; nam
     `${RAILWAY}/api/culturetoons/variants/${params.id}/expressions/${encodeURIComponent(params.name)}/generate-image`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: internalApiHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ ...body, user_id: user.id }),
       // LLM/image-generation call — matches the 30000ms convention used for
       // other AI-generation-triggering proxy routes.

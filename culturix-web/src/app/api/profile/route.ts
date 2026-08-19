@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -12,7 +13,7 @@ export async function POST(req: Request) {
 
   const res = await fetch(`${API_URL}/api/users/profile`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: internalApiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ ...body, user_id: user.id }),
   });
 

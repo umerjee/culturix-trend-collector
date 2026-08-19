@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -15,7 +16,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
 
   const res = await fetch(
     `${RAILWAY}/users/${user.id}/content-profiles/${params.id}/persona-advisory`,
-    { cache: "no-store" }
+    { headers: internalApiHeaders(), cache: "no-store" }
   );
   const data = await res.json().catch(() => ({ declining: [], dormant: [] }));
   return NextResponse.json(data, { status: res.status });

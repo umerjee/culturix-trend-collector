@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -13,7 +14,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   const body = await req.json().catch(() => ({}));
   const res = await fetch(`${RAILWAY}/api/culturetoons/scripts/${params.id}/generate-background`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: internalApiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ ...body, user_id: user.id }),
     // AI image generation — matches the 30000ms convention used for other
     // AI-generation-triggering proxy routes.

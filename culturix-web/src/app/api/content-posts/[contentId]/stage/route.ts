@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -18,7 +19,7 @@ export async function GET(
 
   const res = await fetch(
     `${RAILWAY}/api/content-posts/${params.contentId}/stage`,
-    { cache: "no-store", signal: AbortSignal.timeout(10000) }
+    { headers: internalApiHeaders(), cache: "no-store", signal: AbortSignal.timeout(10000) }
   );
   const data = await res.json().catch(() => ({}));
   return NextResponse.json(data, { status: res.status });

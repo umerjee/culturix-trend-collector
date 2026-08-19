@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -16,7 +17,7 @@ export async function POST(req: Request, { params }: { params: { platform: strin
 
   const res = await fetch(
     `${RAILWAY}/api/social/${params.platform}/test?user_id=${user.id}&character_brand_id=${brandId}`,
-    { method: "POST", signal: AbortSignal.timeout(20000) },
+    { headers: internalApiHeaders(), method: "POST", signal: AbortSignal.timeout(20000) },
   );
   const data = await res.json().catch(() => ({ ok: false }));
   return NextResponse.json(data, { status: res.status });

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -33,7 +34,7 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const res = await fetch(`${RAILWAY}/api/culturetoons/episodes`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: internalApiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ ...body, user_id: user.id }),
     signal: AbortSignal.timeout(15000),
   });

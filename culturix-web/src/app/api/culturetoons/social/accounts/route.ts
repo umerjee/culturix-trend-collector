@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 const RAILWAY =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -16,7 +17,7 @@ export async function GET(req: Request) {
 
   const res = await fetch(
     `${RAILWAY}/api/social/accounts?user_id=${user.id}&character_brand_id=${brandId}`,
-    { cache: "no-store", signal: AbortSignal.timeout(15000) },
+    { headers: internalApiHeaders(), cache: "no-store", signal: AbortSignal.timeout(15000) },
   );
   const data = await res.json().catch(() => ([]));
   return NextResponse.json(data, { status: res.status });
