@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check, Target, Pencil } from "lucide-react";
+import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check, Target, Pencil, Trash2 } from "lucide-react";
 import type { ToonScript, CharacterVariant, ToonBackground } from "@/lib/types";
 import { TONE_OPTIONS, MAX_CHARACTERS_PER_VIDEO, ART_STYLES } from "@/lib/types";
 
@@ -266,8 +266,15 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
         body: JSON.stringify({ brand_id: brandId, status }),
       });
       if (res.ok) {
-        const updated = await res.json();
-        setScripts((prev) => prev.map((s) => (s.id === scriptId ? updated : s)));
+        // Archiving removes the card outright rather than leaving a
+        // permanent "archived"-labeled ghost behind — approving still
+        // updates in place since that script stays relevant.
+        if (status === "archived") {
+          setScripts((prev) => prev.filter((s) => s.id !== scriptId));
+        } else {
+          const updated = await res.json();
+          setScripts((prev) => prev.map((s) => (s.id === scriptId ? updated : s)));
+        }
       } else {
         const data = await res.json().catch(() => ({}));
         setStatusErrors((prev) => ({ ...prev, [scriptId]: typeof data.detail === "string" ? data.detail : `Couldn't update (${res.status})` }));
@@ -555,7 +562,16 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                     </span>
                   )}
                 </span>
-                <span className="text-[10px] uppercase tracking-wide text-gray-400">{s.status}</span>
+                <span className="flex items-center gap-2 shrink-0">
+                  <span className="text-[10px] uppercase tracking-wide text-gray-400">{s.status}</span>
+                  <button
+                    onClick={() => updateScriptStatus(s.id, "archived")}
+                    title="Delete this script"
+                    className="text-gray-300 hover:text-red-500 transition-colors"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </span>
               </div>
               {s.generation_source === "ai_auto" && s.status === "draft" && (
                 <div className="flex gap-2 mb-2">
