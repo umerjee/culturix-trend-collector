@@ -7,7 +7,11 @@ import type { Toon, ToonEpisode, ToonScene, ToonShot, CharacterVariant, ToonScri
 interface Props {
   brandId: string;
   initialEpisodes: ToonEpisode[];
-  initialToons: Toon[];
+  // Lifted up to CultureToonWorkspace and shared with the Toons tab (which
+  // creates/archives toons independently of episode attach/detach) so
+  // neither tab goes stale relative to the other — see that file for why.
+  toons: Toon[];
+  setToons: React.Dispatch<React.SetStateAction<Toon[]>>;
   variants: CharacterVariant[];
   scripts: ToonScript[];
   backgrounds: ToonBackground[];
@@ -28,9 +32,8 @@ const SCENE_STATUS_STYLES: Record<ToonScene["status"], string> = {
   failed: "bg-red-50 text-red-600",
 };
 
-export default function EpisodeManager({ brandId, initialEpisodes, initialToons, variants, scripts, backgrounds }: Props) {
+export default function EpisodeManager({ brandId, initialEpisodes, toons, setToons, variants, scripts, backgrounds }: Props) {
   const [episodes, setEpisodes] = useState(initialEpisodes.filter((e) => e.status !== "archived"));
-  const [toons, setToons] = useState(initialToons);
   const [title, setTitle] = useState("");
   const [creating, setCreating] = useState(false);
   const [createEpisodeError, setCreateEpisodeError] = useState<string | null>(null);

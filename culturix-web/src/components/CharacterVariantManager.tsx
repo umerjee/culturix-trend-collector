@@ -16,7 +16,11 @@ interface Props {
   brandId: string;
   hasElevenLabsKey: boolean;
   initialCharacters: Character[];
-  initialVariants: CharacterVariant[];
+  // Lifted up to CultureToonWorkspace so Scripts/Toons/Episodes tabs see
+  // archives/creates here without a full page reload — see that file for
+  // why. `characters` stays local below since nothing else reads it.
+  variants: CharacterVariant[];
+  setVariants: React.Dispatch<React.SetStateAction<CharacterVariant[]>>;
   // When set (by a blocker elsewhere, e.g. ToonManager's "register this
   // character" prompt), selects this exact variant — and its parent
   // character — on arrival instead of defaulting to the first character.
@@ -30,10 +34,9 @@ function ElementStatusIcon({ status }: { status: CharacterVariant["element_statu
   return null;
 }
 
-export default function CharacterVariantManager({ brandId, hasElevenLabsKey, initialCharacters, initialVariants, focusVariantId }: Props) {
+export default function CharacterVariantManager({ brandId, hasElevenLabsKey, initialCharacters, variants, setVariants, focusVariantId }: Props) {
   const [characters, setCharacters] = useState(initialCharacters);
-  const [variants, setVariants] = useState(initialVariants);
-  const focusedVariant = focusVariantId ? initialVariants.find((v) => v.id === focusVariantId) : null;
+  const focusedVariant = focusVariantId ? variants.find((v) => v.id === focusVariantId) : null;
   const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(
     focusedVariant?.character_id ?? characters[0]?.id ?? null
   );

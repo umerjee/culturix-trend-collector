@@ -48,6 +48,21 @@ export default function CultureToonWorkspace({
   onBrandUpdated,
 }: Props) {
   const [tab, setTab] = useState<Tab>("characters");
+  // Lifted up from whichever tab used to "own" each list (Characters owned
+  // variants, Locations owned backgrounds, Scripts owned scripts, Toons
+  // owned toons) so every tab reads the same live data instead of the
+  // one-time initial* snapshot from page load. Confirmed live: archiving a
+  // character in the Characters tab left it still showing in the Scripts
+  // tab's cast picker until a full page reload, since that tab held its own
+  // frozen copy from mount.
+  const [variants, setVariants] = useState(initialVariants);
+  const [backgrounds, setBackgrounds] = useState(initialBackgrounds);
+  const [scripts, setScripts] = useState(initialScripts);
+  // Excludes archived up front (status flips to "archived" server-side on
+  // delete, row isn't removed) — matches ToonManager's original filter, now
+  // applied once here so an archived toon can't reappear in Episodes'
+  // "attach" picker either.
+  const [toons, setToons] = useState(initialToons.filter((t) => t.status !== "archived"));
   // Set when a blocker elsewhere (e.g. ToonManager's "this character isn't
   // registered yet" warning) wants to land the user directly on the
   // specific character/variant that needs attention, instead of just
@@ -102,18 +117,21 @@ export default function CultureToonWorkspace({
           brandId={brand.id}
           hasElevenLabsKey={brand.has_elevenlabs_key}
           initialCharacters={initialCharacters}
-          initialVariants={initialVariants}
+          variants={variants}
+          setVariants={setVariants}
           focusVariantId={focusVariantId}
         />
       )}
       {tab === "relationships" && <RelationshipManager brandId={brand.id} />}
-      {tab === "backgrounds" && <BackgroundGallery brandId={brand.id} initialBackgrounds={initialBackgrounds} />}
+      {tab === "backgrounds" && <BackgroundGallery brandId={brand.id} backgrounds={backgrounds} setBackgrounds={setBackgrounds} />}
       {tab === "scripts" && (
         <ScriptManager
           brandId={brand.id}
-          initialScripts={initialScripts}
-          variants={initialVariants}
-          backgrounds={initialBackgrounds}
+          scripts={scripts}
+          setScripts={setScripts}
+          variants={variants}
+          backgrounds={backgrounds}
+          setBackgrounds={setBackgrounds}
           initialTrendInterests={brand.trend_interests}
         />
       )}
@@ -121,10 +139,11 @@ export default function CultureToonWorkspace({
         <ToonManager
           brandId={brand.id}
           brandName={brand.name}
-          initialToons={initialToons}
-          scripts={initialScripts}
-          variants={initialVariants}
-          backgrounds={initialBackgrounds}
+          toons={toons}
+          setToons={setToons}
+          scripts={scripts}
+          variants={variants}
+          backgrounds={backgrounds}
           onJumpToVariant={jumpToVariant}
         />
       )}
@@ -132,10 +151,11 @@ export default function CultureToonWorkspace({
         <EpisodeManager
           brandId={brand.id}
           initialEpisodes={initialEpisodes}
-          initialToons={initialToons}
-          variants={initialVariants}
-          scripts={initialScripts}
-          backgrounds={initialBackgrounds}
+          toons={toons}
+          setToons={setToons}
+          variants={variants}
+          scripts={scripts}
+          backgrounds={backgrounds}
         />
       )}
       {tab === "usage" && <UsageBudgetPanel brand={brand} onBrandUpdated={onBrandUpdated} />}

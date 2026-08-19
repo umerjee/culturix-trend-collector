@@ -32,9 +32,15 @@ const DURATION_PRESETS = [
 
 interface Props {
   brandId: string;
-  initialScripts: ToonScript[];
+  // scripts/backgrounds are lifted up to CultureToonWorkspace and shared
+  // read/write with Toons/Episodes (backgrounds also with the Locations
+  // tab) so a script's own "generate a background" doesn't go stale
+  // elsewhere, and vice versa — see that file for why.
+  scripts: ToonScript[];
+  setScripts: React.Dispatch<React.SetStateAction<ToonScript[]>>;
   variants: CharacterVariant[];
   backgrounds: ToonBackground[];
+  setBackgrounds: React.Dispatch<React.SetStateAction<ToonBackground[]>>;
   initialTrendInterests: string | null;
 }
 
@@ -64,9 +70,7 @@ function scriptHasScene(s: ToonScript): boolean {
   return !!s.shots?.some((shot) => shot.action?.trim());
 }
 
-export default function ScriptManager({ brandId, initialScripts, variants, backgrounds, initialTrendInterests }: Props) {
-  const [scripts, setScripts] = useState(initialScripts);
-  const [backgroundsState, setBackgroundsState] = useState(backgrounds);
+export default function ScriptManager({ brandId, scripts, setScripts, variants, backgrounds, setBackgrounds, initialTrendInterests }: Props) {
   const [sourceType, setSourceType] = useState<"persona" | "cluster">("persona");
   const [trendSources, setTrendSources] = useState<{ personas: TrendSource[]; clusters: TrendSource[] }>({
     personas: [], clusters: [],
@@ -218,7 +222,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
   }
 
   function backgroundFor(id: string | null) {
-    return backgroundsState.find((b) => b.id === id) ?? null;
+    return backgrounds.find((b) => b.id === id) ?? null;
   }
 
   async function createManual(e: React.FormEvent) {
@@ -291,7 +295,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
         setBgErrors((prev) => ({ ...prev, [scriptId]: typeof data.detail === "string" ? data.detail : "Background generation failed" }));
         return;
       }
-      setBackgroundsState((prev) => [...prev, data as ToonBackground]);
+      setBackgrounds((prev) => [...prev, data as ToonBackground]);
       setScripts((prev) => prev.map((s) => (s.id === scriptId ? { ...s, background_id: data.id } : s)));
     } finally {
       setGeneratingBgFor(null);

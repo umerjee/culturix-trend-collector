@@ -13,7 +13,11 @@ import InfoTooltip from "@/components/ui/Tooltip";
 interface Props {
   brandId: string;
   brandName: string;
-  initialToons: Toon[];
+  // Lifted up to CultureToonWorkspace and shared with the Episodes tab
+  // (which also attaches/detaches toons to/from episodes) so neither tab
+  // goes stale relative to the other — see that file for why.
+  toons: Toon[];
+  setToons: React.Dispatch<React.SetStateAction<Toon[]>>;
   scripts: ToonScript[];
   variants: CharacterVariant[];
   backgrounds: ToonBackground[];
@@ -44,8 +48,7 @@ const STATUS_BADGE_STYLES: Record<Toon["status"], string> = {
   failed: "bg-red-50 text-red-600",
 };
 
-export default function ToonManager({ brandId, brandName, initialToons, scripts, variants, backgrounds, onJumpToVariant }: Props) {
-  const [toons, setToons] = useState(initialToons.filter((t) => t.status !== "archived"));
+export default function ToonManager({ brandId, brandName, toons, setToons, scripts, variants, backgrounds, onJumpToVariant }: Props) {
   const [variantId, setVariantId] = useState(variants[0]?.id ?? "");
   const [scriptId, setScriptId] = useState(scripts[0]?.id ?? "");
   const [title, setTitle] = useState("");

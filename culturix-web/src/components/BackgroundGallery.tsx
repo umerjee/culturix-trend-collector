@@ -8,13 +8,16 @@ import ImageUploadButton from "@/components/ImageUploadButton";
 
 interface Props {
   brandId: string;
-  initialBackgrounds: ToonBackground[];
+  // Lifted up to CultureToonWorkspace so Scripts/Toons/Episodes tabs (and
+  // backgrounds generated from a script) see the same live list — see that
+  // file for why.
+  backgrounds: ToonBackground[];
+  setBackgrounds: React.Dispatch<React.SetStateAction<ToonBackground[]>>;
 }
 
 const DEFAULT_BACKGROUND_STYLE = "cinematic_cultural";
 
-export default function BackgroundGallery({ brandId, initialBackgrounds }: Props) {
-  const [backgrounds, setBackgrounds] = useState(initialBackgrounds);
+export default function BackgroundGallery({ brandId, backgrounds, setBackgrounds }: Props) {
   const [newName, setNewName] = useState("");
   const [newCountry, setNewCountry] = useState("");
   const [creating, setCreating] = useState(false);
