@@ -12,7 +12,8 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const res = await fetch(`${RAILWAY}/users/${user.id}/content-profiles`, { cache: "no-store" });
+  const res = await fetch(`${RAILWAY}/users/${user.id}/content-profiles`, {
+    headers: internalApiHeaders(), cache: "no-store" });
   const data = await res.json().catch(() => []);
   return NextResponse.json(data, { status: res.status });
 }

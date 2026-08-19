@@ -36,6 +36,7 @@ export async function GET(req: Request) {
   const qs = profileId ? `&content_profile_id=${profileId}` : "";
 
   const res = await fetch(`${RAILWAY}/api/content-posts?user_id=${user.id}${qs}`, {
+    headers: internalApiHeaders(),
     cache: "no-store",
     signal: AbortSignal.timeout(15000),
   });

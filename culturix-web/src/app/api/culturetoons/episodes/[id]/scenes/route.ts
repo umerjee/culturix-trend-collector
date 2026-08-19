@@ -16,6 +16,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   if (!brandId) return NextResponse.json({ detail: "brand_id is required" }, { status: 400 });
 
   const res = await fetch(`${RAILWAY}/api/culturetoons/episodes/${params.id}/scenes?user_id=${user.id}&brand_id=${brandId}`, {
+    headers: internalApiHeaders(),
     cache: "no-store",
     signal: AbortSignal.timeout(15000),
   });

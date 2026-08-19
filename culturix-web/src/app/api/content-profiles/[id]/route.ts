@@ -29,6 +29,7 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const res = await fetch(`${RAILWAY}/users/${user.id}/content-profiles/${params.id}`, {
+    headers: internalApiHeaders(),
     method: "DELETE",
   });
   const data = await res.json().catch(() => ({}));

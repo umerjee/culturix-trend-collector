@@ -12,6 +12,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const res = await fetch(`${RAILWAY}/api/culturetoons/brands/${params.id}?user_id=${user.id}`, {
+    headers: internalApiHeaders(),
     cache: "no-store",
     signal: AbortSignal.timeout(15000),
   });

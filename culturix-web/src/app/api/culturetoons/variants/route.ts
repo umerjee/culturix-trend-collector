@@ -20,6 +20,7 @@ export async function GET(req: Request) {
   if (characterId) qs.set("character_id", characterId);
 
   const res = await fetch(`${RAILWAY}/api/culturetoons/variants?${qs.toString()}`, {
+    headers: internalApiHeaders(),
     cache: "no-store",
     signal: AbortSignal.timeout(15000),
   });

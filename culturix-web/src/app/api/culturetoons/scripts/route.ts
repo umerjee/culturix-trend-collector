@@ -21,6 +21,7 @@ export async function GET(req: Request) {
   if (status) qs.set("status", status);
 
   const res = await fetch(`${RAILWAY}/api/culturetoons/scripts?${qs.toString()}`, {
+    headers: internalApiHeaders(),
     cache: "no-store",
     signal: AbortSignal.timeout(15000),
   });

@@ -17,7 +17,8 @@ export async function GET(req: Request) {
   const activeOnly = searchParams.get("active_only") ?? "true";
   const res = await fetch(
     `${RAILWAY}/api/culturetoons/characters?user_id=${user.id}&brand_id=${brandId}&active_only=${activeOnly}`,
-    { cache: "no-store", signal: AbortSignal.timeout(15000) }
+    {
+    headers: internalApiHeaders(), cache: "no-store", signal: AbortSignal.timeout(15000) }
   );
   const data = await res.json().catch(() => ({}));
   return NextResponse.json(data, { status: res.status });

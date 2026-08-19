@@ -15,6 +15,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   const brandId = searchParams.get("brand_id");
   if (!brandId) return NextResponse.json({ detail: "brand_id is required" }, { status: 400 });
   const res = await fetch(`${RAILWAY}/api/culturetoons/variants/${params.id}/memories?user_id=${user.id}&brand_id=${brandId}`, {
+    headers: internalApiHeaders(),
     cache: "no-store", signal: AbortSignal.timeout(15000),
   });
   const data = await res.json().catch(() => ({}));

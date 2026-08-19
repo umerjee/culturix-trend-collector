@@ -19,6 +19,7 @@ export async function GET(req: Request) {
   const params = new URLSearchParams({ user_id: user.id, brand_id: brandId, active_only: activeOnly });
   if (characterId) params.set("character_id", characterId);
   const res = await fetch(`${RAILWAY}/api/culturetoons/relationships?${params.toString()}`, {
+    headers: internalApiHeaders(),
     cache: "no-store", signal: AbortSignal.timeout(15000),
   });
   const data = await res.json().catch(() => ({}));
