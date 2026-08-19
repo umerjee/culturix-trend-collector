@@ -92,6 +92,7 @@ export default function TrendIdeaCard({
         <button
           onClick={generate}
           disabled={generating}
+          title={plan === "free" ? "Upgrade to Pro to generate ideas for additional trends" : "Generate content ideas"}
           className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-gray-200 py-2 text-xs font-medium text-gray-500 hover:border-blue-300 hover:text-blue-600 transition-colors disabled:opacity-60"
         >
           {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}

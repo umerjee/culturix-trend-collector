@@ -1112,6 +1112,27 @@ def generate_idea_for_trend(body: dict):
             # than let the frontend guess/recompute it.
             return {**existing, "idea_index": existing_index}
 
+        # Plan-tier gating: the 3 proactively-generated ideas per digest
+        # (PROACTIVE_CLUSTER_COUNT in content_strategist.py) are free for
+        # everyone and never reach here — this endpoint only runs for a
+        # cluster with no idea yet, i.e. an on-demand generation, which is
+        # the pro differentiator. user_id comes from the digest row itself
+        # (content.user_id), not a client-supplied field, so this can't be
+        # spoofed by passing someone else's id. Superadmin bypasses, same
+        # convention as request_generate_media below.
+        from app.media.quota import plan_blocks_extra_ideas
+        from app.models.user_profile import UserProfile
+        _superadmin_id = os.getenv("SUPERADMIN_USER_ID", "")
+        if str(content.user_id) != _superadmin_id:
+            owner_profile = session.query(UserProfile).filter_by(user_id=content.user_id).first()
+            owner_plan = (owner_profile.plan or "free") if owner_profile else "free"
+            if plan_blocks_extra_ideas(owner_plan):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Generating ideas for additional trends is a Pro feature. "
+                           "Your 3 daily ideas are already ready above — upgrade to generate more.",
+                )
+
         profile = None
         if content.content_profile_id:
             profile = session.query(ContentProfile).filter_by(id=content.content_profile_id).first()
@@ -2598,11 +2619,22 @@ def admin_collect():
 
 @app.get("/admin/users", dependencies=[Depends(require_admin_secret)])
 def admin_users():
+    """content_ideas_this_month/on_demand_ideas_this_month give admins real
+    visibility into idea-generation usage per user (the same GeneratedContent
+    rows request_generate_media already reads for its own quota check,
+    read here to SHOW usage rather than enforce a limit — on-demand idea
+    generation itself has no monthly cap, only the free/pro gate in
+    generate_idea_for_trend). Reinforces that plan-tier gating is backed by
+    something admins can actually verify happened, not just a client-side
+    claim."""
     from app.db import SessionLocal
     from app.models.user_profile import UserProfile
     from app.models.content_profile import ContentProfile
+    from app.models.generated_content import GeneratedContent
+    from datetime import datetime as _datetime
     session = SessionLocal()
     try:
+        month_start = _datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         users = session.query(UserProfile).order_by(UserProfile.created_at.asc()).all()
         result = []
         for u in users:
@@ -2612,12 +2644,27 @@ def admin_users():
                 .order_by(ContentProfile.created_at.asc())
                 .all()
             )
+            digests_this_month = (
+                session.query(GeneratedContent)
+                .filter(GeneratedContent.user_id == u.user_id, GeneratedContent.generated_at >= month_start)
+                .all()
+            )
+            proactive_ideas = 0
+            on_demand_ideas = 0
+            for digest in digests_this_month:
+                for idea in (digest.content_ideas or []):
+                    if idea.get("source") == "on_demand":
+                        on_demand_ideas += 1
+                    else:
+                        proactive_ideas += 1
             result.append({
                 "id": str(u.id),
                 "user_id": str(u.user_id),
                 "approved": u.approved,
                 "plan": u.plan or "free",
                 "created_at": u.created_at.isoformat() if u.created_at else None,
+                "proactive_ideas_this_month": proactive_ideas,
+                "on_demand_ideas_this_month": on_demand_ideas,
                 "content_profiles": [
                     {
                         "id": str(p.id),

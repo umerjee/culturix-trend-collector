@@ -10,14 +10,14 @@ import { buttonVariants } from "@/components/ui/Button";
 export const metadata = {
   title: "Posting Ideation — Culturix",
   description:
-    "Culturix monitors thousands of daily signals across TikTok, YouTube, Reddit, X, and Xiaohongshu, clusters emerging cultural moments with AI, and delivers 10 personalized content ideas to your dashboard every morning.",
+    "Culturix monitors thousands of daily signals across TikTok, YouTube, Instagram, Reddit, X, Xiaohongshu, and Pinterest, clusters emerging cultural moments with AI, and delivers 3 personalized content ideas to your dashboard every morning — generate more for any trend on Pro.",
 };
 
 const FEATURES = [
   {
     icon: TrendingUp,
     title: "Live signal radar",
-    desc: "We collect thousands of posts per day across TikTok, YouTube, Reddit, X, and Xiaohongshu — tracking engagement velocity, not just volume.",
+    desc: "We collect thousands of posts per day across TikTok, YouTube, Instagram, Reddit, X, Xiaohongshu, and Pinterest — tracking engagement velocity, not just volume.",
   },
   {
     icon: Sparkles,
@@ -39,7 +39,7 @@ const FEATURES = [
 const STEPS = [
   { num: "01", title: "Set your content profile", desc: "Tell us your niche, audience age range, target platforms, tone, and goals. Takes two minutes." },
   { num: "02", title: "We monitor & cluster", desc: "Four times a day our pipeline collects fresh signals and AI-clusters them into named cultural narratives." },
-  { num: "03", title: "Get your daily brief", desc: "By 7 AM you have 10 content ideas — each with hook, caption, CTA, viral angle, posting time, and hashtag strategy." },
+  { num: "03", title: "Get your daily brief", desc: "By 7 AM you have 3 ready-made content ideas for your top trends — each with hook, caption, CTA, viral angle, posting time, and hashtag strategy." },
 ];
 
 export default function PostingIdeationProductPage() {

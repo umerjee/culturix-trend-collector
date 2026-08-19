@@ -93,6 +93,12 @@ export default function UsersPage() {
               {u.plan === "pro" ? "Pro" : "Free"}
             </span>
             <span className="text-xs text-gray-400">{u.content_profiles.length} profile{u.content_profiles.length !== 1 ? "s" : ""}</span>
+            <span
+              className="text-xs text-gray-400"
+              title="Ideas generated this month — proactive (free, 3/day) vs on-demand (pro-gated)"
+            >
+              {u.proactive_ideas_this_month} proactive · {u.on_demand_ideas_this_month} on-demand
+            </span>
             <span className="text-xs text-gray-400 ml-auto">{fmt(u.created_at)}</span>
 
             <div className="flex items-center gap-2">

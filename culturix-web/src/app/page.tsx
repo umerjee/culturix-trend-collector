@@ -210,7 +210,7 @@ const FEATURES = [
   {
     icon: Target,
     title: "Persona-matched ideas",
-    desc: "Each idea is calibrated to your brand: your tone, your audience age range, your platforms. Ten ideas that read like a strategist wrote them for you.",
+    desc: "Each idea is calibrated to your brand: your tone, your audience age range, your platforms. 3 ideas a day that read like a strategist wrote them for you — generate more for any trend on Pro.",
     accent: "text-pink-500",
     bg: "bg-pink-50",
   },
@@ -244,7 +244,7 @@ const STEPS = [
   {
     num: "03",
     title: "Get your daily brief",
-    desc: "By 7 AM you have 10 content ideas — each with hook, caption, CTA, viral angle, best posting time, and hashtag strategy.",
+    desc: "By 7 AM you have 3 ready-made content ideas for your top trends — each with hook, caption, CTA, viral angle, best posting time, and hashtag strategy.",
   },
 ];
 
@@ -254,7 +254,7 @@ const PLANS = [
     price: "$0",
     period: "forever",
     features: [
-      "5 content ideas/day",
+      "3 personalized ideas/day",
       "All 7 platforms",
       "Daily digest",
       "Hook + caption + CTA",
@@ -269,7 +269,7 @@ const PLANS = [
     price: "$29",
     period: "/month",
     features: [
-      "10 content ideas/day",
+      "3 daily ideas + generate ideas for any trend",
       "All 7 platforms",
       "Daily digest by 7 AM",
       "Viral angle + posting time + hashtags",
@@ -369,7 +369,7 @@ export default async function LandingPage() {
               </h1>
               <p className="text-lg text-gray-400 mb-8 leading-relaxed">
                 Culturix monitors thousands of daily signals across TikTok, YouTube, Instagram, Reddit, X, Xiaohongshu, and Pinterest — clusters emerging cultural moments with AI — and delivers{" "}
-                <span className="text-gray-200 font-medium">10 personalized content ideas</span>{" "}
+                <span className="text-gray-200 font-medium">3 personalized content ideas</span>{" "}
                 to your dashboard every morning.
               </p>
 
@@ -415,7 +415,7 @@ export default async function LandingPage() {
           {[
             { val: "7",     label: "platforms monitored" },
             { val: "10k+",  label: "signals per day" },
-            { val: "10",    label: "ideas per brief" },
+            { val: "3",     label: "ideas per brief" },
             { val: "4×",    label: "daily signal refresh" },
           ].map((s) => (
             <div key={s.label}>

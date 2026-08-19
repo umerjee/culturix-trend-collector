@@ -114,6 +114,14 @@ export interface UserRecord {
   approved: boolean;
   plan: "free" | "pro";
   created_at: string | null;
+  // This month's actual idea-generation activity — proactive is the 3
+  // free daily ideas (same for every plan), on_demand is the pro-gated
+  // "Generate" button for additional trends (see
+  // app/media/quota.py::plan_blocks_extra_ideas). Lets an admin verify a
+  // pro user is actually using what they're paying for, or spot a free
+  // user who should be (successfully or not) hitting the gate.
+  proactive_ideas_this_month: number;
+  on_demand_ideas_this_month: number;
   content_profiles: ContentProfileRecord[];
 }
 

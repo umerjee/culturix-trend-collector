@@ -1,4 +1,4 @@
-from app.media.quota import plan_blocks_media, quota_exceeded, MONTHLY_QUOTA
+from app.media.quota import plan_blocks_media, quota_exceeded, plan_blocks_extra_ideas, MONTHLY_QUOTA
 
 
 class TestPlanBlocksMedia:
@@ -34,3 +34,20 @@ class TestQuotaExceeded:
     def test_default_quota_constant_used_when_not_specified(self):
         assert quota_exceeded(month_count=MONTHLY_QUOTA, requested=1) is True
         assert quota_exceeded(month_count=MONTHLY_QUOTA - 1, requested=1) is False
+
+
+class TestPlanBlocksExtraIdeas:
+    def test_free_plan_is_blocked(self):
+        assert plan_blocks_extra_ideas("free") is True
+
+    def test_pro_plan_is_not_blocked(self):
+        assert plan_blocks_extra_ideas("pro") is False
+
+    def test_enterprise_plan_is_not_blocked(self):
+        assert plan_blocks_extra_ideas("enterprise") is False
+
+    def test_none_defaults_to_free_and_is_blocked(self):
+        assert plan_blocks_extra_ideas(None) is True
+
+    def test_empty_string_defaults_to_free_and_is_blocked(self):
+        assert plan_blocks_extra_ideas("") is True
