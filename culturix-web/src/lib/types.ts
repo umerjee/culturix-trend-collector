@@ -285,6 +285,22 @@ export interface AvatarTypePreset {
 // Curated, data-backed starting points for a new trend/avatar profile — each
 // pre-fills the profile form, which stays fully editable before saving.
 // Chosen for durable, evergreen audience interest (not single-event spikes).
+//
+// persona_tags is deliberately [] on every preset here, not a curated guess
+// — GET /personas/active (app/main.py) is the live, momentum-tracked
+// persona catalog, and it's dynamic by design (personas rotate between
+// active/dormant/pending as real trend data moves). Any specific tags
+// hardcoded here would just be today's live personas frozen at write time,
+// silently going stale the next time the catalog rotates (confirmed this
+// had already happened: the tags previously here — "Gen Z", "Main
+// Character", "Quiet Luxury", "Clean Girl", "Soft Life", "That Girl" — all
+// came from the deprecated static PERSONA_TAGS list below, and matched
+// none of the personas actually live in production, so every profile
+// created from a preset silently saved persona_tags that could never match
+// anything in the personalization/relevance-ranking pipeline). Leaving
+// this empty means step 4's PersonaChips picker (which already fetches the
+// live catalog itself) is the only source of truth — the one place that
+// can't go stale, because it always reflects what's active right now.
 export const AVATAR_TYPES: AvatarTypePreset[] = [
   {
     key: "kpop",
@@ -296,7 +312,7 @@ export const AVATAR_TYPES: AvatarTypePreset[] = [
     target_regions: ["Global"],
     content_goals: ["Community building", "Entertainment"],
     content_tones: ["Trendy & playful"],
-    persona_tags: ["Gen Z", "Main Character"],
+    persona_tags: [],
   },
   {
     key: "anime",
@@ -308,7 +324,7 @@ export const AVATAR_TYPES: AvatarTypePreset[] = [
     target_regions: ["Global"],
     content_goals: ["Community building", "Entertainment"],
     content_tones: ["Trendy & playful", "Aesthetic"],
-    persona_tags: ["Gen Z"],
+    persona_tags: [],
   },
   {
     key: "gaming",
@@ -320,7 +336,7 @@ export const AVATAR_TYPES: AvatarTypePreset[] = [
     target_regions: ["Global"],
     content_goals: ["Community building", "Entertainment"],
     content_tones: ["Comedic", "Trendy & playful"],
-    persona_tags: ["Gen Z"],
+    persona_tags: [],
   },
   {
     key: "streetwear",
@@ -332,7 +348,7 @@ export const AVATAR_TYPES: AvatarTypePreset[] = [
     target_regions: ["Global"],
     content_goals: ["Brand awareness", "Culture fit"],
     content_tones: ["Aesthetic", "Trendy & playful"],
-    persona_tags: ["Quiet Luxury", "Main Character"],
+    persona_tags: [],
   },
   {
     key: "beauty",
@@ -344,7 +360,7 @@ export const AVATAR_TYPES: AvatarTypePreset[] = [
     target_regions: ["Global"],
     content_goals: ["Community building", "Brand awareness"],
     content_tones: ["Aesthetic", "Authentic & raw"],
-    persona_tags: ["Clean Girl", "Soft Life", "That Girl"],
+    persona_tags: [],
   },
 ];
 
