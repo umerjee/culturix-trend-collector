@@ -282,6 +282,30 @@ class TestMainCharacter:
         second = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Priya"})
         assert second["is_main"] is False
 
+    def test_explicit_is_main_false_overrides_first_character_default(self, db, user_id):
+        # The bug this closes: a character created first (e.g. a
+        # secondary character built before "Suggest a cast" adds the
+        # actually-intended lead) used to silently lock in as main with
+        # no way to say otherwise at creation time.
+        brand = culturetoons.create_brand({"user_id": user_id})
+        hans = culturetoons.create_character({
+            "user_id": user_id, "brand_id": brand["id"], "name": "Hans", "is_main": False,
+        })
+        assert hans["is_main"] is False
+
+    def test_explicit_is_main_true_on_a_later_character_reassigns_main(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        hans = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Hans"})
+        assert hans["is_main"] is True  # first character, still auto-main by default
+
+        kumar = culturetoons.create_character({
+            "user_id": user_id, "brand_id": brand["id"], "name": "Kumar", "is_main": True,
+        })
+
+        listed = {c["id"]: c["is_main"] for c in culturetoons.list_characters(user_id, brand["id"])}
+        assert listed[hans["id"]] is False
+        assert listed[kumar["id"]] is True
+
     def test_reassigning_main_clears_the_previous_one(self, db, user_id):
         brand = culturetoons.create_brand({"user_id": user_id})
         first = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Kumar"})

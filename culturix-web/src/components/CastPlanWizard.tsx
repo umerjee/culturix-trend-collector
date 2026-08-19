@@ -159,20 +159,23 @@ export default function CastPlanWizard({ brandId, characters, onCreated }: Props
       const includedIndices = draftCharacters
         .map((c, i) => (c.included ? i : -1))
         .filter((i) => i !== -1);
-      if (brandHasNoCharacters) {
-        // The brand's first created character auto-becomes main
-        // server-side (create_character) — order the suggested main
-        // first so that logic lands on the right one.
-        includedIndices.sort((a, b) => (draftCharacters[b].suggested_main ? 1 : 0) - (draftCharacters[a].suggested_main ? 1 : 0));
-      }
-
       const indexToReal = new Map<number, { character: Character; variant: CharacterVariant | null }>();
       for (const index of includedIndices) {
         const draft = draftCharacters[index];
         const res = await fetch("/api/culturetoons/characters", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ brand_id: brandId, name: draft.name.trim(), description: draft.description.trim() || undefined }),
+          body: JSON.stringify({
+            brand_id: brandId, name: draft.name.trim(), description: draft.description.trim() || undefined,
+            // Only ever explicit when this batch is starting a brand's
+            // cast from zero — with an existing cast (and possibly an
+            // existing main character already chosen deliberately), this
+            // stays silent on is_main entirely rather than risk
+            // overriding that choice. See create_character's own
+            // docstring for why is_main is now respected explicitly
+            // instead of purely inferred from creation order.
+            ...(brandHasNoCharacters ? { is_main: draft.suggested_main } : {}),
+          }),
         });
         if (!res.ok) continue;
         const data = await res.json();

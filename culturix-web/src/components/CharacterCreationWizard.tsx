@@ -2,10 +2,8 @@
 
 import { useState } from "react";
 import { Plus, Loader2, Sparkles, X } from "lucide-react";
-import type { Character, CharacterVariant, RelationshipDraft } from "@/lib/types";
-import { RELATIONSHIP_TYPES } from "@/lib/types";
+import type { Character, CharacterVariant, CastRelationshipSuggestion } from "@/lib/types";
 import PersonalityFieldsEditor from "@/components/PersonalityFieldsEditor";
-import { DirectionEditor, EMPTY_DIRECTION, type DirectionDraft } from "@/components/RelationshipManager";
 
 interface Props {
   brandId: string;
@@ -16,20 +14,26 @@ interface Props {
 // Guided one-at-a-time character creation. The brand's first character is
 // framed as the main character's origin story and needs no further review
 // — there's no one else yet to build a relationship against. Every
-// character after that also asks how it relates to the main character,
-// then automatically drafts both its personality and its relationship to
-// the main character for review before anything but the character itself
-// is saved. See CastPlanWizard.tsx for the batch alternative ("describe
-// your whole show at once").
+// character after that automatically drafts both its personality and a
+// relationship with EVERY existing castmate (not just whoever's currently
+// marked main — reuses POST .../relationships/suggest-with-cast, the same
+// batch endpoint RelationshipManager.tsx's own "Suggest with cast" button
+// calls), for review before anything but the character itself is saved.
+// See CastPlanWizard.tsx for the batch alternative ("describe your whole
+// show at once").
 export default function CharacterCreationWizard({ brandId, characters, onCreated }: Props) {
-  const mainCharacter = characters.find((c) => c.is_main) ?? null;
   const isFirstCharacter = characters.length === 0;
 
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<"describe" | "review">("describe");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [relationshipHint, setRelationshipHint] = useState("");
+  // Defaults to true only when there's no existing main character to
+  // displace — otherwise this is an explicit, visible choice rather than
+  // the old silent "first character created wins" rule, which confirmed
+  // live to surprise people (a secondary character created before the
+  // intended lead locked in as main with no way to say otherwise).
+  const [isMain, setIsMain] = useState(isFirstCharacter);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -38,23 +42,17 @@ export default function CharacterCreationWizard({ brandId, characters, onCreated
   const [traits, setTraits] = useState<Record<string, number>>({});
   const [behavioralRules, setBehavioralRules] = useState<string[]>([]);
   const [speechRules, setSpeechRules] = useState<string[]>([]);
-  const [relationshipType, setRelationshipType] = useState("");
-  const [relationshipTypeLabel, setRelationshipTypeLabel] = useState("");
-  const [relationshipDescription, setRelationshipDescription] = useState("");
-  const [comedyChemistry, setComedyChemistry] = useState(5);
-  const [directions, setDirections] = useState<{ a_to_b: DirectionDraft; b_to_a: DirectionDraft }>({
-    a_to_b: { ...EMPTY_DIRECTION }, b_to_a: { ...EMPTY_DIRECTION },
-  });
-  const [newRuleAtoB, setNewRuleAtoB] = useState("");
-  const [newRuleBtoA, setNewRuleBtoA] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [relationshipDrafts, setRelationshipDrafts] = useState<CastRelationshipSuggestion[]>([]);
+  const [savedRelationshipIds, setSavedRelationshipIds] = useState<Set<string>>(new Set());
+  const [savingRelationshipFor, setSavingRelationshipFor] = useState<string | null>(null);
+  const [savingPersonality, setSavingPersonality] = useState(false);
+  const [personalitySaved, setPersonalitySaved] = useState(false);
 
   function reset() {
-    setStep("describe"); setName(""); setDescription(""); setRelationshipHint("");
+    setStep("describe"); setName(""); setDescription(""); setIsMain(isFirstCharacter);
     setError(null); setNewCharacter(null); setNewDefaultVariant(null);
     setTraits({}); setBehavioralRules([]); setSpeechRules([]);
-    setRelationshipType(""); setRelationshipTypeLabel(""); setRelationshipDescription(""); setComedyChemistry(5);
-    setDirections({ a_to_b: { ...EMPTY_DIRECTION }, b_to_a: { ...EMPTY_DIRECTION } });
+    setRelationshipDrafts([]); setSavedRelationshipIds(new Set()); setPersonalitySaved(false);
   }
 
   function close() {
@@ -71,7 +69,9 @@ export default function CharacterCreationWizard({ brandId, characters, onCreated
       const res = await fetch("/api/culturetoons/characters", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brand_id: brandId, name: name.trim(), description: description.trim() || undefined }),
+        body: JSON.stringify({
+          brand_id: brandId, name: name.trim(), description: description.trim() || undefined, is_main: isMain,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -82,7 +82,7 @@ export default function CharacterCreationWizard({ brandId, characters, onCreated
       const createdCharacter = character as Character;
       const createdVariant = (default_variant ?? null) as CharacterVariant | null;
 
-      if (isFirstCharacter || !mainCharacter) {
+      if (isFirstCharacter) {
         onCreated(createdCharacter, createdVariant);
         close();
         return;
@@ -91,26 +91,23 @@ export default function CharacterCreationWizard({ brandId, characters, onCreated
       setNewCharacter(createdCharacter);
       setNewDefaultVariant(createdVariant);
 
-      const [personalityRes, relationshipRes] = await Promise.all([
+      const [personalityRes, relationshipsRes] = await Promise.all([
         fetch(`/api/culturetoons/characters/${createdCharacter.id}/personality/generate`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ brand_id: brandId, hint: "" }),
         }),
-        fetch("/api/culturetoons/relationships/generate", {
+        fetch(`/api/culturetoons/characters/${createdCharacter.id}/relationships/suggest-with-cast`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            brand_id: brandId, character_a_id: mainCharacter.id, character_b_id: createdCharacter.id,
-            hint: relationshipHint.trim() || undefined,
-          }),
+          body: JSON.stringify({ brand_id: brandId }),
         }),
       ]);
-      const [personalityData, relationshipData] = await Promise.all([
-        personalityRes.json().catch(() => ({})), relationshipRes.json().catch(() => ({})),
+      const [personalityData, relationshipsData] = await Promise.all([
+        personalityRes.json().catch(() => ({})), relationshipsRes.json().catch(() => ([])),
       ]);
-      if (!personalityRes.ok || !relationshipRes.ok) {
+      if (!personalityRes.ok || !relationshipsRes.ok) {
         setError(
           (typeof personalityData.detail === "string" && personalityData.detail) ||
-          (typeof relationshipData.detail === "string" && relationshipData.detail) ||
+          (typeof relationshipsData.detail === "string" && relationshipsData.detail) ||
           "AI suggestions failed — you can still fill these in later from the Characters/Relationships tabs."
         );
         setStep("review");
@@ -120,68 +117,63 @@ export default function CharacterCreationWizard({ brandId, characters, onCreated
       setTraits(personalityData.traits ?? {});
       setBehavioralRules(personalityData.behavioral_rules ?? []);
       setSpeechRules(personalityData.speech_rules ?? []);
-
-      const draft = relationshipData as RelationshipDraft;
-      setRelationshipType(draft.relationship_type);
-      setRelationshipTypeLabel(draft.relationship_type_label);
-      setRelationshipDescription(draft.description ?? "");
-      setComedyChemistry(draft.comedy_chemistry);
-      setDirections({
-        a_to_b: {
-          affection_level: draft.a_to_b.affection_level, trust_level: draft.a_to_b.trust_level,
-          conflict_level: draft.a_to_b.conflict_level, perspective_description: draft.a_to_b.perspective_description ?? "",
-          behavior_rules: draft.a_to_b.behavior_rules,
-        },
-        b_to_a: {
-          affection_level: draft.b_to_a.affection_level, trust_level: draft.b_to_a.trust_level,
-          conflict_level: draft.b_to_a.conflict_level, perspective_description: draft.b_to_a.perspective_description ?? "",
-          behavior_rules: draft.b_to_a.behavior_rules,
-        },
-      });
+      setRelationshipDrafts(relationshipsData as CastRelationshipSuggestion[]);
       setStep("review");
     } finally {
       setSubmitting(false);
     }
   }
 
-  function updateDirection(which: "a_to_b" | "b_to_a", patch: Partial<DirectionDraft>) {
-    setDirections((prev) => ({ ...prev, [which]: { ...prev[which], ...patch } }));
-  }
-
-  function skipReview() {
-    if (newCharacter) onCreated(newCharacter, newDefaultVariant);
-    close();
-  }
-
-  async function saveAndFinish() {
-    if (!newCharacter || !mainCharacter) return;
-    setSaving(true);
+  async function savePersonality() {
+    if (!newCharacter) return;
+    setSavingPersonality(true);
     try {
       await fetch(`/api/culturetoons/characters/${newCharacter.id}`, {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ brand_id: brandId, personality: { traits, behavioral_rules: behavioralRules, speech_rules: speechRules } }),
       });
-      const directionPayload = (d: DirectionDraft) => ({
-        affection_level: d.affection_level, trust_level: d.trust_level, conflict_level: d.conflict_level,
-        perspective_description: d.perspective_description.trim() || undefined,
-        behavior_rules: d.behavior_rules,
-      });
+      setPersonalitySaved(true);
+    } finally {
+      setSavingPersonality(false);
+    }
+  }
+
+  async function saveRelationshipDraft(s: CastRelationshipSuggestion) {
+    if ("error" in s) return;
+    setSavingRelationshipFor(s.character_b_id);
+    try {
       await fetch("/api/culturetoons/relationships", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          brand_id: brandId, character_a_id: mainCharacter.id, character_b_id: newCharacter.id,
-          relationship_type: relationshipType || undefined,
-          relationship_type_label: relationshipType === "custom" ? relationshipTypeLabel.trim() : undefined,
-          description: relationshipDescription.trim() || undefined,
-          comedy_chemistry: comedyChemistry,
-          a_to_b: directionPayload(directions.a_to_b), b_to_a: directionPayload(directions.b_to_a),
+          brand_id: brandId,
+          character_a_id: s.character_a_id, character_b_id: s.character_b_id,
+          relationship_type: s.relationship_type,
+          relationship_type_label: s.relationship_type === "custom" ? s.relationship_type_label : undefined,
+          description: s.description ?? undefined,
+          comedy_chemistry: s.comedy_chemistry,
+          a_to_b: s.a_to_b, b_to_a: s.b_to_a,
         }),
       });
-      onCreated(newCharacter, newDefaultVariant);
-      close();
+      setSavedRelationshipIds((prev) => new Set(prev).add(s.character_b_id));
     } finally {
-      setSaving(false);
+      setSavingRelationshipFor(null);
     }
+  }
+
+  async function saveAllAndFinish() {
+    if (!newCharacter) return;
+    if (!personalitySaved) await savePersonality();
+    await Promise.all(
+      relationshipDrafts
+        .filter((s) => !("error" in s) && !savedRelationshipIds.has(s.character_b_id))
+        .map((s) => saveRelationshipDraft(s))
+    );
+    finish();
+  }
+
+  function finish() {
+    if (newCharacter) onCreated(newCharacter, newDefaultVariant);
+    close();
   }
 
   if (!open) {
@@ -223,13 +215,12 @@ export default function CharacterCreationWizard({ brandId, characters, onCreated
             rows={3}
             className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs resize-none focus:outline-none focus:ring-2 focus:ring-blue-200"
           />
-          {!isFirstCharacter && mainCharacter && (
-            <textarea
-              value={relationshipHint} onChange={(e) => setRelationshipHint(e.target.value)}
-              placeholder={`How do they know/relate to ${mainCharacter.name}? (optional, e.g. "younger sibling who's always competing for attention")`}
-              rows={2}
-              className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs resize-none focus:outline-none focus:ring-2 focus:ring-blue-200"
-            />
+          {!isFirstCharacter && (
+            <label className="flex items-center gap-2 text-[11px] text-gray-600">
+              <input type="checkbox" checked={isMain} onChange={(e) => setIsMain(e.target.checked)} />
+              Make this the main character
+              {isMain && <span className="text-amber-600">— replaces whoever currently holds that</span>}
+            </label>
           )}
           {error && <p className="text-[11px] text-red-500">{error}</p>}
           <button
@@ -243,16 +234,30 @@ export default function CharacterCreationWizard({ brandId, characters, onCreated
         </form>
       )}
 
-      {step === "review" && newCharacter && mainCharacter && (
+      {step === "review" && newCharacter && (
         <div className="space-y-4">
           <p className="text-[11px] text-gray-400">
-            {newCharacter.name} has been created. Review the AI-suggested personality and relationship to{" "}
-            {mainCharacter.name} below, then save — or skip and fill these in later.
+            {newCharacter.name} has been created. Review the AI-suggested personality and its relationship with{" "}
+            each existing castmate below, then save what you want — or skip and fill these in later.
           </p>
           {error && <p className="text-[11px] text-red-500">{error}</p>}
 
           <div>
-            <p className="text-xs font-semibold text-gray-700 mb-2">Personality</p>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold text-gray-700">Personality</p>
+              <button
+                type="button"
+                onClick={savePersonality}
+                disabled={savingPersonality || personalitySaved}
+                className={`text-[11px] font-medium rounded-lg px-2.5 py-1 transition-colors ${
+                  personalitySaved
+                    ? "text-green-600 bg-green-50 cursor-default"
+                    : "text-blue-600 border border-blue-200 hover:bg-blue-50 disabled:opacity-60"
+                }`}
+              >
+                {personalitySaved ? "Saved ✓" : savingPersonality ? "Saving…" : "Save personality"}
+              </button>
+            </div>
             <div className="space-y-3">
               <PersonalityFieldsEditor
                 traits={traits} onTraitsChange={setTraits}
@@ -263,72 +268,60 @@ export default function CharacterCreationWizard({ brandId, characters, onCreated
           </div>
 
           <div>
-            <p className="text-xs font-semibold text-gray-700 mb-2">Relationship to {mainCharacter.name}</p>
-            <div className="space-y-2">
-              <div className="flex flex-wrap gap-2 items-center">
-                <select
-                  value={relationshipType} onChange={(e) => setRelationshipType(e.target.value)}
-                  className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
-                >
-                  <option value="">No type set</option>
-                  {Object.entries(RELATIONSHIP_TYPES).map(([key, label]) => (
-                    <option key={key} value={key}>{label}</option>
-                  ))}
-                </select>
-                {relationshipType === "custom" && (
-                  <input
-                    type="text" value={relationshipTypeLabel} onChange={(e) => setRelationshipTypeLabel(e.target.value)}
-                    placeholder="Custom type label"
-                    className="flex-1 min-w-[8rem] rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs"
-                  />
-                )}
-                <label className="flex items-center gap-1.5 text-[11px] text-gray-500">
-                  Comedy chemistry {comedyChemistry}/10
-                  <input type="range" min={0} max={10} value={comedyChemistry} onChange={(e) => setComedyChemistry(parseInt(e.target.value))} className="w-20" />
-                </label>
+            <p className="text-xs font-semibold text-gray-700 mb-2">
+              Relationships with the cast{relationshipDrafts.length === 0 ? " — none yet, this is the first castmate" : ""}
+            </p>
+            {relationshipDrafts.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {relationshipDrafts.map((s) => {
+                  const saved = savedRelationshipIds.has(s.character_b_id);
+                  return (
+                    <div key={s.character_b_id} className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                      <p className="text-xs font-medium text-gray-800">
+                        {newCharacter.name} ↔ {s.character_b_name}
+                      </p>
+                      {"error" in s ? (
+                        <p className="text-[11px] text-red-500 mt-1">{s.error}</p>
+                      ) : (
+                        <>
+                          <p className="text-[11px] text-gray-500 mt-0.5">{s.relationship_type_label}</p>
+                          {s.description && <p className="text-[11px] text-gray-400 mt-1">{s.description}</p>}
+                          <div className="flex items-center justify-between mt-2">
+                            <span className="text-[10px] text-gray-400">Comedy chemistry {s.comedy_chemistry}/10</span>
+                            <button
+                              type="button"
+                              onClick={() => saveRelationshipDraft(s)}
+                              disabled={saved || savingRelationshipFor === s.character_b_id}
+                              className={`text-[11px] font-medium rounded-lg px-2.5 py-1 transition-colors ${
+                                saved
+                                  ? "text-green-600 bg-green-50 cursor-default"
+                                  : "text-blue-600 border border-blue-200 hover:bg-blue-50 disabled:opacity-60"
+                              }`}
+                            >
+                              {saved ? "Saved ✓" : savingRelationshipFor === s.character_b_id ? "Saving…" : "Save"}
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-              <textarea
-                value={relationshipDescription} onChange={(e) => setRelationshipDescription(e.target.value)}
-                rows={2}
-                className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs resize-none"
-              />
-              <div className="flex gap-3 flex-wrap">
-                <DirectionEditor
-                  title={`${mainCharacter.name} → ${newCharacter.name}`}
-                  direction={directions.a_to_b}
-                  onChange={(patch) => updateDirection("a_to_b", patch)}
-                  newRule={newRuleAtoB}
-                  onNewRuleChange={setNewRuleAtoB}
-                  onAddRule={() => { if (newRuleAtoB.trim()) { updateDirection("a_to_b", { behavior_rules: [...directions.a_to_b.behavior_rules, newRuleAtoB.trim()] }); setNewRuleAtoB(""); } }}
-                  onRemoveRule={(i) => updateDirection("a_to_b", { behavior_rules: directions.a_to_b.behavior_rules.filter((_, idx) => idx !== i) })}
-                />
-                <DirectionEditor
-                  title={`${newCharacter.name} → ${mainCharacter.name}`}
-                  direction={directions.b_to_a}
-                  onChange={(patch) => updateDirection("b_to_a", patch)}
-                  newRule={newRuleBtoA}
-                  onNewRuleChange={setNewRuleBtoA}
-                  onAddRule={() => { if (newRuleBtoA.trim()) { updateDirection("b_to_a", { behavior_rules: [...directions.b_to_a.behavior_rules, newRuleBtoA.trim()] }); setNewRuleBtoA(""); } }}
-                  onRemoveRule={(i) => updateDirection("b_to_a", { behavior_rules: directions.b_to_a.behavior_rules.filter((_, idx) => idx !== i) })}
-                />
-              </div>
-            </div>
+            )}
           </div>
 
           <div className="flex gap-2">
             <button
-              onClick={saveAndFinish}
-              disabled={saving}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium px-3 py-1.5 hover:bg-blue-700 transition-colors disabled:opacity-60"
+              onClick={saveAllAndFinish}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium px-3 py-1.5 hover:bg-blue-700 transition-colors"
             >
-              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-              Save personality & relationship
+              Save all & finish
             </button>
             <button
-              onClick={skipReview}
+              onClick={finish}
               className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1.5"
             >
-              Skip — I&apos;ll fill these in later
+              Finish — I&apos;ll fill in the rest later
             </button>
           </div>
         </div>

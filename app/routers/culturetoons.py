@@ -752,14 +752,28 @@ def create_character(body: dict):
         if art_style not in ART_STYLES:
             raise HTTPException(status_code=400, detail=f"Unknown art_style: {art_style}")
         # The brand's first character automatically becomes its main
-        # character — no user action required. Reassignable afterward via
-        # PUT /characters/{id} — see Character.is_main's docstring.
+        # character — no user action required, since there's no one else
+        # yet for "main" to mean anything relative to. Once a brand has a
+        # cast, defaulting every next character to non-main would be the
+        # obviously right call too, EXCEPT the previous version of this
+        # endpoint didn't allow the caller to override that guess at all —
+        # confirmed live to actually happen: a character created first
+        # (before, say, "Suggest a cast" adds the character the creator
+        # actually intended as the lead) silently locked in as main with
+        # no way to declare intent at creation time, only to notice and
+        # fix it afterward via the star button. is_main is now honored
+        # from the request when explicitly provided, falling back to the
+        # first-character default otherwise.
         has_existing_character = session.query(Character.id).filter(
             Character.brand_id == brand.id, Character.is_active.is_(True),
         ).first() is not None
+        is_main = bool(body["is_main"]) if "is_main" in body else not has_existing_character
+        if is_main:
+            # Same at-most-one-main invariant as PUT /characters/{id}.
+            session.query(Character).filter(Character.brand_id == brand.id).update({"is_main": False})
         character = Character(
             brand_id=brand.id, name=body["name"], description=body.get("description"),
-            art_style=art_style, is_main=not has_existing_character,
+            art_style=art_style, is_main=is_main,
         )
         session.add(character)
         session.commit()
