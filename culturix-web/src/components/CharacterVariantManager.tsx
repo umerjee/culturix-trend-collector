@@ -15,10 +15,18 @@ import InfoTooltip from "@/components/ui/Tooltip";
 interface Props {
   brandId: string;
   hasElevenLabsKey: boolean;
-  initialCharacters: Character[];
-  // Lifted up to CultureToonWorkspace so Scripts/Toons/Episodes tabs see
-  // archives/creates here without a full page reload — see that file for
-  // why. `characters` stays local below since nothing else reads it.
+  // Both lifted up to CultureToonWorkspace. `variants` for cross-tab
+  // staleness (Scripts/Toons/Episodes read it too); `characters` for a
+  // different reason — this whole component unmounts/remounts on every
+  // tab switch away and back (conditional rendering in
+  // CultureToonWorkspace), so state owned locally here doesn't survive
+  // that. Confirmed live: AI-generated character portraits vanished after
+  // switching to the Toons tab and back — this component's own
+  // `useState(initialCharacters)` was resetting to the original page-load
+  // snapshot on every remount. See CultureToonWorkspace.tsx for the fuller
+  // explanation.
+  characters: Character[];
+  setCharacters: React.Dispatch<React.SetStateAction<Character[]>>;
   variants: CharacterVariant[];
   setVariants: React.Dispatch<React.SetStateAction<CharacterVariant[]>>;
   // When set (by a blocker elsewhere, e.g. ToonManager's "register this
@@ -34,8 +42,7 @@ function ElementStatusIcon({ status }: { status: CharacterVariant["element_statu
   return null;
 }
 
-export default function CharacterVariantManager({ brandId, hasElevenLabsKey, initialCharacters, variants, setVariants, focusVariantId }: Props) {
-  const [characters, setCharacters] = useState(initialCharacters);
+export default function CharacterVariantManager({ brandId, hasElevenLabsKey, characters, setCharacters, variants, setVariants, focusVariantId }: Props) {
   const focusedVariant = focusVariantId ? variants.find((v) => v.id === focusVariantId) : null;
   const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(
     focusedVariant?.character_id ?? characters[0]?.id ?? null

@@ -55,6 +55,18 @@ export default function CultureToonWorkspace({
   // character in the Characters tab left it still showing in the Scripts
   // tab's cast picker until a full page reload, since that tab held its own
   // frozen copy from mount.
+  //
+  // `characters` is lifted for a DIFFERENT reason than the rest: each tab
+  // below is conditionally rendered ({tab === "x" && <Component/>}), which
+  // fully unmounts the component when you switch away and remounts a fresh
+  // instance when you switch back — any state owned inside that component
+  // resets to whatever prop it was seeded with, discarding anything changed
+  // in between. Confirmed live: a user AI-generated character portraits,
+  // switched to the Toons tab to create a toon, and the portraits were gone
+  // on returning to Characters — CharacterVariantManager's own `characters`
+  // state had reset to the original page-load snapshot. Lifting it here
+  // (a component that's never unmounted by tab switching) fixes that.
+  const [characters, setCharacters] = useState(initialCharacters);
   const [variants, setVariants] = useState(initialVariants);
   const [backgrounds, setBackgrounds] = useState(initialBackgrounds);
   const [scripts, setScripts] = useState(initialScripts);
@@ -116,7 +128,8 @@ export default function CultureToonWorkspace({
         <CharacterVariantManager
           brandId={brand.id}
           hasElevenLabsKey={brand.has_elevenlabs_key}
-          initialCharacters={initialCharacters}
+          characters={characters}
+          setCharacters={setCharacters}
           variants={variants}
           setVariants={setVariants}
           focusVariantId={focusVariantId}
