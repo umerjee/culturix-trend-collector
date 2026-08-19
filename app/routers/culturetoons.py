@@ -375,7 +375,7 @@ def _serialize_script(s) -> dict:
         "id": str(s.id), "brand_id": str(s.brand_id),
         "character_variant_id": str(s.character_variant_id) if s.character_variant_id else None,
         "character_variant_ids": list(s.character_variant_ids) if s.character_variant_ids else [],
-        "source_type": s.source_type, "source_id": s.source_id,
+        "source_type": s.source_type, "source_id": s.source_id, "idea_text": s.idea_text,
         "hook_line": s.hook_line, "dialogue": s.dialogue, "scene_direction": s.scene_direction,
         "tone": s.tone, "shots": s.shots, "total_duration_seconds": s.total_duration_seconds,
         "background_id": str(s.background_id) if s.background_id else None,
@@ -2758,7 +2758,7 @@ def suggest_script_from_idea(body: dict):
             brand_id=brand.id,
             character_variant_id=variants[0].id,
             character_variant_ids=[str(v.id) for v in variants],
-            source_type="idea",
+            source_type="idea", idea_text=idea,
             hook_line=result.get("hook_line"),
             tone=result.get("tone"),
             shots=result.get("shots"),
@@ -2845,6 +2845,101 @@ def delete_script(script_id: str, user_id: str, brand_id: str):
         script.status = "archived"
         session.commit()
         return {"status": "archived"}
+    finally:
+        session.close()
+
+
+@router.post("/scripts/{script_id}/regenerate")
+def regenerate_script(script_id: str, body: dict):
+    """Re-runs AI generation for an existing script and updates it IN
+    PLACE (same id, same row) rather than creating a duplicate — lets a
+    user get a fresh take on a draft they don't like without deleting and
+    re-suggesting by hand. Only works for scripts with a stored AI source
+    to regenerate from: persona/cluster (source_type + source_id, still
+    live) or idea (idea_text). Manual scripts, or idea scripts created
+    before idea_text was tracked, have nothing to regenerate from.
+
+    Known simplification: episode-continuation scripts (generate_toon_
+    script_continuing_episode) also set source_type="idea" and now store
+    idea_text too, but regenerating one here re-runs the PLAIN idea-based
+    generator, not the continuation-aware one — it won't re-ground itself
+    in the episode's prior parts. Flagged rather than silently dropping
+    that context with no trace."""
+    from app.db import SessionLocal
+    from app.models.character_variant import CharacterVariant
+    from app.services.culturetoon_script import (
+        generate_toon_script, generate_toon_script_from_idea, ToonScriptGenerationError, TONE_OPTIONS as _TONES,
+    )
+
+    user_id = body.get("user_id")
+    brand_id = body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+    tone = body.get("tone")
+    if tone is not None and tone not in _TONES:
+        raise HTTPException(status_code=400, detail=f"tone must be one of {_TONES}")
+
+    session = SessionLocal()
+    try:
+        _get_brand_owned(session, brand_id, user_id)
+        script = _get_script_owned(session, script_id, brand_id, user_id)
+
+        cast_ids = list(script.character_variant_ids or ([str(script.character_variant_id)] if script.character_variant_id else []))
+        if not cast_ids:
+            raise HTTPException(status_code=400, detail="Script has no cast to regenerate for")
+        variants_by_id = {
+            str(v.id): v for v in session.query(CharacterVariant).filter(
+                CharacterVariant.id.in_([_uuid.UUID(v) for v in cast_ids])
+            ).all()
+        }
+        variants = [variants_by_id[vid] for vid in cast_ids if vid in variants_by_id]
+        if not variants:
+            raise HTTPException(status_code=400, detail="This script's cast no longer exists")
+
+        effective_tone = tone or script.tone or "funny"
+        num_shots = len(script.shots) if script.shots else 4
+        target_duration_seconds = script.total_duration_seconds or 12
+        character_personalities, relationships, memories, cultures, performance_context = _gather_script_generation_context(
+            session, brand_id, variants, script.idea_text or ""
+        )
+
+        try:
+            if script.source_type in ("persona", "cluster") and script.source_id is not None:
+                source = _fetch_trend_source(session, script.source_type, script.source_id)
+                if not source:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"The {script.source_type} this script was grounded in no longer exists — can't regenerate from it",
+                    )
+                result = generate_toon_script(
+                    source, variants=variants, tone=effective_tone,
+                    num_shots=num_shots, target_duration_seconds=target_duration_seconds,
+                    character_personalities=character_personalities, relationships=relationships,
+                    memories=memories, cultures=cultures, performance_context=performance_context,
+                )
+            elif script.idea_text:
+                result = generate_toon_script_from_idea(
+                    script.idea_text, variants=variants, tone=effective_tone,
+                    num_shots=num_shots, target_duration_seconds=target_duration_seconds,
+                    character_personalities=character_personalities, relationships=relationships,
+                    memories=memories, cultures=cultures, performance_context=performance_context,
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="This script has no stored AI source to regenerate from — edit it directly, or create a new one instead.",
+                )
+        except ToonScriptGenerationError as exc:
+            raise HTTPException(status_code=502, detail=f"Regeneration failed: {exc}")
+
+        script.hook_line = result.get("hook_line")
+        script.tone = result.get("tone")
+        script.shots = result.get("shots")
+        script.total_duration_seconds = result.get("total_duration_seconds")
+        script.status = "draft"
+        session.commit()
+        session.refresh(script)
+        return _serialize_script(script)
     finally:
         session.close()
 
@@ -3427,7 +3522,7 @@ def suggest_next_episode_part(episode_id: str, body: dict):
             brand_id=brand.id,
             character_variant_id=variants[0].id,
             character_variant_ids=[str(v.id) for v in variants],
-            source_type="idea",
+            source_type="idea", idea_text=idea,
             hook_line=result.get("hook_line"),
             tone=result.get("tone"),
             shots=result.get("shots"),

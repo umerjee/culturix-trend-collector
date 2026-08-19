@@ -724,6 +724,11 @@ export interface ToonScript {
   character_variant_ids: string[];
   source_type: "persona" | "cluster" | "idea" | null;
   source_id: number | null;
+  // Only set when source_type is "idea" — the user's own free-text
+  // scenario, stored so the script can be regenerated from the same
+  // premise later. Null for persona/cluster/manual scripts, and for idea
+  // scripts created before this field existed.
+  idea_text: string | null;
   hook_line: string | null;
   dialogue: string | null;
   scene_direction: string | null;

@@ -207,6 +207,9 @@ async def lifespan(_):
             # existing single character_variant_id ("primary speaker"). See
             # ToonScript's docstring / app/services/culturetoon_script.py.
             "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS character_variant_ids TEXT[]",
+            # The user's own free-text idea for source_type="idea" scripts —
+            # see ToonScript.idea_text's docstring.
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS idea_text TEXT",
             # Kling Omni video pipeline state — see app/services/culturetoon_video.py.
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS raw_video_url TEXT",
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS clip_video_urls TEXT[] DEFAULT '{}'",

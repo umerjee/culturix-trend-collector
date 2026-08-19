@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check, Target, Pencil, Trash2, Film } from "lucide-react";
-import type { ToonScript, CharacterVariant, ToonBackground } from "@/lib/types";
-import { TONE_OPTIONS, MAX_CHARACTERS_PER_VIDEO, ART_STYLES } from "@/lib/types";
+import type { ToonScript, ToonScriptShot, CharacterVariant, ToonBackground } from "@/lib/types";
+import { TONE_OPTIONS, MAX_CHARACTERS_PER_VIDEO, ART_STYLES, EXPRESSION_NAMES } from "@/lib/types";
 
 // Backgrounds pick their own rendering style independently of the
 // character's art_style — a background is composited separately at
@@ -94,6 +94,18 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
   const [creatingManual, setCreatingManual] = useState(false);
   const [manualError, setManualError] = useState<string | null>(null);
   const [statusErrors, setStatusErrors] = useState<Record<string, string>>({});
+
+  // Edit-in-place for an existing script's flat fields + shots.
+  const [editingScriptId, setEditingScriptId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<{
+    hook_line: string; dialogue: string; scene_direction: string; shots: ToonScriptShot[] | null;
+  } | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  // Re-run AI generation for an existing script, in place.
+  const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
+  const [regenerateErrors, setRegenerateErrors] = useState<Record<string, string>>({});
 
   const [extraDescByScript, setExtraDescByScript] = useState<Record<string, string>>({});
   const [bgStyleByScript, setBgStyleByScript] = useState<Record<string, string>>({});
@@ -402,6 +414,82 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
       }
     } catch {
       setStatusErrors((prev) => ({ ...prev, [scriptId]: "Network error — check your connection and try again." }));
+    }
+  }
+
+  function startEdit(s: ToonScript) {
+    setEditingScriptId(s.id);
+    setEditDraft({
+      hook_line: s.hook_line ?? "", dialogue: s.dialogue ?? "", scene_direction: s.scene_direction ?? "",
+      shots: s.shots ? s.shots.map((sh) => ({ ...sh })) : null,
+    });
+    setEditError(null);
+  }
+
+  function cancelEdit() {
+    setEditingScriptId(null);
+    setEditDraft(null);
+    setEditError(null);
+  }
+
+  function updateEditShotField(index: number, field: keyof ToonScriptShot, value: string | number | null) {
+    setEditDraft((prev) => {
+      if (!prev?.shots) return prev;
+      const shots = prev.shots.map((sh, i) => (i === index ? { ...sh, [field]: value } : sh));
+      return { ...prev, shots };
+    });
+  }
+
+  async function saveEdit(scriptId: string) {
+    if (!editDraft) return;
+    setSavingEdit(true);
+    setEditError(null);
+    try {
+      const res = await fetch(`/api/culturetoons/scripts/${scriptId}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          brand_id: brandId,
+          hook_line: editDraft.hook_line.trim() || null,
+          dialogue: editDraft.dialogue.trim() || null,
+          scene_direction: editDraft.scene_direction.trim() || null,
+          ...(editDraft.shots ? { shots: editDraft.shots } : {}),
+        }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setScripts((prev) => prev.map((s) => (s.id === scriptId ? updated : s)));
+        setEditingScriptId(null);
+        setEditDraft(null);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setEditError(typeof data.detail === "string" ? data.detail : `Couldn't save (${res.status})`);
+      }
+    } catch {
+      setEditError("Network error — check your connection and try again.");
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  async function regenerateScript(scriptId: string) {
+    setRegeneratingId(scriptId);
+    setRegenerateErrors((prev) => ({ ...prev, [scriptId]: "" }));
+    try {
+      const res = await fetch(`/api/culturetoons/scripts/${scriptId}/regenerate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setScripts((prev) => prev.map((s) => (s.id === scriptId ? updated : s)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setRegenerateErrors((prev) => ({ ...prev, [scriptId]: typeof data.detail === "string" ? data.detail : `Couldn't regenerate (${res.status})` }));
+      }
+    } catch {
+      setRegenerateErrors((prev) => ({ ...prev, [scriptId]: "Network error — check your connection and try again." }));
+    } finally {
+      setRegeneratingId(null);
     }
   }
 
@@ -747,6 +835,23 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                 </span>
                 <span className="flex items-center gap-2 shrink-0">
                   <span className="text-[10px] uppercase tracking-wide text-gray-400">{s.status}</span>
+                  {s.generation_source !== "manual" && (
+                    <button
+                      onClick={() => regenerateScript(s.id)}
+                      disabled={regeneratingId === s.id || editingScriptId === s.id}
+                      title="Regenerate this script with AI, replacing its content"
+                      className="text-gray-300 hover:text-blue-500 transition-colors disabled:opacity-40"
+                    >
+                      {regeneratingId === s.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => (editingScriptId === s.id ? cancelEdit() : startEdit(s))}
+                    title={editingScriptId === s.id ? "Cancel editing" : "Edit this script"}
+                    className="text-gray-300 hover:text-gray-600 transition-colors"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
                   <button
                     onClick={() => updateScriptStatus(s.id, "archived")}
                     title="Delete this script"
@@ -756,6 +861,7 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                   </button>
                 </span>
               </div>
+              {regenerateErrors[s.id] && <p className="text-[11px] text-red-500 mb-2">{regenerateErrors[s.id]}</p>}
               {s.generation_source === "ai_auto" && s.status === "draft" && (
                 <div className="flex gap-2 mb-2">
                   <button
@@ -773,37 +879,131 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                 </div>
               )}
               {statusErrors[s.id] && <p className="text-[11px] text-red-500 mb-2">{statusErrors[s.id]}</p>}
-              {s.hook_line && <p className="text-sm font-medium text-gray-900">&quot;{s.hook_line}&quot;</p>}
-              {s.dialogue && <p className="text-sm text-gray-600 mt-1">{s.dialogue}</p>}
-              {s.scene_direction && <p className="text-xs text-gray-400 mt-1 italic">{s.scene_direction}</p>}
-              {s.shots && s.shots.length > 0 && (
-                <ol className="mt-2 space-y-2">
-                  {s.shots.map((shot) => (
-                    <li key={shot.shot_number} className="text-xs text-gray-600">
-                      <span className="text-gray-400">
-                        Shot {shot.shot_number} ({shot.duration_seconds}s)
-                        {(s.character_variant_ids?.length ?? 0) > 1 && shot.speaker_variant_id && (
-                          <> — <span className="font-medium text-gray-700">{variantName(shot.speaker_variant_id)}</span></>
-                        )}
-                      </span>
-                      {shot.visual && (
-                        <p className="mt-0.5"><span className="text-gray-400">Visual:</span> {shot.visual}</p>
-                      )}
-                      <p className="mt-0.5">
-                        <span className="text-gray-400">Action:</span> {shot.action}
-                        {shot.expression && <span className="text-gray-400"> · {shot.expression}</span>}
-                      </p>
-                      {shot.dialogue && (
-                        <p className="mt-0.5">
+              {editingScriptId === s.id && editDraft ? (
+                <div className="space-y-2 rounded-xl border border-blue-100 bg-blue-50/40 p-3">
+                  <input
+                    type="text" value={editDraft.hook_line}
+                    onChange={(e) => setEditDraft((prev) => (prev ? { ...prev, hook_line: e.target.value } : prev))}
+                    placeholder="Hook line"
+                    className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs"
+                  />
+                  {editDraft.shots === null && (
+                    <>
+                      <textarea
+                        value={editDraft.dialogue}
+                        onChange={(e) => setEditDraft((prev) => (prev ? { ...prev, dialogue: e.target.value } : prev))}
+                        placeholder="Dialogue" rows={2}
+                        className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs resize-none"
+                      />
+                      <textarea
+                        value={editDraft.scene_direction}
+                        onChange={(e) => setEditDraft((prev) => (prev ? { ...prev, scene_direction: e.target.value } : prev))}
+                        placeholder="Scene direction" rows={2}
+                        className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs resize-none"
+                      />
+                    </>
+                  )}
+                  {editDraft.shots && editDraft.shots.length > 0 && (
+                    <div className="space-y-2">
+                      {editDraft.shots.map((shot, i) => (
+                        <div key={shot.shot_number} className="rounded-lg border border-gray-200 bg-white p-2 space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-gray-400 shrink-0">Shot {shot.shot_number}</span>
+                            <input
+                              type="number" min={1} value={shot.duration_seconds}
+                              onChange={(e) => updateEditShotField(i, "duration_seconds", Number(e.target.value) || 1)}
+                              className="w-14 rounded-md border border-gray-200 px-1.5 py-1 text-[11px]"
+                            />
+                            <span className="text-[10px] text-gray-400">s</span>
+                            <select
+                              value={shot.expression ?? ""}
+                              onChange={(e) => updateEditShotField(i, "expression", e.target.value || null)}
+                              className="rounded-md border border-gray-200 px-1.5 py-1 text-[11px] flex-1"
+                            >
+                              <option value="">No expression</option>
+                              {EXPRESSION_NAMES.map((name) => <option key={name} value={name}>{name}</option>)}
+                            </select>
+                          </div>
+                          <input
+                            type="text" value={shot.visual ?? ""}
+                            onChange={(e) => updateEditShotField(i, "visual", e.target.value)}
+                            placeholder="Visual — staging, props, positioning"
+                            className="w-full rounded-md border border-gray-200 px-1.5 py-1 text-[11px]"
+                          />
+                          <input
+                            type="text" value={shot.action}
+                            onChange={(e) => updateEditShotField(i, "action", e.target.value)}
+                            placeholder="Action — physical performance"
+                            className="w-full rounded-md border border-gray-200 px-1.5 py-1 text-[11px]"
+                          />
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="text" value={shot.dialogue ?? ""}
+                              onChange={(e) => updateEditShotField(i, "dialogue", e.target.value || null)}
+                              placeholder="Dialogue"
+                              className="flex-1 rounded-md border border-gray-200 px-1.5 py-1 text-[11px]"
+                            />
+                            <input
+                              type="text" value={shot.dialogue_delivery ?? ""}
+                              onChange={(e) => updateEditShotField(i, "dialogue_delivery", e.target.value || null)}
+                              placeholder="Delivery style"
+                              className="w-32 rounded-md border border-gray-200 px-1.5 py-1 text-[11px]"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => saveEdit(s.id)}
+                      disabled={savingEdit}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white text-[11px] font-medium px-2.5 py-1.5 hover:bg-blue-700 transition-colors disabled:opacity-60"
+                    >
+                      {savingEdit ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                      Save
+                    </button>
+                    <button onClick={cancelEdit} className="text-[11px] text-gray-400 hover:text-gray-600">
+                      Cancel
+                    </button>
+                  </div>
+                  {editError && <p className="text-[11px] text-red-500">{editError}</p>}
+                </div>
+              ) : (
+                <>
+                  {s.hook_line && <p className="text-sm font-medium text-gray-900">&quot;{s.hook_line}&quot;</p>}
+                  {s.dialogue && <p className="text-sm text-gray-600 mt-1">{s.dialogue}</p>}
+                  {s.scene_direction && <p className="text-xs text-gray-400 mt-1 italic">{s.scene_direction}</p>}
+                  {s.shots && s.shots.length > 0 && (
+                    <ol className="mt-2 space-y-2">
+                      {s.shots.map((shot) => (
+                        <li key={shot.shot_number} className="text-xs text-gray-600">
                           <span className="text-gray-400">
-                            Dialogue{shot.dialogue_delivery ? ` (${shot.dialogue_delivery})` : ""}:
-                          </span>{" "}
-                          &quot;{shot.dialogue}&quot;
-                        </p>
-                      )}
-                    </li>
-                  ))}
-                </ol>
+                            Shot {shot.shot_number} ({shot.duration_seconds}s)
+                            {(s.character_variant_ids?.length ?? 0) > 1 && shot.speaker_variant_id && (
+                              <> — <span className="font-medium text-gray-700">{variantName(shot.speaker_variant_id)}</span></>
+                            )}
+                          </span>
+                          {shot.visual && (
+                            <p className="mt-0.5"><span className="text-gray-400">Visual:</span> {shot.visual}</p>
+                          )}
+                          <p className="mt-0.5">
+                            <span className="text-gray-400">Action:</span> {shot.action}
+                            {shot.expression && <span className="text-gray-400"> · {shot.expression}</span>}
+                          </p>
+                          {shot.dialogue && (
+                            <p className="mt-0.5">
+                              <span className="text-gray-400">
+                                Dialogue{shot.dialogue_delivery ? ` (${shot.dialogue_delivery})` : ""}:
+                              </span>{" "}
+                              &quot;{shot.dialogue}&quot;
+                            </p>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </>
               )}
 
               <div className="mt-3 pt-3 border-t border-gray-50">

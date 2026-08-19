@@ -48,8 +48,14 @@ class ToonScript(Base):
     # SQLite shim round-trips via json.dumps/loads, which can't serialize
     # raw UUID objects).
     character_variant_ids = Column(ARRAY(Text), nullable=True)
-    source_type = Column(String(10), nullable=True, index=True)  # persona|cluster|NULL
+    source_type = Column(String(10), nullable=True, index=True)  # persona|cluster|idea|NULL
     source_id = Column(Integer, nullable=True, index=True)
+    # The user's own free-text scenario, set only when source_type="idea" —
+    # source_id doesn't apply there (no Persona/Cluster row to point at).
+    # Needed so POST /scripts/{id}/regenerate has something to regenerate
+    # FROM for an idea-grounded script; before this column existed, the
+    # idea text was used once to generate the script and then lost.
+    idea_text = Column(Text, nullable=True)
     hook_line = Column(Text, nullable=True)
     dialogue = Column(Text, nullable=True)
     scene_direction = Column(Text, nullable=True)

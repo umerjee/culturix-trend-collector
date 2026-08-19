@@ -1391,6 +1391,118 @@ class TestScripts:
         assert archived["status"] == "archived"
 
 
+class TestRegenerateScript:
+    def test_manual_script_has_no_source_400s(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        script = culturetoons.create_script({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "hook_line": "Hook", "dialogue": "line",
+        })
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.regenerate_script(script["id"], {"user_id": user_id, "brand_id": brand["id"]})
+        assert exc_info.value.status_code == 400
+        assert "no stored AI source" in exc_info.value.detail
+
+    def test_persona_script_regenerates_in_place(self, db, user_id, brand_and_character, mocker):
+        brand, _character, variant = brand_and_character
+        session = db()
+        persona = Persona(name="Reality TV Stan", description="loves drama", motivations="gossip", interests="tv")
+        session.add(persona)
+        session.commit()
+        persona_id = persona.id
+        session.close()
+
+        mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script",
+            return_value={"hook_line": "Original", "tone": "funny", "shots": [
+                {"shot_number": 1, "duration_seconds": 4, "action": "a", "expression": None, "dialogue": None},
+            ], "total_duration_seconds": 4},
+        )
+        script = culturetoons.suggest_script({
+            "user_id": user_id, "brand_id": brand["id"], "source_type": "persona", "source_id": persona_id,
+            "character_variant_id": variant["id"], "tone": "funny",
+        })
+
+        mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script",
+            return_value={"hook_line": "Regenerated!", "tone": "chaotic", "shots": [
+                {"shot_number": 1, "duration_seconds": 6, "action": "b", "expression": "Happy", "dialogue": "New!"},
+            ], "total_duration_seconds": 6},
+        )
+        result = culturetoons.regenerate_script(script["id"], {"user_id": user_id, "brand_id": brand["id"]})
+
+        assert result["id"] == script["id"]  # same row, not a new script
+        assert result["hook_line"] == "Regenerated!"
+        assert result["total_duration_seconds"] == 6
+        assert culturetoons.list_scripts(user_id, brand["id"]).__len__() == 1  # no duplicate created
+
+    def test_idea_script_regenerates_from_stored_idea_text(self, db, user_id, brand_and_character, mocker):
+        brand, _character, variant = brand_and_character
+        mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H", "tone": "funny", "shots": [], "total_duration_seconds": 4},
+        )
+        script = culturetoons.suggest_script_from_idea({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "idea": "The character finds a spider in their shoe", "tone": "funny",
+        })
+
+        mock_regen = mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "Regenerated", "tone": "funny", "shots": [], "total_duration_seconds": 5},
+        )
+        result = culturetoons.regenerate_script(script["id"], {"user_id": user_id, "brand_id": brand["id"]})
+
+        assert result["hook_line"] == "Regenerated"
+        mock_regen.assert_called_once()
+        assert mock_regen.call_args[0][0] == "The character finds a spider in their shoe"
+
+    def test_regenerate_overrides_tone_when_given(self, db, user_id, brand_and_character, mocker):
+        brand, _character, variant = brand_and_character
+        mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H", "tone": "funny", "shots": [], "total_duration_seconds": 4},
+        )
+        script = culturetoons.suggest_script_from_idea({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "idea": "An idea", "tone": "funny",
+        })
+
+        mock_regen = mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H2", "tone": "deadpan", "shots": [], "total_duration_seconds": 4},
+        )
+        culturetoons.regenerate_script(script["id"], {"user_id": user_id, "brand_id": brand["id"], "tone": "deadpan"})
+        assert mock_regen.call_args.kwargs["tone"] == "deadpan"
+
+    def test_deleted_persona_404s_on_regenerate(self, db, user_id, brand_and_character, mocker):
+        brand, _character, variant = brand_and_character
+        session = db()
+        persona = Persona(name="Gone", description="d", motivations="m", interests="i")
+        session.add(persona)
+        session.commit()
+        persona_id = persona.id
+        session.close()
+
+        mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script",
+            return_value={"hook_line": "H", "tone": "funny", "shots": [], "total_duration_seconds": 4},
+        )
+        script = culturetoons.suggest_script({
+            "user_id": user_id, "brand_id": brand["id"], "source_type": "persona", "source_id": persona_id,
+            "character_variant_id": variant["id"], "tone": "funny",
+        })
+
+        session = db()
+        session.query(Persona).filter_by(id=persona_id).delete()
+        session.commit()
+        session.close()
+
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.regenerate_script(script["id"], {"user_id": user_id, "brand_id": brand["id"]})
+        assert exc_info.value.status_code == 404
+
+
 class TestSuggestScriptFromIdea:
     def test_requires_idea(self, db, user_id, brand_and_character):
         brand, _character, variant = brand_and_character
@@ -1427,6 +1539,9 @@ class TestSuggestScriptFromIdea:
         assert result["source_type"] == "idea"
         assert result["source_id"] is None
         assert result["shots"] == fake_shots
+        # Stored so /scripts/{id}/regenerate has something to regenerate
+        # from later — previously the idea text was used once and lost.
+        assert result["idea_text"] == "The character comes home to find the kitchen destroyed"
         mock_generate.assert_called_once()
         call_args = mock_generate.call_args
         assert call_args[0][0] == "The character comes home to find the kitchen destroyed"
