@@ -117,15 +117,13 @@ way — `/blob/main/` silently returns an HTML page instead of the model.
 
 ## 5. Build and deploy the Serverless inference worker
 
-```bash
-cd deploy/runpod_serverless
-docker build -t <your-dockerhub-username>/culturix-ltx-serverless:latest .
-docker push <your-dockerhub-username>/culturix-ltx-serverless:latest
-```
+No local Docker needed — RunPod console → **Serverless** → **New
+Endpoint** → **Deploy from a GitHub repository** → select this repo →
+**Dockerfile path**: `/deploy/runpod_serverless/Dockerfile` (confirmed
+working 2026-08-19; it builds with the whole repo as context, which is
+why that Dockerfile's `COPY` lines are repo-root-relative). Continue on
+to:
 
-Then console → **Serverless** → **New Endpoint**:
-
-- **Container Image**: the tag you just pushed.
 - **GPU**: RTX 4090 tier (what this image is sized for).
 - **Network Volume**: attach the same volume from step 2 (same region
   requirement as everything else that touches it).
@@ -135,6 +133,9 @@ Then console → **Serverless** → **New Endpoint**:
 - Deploy, then copy the **Endpoint ID** from the endpoint's page.
 
 Set that as `RUNPOD_SERVERLESS_ENDPOINT_ID` in Railway.
+
+(If you have Docker available and would rather build/push locally
+instead, `deploy/runpod_serverless/README.md` has that path too.)
 
 Full detail/troubleshooting: `deploy/runpod_serverless/README.md`.
 

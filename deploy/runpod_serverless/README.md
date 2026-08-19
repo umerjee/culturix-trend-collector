@@ -4,14 +4,27 @@ Builds a custom RunPod Serverless worker image for LTX-2.3 inference. See
 `handler.py`'s header comment for why this can't just be the stock
 `runpod/worker-comfyui` image (it drops video outputs).
 
-## 1. Build and push the image
+## 1. Build the image
 
-Needs Docker and a container registry you can push to (Docker Hub is
-simplest — RunPod pulls from any public registry). Run from a machine with
-Docker, or from inside the RunPod Pod you already have running (it has
-Docker-in-Docker available on most RunPod base templates — check with
-`docker version` first; if unavailable, build on your laptop instead, this
-folder has no RunPod-specific build dependencies):
+Two ways — pick whichever matches what you have available.
+
+**Option A — RunPod builds it for you from GitHub, no Docker needed
+(confirmed working 2026-08-19):** RunPod console → **Serverless** → **New
+Endpoint** → **Deploy from a GitHub repository** → select this repo. It
+asks for a single **Dockerfile path** field (no separate build-context
+field — it builds with the whole repo as context, not just this folder):
+
+```
+/deploy/runpod_serverless/Dockerfile
+```
+
+That's also why this Dockerfile's `COPY` lines are prefixed with
+`deploy/runpod_serverless/` rather than being bare filenames — they're
+resolved from the repo root, not from this directory.
+
+**Option B — build locally and push to a registry**, if you have Docker
+installed (Docker Hub is simplest — RunPod pulls from any public
+registry):
 
 ```bash
 cd deploy/runpod_serverless
@@ -19,13 +32,17 @@ docker build -t <your-dockerhub-username>/culturix-ltx-serverless:latest .
 docker push <your-dockerhub-username>/culturix-ltx-serverless:latest
 ```
 
-This will take a while the first time — it's cloning ComfyUI-LTXVideo and
-installing its (fairly large) dependency set on top of the base image's
-own CUDA/PyTorch/ComfyUI layers.
+Either way, this will take a while the first time — it's cloning
+ComfyUI-LTXVideo and installing its (fairly large) dependency set on top
+of the base image's own CUDA/PyTorch/ComfyUI layers.
 
 ## 2. Deploy the Serverless endpoint (RunPod console)
 
-1. RunPod console → **Serverless** → **New Endpoint**.
+If you used Option A above, this happens in the same flow — just
+continue on to the settings below. If you used Option B:
+
+1. RunPod console → **Serverless** → **New Endpoint** → **Deploy from a
+   Docker image**.
 2. **Container Image**: `<your-dockerhub-username>/culturix-ltx-serverless:latest`.
 3. **GPU**: RTX 4090 (or whatever tier the Network Volume's models were
    downloaded expecting — same tier as the manual validation pod).
