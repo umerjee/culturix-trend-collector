@@ -428,6 +428,22 @@ class TestBuildKlingPrompt:
         assert "shot 2, 4, @Mom, already reaching for a pan, smiling expression." in prompt
         assert prompt.endswith(";")
 
+    def test_includes_camera_direction_when_present(self):
+        shots = [{
+            "shot_number": 1, "duration_seconds": 4, "action": "waves", "expression": None,
+            "dialogue": None, "shot_type": "closeup", "camera_movement": "push_in",
+        }]
+        prompt = build_kling_prompt(shots, "Mom")
+        assert "closeup shot" in prompt
+        assert "push in camera movement" in prompt
+
+    def test_camera_direction_optional(self):
+        # Scripts generated before these fields existed shouldn't break,
+        # and shouldn't inject any stray camera-direction text.
+        prompt = build_kling_prompt(_VALID_SHOTS, "Mom")
+        assert "camera movement" not in prompt
+        assert prompt.startswith('shot 1, 4, @Mom, storms into the kitchen, annoyed expression, saying "You didn\'t eat?!".')
+
     def test_empty_shots_raises(self):
         with pytest.raises(ToonScriptGenerationError, match="empty"):
             build_kling_prompt([], "Mom")

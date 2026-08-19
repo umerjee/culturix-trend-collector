@@ -708,6 +708,12 @@ export interface ToonScriptShot {
   // Short delivery-style tag (e.g. "Loud & Hyped", "Deadpan / Robotic") —
   // null/absent when dialogue is null.
   dialogue_delivery?: string | null;
+  // Same SHOT_TYPES/CAMERA_MOVEMENTS vocabulary as ToonShot (the separate
+  // Scene/Storyboard cinematic system) — reused here so a script's own
+  // shots carry real camera direction too, not just the deeper Scene path.
+  // Optional/absent on scripts generated before these fields existed.
+  shot_type?: (typeof SHOT_TYPES)[number] | null;
+  camera_movement?: (typeof CAMERA_MOVEMENTS)[number] | null;
   speaker_variant_id?: string | null;
 }
 

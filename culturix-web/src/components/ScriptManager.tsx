@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check, Target, Pencil, Trash2, Film, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check, Target, Pencil, Trash2, Film, AlertTriangle, CheckCircle2, Camera } from "lucide-react";
 import type { ToonScript, ToonScriptShot, CharacterVariant, ToonBackground } from "@/lib/types";
-import { TONE_OPTIONS, MAX_CHARACTERS_PER_VIDEO, ART_STYLES, EXPRESSION_NAMES } from "@/lib/types";
+import { TONE_OPTIONS, MAX_CHARACTERS_PER_VIDEO, ART_STYLES, EXPRESSION_NAMES, SHOT_TYPES, CAMERA_MOVEMENTS } from "@/lib/types";
 
 // Backgrounds pick their own rendering style independently of the
 // character's art_style — a background is composited separately at
@@ -946,6 +946,25 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                               {EXPRESSION_NAMES.map((name) => <option key={name} value={name}>{name}</option>)}
                             </select>
                           </div>
+                          <div className="flex items-center gap-1.5">
+                            <Camera className="h-3 w-3 text-gray-400 shrink-0" />
+                            <select
+                              value={shot.shot_type ?? ""}
+                              onChange={(e) => updateEditShotField(i, "shot_type", e.target.value || null)}
+                              className="rounded-md border border-gray-200 px-1.5 py-1 text-[11px] flex-1 capitalize"
+                            >
+                              <option value="">Shot type</option>
+                              {SHOT_TYPES.map((t) => <option key={t} value={t} className="capitalize">{t.replace(/_/g, " ")}</option>)}
+                            </select>
+                            <select
+                              value={shot.camera_movement ?? ""}
+                              onChange={(e) => updateEditShotField(i, "camera_movement", e.target.value || null)}
+                              className="rounded-md border border-gray-200 px-1.5 py-1 text-[11px] flex-1 capitalize"
+                            >
+                              <option value="">Static (no movement)</option>
+                              {CAMERA_MOVEMENTS.map((m) => <option key={m} value={m} className="capitalize">{m.replace(/_/g, " ")}</option>)}
+                            </select>
+                          </div>
                           <input
                             type="text" value={shot.visual ?? ""}
                             onChange={(e) => updateEditShotField(i, "visual", e.target.value)}
@@ -1004,6 +1023,13 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                             Shot {shot.shot_number} ({shot.duration_seconds}s)
                             {(s.character_variant_ids?.length ?? 0) > 1 && shot.speaker_variant_id && (
                               <> — <span className="font-medium text-gray-700">{variantName(shot.speaker_variant_id)}</span></>
+                            )}
+                            {shot.shot_type && (
+                              <span className="ml-1.5 inline-flex items-center gap-1 text-blue-500 bg-blue-50 rounded-full px-1.5 py-0.5 text-[10px] capitalize">
+                                <Camera className="h-2.5 w-2.5" />
+                                {shot.shot_type.replace(/_/g, " ")}
+                                {shot.camera_movement && ` · ${shot.camera_movement.replace(/_/g, " ")}`}
+                              </span>
                             )}
                           </span>
                           {shot.visual && (

@@ -20,6 +20,7 @@ from typing import Optional
 
 from app.models.persona import Persona
 from app.models.cluster import Cluster
+from app.models.toon_shot import SHOT_TYPES, CAMERA_MOVEMENTS
 
 logger = logging.getLogger("culturix.services.culturetoon_script")
 
@@ -435,6 +436,14 @@ genuinely absurd extreme instead of a throwaway "we sleep" aside. Match THIS lev
 specificity and commitment, not the weak version, on every shot you write — regardless of
 premise.
 
+Camera — the writer also directs the shot, don't leave this to chance: vary shot_type
+meaningfully across the sequence rather than defaulting to the same medium/talking-head shot
+every time — use establishing/wide shots to open or reset a scene, closeup/extreme_closeup for
+a reaction or comedic beat, two_shot/over_shoulder for a dialogue exchange, insert for a prop
+close-up (e.g. that stopwatch), reveal for a punchline. Not every shot needs camera_movement
+(static is a real, correct choice), but push_in on an escalating line or whip_pan into a reveal
+reads as far more intentional than leaving every shot on the same static medium framing.
+
 Requirements:
 - Between {MIN_SHOTS} and {MAX_SHOTS} shots. shot_number must be 1, 2, 3... with no gaps.
 - Each shot's duration_seconds is a whole number >= 1. The SUM of all shots'
@@ -451,13 +460,15 @@ Requirements:
   generic informative sentence.
 - "dialogue_delivery" is a short (2-4 word) delivery-style tag for how the line is performed
   (e.g. "Loud & Hyped", "Deadpan / Robotic", "Whispered, intense") — null when dialogue is null.
+- "shot_type" must be one of exactly these values: {SHOT_TYPES}.
+- "camera_movement" must be one of exactly these values, or null for a static shot: {CAMERA_MOVEMENTS}.
 - hook_line is a punchy, stand-alone opening line/on-screen text summarizing the skit (max 15 words).{speaker_field}
 
 Return ONLY valid JSON with exactly these keys:
 - hook_line: string
 - shots: array of objects, each with exactly: shot_number (int), duration_seconds (int),
   visual (string), action (string), expression (string or null), dialogue (string or null),
-  dialogue_delivery (string or null){speaker_key}
+  dialogue_delivery (string or null), shot_type (string), camera_movement (string or null){speaker_key}
 
 Return ONLY the JSON object, no other text."""
 
@@ -745,6 +756,12 @@ def build_kling_prompt(shots: list, element_names) -> str:
         element_name = element_map.get(speaker_variant_id, default_element) if element_map else default_element
 
         parts = [f"@{element_name}"]
+        shot_type = shot.get("shot_type")
+        if shot_type:
+            parts.append(f"{shot_type.replace('_', ' ')} shot")
+        camera_movement = shot.get("camera_movement")
+        if camera_movement:
+            parts.append(f"{camera_movement.replace('_', ' ')} camera movement")
         visual = (shot.get("visual") or "").strip()
         if visual:
             parts.append(visual)

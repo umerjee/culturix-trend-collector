@@ -66,6 +66,15 @@ class TestBuildPromptFromScript:
         assert "holding a massive drum, confetti mid-air" in prompt
         assert 'saying "500-person feast!" (Loud & Hyped delivery)' in prompt
 
+    def test_includes_camera_direction_when_present(self, mocker):
+        script = _script(
+            mocker, hook_line="H",
+            shots=[{"action": "waves", "dialogue": None, "shot_type": "closeup", "camera_movement": "push_in"}],
+        )
+        prompt = build_prompt_from_script(script)
+        assert "closeup shot" in prompt
+        assert "push in camera movement" in prompt
+
     def test_no_content_falls_back_to_generic_prompt(self, mocker):
         script = _script(mocker, hook_line=None, shots=[])
         assert build_prompt_from_script(script) == "A character reacts to their day."

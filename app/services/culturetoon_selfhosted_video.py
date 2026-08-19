@@ -44,6 +44,17 @@ def build_prompt_from_script(script) -> str:
     if script.hook_line:
         parts.append(script.hook_line.strip())
     for shot in script.shots or []:
+        # shot_type/camera_movement don't produce discrete cuts here the
+        # way they do in Kling's multi-shot DSL (this whole loop still
+        # folds into ONE continuous clip, see module docstring) — but
+        # still useful descriptive signal for framing/movement within
+        # that one continuous generation.
+        shot_type = shot.get("shot_type")
+        if shot_type:
+            parts.append(f"{shot_type.replace('_', ' ')} shot")
+        camera_movement = shot.get("camera_movement")
+        if camera_movement:
+            parts.append(f"{camera_movement.replace('_', ' ')} camera movement")
         visual = (shot.get("visual") or "").strip()
         action = (shot.get("action") or "").strip()
         dialogue = (shot.get("dialogue") or "").strip()
