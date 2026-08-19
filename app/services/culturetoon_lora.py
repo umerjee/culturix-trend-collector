@@ -103,6 +103,15 @@ _RESOLUTION_BUCKET = "768x1360x49"  # vertical 9:16, ~2s at 24fps — matches th
 _CHECKPOINT_REPO = os.getenv("LTX_TRAINING_CHECKPOINT_REPO", "Lightricks/LTX-2.3")
 _CHECKPOINT_FILE = os.getenv("LTX_TRAINING_CHECKPOINT_FILE", "ltx-2.3-22b-dev.safetensors")
 _TEXT_ENCODER_REPO = os.getenv("LTX_TRAINING_TEXT_ENCODER_REPO", "google/gemma-3-12b-it")
+# google/gemma-3-12b-it is a gated HuggingFace model — downloading it needs
+# an authenticated token whose account has accepted Gemma's license, not
+# just a repo name. Read here (not baked into the training image) so the
+# same token works regardless of which pod/run uses it. Left unset by
+# default rather than pre-validated — same lazy-fail posture as
+# RUNPOD_SERVERLESS_ENDPOINT_ID elsewhere in this codebase; a missing/
+# invalid token surfaces as an authenticated-download failure from `hf
+# download` itself, caught by the existing _run() error handling below.
+_HF_TOKEN = os.getenv("HF_TOKEN", "")
 
 
 _CAPTION_PROMPT_TEMPLATE = (
@@ -334,15 +343,26 @@ def train_character_lora(variant, session) -> None:
              f"mkdir -p {q(work_dir)} {q(models_dir + '/checkpoint')} {q(models_dir + '/text_encoder')} {q(output_dir)}",
              120, "Failed to set up the training pod's working directory")
 
+        # HF_TOKEN= prefix rather than a persistent `hf auth login` on the
+        # pod — this pod is ephemeral and terminated at the end of this
+        # function either way, so there's nothing to log out of; scoping
+        # the token to just these two commands (only the text encoder
+        # download actually needs it — the LTX checkpoint repo is public)
+        # keeps it out of shell history / any other command run on the pod.
+        hf_env = f"HF_TOKEN={q(_HF_TOKEN)} " if _HF_TOKEN else ""
+
         # This pod's own model copy — the Network Volume isn't mounted here.
         checkpoint_path = f"{models_dir}/checkpoint/{_CHECKPOINT_FILE}"
         _run(runpod_ssh, host, port,
              f"hf download {q(_CHECKPOINT_REPO)} {q(_CHECKPOINT_FILE)} --local-dir {q(models_dir + '/checkpoint')}",
              _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training checkpoint")
         text_encoder_dir = f"{models_dir}/text_encoder"
+        # google/gemma-3-12b-it is gated — this download will fail with an
+        # authentication error if HF_TOKEN isn't set to a token whose
+        # account has accepted Gemma's license on huggingface.co.
         _run(runpod_ssh, host, port,
-             f"hf download {q(_TEXT_ENCODER_REPO)} --local-dir {q(text_encoder_dir)}",
-             _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training text encoder")
+             f"{hf_env}hf download {q(_TEXT_ENCODER_REPO)} --local-dir {q(text_encoder_dir)}",
+             _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training text encoder (is HF_TOKEN set and Gemma's license accepted on huggingface.co for that account?)")
 
         # Stage each reference image, then loop it into a short static clip
         # — see module docstring's open question #1 on why. Each clip keeps
