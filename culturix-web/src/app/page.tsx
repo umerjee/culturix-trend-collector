@@ -64,6 +64,7 @@ const PLATFORM_COLORS: Record<string, string> = {
   Xiaohongshu: "bg-rose-100 text-rose-700",
   "X/Twitter": "bg-sky-100 text-sky-700",
   Reddit: "bg-orange-100 text-orange-700",
+  Pinterest: "bg-red-50 text-red-600",
 };
 
 const VIRAL_COLORS: [string, string][] = [
@@ -141,9 +142,11 @@ async function getSampleIdeas(): Promise<{ ideas: SampleIdea[]; trendDate: strin
 const PLATFORMS = [
   { name: "TikTok", color: "bg-pink-500" },
   { name: "YouTube", color: "bg-red-500" },
+  { name: "Instagram", color: "bg-purple-500" },
   { name: "Reddit", color: "bg-orange-500" },
   { name: "X / Twitter", color: "bg-sky-500" },
   { name: "Xiaohongshu", color: "bg-rose-500" },
+  { name: "Pinterest", color: "bg-red-400" },
 ];
 
 const PRODUCTS = [
@@ -186,7 +189,7 @@ const FEATURES = [
   {
     icon: TrendingUp,
     title: "Live signal radar",
-    desc: "We collect thousands of posts per day across TikTok, YouTube, Reddit, X, and Xiaohongshu — tracking engagement velocity, not just volume.",
+    desc: "We collect thousands of posts per day across TikTok, YouTube, Instagram, Reddit, X, Xiaohongshu, and Pinterest — tracking engagement velocity, not just volume.",
     accent: "text-indigo-500",
     bg: "bg-indigo-50",
   },
@@ -252,7 +255,7 @@ const PLANS = [
     period: "forever",
     features: [
       "5 content ideas/day",
-      "All 5 platforms",
+      "All 7 platforms",
       "Daily digest",
       "Hook + caption + CTA",
       "1 content profile",
@@ -267,7 +270,7 @@ const PLANS = [
     period: "/month",
     features: [
       "10 content ideas/day",
-      "All 5 platforms",
+      "All 7 platforms",
       "Daily digest by 7 AM",
       "Viral angle + posting time + hashtags",
       "AI voiceover, music & video",
@@ -356,7 +359,7 @@ export default async function LandingPage() {
             <div>
               <div className="inline-flex items-center gap-2 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-semibold px-3 py-1.5 mb-6">
                 <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse" />
-                Monitoring 5 platforms · {new Date().toLocaleDateString("en-US", { weekday: "long" })} brief ready
+                Monitoring 7 platforms · {new Date().toLocaleDateString("en-US", { weekday: "long" })} brief ready
               </div>
               <h1 className="text-4xl sm:text-5xl font-extrabold text-white leading-tight mb-6">
                 Your AI content team{" "}
@@ -365,7 +368,7 @@ export default async function LandingPage() {
                 </span>
               </h1>
               <p className="text-lg text-gray-400 mb-8 leading-relaxed">
-                Culturix monitors thousands of daily signals across TikTok, YouTube, Reddit, X, and Xiaohongshu — clusters emerging cultural moments with AI — and delivers{" "}
+                Culturix monitors thousands of daily signals across TikTok, YouTube, Instagram, Reddit, X, Xiaohongshu, and Pinterest — clusters emerging cultural moments with AI — and delivers{" "}
                 <span className="text-gray-200 font-medium">10 personalized content ideas</span>{" "}
                 to your dashboard every morning.
               </p>
@@ -410,7 +413,7 @@ export default async function LandingPage() {
       <section className="py-10 border-b border-gray-100 bg-white">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 grid grid-cols-2 sm:grid-cols-4 gap-6 text-center">
           {[
-            { val: "5",     label: "platforms monitored" },
+            { val: "7",     label: "platforms monitored" },
             { val: "10k+",  label: "signals per day" },
             { val: "10",    label: "ideas per brief" },
             { val: "4×",    label: "daily signal refresh" },
