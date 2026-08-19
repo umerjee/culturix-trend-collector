@@ -83,6 +83,8 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
   const [manualScene, setManualScene] = useState("");
   const [manualVariantId, setManualVariantId] = useState<string>(variants[0]?.id ?? "");
   const [creatingManual, setCreatingManual] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
+  const [statusErrors, setStatusErrors] = useState<Record<string, string>>({});
 
   const [extraDescByScript, setExtraDescByScript] = useState<Record<string, string>>({});
   const [bgStyleByScript, setBgStyleByScript] = useState<Record<string, string>>({});
@@ -98,6 +100,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
   const [trendsPersonalized, setTrendsPersonalized] = useState(false);
   const [trendInterests, setTrendInterests] = useState(initialTrendInterests ?? "");
   const [savingInterests, setSavingInterests] = useState(false);
+  const [interestsError, setInterestsError] = useState<string | null>(null);
   const [interestsEditing, setInterestsEditing] = useState(false);
 
   function loadTrendSources() {
@@ -113,6 +116,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
 
   async function saveTrendInterests() {
     setSavingInterests(true);
+    setInterestsError(null);
     try {
       const res = await fetch(`/api/culturetoons/brands/${brandId}`, {
         method: "PUT",
@@ -122,7 +126,12 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
       if (res.ok) {
         setInterestsEditing(false);
         loadTrendSources();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setInterestsError(typeof data.detail === "string" ? data.detail : `Couldn't save interests (${res.status})`);
       }
+    } catch {
+      setInterestsError("Network error — check your connection and try again.");
     } finally {
       setSavingInterests(false);
     }
@@ -216,6 +225,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
     e.preventDefault();
     if (!manualHook.trim() && !manualDialogue.trim()) return;
     setCreatingManual(true);
+    setManualError(null);
     try {
       const res = await fetch("/api/culturetoons/scripts", {
         method: "POST",
@@ -232,21 +242,34 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
         const created = await res.json();
         setScripts((prev) => [created, ...prev]);
         setManualHook(""); setManualDialogue(""); setManualScene("");
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setManualError(typeof data.detail === "string" ? data.detail : `Couldn't save script (${res.status})`);
       }
+    } catch {
+      setManualError("Network error — check your connection and try again.");
     } finally {
       setCreatingManual(false);
     }
   }
 
   async function updateScriptStatus(scriptId: string, status: "approved" | "archived") {
-    const res = await fetch(`/api/culturetoons/scripts/${scriptId}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ brand_id: brandId, status }),
-    });
-    if (res.ok) {
-      const updated = await res.json();
-      setScripts((prev) => prev.map((s) => (s.id === scriptId ? updated : s)));
+    setStatusErrors((prev) => ({ ...prev, [scriptId]: "" }));
+    try {
+      const res = await fetch(`/api/culturetoons/scripts/${scriptId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, status }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setScripts((prev) => prev.map((s) => (s.id === scriptId ? updated : s)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setStatusErrors((prev) => ({ ...prev, [scriptId]: typeof data.detail === "string" ? data.detail : `Couldn't update (${res.status})` }));
+      }
+    } catch {
+      setStatusErrors((prev) => ({ ...prev, [scriptId]: "Network error — check your connection and try again." }));
     }
   }
 
@@ -320,6 +343,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
             Save script
           </button>
         </form>
+        {manualError && <p className="text-xs text-red-500 mt-2">{manualError}</p>}
       </div>
 
       <div className="rounded-2xl bg-white border border-gray-100 p-4">
@@ -410,6 +434,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
               <button onClick={() => { setInterestsEditing(false); setTrendInterests(initialTrendInterests ?? ""); }} className="text-xs text-gray-400 hover:text-gray-600">
                 Cancel
               </button>
+              {interestsError && <p className="w-full text-[11px] text-red-500">{interestsError}</p>}
             </div>
           ) : (
             <div className="flex items-center gap-2">
@@ -544,6 +569,7 @@ export default function ScriptManager({ brandId, initialScripts, variants, backg
                   </button>
                 </div>
               )}
+              {statusErrors[s.id] && <p className="text-[11px] text-red-500 mb-2">{statusErrors[s.id]}</p>}
               {s.hook_line && <p className="text-sm font-medium text-gray-900">&quot;{s.hook_line}&quot;</p>}
               {s.dialogue && <p className="text-sm text-gray-600 mt-1">{s.dialogue}</p>}
               {s.scene_direction && <p className="text-xs text-gray-400 mt-1 italic">{s.scene_direction}</p>}

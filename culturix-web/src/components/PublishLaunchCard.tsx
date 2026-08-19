@@ -40,6 +40,7 @@ export default function PublishLaunchCard({ stage }: { stage: StageInfo }) {
   const [copied, setCopied] = useState(false);
   const [postUrl, setPostUrl] = useState("");
   const [confirming, setConfirming] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(stage.status === "tracked" || stage.status === "pending" || stage.status === "fetching");
 
   const platform = stage.target_platform.toLowerCase();
@@ -92,13 +93,21 @@ export default function PublishLaunchCard({ stage }: { stage: StageInfo }) {
     e.preventDefault();
     if (!postUrl.trim() || confirming) return;
     setConfirming(true);
+    setConfirmError(null);
     try {
       const res = await fetch(`/api/content-posts/${stage.content_post_id}/confirm-posted`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ post_url: postUrl.trim() }),
       });
-      if (res.ok) setConfirmed(true);
+      if (res.ok) {
+        setConfirmed(true);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setConfirmError(typeof data.detail === "string" ? data.detail : `Couldn't save that — try again (${res.status})`);
+      }
+    } catch {
+      setConfirmError("Network error — check your connection and try again.");
     } finally {
       setConfirming(false);
     }
@@ -172,6 +181,7 @@ export default function PublishLaunchCard({ stage }: { stage: StageInfo }) {
                 {confirming ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
               </button>
             </div>
+            {confirmError && <p className="text-xs text-red-500">{confirmError}</p>}
           </form>
         )}
       </div>

@@ -83,6 +83,9 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
     platform: ConnectedAccount["platform"]; step: "connect" | "test" | "mode" | "next";
   } | null>(null);
   const [testingPlatform, setTestingPlatform] = useState<string | null>(null);
+  const [accountActionError, setAccountActionError] = useState<string | null>(null);
+  const [publishModeError, setPublishModeError] = useState<string | null>(null);
+  const [toggleActiveError, setToggleActiveError] = useState<string | null>(null);
   const autoOpenedRef = useRef(false);
 
   const [pushBusy, setPushBusy] = useState(false);
@@ -234,35 +237,60 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
   }
 
   async function handleDisconnect(platform: string, contentProfileId: string | null) {
-    const qs = contentProfileId ? `?content_profile_id=${contentProfileId}` : "";
-    await fetch(`/api/social/${platform}/disconnect${qs}`, { method: "DELETE" });
-    loadConnectedAccounts();
+    setAccountActionError(null);
+    try {
+      const qs = contentProfileId ? `?content_profile_id=${contentProfileId}` : "";
+      const res = await fetch(`/api/social/${platform}/disconnect${qs}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setAccountActionError(data.detail ?? `Couldn't disconnect (${res.status})`);
+        return;
+      }
+      loadConnectedAccounts();
+    } catch {
+      setAccountActionError("Network error — check your connection and try again.");
+    }
   }
 
   async function handleQuickTest(platform: string) {
     if (testingPlatform) return;
     setTestingPlatform(platform);
+    setAccountActionError(null);
     try {
-      await fetch(
+      const res = await fetch(
         `/api/social/${platform}/test?content_profile_id=${selectedId}`,
         { method: "POST" }
       );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setAccountActionError(data.detail ?? `Test failed (${res.status})`);
+      }
       await loadConnectedAccounts();
+    } catch {
+      setAccountActionError("Network error — check your connection and try again.");
     } finally {
       setTestingPlatform(null);
     }
   }
 
   async function persistPublishMode(profileId: string, mode: "manual" | "review" | "auto") {
-    const res = await fetch(`/api/content-profiles/${profileId}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ publish_mode: mode }),
-    });
-    if (res.ok) {
-      const updated: ContentProfile = await res.json();
-      setProfiles(prev => prev.map(p => p.id === profileId ? updated : p));
-      if (selectedId === profileId) setDraft(d => ({ ...d, publish_mode: updated.publish_mode }));
+    setPublishModeError(null);
+    try {
+      const res = await fetch(`/api/content-profiles/${profileId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ publish_mode: mode }),
+      });
+      if (res.ok) {
+        const updated: ContentProfile = await res.json();
+        setProfiles(prev => prev.map(p => p.id === profileId ? updated : p));
+        if (selectedId === profileId) setDraft(d => ({ ...d, publish_mode: updated.publish_mode }));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setPublishModeError(data.detail ?? `Couldn't change publish mode (${res.status})`);
+      }
+    } catch {
+      setPublishModeError("Network error — could not change publish mode.");
     }
   }
 
@@ -358,15 +386,23 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
 
   async function toggleActive(p: ContentProfile, e: React.MouseEvent) {
     e.stopPropagation();
-    const res = await fetch(`/api/content-profiles/${p.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ is_active: !p.is_active }),
-    });
-    if (res.ok) {
-      const updated: ContentProfile = await res.json();
-      setProfiles(prev => prev.map(x => x.id === p.id ? updated : x));
-      if (selectedId === p.id) setDraft(d => ({ ...d, is_active: updated.is_active }));
+    setToggleActiveError(null);
+    try {
+      const res = await fetch(`/api/content-profiles/${p.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_active: !p.is_active }),
+      });
+      if (res.ok) {
+        const updated: ContentProfile = await res.json();
+        setProfiles(prev => prev.map(x => x.id === p.id ? updated : x));
+        if (selectedId === p.id) setDraft(d => ({ ...d, is_active: updated.is_active }));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setToggleActiveError(data.detail ?? `Couldn't update status (${res.status})`);
+      }
+    } catch {
+      setToggleActiveError("Network error — could not update status.");
     }
   }
 
@@ -420,11 +456,22 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
     if (!selectedId || profiles.length <= 1) return;
     if (!confirm("Delete this content profile?")) return;
     setDeleting(true);
-    await fetch(`/api/content-profiles/${selectedId}`, { method: "DELETE" });
-    const remaining = profiles.filter(p => p.id !== selectedId);
-    setProfiles(remaining);
-    if (remaining.length > 0) selectProfile(remaining[0]);
-    setDeleting(false);
+    setError("");
+    try {
+      const res = await fetch(`/api/content-profiles/${selectedId}`, { method: "DELETE" });
+      if (res.ok) {
+        const remaining = profiles.filter(p => p.id !== selectedId);
+        setProfiles(remaining);
+        if (remaining.length > 0) selectProfile(remaining[0]);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setError(data.detail ?? "Failed to delete profile.");
+      }
+    } catch {
+      setError("Network error — could not delete profile.");
+    } finally {
+      setDeleting(false);
+    }
   }
 
   if (loading) {
@@ -541,6 +588,8 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
             <Plus className="h-3.5 w-3.5" /> Track new trend
           </button>
         </div>
+
+        {toggleActiveError && <p className="text-xs text-red-500 mb-3">{toggleActiveError}</p>}
 
         {profiles.length === 0 && !isNew && (
           <p className="text-sm text-gray-400 text-center py-4">No profiles yet. Create your first one.</p>
@@ -951,6 +1000,8 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
                 </div>
               )}
 
+              {accountActionError && <p className="text-xs text-red-500 mb-3">{accountActionError}</p>}
+
               <div className="space-y-2">
                 {SUPPORTED_SOCIAL_PLATFORMS.map(({ key, label, live }) => {
                   const bound = connectedAccounts.find(
@@ -1045,6 +1096,7 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
               How ideas from this profile turn into real posts.
               {!hasActiveConnection && " Connect an account above to unlock Review and Auto."}
             </p>
+            {publishModeError && <p className="text-xs text-red-500 mb-3">{publishModeError}</p>}
             <div className="grid grid-cols-3 gap-3">
               {(["manual", "review", "auto"] as const).map((key) => {
                 const disabled = key !== "manual" && !hasActiveConnection;

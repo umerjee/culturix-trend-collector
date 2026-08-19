@@ -9,9 +9,11 @@ interface Props {
 
 export default function RefreshButton({ profileId }: Props) {
   const [state, setState] = useState<"idle" | "loading" | "started">("idle");
+  const [error, setError] = useState<string | null>(null);
 
   async function handleClick() {
     setState("loading");
+    setError(null);
     try {
       const body = new FormData();
       if (profileId) body.set("profile_id", profileId);
@@ -21,8 +23,15 @@ export default function RefreshButton({ profileId }: Props) {
       // profile), so reloading immediately just shows the same old digest
       // with nothing to indicate a refresh is actually in progress.
       const res = await fetch("/api/generate", { method: "POST", body });
-      setState(res.ok ? "started" : "idle");
+      if (res.ok) {
+        setState("started");
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setError(typeof data.detail === "string" ? data.detail : `Couldn't start refresh (${res.status})`);
+        setState("idle");
+      }
     } catch {
+      setError("Network error — check your connection and try again.");
       setState("idle");
     }
   }
@@ -36,14 +45,17 @@ export default function RefreshButton({ profileId }: Props) {
   }
 
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      disabled={state === "loading"}
-      className="inline-flex items-center gap-2 text-sm font-medium text-gray-600 border border-gray-200 rounded-lg px-3 py-2 hover:bg-gray-50 transition-colors disabled:opacity-60"
-    >
-      <RefreshCw className={`h-3.5 w-3.5 ${state === "loading" ? "animate-spin" : ""}`} />
-      {state === "loading" ? "Starting…" : "Refresh"}
-    </button>
+    <div className="inline-flex flex-col items-start gap-1.5">
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={state === "loading"}
+        className="inline-flex items-center gap-2 text-sm font-medium text-gray-600 border border-gray-200 rounded-lg px-3 py-2 hover:bg-gray-50 transition-colors disabled:opacity-60"
+      >
+        <RefreshCw className={`h-3.5 w-3.5 ${state === "loading" ? "animate-spin" : ""}`} />
+        {state === "loading" ? "Starting…" : "Refresh"}
+      </button>
+      {error && <p className="text-xs text-red-500">{error}</p>}
+    </div>
   );
 }

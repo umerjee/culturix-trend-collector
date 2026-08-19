@@ -33,8 +33,10 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
   const [toons, setToons] = useState(initialToons);
   const [title, setTitle] = useState("");
   const [creating, setCreating] = useState(false);
+  const [createEpisodeError, setCreateEpisodeError] = useState<string | null>(null);
   const [attachToonId, setAttachToonId] = useState<Record<string, string>>({});
   const [busyEpisodeId, setBusyEpisodeId] = useState<string | null>(null);
+  const [episodeActionError, setEpisodeActionError] = useState<Record<string, string>>({});
   const [nextIdea, setNextIdea] = useState<Record<string, string>>({});
   const [nextVariantId, setNextVariantId] = useState<Record<string, string>>({});
   const [suggestingNextId, setSuggestingNextId] = useState<string | null>(null);
@@ -74,10 +76,18 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
   }
 
   async function refreshEpisode(episodeId: string) {
-    const res = await fetch(`/api/culturetoons/episodes/${episodeId}?brand_id=${brandId}`, { cache: "no-store" });
-    if (res.ok) {
-      const updated = await res.json();
-      setEpisodes((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+    try {
+      const res = await fetch(`/api/culturetoons/episodes/${episodeId}?brand_id=${brandId}`, { cache: "no-store" });
+      if (res.ok) {
+        const updated = await res.json();
+        setEpisodes((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+        setEpisodeActionError((prev) => ({ ...prev, [episodeId]: "" }));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setEpisodeActionError((prev) => ({ ...prev, [episodeId]: typeof data.detail === "string" ? data.detail : `Couldn't refresh episode (${res.status})` }));
+      }
+    } catch {
+      setEpisodeActionError((prev) => ({ ...prev, [episodeId]: "Network error — check your connection and try again." }));
     }
   }
 
@@ -95,6 +105,7 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
   async function createEpisode(e: React.FormEvent) {
     e.preventDefault();
     setCreating(true);
+    setCreateEpisodeError(null);
     try {
       const res = await fetch("/api/culturetoons/episodes", {
         method: "POST",
@@ -105,7 +116,12 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
         const created = await res.json();
         setEpisodes((prev) => [created, ...prev]);
         setTitle("");
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setCreateEpisodeError(typeof data.detail === "string" ? data.detail : `Couldn't create episode (${res.status})`);
       }
+    } catch {
+      setCreateEpisodeError("Network error — check your connection and try again.");
     } finally {
       setCreating(false);
     }
@@ -115,6 +131,7 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
     const toonId = attachToonId[episodeId];
     if (!toonId) return;
     setBusyEpisodeId(episodeId);
+    setEpisodeActionError((prev) => ({ ...prev, [episodeId]: "" }));
     try {
       const res = await fetch(`/api/culturetoons/episodes/${episodeId}/parts`, {
         method: "POST",
@@ -126,7 +143,12 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
         setEpisodes((prev) => prev.map((e) => (e.id === episodeId ? updated : e)));
         setToons((prev) => prev.map((t) => (t.id === toonId ? { ...t, episode_id: episodeId } : t)));
         setAttachToonId((prev) => ({ ...prev, [episodeId]: "" }));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setEpisodeActionError((prev) => ({ ...prev, [episodeId]: typeof data.detail === "string" ? data.detail : `Couldn't attach (${res.status})` }));
       }
+    } catch {
+      setEpisodeActionError((prev) => ({ ...prev, [episodeId]: "Network error — check your connection and try again." }));
     } finally {
       setBusyEpisodeId(null);
     }
@@ -163,13 +185,19 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
 
   async function detachPart(episodeId: string, toonId: string) {
     setBusyEpisodeId(episodeId);
+    setEpisodeActionError((prev) => ({ ...prev, [episodeId]: "" }));
     try {
       const res = await fetch(`/api/culturetoons/episodes/${episodeId}/parts/${toonId}?brand_id=${brandId}`, { method: "DELETE" });
       if (res.ok) {
         const updated = await res.json();
         setEpisodes((prev) => prev.map((e) => (e.id === episodeId ? updated : e)));
         setToons((prev) => prev.map((t) => (t.id === toonId ? { ...t, episode_id: null, part_order: null } : t)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setEpisodeActionError((prev) => ({ ...prev, [episodeId]: typeof data.detail === "string" ? data.detail : `Couldn't remove part (${res.status})` }));
       }
+    } catch {
+      setEpisodeActionError((prev) => ({ ...prev, [episodeId]: "Network error — check your connection and try again." }));
     } finally {
       setBusyEpisodeId(null);
     }
@@ -181,6 +209,7 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
     const ids = episode.parts.map((p) => p.toon_id);
     [ids[index], ids[target]] = [ids[target], ids[index]];
     setBusyEpisodeId(episode.id);
+    setEpisodeActionError((prev) => ({ ...prev, [episode.id]: "" }));
     try {
       const res = await fetch(`/api/culturetoons/episodes/${episode.id}/parts/reorder`, {
         method: "PUT",
@@ -190,7 +219,12 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
       if (res.ok) {
         const updated = await res.json();
         setEpisodes((prev) => prev.map((e) => (e.id === episode.id ? updated : e)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setEpisodeActionError((prev) => ({ ...prev, [episode.id]: typeof data.detail === "string" ? data.detail : `Couldn't reorder (${res.status})` }));
       }
+    } catch {
+      setEpisodeActionError((prev) => ({ ...prev, [episode.id]: "Network error — check your connection and try again." }));
     } finally {
       setBusyEpisodeId(null);
     }
@@ -217,6 +251,7 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
 
   async function generateClips(episodeId: string) {
     setBusyEpisodeId(episodeId);
+    setEpisodeActionError((prev) => ({ ...prev, [episodeId]: "" }));
     try {
       const res = await fetch(`/api/culturetoons/episodes/${episodeId}/generate-clips`, {
         method: "POST",
@@ -227,7 +262,12 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
         // Clip generation doesn't flip episode.status, so poll once shortly
         // after rather than adding a whole separate "generating" state.
         setTimeout(() => refreshEpisode(episodeId), 6000);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setEpisodeActionError((prev) => ({ ...prev, [episodeId]: typeof data.detail === "string" ? data.detail : `Couldn't start clip generation (${res.status})` }));
       }
+    } catch {
+      setEpisodeActionError((prev) => ({ ...prev, [episodeId]: "Network error — check your connection and try again." }));
     } finally {
       setBusyEpisodeId(null);
     }
@@ -240,7 +280,13 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
       if (res.ok) {
         const data = await res.json();
         setScenesByEpisode((prev) => ({ ...prev, [episodeId]: data }));
+        setSceneError((prev) => ({ ...prev, [episodeId]: "" }));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setSceneError((prev) => ({ ...prev, [episodeId]: typeof data.detail === "string" ? data.detail : `Couldn't load scenes (${res.status})` }));
       }
+    } catch {
+      setSceneError((prev) => ({ ...prev, [episodeId]: "Network error — check your connection and try again." }));
     } finally {
       setScenesLoading((prev) => ({ ...prev, [episodeId]: false }));
     }
@@ -266,6 +312,7 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
 
   async function createScene(episodeId: string) {
     setBusyEpisodeId(episodeId);
+    setSceneError((prev) => ({ ...prev, [episodeId]: "" }));
     try {
       const res = await fetch(`/api/culturetoons/episodes/${episodeId}/scenes`, {
         method: "POST",
@@ -284,7 +331,12 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
         setSceneAction((prev) => ({ ...prev, [episodeId]: "" }));
         setSceneDialogue((prev) => ({ ...prev, [episodeId]: "" }));
         setSceneBackgroundId((prev) => ({ ...prev, [episodeId]: "" }));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setSceneError((prev) => ({ ...prev, [episodeId]: typeof data.detail === "string" ? data.detail : `Couldn't add scene (${res.status})` }));
       }
+    } catch {
+      setSceneError((prev) => ({ ...prev, [episodeId]: "Network error — check your connection and try again." }));
     } finally {
       setBusyEpisodeId(null);
     }
@@ -337,11 +389,17 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
 
   async function deleteScene(episodeId: string, sceneId: string) {
     setBusySceneId(sceneId);
+    setSceneError((prev) => ({ ...prev, [sceneId]: "" }));
     try {
       const res = await fetch(`/api/culturetoons/scenes/${sceneId}?brand_id=${brandId}`, { method: "DELETE" });
       if (res.ok) {
         setScenesByEpisode((prev) => ({ ...prev, [episodeId]: (prev[episodeId] ?? []).filter((s) => s.id !== sceneId) }));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setSceneError((prev) => ({ ...prev, [sceneId]: typeof data.detail === "string" ? data.detail : `Couldn't delete scene (${res.status})` }));
       }
+    } catch {
+      setSceneError((prev) => ({ ...prev, [sceneId]: "Network error — check your connection and try again." }));
     } finally {
       setBusySceneId(null);
     }
@@ -373,7 +431,13 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
       if (res.ok) {
         const data = await res.json();
         setShotsByScene((prev) => ({ ...prev, [sceneId]: data }));
+        setShotError((prev) => ({ ...prev, [sceneId]: "" }));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setShotError((prev) => ({ ...prev, [sceneId]: typeof data.detail === "string" ? data.detail : `Couldn't load storyboard (${res.status})` }));
       }
+    } catch {
+      setShotError((prev) => ({ ...prev, [sceneId]: "Network error — check your connection and try again." }));
     } finally {
       setShotsLoading((prev) => ({ ...prev, [sceneId]: false }));
     }
@@ -431,11 +495,17 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
 
   async function deleteShot(sceneId: string, shotId: string) {
     setBusyShotId(shotId);
+    setShotError((prev) => ({ ...prev, [shotId]: "" }));
     try {
       const res = await fetch(`/api/culturetoons/shots/${shotId}?brand_id=${brandId}`, { method: "DELETE" });
       if (res.ok) {
         setShotsByScene((prev) => ({ ...prev, [sceneId]: (prev[sceneId] ?? []).filter((s) => s.id !== shotId) }));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setShotError((prev) => ({ ...prev, [shotId]: typeof data.detail === "string" ? data.detail : `Couldn't delete shot (${res.status})` }));
       }
+    } catch {
+      setShotError((prev) => ({ ...prev, [shotId]: "Network error — check your connection and try again." }));
     } finally {
       setBusyShotId(null);
     }
@@ -506,6 +576,7 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
             New episode
           </button>
         </form>
+        {createEpisodeError && <p className="text-[11px] text-red-500 mt-2">{createEpisodeError}</p>}
       </div>
 
       <div className="space-y-3">
@@ -528,6 +599,7 @@ export default function EpisodeManager({ brandId, initialEpisodes, initialToons,
                   {ep.status}
                 </span>
               </div>
+              {episodeActionError[ep.id] && <p className="text-[11px] text-red-500 mb-1.5">{episodeActionError[ep.id]}</p>}
 
               <ol className="space-y-1.5">
                 {ep.parts.length === 0 && (

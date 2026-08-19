@@ -18,6 +18,8 @@ export default function BackgroundGallery({ brandId, initialBackgrounds }: Props
   const [newName, setNewName] = useState("");
   const [newCountry, setNewCountry] = useState("");
   const [creating, setCreating] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   const [genName, setGenName] = useState("");
   const [genDescription, setGenDescription] = useState("");
@@ -34,6 +36,7 @@ export default function BackgroundGallery({ brandId, initialBackgrounds }: Props
     e.preventDefault();
     if (!newName.trim()) return;
     setCreating(true);
+    setAddError(null);
     try {
       const res = await fetch("/api/culturetoons/backgrounds", {
         method: "POST",
@@ -45,7 +48,12 @@ export default function BackgroundGallery({ brandId, initialBackgrounds }: Props
         setBackgrounds((prev) => [...prev, created]);
         setNewName("");
         setNewCountry("");
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setAddError(typeof data.detail === "string" ? data.detail : `Couldn't add location (${res.status})`);
       }
+    } catch {
+      setAddError("Network error — check your connection and try again.");
     } finally {
       setCreating(false);
     }
@@ -83,18 +91,38 @@ export default function BackgroundGallery({ brandId, initialBackgrounds }: Props
   }
 
   async function removeBackground(id: string) {
-    setBackgrounds((prev) => prev.filter((b) => b.id !== id));
-    await fetch(`/api/culturetoons/backgrounds/${id}?brand_id=${brandId}`, { method: "DELETE" });
+    setRemoveError(null);
+    try {
+      const res = await fetch(`/api/culturetoons/backgrounds/${id}?brand_id=${brandId}`, { method: "DELETE" });
+      if (res.ok) {
+        setBackgrounds((prev) => prev.filter((b) => b.id !== id));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setRemoveError(typeof data.detail === "string" ? data.detail : `Couldn't remove location (${res.status})`);
+      }
+    } catch {
+      setRemoveError("Network error — check your connection and try again.");
+    }
   }
 
   async function removeReferenceImage(backgroundId: string, imageUrl: string) {
-    setBackgrounds((prev) => prev.map((b) => (
-      b.id === backgroundId ? { ...b, reference_image_urls: b.reference_image_urls.filter((u) => u !== imageUrl) } : b
-    )));
-    await fetch(
-      `/api/culturetoons/backgrounds/${backgroundId}/reference-images?brand_id=${brandId}&image_url=${encodeURIComponent(imageUrl)}`,
-      { method: "DELETE" },
-    );
+    setRemoveError(null);
+    try {
+      const res = await fetch(
+        `/api/culturetoons/backgrounds/${backgroundId}/reference-images?brand_id=${brandId}&image_url=${encodeURIComponent(imageUrl)}`,
+        { method: "DELETE" },
+      );
+      if (res.ok) {
+        setBackgrounds((prev) => prev.map((b) => (
+          b.id === backgroundId ? { ...b, reference_image_urls: b.reference_image_urls.filter((u) => u !== imageUrl) } : b
+        )));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setRemoveError(typeof data.detail === "string" ? data.detail : `Couldn't remove image (${res.status})`);
+      }
+    } catch {
+      setRemoveError("Network error — check your connection and try again.");
+    }
   }
 
   return (
@@ -110,6 +138,7 @@ export default function BackgroundGallery({ brandId, initialBackgrounds }: Props
           background set (still fine).
         </p>
       )}
+      {removeError && <p className="text-xs text-red-500">{removeError}</p>}
       <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-4">
         {backgrounds.map((bg) => (
           <div key={bg.id} className="flex flex-col items-center gap-1">
@@ -256,6 +285,7 @@ export default function BackgroundGallery({ brandId, initialBackgrounds }: Props
           {creating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
         </button>
       </form>
+      {addError && <p className="text-[11px] text-red-500">{addError}</p>}
     </div>
   );
 }

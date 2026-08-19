@@ -23,6 +23,7 @@ function timeAgo(iso: string | null): string {
 export default function PostPerformance({ contentId, ideaIndex }: Props) {
   const [post, setPost] = useState<ContentPost | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -54,19 +55,27 @@ export default function PostPerformance({ contentId, ideaIndex }: Props) {
   async function refresh() {
     if (!post || refreshing) return;
     setRefreshing(true);
+    setRefreshError(null);
     try {
-      await fetch("/api/content-posts/refresh", {
+      const res = await fetch("/api/content-posts/refresh", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content_post_id: post.id }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setRefreshError(typeof data.detail === "string" ? data.detail : `Couldn't refresh (${res.status})`);
+        return;
+      }
       intervalRef.current = setInterval(async () => {
-        const res = await fetch(`/api/content-posts/${contentId}?idea_index=${ideaIndex}`);
-        if (res.ok) {
-          const rows: ContentPost[] = await res.json();
+        const pollRes = await fetch(`/api/content-posts/${contentId}?idea_index=${ideaIndex}`);
+        if (pollRes.ok) {
+          const rows: ContentPost[] = await pollRes.json();
           if (rows[0]) setPost(rows[0]);
         }
       }, 3000);
+    } catch {
+      setRefreshError("Network error — check your connection and try again.");
     } finally {
       setTimeout(() => setRefreshing(false), 3000);
     }
@@ -126,6 +135,7 @@ export default function PostPerformance({ contentId, ideaIndex }: Props) {
           <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
         </button>
       </div>
+      {refreshError && <p className="text-xs text-red-500">{refreshError}</p>}
       <div className="flex items-center justify-between text-xs text-gray-400">
         <span>{post.created_via === "published" ? "Published by Culturix" : "Tracked"} · {timeAgo(post.last_fetched_at ?? post.posted_at)}</span>
         {post.post_url && (

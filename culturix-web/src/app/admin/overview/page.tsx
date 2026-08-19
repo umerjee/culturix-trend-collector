@@ -25,6 +25,7 @@ export default function OverviewPage() {
   const [error, setError] = useState<string | null>(null);
   const [checkingHealth, setCheckingHealth] = useState(false);
   const [confirmCheckOpen, setConfirmCheckOpen] = useState(false);
+  const [healthCheckError, setHealthCheckError] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -53,10 +54,18 @@ export default function OverviewPage() {
 
   async function runHealthCheckNow() {
     setCheckingHealth(true);
+    setHealthCheckError(null);
     try {
-      await fetch("/api/admin/integration-health/check-now", { method: "POST" });
+      const res = await fetch("/api/admin/integration-health/check-now", { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setHealthCheckError(data.detail ?? `Health check failed (${res.status})`);
+        return;
+      }
       const h = await fetchAdminData<IntegrationHealthEntry[]>("integration-health");
       setHealth(h);
+    } catch (err) {
+      setHealthCheckError(err instanceof Error ? err.message : "Network error — check your connection and try again.");
     } finally {
       setCheckingHealth(false);
       setConfirmCheckOpen(false);
@@ -140,6 +149,9 @@ export default function OverviewPage() {
             <RefreshCw className="h-3 w-3" /> {checkingHealth ? "Checking…" : "Check now"}
           </button>
         </div>
+        {healthCheckError && (
+          <p className="text-sm text-red-600 px-6 py-2 border-b border-gray-50">{healthCheckError}</p>
+        )}
         {health.length === 0 ? (
           <p className="text-sm text-gray-400 px-6 py-8">No health checks recorded yet.</p>
         ) : (

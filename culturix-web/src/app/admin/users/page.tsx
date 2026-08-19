@@ -17,6 +17,7 @@ export default function UsersPage() {
   const [search, setSearch] = useState("");
   const [approving, setApproving] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAdminData<UserRecord[]>("users").then(setUsers).catch(() => setUsers([])).finally(() => setLoading(false));
@@ -24,10 +25,18 @@ export default function UsersPage() {
 
   async function setApproval(userId: string, approved: boolean) {
     setApproving(userId);
+    setActionError(null);
     try {
       const action = approved ? "approve" : "reject";
       const res = await fetch(`/api/admin/users/${userId}/${action}`, { method: "POST" });
-      if (res.ok) setUsers((prev) => prev.map((u) => (u.user_id === userId ? { ...u, approved } : u)));
+      if (res.ok) {
+        setUsers((prev) => prev.map((u) => (u.user_id === userId ? { ...u, approved } : u)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setActionError(data.detail ?? `Couldn't update approval (${res.status})`);
+      }
+    } catch {
+      setActionError("Network error — check your connection and try again.");
     } finally {
       setApproving(null);
       setPendingAction(null);
@@ -35,13 +44,24 @@ export default function UsersPage() {
   }
 
   async function setPlan(userId: string, plan: "free" | "pro") {
-    const res = await fetch(`/api/admin/users/${userId}/plan`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ plan }),
-    });
-    if (res.ok) setUsers((prev) => prev.map((u) => (u.user_id === userId ? { ...u, plan } : u)));
-    setPendingAction(null);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan }),
+      });
+      if (res.ok) {
+        setUsers((prev) => prev.map((u) => (u.user_id === userId ? { ...u, plan } : u)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setActionError(data.detail ?? `Couldn't update plan (${res.status})`);
+      }
+    } catch {
+      setActionError("Network error — check your connection and try again.");
+    } finally {
+      setPendingAction(null);
+    }
   }
 
   const filtered = users.filter((u) => {
@@ -64,6 +84,12 @@ export default function UsersPage() {
         placeholder="Search by user ID, profile name, or niche…"
         className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary-500"
       />
+
+      {actionError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl px-5 py-3 text-sm text-red-700">
+          {actionError}
+        </div>
+      )}
 
       {pendingCount > 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-3 flex items-center gap-2 text-sm text-amber-700">

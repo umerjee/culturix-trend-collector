@@ -16,6 +16,8 @@ export default function MemoryManager({ brandId, variantId }: Props) {
   const [memoryType, setMemoryType] = useState<(typeof MEMORY_TYPES)[number]>("running_gag");
   const [content, setContent] = useState("");
   const [creating, setCreating] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -31,6 +33,7 @@ export default function MemoryManager({ brandId, variantId }: Props) {
     e.preventDefault();
     if (!content.trim()) return;
     setCreating(true);
+    setAddError(null);
     try {
       const res = await fetch(`/api/culturetoons/variants/${variantId}/memories`, {
         method: "POST",
@@ -41,15 +44,30 @@ export default function MemoryManager({ brandId, variantId }: Props) {
         const data = await res.json();
         setMemories((prev) => [data as CharacterMemory, ...prev]);
         setContent("");
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setAddError(typeof data.detail === "string" ? data.detail : `Couldn't add memory (${res.status})`);
       }
+    } catch {
+      setAddError("Network error — check your connection and try again.");
     } finally {
       setCreating(false);
     }
   }
 
   async function removeMemory(id: string) {
-    setMemories((prev) => prev.filter((m) => m.id !== id));
-    await fetch(`/api/culturetoons/memories/${id}?brand_id=${brandId}`, { method: "DELETE" });
+    setRemoveError(null);
+    try {
+      const res = await fetch(`/api/culturetoons/memories/${id}?brand_id=${brandId}`, { method: "DELETE" });
+      if (res.ok) {
+        setMemories((prev) => prev.filter((m) => m.id !== id));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setRemoveError(typeof data.detail === "string" ? data.detail : `Couldn't delete memory (${res.status})`);
+      }
+    } catch {
+      setRemoveError("Network error — check your connection and try again.");
+    }
   }
 
   return (
@@ -61,6 +79,8 @@ export default function MemoryManager({ brandId, variantId }: Props) {
         Persistent facts/running jokes for this variant — automatically retrieved and referenced in
         future script generation when relevant.
       </p>
+
+      {removeError && <p className="text-[11px] text-red-500 mb-2">{removeError}</p>}
 
       {loading ? (
         <p className="text-xs text-gray-400">Loading…</p>
@@ -102,6 +122,7 @@ export default function MemoryManager({ brandId, variantId }: Props) {
           {creating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
         </button>
       </form>
+      {addError && <p className="text-[11px] text-red-500 mt-1.5">{addError}</p>}
     </div>
   );
 }

@@ -47,6 +47,8 @@ export default function CharacterCreationWizard({ brandId, characters, onCreated
   const [savingRelationshipFor, setSavingRelationshipFor] = useState<string | null>(null);
   const [savingPersonality, setSavingPersonality] = useState(false);
   const [personalitySaved, setPersonalitySaved] = useState(false);
+  const [personalitySaveError, setPersonalitySaveError] = useState<string | null>(null);
+  const [relationshipSaveErrors, setRelationshipSaveErrors] = useState<Record<string, string>>({});
 
   function reset() {
     setStep("describe"); setName(""); setDescription(""); setIsMain(isFirstCharacter);
@@ -127,12 +129,20 @@ export default function CharacterCreationWizard({ brandId, characters, onCreated
   async function savePersonality() {
     if (!newCharacter) return;
     setSavingPersonality(true);
+    setPersonalitySaveError(null);
     try {
-      await fetch(`/api/culturetoons/characters/${newCharacter.id}`, {
+      const res = await fetch(`/api/culturetoons/characters/${newCharacter.id}`, {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ brand_id: brandId, personality: { traits, behavioral_rules: behavioralRules, speech_rules: speechRules } }),
       });
-      setPersonalitySaved(true);
+      if (res.ok) {
+        setPersonalitySaved(true);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setPersonalitySaveError(typeof data.detail === "string" ? data.detail : `Couldn't save personality (${res.status})`);
+      }
+    } catch {
+      setPersonalitySaveError("Network error — check your connection and try again.");
     } finally {
       setSavingPersonality(false);
     }
@@ -141,8 +151,9 @@ export default function CharacterCreationWizard({ brandId, characters, onCreated
   async function saveRelationshipDraft(s: CastRelationshipSuggestion) {
     if ("error" in s) return;
     setSavingRelationshipFor(s.character_b_id);
+    setRelationshipSaveErrors((prev) => ({ ...prev, [s.character_b_id]: "" }));
     try {
-      await fetch("/api/culturetoons/relationships", {
+      const res = await fetch("/api/culturetoons/relationships", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           brand_id: brandId,
@@ -154,7 +165,14 @@ export default function CharacterCreationWizard({ brandId, characters, onCreated
           a_to_b: s.a_to_b, b_to_a: s.b_to_a,
         }),
       });
-      setSavedRelationshipIds((prev) => new Set(prev).add(s.character_b_id));
+      if (res.ok) {
+        setSavedRelationshipIds((prev) => new Set(prev).add(s.character_b_id));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setRelationshipSaveErrors((prev) => ({ ...prev, [s.character_b_id]: typeof data.detail === "string" ? data.detail : `Couldn't save (${res.status})` }));
+      }
+    } catch {
+      setRelationshipSaveErrors((prev) => ({ ...prev, [s.character_b_id]: "Network error — check your connection and try again." }));
     } finally {
       setSavingRelationshipFor(null);
     }
@@ -258,6 +276,7 @@ export default function CharacterCreationWizard({ brandId, characters, onCreated
                 {personalitySaved ? "Saved ✓" : savingPersonality ? "Saving…" : "Save personality"}
               </button>
             </div>
+            {personalitySaveError && <p className="text-[11px] text-red-500 mb-2">{personalitySaveError}</p>}
             <div className="space-y-3">
               <PersonalityFieldsEditor
                 traits={traits} onTraitsChange={setTraits}
@@ -301,6 +320,9 @@ export default function CharacterCreationWizard({ brandId, characters, onCreated
                               {saved ? "Saved ✓" : savingRelationshipFor === s.character_b_id ? "Saving…" : "Save"}
                             </button>
                           </div>
+                          {relationshipSaveErrors[s.character_b_id] && (
+                            <p className="text-[11px] text-red-500 mt-1">{relationshipSaveErrors[s.character_b_id]}</p>
+                          )}
                         </>
                       )}
                     </div>

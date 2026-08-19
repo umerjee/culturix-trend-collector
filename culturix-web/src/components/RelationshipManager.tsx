@@ -132,6 +132,7 @@ export default function RelationshipManager({ brandId }: Props) {
   const [newRuleBtoA, setNewRuleBtoA] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [relationshipHint, setRelationshipHint] = useState("");
@@ -380,9 +381,19 @@ export default function RelationshipManager({ brandId }: Props) {
   }
 
   async function archiveRelationship(id: string) {
-    setRelationships((prev) => prev.filter((r) => r.id !== id));
-    if (editingId === id) closeForm();
-    await fetch(`/api/culturetoons/relationships/${id}?brand_id=${brandId}`, { method: "DELETE" });
+    setListError(null);
+    try {
+      const res = await fetch(`/api/culturetoons/relationships/${id}?brand_id=${brandId}`, { method: "DELETE" });
+      if (res.ok) {
+        setRelationships((prev) => prev.filter((r) => r.id !== id));
+        if (editingId === id) closeForm();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setListError(typeof data.detail === "string" ? data.detail : `Couldn't archive relationship (${res.status})`);
+      }
+    } catch {
+      setListError("Network error — check your connection and try again.");
+    }
   }
 
   async function loadEvents(relationshipId: string) {
@@ -442,10 +453,20 @@ export default function RelationshipManager({ brandId }: Props) {
   }
 
   async function deleteEvent(relationshipId: string, eventId: string) {
-    setEventsByRelationship((prev) => ({
-      ...prev, [relationshipId]: (prev[relationshipId] ?? []).filter((e) => e.id !== eventId),
-    }));
-    await fetch(`/api/culturetoons/relationship-events/${eventId}?brand_id=${brandId}`, { method: "DELETE" });
+    setEventError((prev) => ({ ...prev, [relationshipId]: "" }));
+    try {
+      const res = await fetch(`/api/culturetoons/relationship-events/${eventId}?brand_id=${brandId}`, { method: "DELETE" });
+      if (res.ok) {
+        setEventsByRelationship((prev) => ({
+          ...prev, [relationshipId]: (prev[relationshipId] ?? []).filter((e) => e.id !== eventId),
+        }));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setEventError((prev) => ({ ...prev, [relationshipId]: typeof data.detail === "string" ? data.detail : `Couldn't delete event (${res.status})` }));
+      }
+    } catch {
+      setEventError((prev) => ({ ...prev, [relationshipId]: "Network error — check your connection and try again." }));
+    }
   }
 
   return (
@@ -481,6 +502,7 @@ export default function RelationshipManager({ brandId }: Props) {
                 </button>
               )}
             </div>
+            {listError && <p className="text-xs text-red-500 mb-2">{listError}</p>}
             {relationships.length > 0 && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {relationships.map((r) => {

@@ -54,6 +54,8 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   const [imageGenError, setImageGenError] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [savingName, setSavingName] = useState(false);
+  const [saveNameError, setSaveNameError] = useState<string | null>(null);
+  const [makeMainError, setMakeMainError] = useState<string | null>(null);
   const [archivingCharacter, setArchivingCharacter] = useState(false);
   const [archiveCharacterError, setArchiveCharacterError] = useState<string | null>(null);
 
@@ -62,6 +64,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   const [behavioralRules, setBehavioralRules] = useState<string[]>([]);
   const [speechRules, setSpeechRules] = useState<string[]>([]);
   const [savingPersonality, setSavingPersonality] = useState(false);
+  const [savePersonalityError, setSavePersonalityError] = useState<string | null>(null);
   const [personalityHint, setPersonalityHint] = useState("");
   const [generatingPersonality, setGeneratingPersonality] = useState(false);
   const [personalityGenError, setPersonalityGenError] = useState<string | null>(null);
@@ -70,6 +73,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   const [creatingVariant, setCreatingVariant] = useState(false);
   const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>("kling");
   const [registering, setRegistering] = useState(false);
+  const [registerError, setRegisterError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const [variantDescriptionDraft, setVariantDescriptionDraft] = useState("");
@@ -79,6 +83,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   const [variantImageGenWarning, setVariantImageGenWarning] = useState<string | null>(null);
   const [variantNameDraft, setVariantNameDraft] = useState("");
   const [savingVariantName, setSavingVariantName] = useState(false);
+  const [saveVariantNameError, setSaveVariantNameError] = useState<string | null>(null);
   const [archivingVariant, setArchivingVariant] = useState(false);
   const [archiveVariantError, setArchiveVariantError] = useState<string | null>(null);
 
@@ -104,6 +109,9 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     setArtStyleDraft(selectedCharacter?.art_style ?? "cartoon_3d");
     setImageGenError(null);
     setNameDraft(selectedCharacter?.name ?? "");
+    setSaveNameError(null);
+    setMakeMainError(null);
+    setSavePersonalityError(null);
     setTraits(selectedCharacter?.personality?.traits ?? {});
     setBehavioralRules(selectedCharacter?.personality?.behavioral_rules ?? []);
     setSpeechRules(selectedCharacter?.personality?.speech_rules ?? []);
@@ -116,6 +124,8 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     setVariantImageGenWarning(null);
     setAdvancedOpen(!!selectedVariant?.image_url);
     setVariantNameDraft(selectedVariant?.name ?? "");
+    setSaveVariantNameError(null);
+    setRegisterError(null);
   }, [selectedVariantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleCharacterCreated(character: Character, defaultVariant: CharacterVariant | null) {
@@ -135,14 +145,22 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   }
 
   async function makeMainCharacter(characterId: string) {
-    const res = await fetch(`/api/culturetoons/characters/${characterId}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ brand_id: brandId, is_main: true }),
-    });
-    if (res.ok) {
-      const updated = await res.json();
-      setCharacters((prev) => prev.map((c) => (c.id === characterId ? (updated as Character) : { ...c, is_main: false })));
+    setMakeMainError(null);
+    try {
+      const res = await fetch(`/api/culturetoons/characters/${characterId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, is_main: true }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setCharacters((prev) => prev.map((c) => (c.id === characterId ? (updated as Character) : { ...c, is_main: false })));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setMakeMainError(typeof data.detail === "string" ? data.detail : `Couldn't set main character (${res.status})`);
+      }
+    } catch {
+      setMakeMainError("Network error — check your connection and try again.");
     }
   }
 
@@ -170,13 +188,21 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   async function registerElement() {
     if (!selectedVariant) return;
     setRegistering(true);
+    setRegisterError(null);
     try {
-      await fetch(`/api/culturetoons/variants/${selectedVariant.id}/register-element`, {
+      const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}/register-element`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ brand_id: brandId, voice_provider: voiceProvider }),
       });
-      setVariants((prev) => prev.map((v) => (v.id === selectedVariant.id ? { ...v, element_status: "pending" } : v)));
+      if (res.ok) {
+        setVariants((prev) => prev.map((v) => (v.id === selectedVariant.id ? { ...v, element_status: "pending" } : v)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setRegisterError(typeof data.detail === "string" ? data.detail : `Couldn't register (${res.status})`);
+      }
+    } catch {
+      setRegisterError("Network error — check your connection and try again.");
     } finally {
       setRegistering(false);
     }
@@ -241,6 +267,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   async function saveCharacterName() {
     if (!selectedCharacter || !nameDraft.trim() || nameDraft.trim() === selectedCharacter.name) return;
     setSavingName(true);
+    setSaveNameError(null);
     try {
       const res = await fetch(`/api/culturetoons/characters/${selectedCharacter.id}`, {
         method: "PUT",
@@ -250,7 +277,12 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
       if (res.ok) {
         const data = await res.json();
         setCharacters((prev) => prev.map((c) => (c.id === selectedCharacter.id ? (data as Character) : c)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setSaveNameError(typeof data.detail === "string" ? data.detail : `Couldn't save name (${res.status})`);
       }
+    } catch {
+      setSaveNameError("Network error — check your connection and try again.");
     } finally {
       setSavingName(false);
     }
@@ -259,6 +291,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   async function savePersonality() {
     if (!selectedCharacter) return;
     setSavingPersonality(true);
+    setSavePersonalityError(null);
     try {
       const personality: CharacterPersonality = {
         traits, behavioral_rules: behavioralRules, speech_rules: speechRules,
@@ -271,7 +304,12 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
       if (res.ok) {
         const data = await res.json();
         setCharacters((prev) => prev.map((c) => (c.id === selectedCharacter.id ? (data as Character) : c)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setSavePersonalityError(typeof data.detail === "string" ? data.detail : `Couldn't save personality (${res.status})`);
       }
+    } catch {
+      setSavePersonalityError("Network error — check your connection and try again.");
     } finally {
       setSavingPersonality(false);
     }
@@ -326,6 +364,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   async function saveVariantName() {
     if (!selectedVariant || !variantNameDraft.trim() || variantNameDraft.trim() === selectedVariant.name) return;
     setSavingVariantName(true);
+    setSaveVariantNameError(null);
     try {
       const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}`, {
         method: "PUT",
@@ -335,7 +374,12 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
       if (res.ok) {
         const data = await res.json();
         setVariants((prev) => prev.map((v) => (v.id === selectedVariant.id ? (data as CharacterVariant) : v)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setSaveVariantNameError(typeof data.detail === "string" ? data.detail : `Couldn't save name (${res.status})`);
       }
+    } catch {
+      setSaveVariantNameError("Network error — check your connection and try again.");
     } finally {
       setSavingVariantName(false);
     }
@@ -429,6 +473,8 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                 Archive
               </button>
             </div>
+            {saveNameError && <p className="text-[11px] text-red-500 mb-3">{saveNameError}</p>}
+            {makeMainError && <p className="text-[11px] text-red-500 mb-3">{makeMainError}</p>}
             {archiveCharacterError && <p className="text-[11px] text-red-500 mb-3">{archiveCharacterError}</p>}
             <CharacterImageBuilder
             description={descriptionDraft}
@@ -513,6 +559,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                   {savingPersonality ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
                   Save personality
                 </button>
+                {savePersonalityError && <p className="text-[11px] text-red-500">{savePersonalityError}</p>}
               </div>
             )}
           </div>
@@ -609,6 +656,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                   Archive
                 </button>
               </div>
+              {saveVariantNameError && <p className="text-[11px] text-red-500 mb-2">{saveVariantNameError}</p>}
               {archiveVariantError && <p className="text-[11px] text-red-500 mb-2">{archiveVariantError}</p>}
               <CharacterImageBuilder
                 description={variantDescriptionDraft}
@@ -695,6 +743,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                       {!selectedVariant.image_url && (
                         <p className="text-[11px] text-gray-400 mt-1.5">Build a variant image above first.</p>
                       )}
+                      {registerError && <p className="text-[11px] text-red-500 mt-1.5">{registerError}</p>}
                     </div>
 
                     <ExpressionUploadGrid

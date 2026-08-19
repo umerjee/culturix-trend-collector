@@ -50,6 +50,8 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
   const [scriptId, setScriptId] = useState(scripts[0]?.id ?? "");
   const [title, setTitle] = useState("");
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [toonErrors, setToonErrors] = useState<Record<string, string>>({});
   const [generatingId, setGeneratingId] = useState<string | null>(null);
 
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccount[]>([]);
@@ -191,6 +193,7 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
     e.preventDefault();
     if (!variantId || !scriptId) return;
     setCreating(true);
+    setCreateError(null);
     try {
       // A toon defaults to the background its script was generated for —
       // scripts drive backgrounds, not the reverse — but this stays
@@ -208,28 +211,54 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
         const created = await res.json();
         setToons((prev) => [created, ...prev]);
         setTitle("");
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setCreateError(typeof data.detail === "string" ? data.detail : `Couldn't create toon (${res.status})`);
       }
+    } catch {
+      setCreateError("Network error — check your connection and try again.");
     } finally {
       setCreating(false);
     }
   }
 
   async function updateToon(id: string, patch: Record<string, unknown>) {
+    const previous = toons.find((t) => t.id === id);
     setToons((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } as Toon : t)));
-    const res = await fetch(`/api/culturetoons/toons/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...patch, brand_id: brandId }),
-    });
-    if (res.ok) {
-      const updated = await res.json();
-      setToons((prev) => prev.map((t) => (t.id === id ? updated : t)));
+    setToonErrors((prev) => ({ ...prev, [id]: "" }));
+    try {
+      const res = await fetch(`/api/culturetoons/toons/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...patch, brand_id: brandId }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setToons((prev) => prev.map((t) => (t.id === id ? updated : t)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        if (previous) setToons((prev) => prev.map((t) => (t.id === id ? previous : t)));
+        setToonErrors((prev) => ({ ...prev, [id]: typeof data.detail === "string" ? data.detail : `Couldn't save changes (${res.status})` }));
+      }
+    } catch {
+      if (previous) setToons((prev) => prev.map((t) => (t.id === id ? previous : t)));
+      setToonErrors((prev) => ({ ...prev, [id]: "Network error — check your connection and try again." }));
     }
   }
 
   async function archiveToon(id: string) {
-    setToons((prev) => prev.filter((t) => t.id !== id));
-    await fetch(`/api/culturetoons/toons/${id}?brand_id=${brandId}`, { method: "DELETE" });
+    setToonErrors((prev) => ({ ...prev, [id]: "" }));
+    try {
+      const res = await fetch(`/api/culturetoons/toons/${id}?brand_id=${brandId}`, { method: "DELETE" });
+      if (res.ok) {
+        setToons((prev) => prev.filter((t) => t.id !== id));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setToonErrors((prev) => ({ ...prev, [id]: typeof data.detail === "string" ? data.detail : `Couldn't archive (${res.status})` }));
+      }
+    } catch {
+      setToonErrors((prev) => ({ ...prev, [id]: "Network error — check your connection and try again." }));
+    }
   }
 
   async function generateVideo(id: string) {
@@ -316,6 +345,7 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
             Add toon
           </button>
         </form>
+        {createError && <p className="text-xs text-red-500 mt-2">{createError}</p>}
       </div>
 
       <div className="space-y-3">
@@ -347,6 +377,7 @@ export default function ToonManager({ brandId, brandName, initialToons, scripts,
                   {t.status}
                 </span>
               </div>
+              {toonErrors[t.id] && <p className="text-[11px] text-red-500 mb-2">{toonErrors[t.id]}</p>}
 
               {!t.background_id && (
                 <select

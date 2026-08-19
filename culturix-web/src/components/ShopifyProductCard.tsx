@@ -21,6 +21,7 @@ export default function ShopifyProductCard({ product }: Props) {
 
   const [reel, setReel] = useState(product.reel);
   const [reelStarting, setReelStarting] = useState(false);
+  const [reelStartError, setReelStartError] = useState<string | null>(null);
 
   async function generate() {
     if (generating) return;
@@ -44,9 +45,17 @@ export default function ShopifyProductCard({ product }: Props) {
   async function generateReel() {
     if (reelStarting || reel?.status === "processing") return;
     setReelStarting(true);
+    setReelStartError(null);
     try {
-      await fetch(`/api/shopify/products/${product.id}/generate-reel`, { method: "POST" });
-      setReel({ status: "processing", video_url: null, error: null, generated_at: null });
+      const res = await fetch(`/api/shopify/products/${product.id}/generate-reel`, { method: "POST" });
+      if (res.ok) {
+        setReel({ status: "processing", video_url: null, error: null, generated_at: null });
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setReelStartError(typeof data.detail === "string" ? data.detail : `Couldn't start reel generation (${res.status})`);
+      }
+    } catch {
+      setReelStartError("Network error — check your connection and try again.");
     } finally {
       setReelStarting(false);
     }
@@ -186,6 +195,12 @@ export default function ShopifyProductCard({ product }: Props) {
               {reelStarting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Film className="h-3.5 w-3.5" />}
               Generate reel
             </button>
+          )}
+          {reelStartError && (
+            <p className="flex items-start gap-1.5 text-xs text-red-500 mt-1.5">
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              {reelStartError}
+            </p>
           )}
         </div>
       </div>

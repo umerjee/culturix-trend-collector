@@ -155,6 +155,7 @@ export default function CastPlanWizard({ brandId, characters, onCreated }: Props
   async function createCast() {
     setCreating(true);
     setError(null);
+    const failures: string[] = [];
     try {
       const includedIndices = draftCharacters
         .map((c, i) => (c.included ? i : -1))
@@ -177,15 +178,19 @@ export default function CastPlanWizard({ brandId, characters, onCreated }: Props
             ...(brandHasNoCharacters ? { is_main: draft.suggested_main } : {}),
           }),
         });
-        if (!res.ok) continue;
+        if (!res.ok) {
+          failures.push(draft.name.trim() || `Character ${index + 1}`);
+          continue;
+        }
         const data = await res.json();
         const { default_variant, ...character } = data;
         indexToReal.set(index, { character: character as Character, variant: (default_variant ?? null) as CharacterVariant | null });
 
-        await fetch(`/api/culturetoons/characters/${character.id}`, {
+        const personalityRes = await fetch(`/api/culturetoons/characters/${character.id}`, {
           method: "PUT", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ brand_id: brandId, personality: draft.personality }),
         });
+        if (!personalityRes.ok) failures.push(`${draft.name.trim() || `Character ${index + 1}`} (personality)`);
       }
 
       for (const rel of draftRelationships) {
@@ -193,7 +198,7 @@ export default function CastPlanWizard({ brandId, characters, onCreated }: Props
         const a = indexToReal.get(rel.character_a_index);
         const b = indexToReal.get(rel.character_b_index);
         if (!a || !b) continue;
-        await fetch("/api/culturetoons/relationships", {
+        const relRes = await fetch("/api/culturetoons/relationships", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             brand_id: brandId, character_a_id: a.character.id, character_b_id: b.character.id,
@@ -204,12 +209,23 @@ export default function CastPlanWizard({ brandId, characters, onCreated }: Props
             a_to_b: directionPayload(rel.a_to_b), b_to_a: directionPayload(rel.b_to_a),
           }),
         });
+        if (!relRes.ok) {
+          const aName = draftCharacters[rel.character_a_index]?.name || "?";
+          const bName = draftCharacters[rel.character_b_index]?.name || "?";
+          failures.push(`${aName} ↔ ${bName} (relationship)`);
+        }
       }
 
       const createdCharacters = includedIndices.map((i) => indexToReal.get(i)?.character).filter(Boolean) as Character[];
       const createdVariants = includedIndices.map((i) => indexToReal.get(i)?.variant).filter(Boolean) as CharacterVariant[];
       onCreated(createdCharacters, createdVariants);
-      close();
+      if (failures.length > 0) {
+        setError(`Created, but some parts failed: ${failures.join(", ")}. You can fix these later from the Characters/Relationships tabs.`);
+      } else {
+        close();
+      }
+    } catch {
+      setError("Network error — check your connection and try again. Anything already created above was saved.");
     } finally {
       setCreating(false);
     }

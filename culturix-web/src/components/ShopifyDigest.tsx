@@ -22,8 +22,10 @@ export default function ShopifyDigest({ initialStore, initialProducts }: Props) 
   const [store, setStore] = useState(initialStore);
   const [products, setProducts] = useState(initialProducts);
   const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [generatingBulk, setGeneratingBulk] = useState(false);
   const [bulkMessage, setBulkMessage] = useState<string | null>(null);
+  const [bulkError, setBulkError] = useState<string | null>(null);
   const hasIdea = products.some((p) => !!p.idea);
   const hasReel = products.some((p) => p.reel?.status === "done");
   const [setupCollapsed, setSetupCollapsed] = useState(() => products.length > 0 && hasIdea && hasReel);
@@ -46,10 +48,18 @@ export default function ShopifyDigest({ initialStore, initialProducts }: Props) 
 
   async function triggerSync() {
     setSyncing(true);
+    setSyncError(null);
     try {
-      await fetch("/api/shopify/sync", { method: "POST" });
-      const res = await fetch("/api/shopify/store", { cache: "no-store" });
-      if (res.ok) setStore(await res.json());
+      const res = await fetch("/api/shopify/sync", { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setSyncError(typeof data.detail === "string" ? data.detail : `Couldn't start sync (${res.status})`);
+        return;
+      }
+      const storeRes = await fetch("/api/shopify/store", { cache: "no-store" });
+      if (storeRes.ok) setStore(await storeRes.json());
+    } catch {
+      setSyncError("Network error — check your connection and try again.");
     } finally {
       setSyncing(false);
     }
@@ -58,13 +68,21 @@ export default function ShopifyDigest({ initialStore, initialProducts }: Props) 
   async function generateBulk() {
     setGeneratingBulk(true);
     setBulkMessage(null);
+    setBulkError(null);
     try {
-      await fetch("/api/shopify/generate-ideas", {
+      const res = await fetch("/api/shopify/generate-ideas", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ limit: 10 }),
       });
-      setBulkMessage("Generating ideas for up to 10 products without one — this runs in the background, check back shortly and refresh.");
+      if (res.ok) {
+        setBulkMessage("Generating ideas for up to 10 products without one — this runs in the background, check back shortly and refresh.");
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setBulkError(typeof data.detail === "string" ? data.detail : `Couldn't start generation (${res.status})`);
+      }
+    } catch {
+      setBulkError("Network error — check your connection and try again.");
     } finally {
       setGeneratingBulk(false);
     }
@@ -144,6 +162,7 @@ export default function ShopifyDigest({ initialStore, initialProducts }: Props) 
           <span>{store.product_count} products (last 90 days)</span>
           <span>Last synced {fmt(store.last_synced_at)}</span>
         </div>
+        {syncError && <p className="text-xs text-red-500 mt-2">{syncError}</p>}
       </div>
 
       {products.length > 0 && (
@@ -173,6 +192,7 @@ export default function ShopifyDigest({ initialStore, initialProducts }: Props) 
         </div>
       )}
       {bulkMessage && <p className="text-xs text-primary-500">{bulkMessage}</p>}
+      {bulkError && <p className="text-xs text-red-500">{bulkError}</p>}
 
       {products.length === 0 ? (
         <div className="rounded-2xl border-2 border-dashed border-gray-200 py-16 text-center">
