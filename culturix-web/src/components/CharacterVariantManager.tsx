@@ -55,6 +55,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   const [nameDraft, setNameDraft] = useState("");
   const [savingName, setSavingName] = useState(false);
   const [archivingCharacter, setArchivingCharacter] = useState(false);
+  const [archiveCharacterError, setArchiveCharacterError] = useState<string | null>(null);
 
   const [personalityOpen, setPersonalityOpen] = useState(false);
   const [traits, setTraits] = useState<Record<string, number>>({});
@@ -79,6 +80,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   const [variantNameDraft, setVariantNameDraft] = useState("");
   const [savingVariantName, setSavingVariantName] = useState(false);
   const [archivingVariant, setArchivingVariant] = useState(false);
+  const [archiveVariantError, setArchiveVariantError] = useState<string | null>(null);
 
   const selectedCharacter = characters.find((c) => c.id === selectedCharacterId) ?? null;
   const characterVariants = variants.filter((v) => v.character_id === selectedCharacterId);
@@ -301,6 +303,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   async function archiveCharacter() {
     if (!selectedCharacter) return;
     setArchivingCharacter(true);
+    setArchiveCharacterError(null);
     try {
       const res = await fetch(`/api/culturetoons/characters/${selectedCharacter.id}?brand_id=${brandId}`, { method: "DELETE" });
       if (res.ok) {
@@ -309,7 +312,12 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
         setVariants((prev) => prev.filter((v) => v.character_id !== selectedCharacter.id));
         setSelectedCharacterId(remaining[0]?.id ?? null);
         setSelectedVariantId(null);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setArchiveCharacterError(typeof data.detail === "string" ? data.detail : `Couldn't archive (${res.status})`);
       }
+    } catch {
+      setArchiveCharacterError("Network error — check your connection and try again.");
     } finally {
       setArchivingCharacter(false);
     }
@@ -336,12 +344,18 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   async function archiveVariant() {
     if (!selectedVariant) return;
     setArchivingVariant(true);
+    setArchiveVariantError(null);
     try {
       const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}?brand_id=${brandId}`, { method: "DELETE" });
       if (res.ok) {
         setVariants((prev) => prev.filter((v) => v.id !== selectedVariant.id));
         setSelectedVariantId(null);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setArchiveVariantError(typeof data.detail === "string" ? data.detail : `Couldn't archive (${res.status})`);
       }
+    } catch {
+      setArchiveVariantError("Network error — check your connection and try again.");
     } finally {
       setArchivingVariant(false);
     }
@@ -415,6 +429,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                 Archive
               </button>
             </div>
+            {archiveCharacterError && <p className="text-[11px] text-red-500 mb-3">{archiveCharacterError}</p>}
             <CharacterImageBuilder
             description={descriptionDraft}
             onDescriptionChange={setDescriptionDraft}
@@ -594,6 +609,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                   Archive
                 </button>
               </div>
+              {archiveVariantError && <p className="text-[11px] text-red-500 mb-2">{archiveVariantError}</p>}
               <CharacterImageBuilder
                 description={variantDescriptionDraft}
                 onDescriptionChange={setVariantDescriptionDraft}
