@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check, Target, Pencil, Trash2, Film } from "lucide-react";
+import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check, Target, Pencil, Trash2, Film, AlertTriangle, CheckCircle2 } from "lucide-react";
 import type { ToonScript, ToonScriptShot, CharacterVariant, ToonBackground } from "@/lib/types";
 import { TONE_OPTIONS, MAX_CHARACTERS_PER_VIDEO, ART_STYLES, EXPRESSION_NAMES } from "@/lib/types";
 
@@ -862,6 +862,28 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                 </span>
               </div>
               {regenerateErrors[s.id] && <p className="text-[11px] text-red-500 mb-2">{regenerateErrors[s.id]}</p>}
+              {s.comedy_judgment && !s.comedy_judgment.judge_failed && s.comedy_judgment.passes_bar === false && (
+                <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-100 px-2.5 py-2 mb-2">
+                  <AlertTriangle className="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-xs text-amber-700">
+                      Comedy check: {s.comedy_judgment.comedy_score}/100 — {s.comedy_judgment.feedback}
+                    </p>
+                    <button
+                      onClick={() => regenerateScript(s.id)}
+                      disabled={regeneratingId === s.id}
+                      className="text-[11px] font-medium text-amber-700 hover:text-amber-900 mt-1 disabled:opacity-50"
+                    >
+                      {regeneratingId === s.id ? "Regenerating…" : "Regenerate with this feedback →"}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {s.comedy_judgment && !s.comedy_judgment.judge_failed && s.comedy_judgment.passes_bar === true && (
+                <p className="flex items-center gap-1 text-[11px] text-emerald-600 mb-2">
+                  <CheckCircle2 className="h-3 w-3" /> Comedy check: {s.comedy_judgment.comedy_score}/100 — passes the bar
+                </p>
+              )}
               {s.generation_source === "ai_auto" && s.status === "draft" && (
                 <div className="flex gap-2 mb-2">
                   <button

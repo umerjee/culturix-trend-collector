@@ -378,6 +378,7 @@ def _serialize_script(s) -> dict:
         "source_type": s.source_type, "source_id": s.source_id, "idea_text": s.idea_text,
         "hook_line": s.hook_line, "dialogue": s.dialogue, "scene_direction": s.scene_direction,
         "tone": s.tone, "shots": s.shots, "total_duration_seconds": s.total_duration_seconds,
+        "comedy_judgment": s.comedy_judgment,
         "background_id": str(s.background_id) if s.background_id else None,
         "generation_source": s.generation_source, "status": s.status,
         "created_at": s.created_at.isoformat() if s.created_at else None,
@@ -2628,7 +2629,7 @@ def suggest_script(body: dict):
     pattern (the caller needs the result immediately to render it)."""
     from app.db import SessionLocal
     from app.models.toon_script import ToonScript
-    from app.services.culturetoon_script import generate_toon_script, ToonScriptGenerationError, TONE_OPTIONS as _TONES
+    from app.services.culturetoon_script import generate_toon_script, judge_script_comedy, ToonScriptGenerationError, TONE_OPTIONS as _TONES
 
     user_id = body.get("user_id")
     brand_id = body.get("brand_id")
@@ -2691,6 +2692,7 @@ def suggest_script(body: dict):
             tone=idea.get("tone"),
             shots=idea.get("shots"),
             total_duration_seconds=idea.get("total_duration_seconds"),
+            comedy_judgment=judge_script_comedy(idea),
             generation_source="ai",
             status="draft",
         )
@@ -2713,7 +2715,7 @@ def suggest_script_from_idea(body: dict):
     from app.db import SessionLocal
     from app.models.toon_script import ToonScript
     from app.services.culturetoon_script import (
-        generate_toon_script_from_idea, ToonScriptGenerationError, TONE_OPTIONS as _TONES,
+        generate_toon_script_from_idea, judge_script_comedy, ToonScriptGenerationError, TONE_OPTIONS as _TONES,
     )
 
     user_id = body.get("user_id")
@@ -2763,6 +2765,7 @@ def suggest_script_from_idea(body: dict):
             tone=result.get("tone"),
             shots=result.get("shots"),
             total_duration_seconds=result.get("total_duration_seconds"),
+            comedy_judgment=judge_script_comedy(result),
             generation_source="ai",
             status="draft",
         )
@@ -2868,7 +2871,8 @@ def regenerate_script(script_id: str, body: dict):
     from app.db import SessionLocal
     from app.models.character_variant import CharacterVariant
     from app.services.culturetoon_script import (
-        generate_toon_script, generate_toon_script_from_idea, ToonScriptGenerationError, TONE_OPTIONS as _TONES,
+        generate_toon_script, generate_toon_script_from_idea, judge_script_comedy,
+        ToonScriptGenerationError, TONE_OPTIONS as _TONES,
     )
 
     user_id = body.get("user_id")
@@ -2902,6 +2906,12 @@ def regenerate_script(script_id: str, body: dict):
         character_personalities, relationships, memories, cultures, performance_context = _gather_script_generation_context(
             session, brand_id, variants, script.idea_text or ""
         )
+        # Auto-fed in whenever the stored judgment failed the bar — closes
+        # the loop from judge_script_comedy's own feedback without the
+        # frontend needing to pass anything extra; the "Regenerate with
+        # this feedback" button relies on this happening automatically.
+        prior_judgment = script.comedy_judgment or {}
+        critique_feedback = prior_judgment.get("feedback") if prior_judgment.get("passes_bar") is False else None
 
         try:
             if script.source_type in ("persona", "cluster") and script.source_id is not None:
@@ -2916,6 +2926,7 @@ def regenerate_script(script_id: str, body: dict):
                     num_shots=num_shots, target_duration_seconds=target_duration_seconds,
                     character_personalities=character_personalities, relationships=relationships,
                     memories=memories, cultures=cultures, performance_context=performance_context,
+                    critique_feedback=critique_feedback,
                 )
             elif script.idea_text:
                 result = generate_toon_script_from_idea(
@@ -2923,6 +2934,7 @@ def regenerate_script(script_id: str, body: dict):
                     num_shots=num_shots, target_duration_seconds=target_duration_seconds,
                     character_personalities=character_personalities, relationships=relationships,
                     memories=memories, cultures=cultures, performance_context=performance_context,
+                    critique_feedback=critique_feedback,
                 )
             else:
                 raise HTTPException(
@@ -2936,6 +2948,7 @@ def regenerate_script(script_id: str, body: dict):
         script.tone = result.get("tone")
         script.shots = result.get("shots")
         script.total_duration_seconds = result.get("total_duration_seconds")
+        script.comedy_judgment = judge_script_comedy(result)
         script.status = "draft"
         session.commit()
         session.refresh(script)
@@ -3474,7 +3487,7 @@ def suggest_next_episode_part(episode_id: str, body: dict):
     from app.models.toon import Toon
     from app.models.toon_script import ToonScript
     from app.services.culturetoon_script import (
-        generate_toon_script_continuing_episode, ToonScriptGenerationError, TONE_OPTIONS as _TONES,
+        generate_toon_script_continuing_episode, judge_script_comedy, ToonScriptGenerationError, TONE_OPTIONS as _TONES,
     )
 
     user_id = body.get("user_id")
@@ -3527,6 +3540,7 @@ def suggest_next_episode_part(episode_id: str, body: dict):
             tone=result.get("tone"),
             shots=result.get("shots"),
             total_duration_seconds=result.get("total_duration_seconds"),
+            comedy_judgment=judge_script_comedy(result),
             generation_source="ai",
             status="draft",
         )

@@ -81,6 +81,24 @@ def _no_real_memory_retrieval(mocker):
     return mocker.patch("app.services.culturetoon_memory.retrieve_relevant_memories", return_value=[])
 
 
+@pytest.fixture(autouse=True)
+def _no_real_comedy_judge_call(mocker):
+    # judge_script_comedy makes a real (billed) LLM call after every script
+    # generation/regeneration — every suggest_script*/regenerate_script test
+    # would otherwise make a real network call, and in this test environment
+    # (QWEN_API_KEY="" set below, ANTHROPIC_API_KEY="test-key") that call
+    # doesn't just fail fast, it hangs on real Anthropic auth-retry behavior
+    # before falling back — confirmed live, ~20+ affected tests took over a
+    # minute instead of the usual sub-second run. Same autouse-mock pattern
+    # as _no_real_ai_judge_call in test_culturetoon_video.py for the
+    # analogous post-video QA judge. Tests that specifically want to
+    # exercise the judge override this mock explicitly.
+    return mocker.patch(
+        "app.services.culturetoon_script.judge_script_comedy",
+        return_value={"comedy_score": 80, "passes_bar": True, "feedback": "mocked", "judge_failed": False},
+    )
+
+
 @pytest.fixture
 def db(mocker):
     engine = create_engine("sqlite:///:memory:")
@@ -1392,6 +1410,33 @@ class TestScripts:
 
 
 class TestRegenerateScript:
+    def test_regenerate_feeds_prior_failing_judgment_back_into_the_prompt(self, db, user_id, brand_and_character, mocker):
+        # Closes the loop end to end: a script that failed the comedy bar
+        # should have that critique automatically fed into the next
+        # generation call when regenerated — not just re-rolled blind.
+        brand, _character, variant = brand_and_character
+        mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H", "tone": "funny", "shots": [], "total_duration_seconds": 4},
+        )
+        mocker.patch(
+            "app.services.culturetoon_script.judge_script_comedy",
+            return_value={"comedy_score": 30, "passes_bar": False, "feedback": "Too generic — be specific.", "judge_failed": False},
+        )
+        script = culturetoons.suggest_script_from_idea({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "idea": "A birthday party", "tone": "funny",
+        })
+        assert script["comedy_judgment"]["passes_bar"] is False
+
+        mock_regen = mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H2", "tone": "funny", "shots": [], "total_duration_seconds": 4},
+        )
+        culturetoons.regenerate_script(script["id"], {"user_id": user_id, "brand_id": brand["id"]})
+
+        assert mock_regen.call_args.kwargs["critique_feedback"] == "Too generic — be specific."
+
     def test_manual_script_has_no_source_400s(self, db, user_id, brand_and_character):
         brand, _character, variant = brand_and_character
         script = culturetoons.create_script({

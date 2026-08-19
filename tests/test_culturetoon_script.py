@@ -11,6 +11,7 @@ import pytest
 from app.services.culturetoon_script import (
     generate_toon_script,
     build_kling_prompt,
+    judge_script_comedy,
     ToonScriptGenerationError,
     _assign_speakers,
 )
@@ -493,3 +494,60 @@ class TestBuildKlingPrompt:
     def test_empty_element_map_raises(self):
         with pytest.raises(ToonScriptGenerationError, match="at least one element name"):
             build_kling_prompt(_VALID_SHOTS, {})
+
+
+class TestJudgeScriptComedy:
+    def test_scores_and_returns_feedback(self, mocker):
+        fake_client = _mock_qwen_response(mocker, {
+            "comedy_score": 35, "passes_bar": False,
+            "feedback": "Hans's line is too mild — push the bureaucratic angle further.",
+        })
+        result = judge_script_comedy({"hook_line": "H", "shots": _VALID_SHOTS})
+
+        assert result == {
+            "comedy_score": 35, "passes_bar": False,
+            "feedback": "Hans's line is too mild — push the bureaucratic angle further.",
+            "judge_failed": False,
+        }
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "storms into the kitchen" in sent_prompt
+        assert "You didn't eat?!" in sent_prompt
+        assert "SPECIFICITY" in sent_prompt
+
+    def test_includes_visual_and_dialogue_delivery_in_the_prompt(self, mocker):
+        fake_client = _mock_qwen_response(mocker, {"comedy_score": 80, "passes_bar": True, "feedback": "Good."})
+        judge_script_comedy({
+            "hook_line": "H",
+            "shots": [{
+                "shot_number": 1, "duration_seconds": 4,
+                "visual": "holding a massive drum, confetti mid-air", "action": "dancing manically",
+                "expression": "Happy", "dialogue": "500-person feast!", "dialogue_delivery": "Loud & Hyped",
+            }],
+        })
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "holding a massive drum, confetti mid-air" in sent_prompt
+        assert "(Loud & Hyped)" in sent_prompt
+
+    def test_fails_open_on_llm_error(self, mocker):
+        # judge_script_comedy is advisory-only, called right after a real
+        # script generation succeeded — a broken judge shouldn't take the
+        # whole suggest/regenerate response down with it.
+        mocker.patch("app.services.culturetoon_script._get_qwen_client", side_effect=RuntimeError("down"))
+        os.environ["QWEN_API_KEY"] = "test-key"
+        result = judge_script_comedy({"hook_line": "H", "shots": _VALID_SHOTS})
+        assert result == {"comedy_score": None, "passes_bar": None, "feedback": None, "judge_failed": True}
+
+    def test_fails_open_on_malformed_json(self, mocker):
+        os.environ["QWEN_API_KEY"] = "test-key"
+        fake_message = mocker.Mock()
+        fake_message.content = "not json"
+        fake_choice = mocker.Mock()
+        fake_choice.message = fake_message
+        fake_response = mocker.Mock()
+        fake_response.choices = [fake_choice]
+        fake_client = mocker.Mock()
+        fake_client.chat.completions.create.return_value = fake_response
+        mocker.patch("app.services.culturetoon_script._get_qwen_client", return_value=fake_client)
+
+        result = judge_script_comedy({"hook_line": "H", "shots": _VALID_SHOTS})
+        assert result["judge_failed"] is True

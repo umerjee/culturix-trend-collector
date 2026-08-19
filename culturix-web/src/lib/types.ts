@@ -735,6 +735,14 @@ export interface ToonScript {
   tone: (typeof TONE_OPTIONS)[number] | null;
   shots: ToonScriptShot[] | null;
   total_duration_seconds: number | null;
+  // Advisory-only, set right after AI generation/regeneration — a
+  // separate LLM call scoring the script against the same comedy-craft
+  // bar the writer prompt was given (specificity/escalation/commitment).
+  // Null for manual scripts, or scripts created before this existed.
+  comedy_judgment: {
+    comedy_score: number | null; passes_bar: boolean | null;
+    feedback: string | null; judge_failed: boolean;
+  } | null;
   background_id: string | null;
   generation_source: "manual" | "ai" | "ai_auto";
   status: "draft" | "approved" | "archived";

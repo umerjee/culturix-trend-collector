@@ -210,6 +210,9 @@ async def lifespan(_):
             # The user's own free-text idea for source_type="idea" scripts —
             # see ToonScript.idea_text's docstring.
             "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS idea_text TEXT",
+            # Advisory comedy-quality score/feedback — see ToonScript.
+            # comedy_judgment's docstring.
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS comedy_judgment JSON",
             # Kling Omni video pipeline state — see app/services/culturetoon_video.py.
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS raw_video_url TEXT",
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS clip_video_urls TEXT[] DEFAULT '{}'",

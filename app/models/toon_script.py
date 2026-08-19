@@ -75,6 +75,18 @@ class ToonScript(Base):
     shots = Column(JSON, nullable=True)
     total_duration_seconds = Column(Integer, nullable=True)
 
+    # {"comedy_score": int|None, "passes_bar": bool|None, "feedback": str|None,
+    #  "judge_failed": bool} — set right after generation/regeneration by
+    # app/services/culturetoon_script.py::judge_script_comedy(), a SEPARATE
+    # LLM call scoring the script against the same comedy-craft bar the
+    # writer prompt was given. Mirrors Toon.qa_results' advisory-only
+    # posture (see that column's docstring) — never blocks or auto-discards
+    # anything, just surfaces score/feedback for the user to act on via
+    # POST /scripts/{id}/regenerate or ignore. NULL for scripts created
+    # before this existed, or for manual scripts (never judged — nothing
+    # was AI-generated to score).
+    comedy_judgment = Column(JSON, nullable=True)
+
     # The background generated FOR this script's scene (see
     # POST /scripts/{id}/generate-background) — a script's setting drives
     # its background, not the other way around, so a Toon built from this

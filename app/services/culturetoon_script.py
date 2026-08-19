@@ -355,12 +355,18 @@ def _build_prompt_from_context(source_type: str, context: str, variants: list, t
                                 relationships: Optional[list] = None,
                                 memories: Optional[list] = None,
                                 cultures: Optional[list] = None,
-                                performance_context: Optional[str] = None) -> str:
+                                performance_context: Optional[str] = None,
+                                critique_feedback: Optional[str] = None) -> str:
     cast_line = _cast_line(variants, source_type, character_personalities)
     relationship_line = _relationship_context(relationships)
     memory_line = _memory_context(memories)
     culture_line = _culture_context(cultures)
     performance_line = performance_context or ""
+    critique_line = (
+        f"\nA critic reviewed an earlier draft of this exact premise and said: \"{critique_feedback}\" "
+        "— this revision MUST specifically fix that, not just produce another similar draft.\n"
+        if critique_feedback else ""
+    )
     speaker_field = (
         '\n- "speaker_name" is the exact name of which listed character is acting/speaking in '
         "that shot (required when more than one character is listed; omit or null otherwise)."
@@ -377,6 +383,7 @@ social video, grounded in the {source_type} below. The tone must be: {tone}.
 {memory_line}
 {culture_line}
 {performance_line}
+{critique_line}
 Aim for around {num_shots} shots totaling about {target_duration_seconds} seconds, though you
 may adjust within the hard limits below if it better serves the joke.
 
@@ -395,6 +402,38 @@ Comedy craft — the single biggest thing separating a flat skit from a genuinel
 - Use the cast's personality/culture/relationship context above aggressively, not just as
   flavor text — a character with an established trait should take that trait to a comedic
   extreme, not just gently reference it.
+
+Concrete example of the gap between a WEAK first draft and what you should actually write —
+same premise (three friends comparing how their cultures react to a newborn), same length:
+
+WEAK (reject this level — safe, generic, no escalation, mild anticlimax):
+  Shot 1, Kumar: "In my culture, we celebrate with a big feast and loud music!"
+  Shot 2, Aisha: "And in mine, we gather the community for blessings and prayers."
+  Shot 3, Hans: "In my culture, we just... sleep. A lot."
+  Shot 4: They laugh.
+  Shot 5, Aisha: "Well, every culture has its own way, doesn't it?"
+
+STRONG (this is the bar):
+  Shot 1, Kumar (visual: wildly throwing confetti, holding a massive drum, manic energy;
+  delivery: Loud & Hyped): "Bro! In my culture, a baby means a 500-person feast, 4 days of
+  non-stop Bollywood dancing, and 12 aunties fighting over who holds him first!"
+  Shot 2, Aisha (visual: pushes the drum away, waving a jug of sacred oil and a family tree
+  scroll; delivery: Intense): "That's nothing! We chant blessings village-wide, sacrifice a
+  goat, and give the baby seven names to confuse evil spirits!"
+  Shot 3, Hans (visual: high-visibility safety vest, digital stopwatch, 400-page binder;
+  delivery: Robotic/Deadpan): "In Germany the child is registered at the Standesamt for a tax
+  ID immediately. Quiet hours are 22:00-06:00. Crying during those hours is an administrative
+  offense."
+  Shot 4: Music record-scratches out. Kumar and Aisha stare in horrified silence.
+  Shot 5, Hans (visual: flips a clipboard page, ignoring their horror; delivery: efficient):
+  "Also his recycling training begins at month three. Ordnung muss sein."
+
+The difference isn't just wording — the strong version has real numbers (500-person, 4 days,
+12 aunties, 7 names), real props (drum, confetti, sacred oil, scroll, safety vest, binder),
+each beat is bigger/weirder than the last, and Hans's bureaucratic deadpan is pushed to a
+genuinely absurd extreme instead of a throwaway "we sleep" aside. Match THIS level of
+specificity and commitment, not the weak version, on every shot you write — regardless of
+premise.
 
 Requirements:
 - Between {MIN_SHOTS} and {MAX_SHOTS} shots. shot_number must be 1, 2, 3... with no gaps.
@@ -426,10 +465,11 @@ Return ONLY the JSON object, no other text."""
 def _build_prompt(persona_or_cluster, variants: list, tone: str, num_shots: int, target_duration_seconds: int,
                    character_personalities: Optional[dict] = None, relationships: Optional[list] = None,
                    memories: Optional[list] = None, cultures: Optional[list] = None,
-                   performance_context: Optional[str] = None) -> str:
+                   performance_context: Optional[str] = None, critique_feedback: Optional[str] = None) -> str:
     source_type, context = _source_type_and_context(persona_or_cluster)
     return _build_prompt_from_context(source_type, context, variants, tone, num_shots, target_duration_seconds,
-                                       character_personalities, relationships, memories, cultures, performance_context)
+                                       character_personalities, relationships, memories, cultures, performance_context,
+                                       critique_feedback)
 
 
 def _assign_speakers(shots: list, variants: list) -> list:
@@ -463,30 +503,38 @@ def _parse(raw: str) -> dict:
     return json.loads(text.strip())
 
 
-def _call_llm_for_script(prompt: str, tone: str, variants: list) -> dict:
+def _call_llm_json(prompt: str, temperature: float = 0.7, max_tokens: int = 900) -> dict:
+    """Shared Qwen-max (primary) / Claude Haiku (fallback) JSON-mode call —
+    every LLM call in this module funnels through here (script writing AND
+    the comedy judge below). Raises ToonScriptGenerationError on any
+    failure (bad JSON, network, auth) rather than letting a raw SDK
+    exception leak past this module's boundary."""
     try:
         if os.getenv("QWEN_API_KEY"):
             qwen = _get_qwen_client()
             response = qwen.chat.completions.create(
                 model="qwen-max",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
+                temperature=temperature,
             )
             raw = response.choices[0].message.content
         else:
             client = _get_claude_client()
             message = client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=900,
+                max_tokens=max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = message.content[0].text
-        parsed = _parse(raw)
+        return _parse(raw)
     except json.JSONDecodeError as exc:
         raise ToonScriptGenerationError(f"Model returned invalid JSON: {exc}") from exc
     except Exception as exc:
         raise ToonScriptGenerationError(str(exc)) from exc
 
+
+def _call_llm_for_script(prompt: str, tone: str, variants: list) -> dict:
+    parsed = _call_llm_json(prompt, temperature=0.7, max_tokens=900)
     shots = parsed.get("shots") or []
     total = sum(s.get("duration_seconds", 0) for s in shots) if shots else 0
     return {
@@ -497,13 +545,78 @@ def _call_llm_for_script(prompt: str, tone: str, variants: list) -> dict:
     }
 
 
+def _build_judge_prompt(script_result: dict) -> str:
+    hook = script_result.get("hook_line") or ""
+    shot_lines = []
+    for s in script_result.get("shots") or []:
+        parts = [f"Shot {s.get('shot_number')}"]
+        if s.get("visual"):
+            parts.append(f"Visual: {s['visual']}")
+        if s.get("action"):
+            parts.append(f"Action: {s['action']}")
+        if s.get("dialogue"):
+            delivery = f" ({s['dialogue_delivery']})" if s.get("dialogue_delivery") else ""
+            parts.append(f'Dialogue{delivery}: "{s["dialogue"]}"')
+        shot_lines.append(" | ".join(parts))
+    shots_text = "\n".join(shot_lines)
+
+    return f"""You are a blunt, strict comedy critic reviewing a short skit script before it
+gets turned into video. Score it honestly — most first drafts are too safe and should NOT
+pass; a passing score should be rare, reserved for scripts that are genuinely specific and
+committed, not just "fine."
+
+Hook: {hook}
+
+{shots_text}
+
+Score against these specific criteria (the exact bar the writer was given):
+- SPECIFICITY: concrete props/numbers/particulars, not generic statements a real person might
+  mildly say.
+- ESCALATION: each beat tops the one before it, not a flat list of parallel/same-size beats.
+- COMMITMENT: characters pushed to an absurd, committed extreme, not a safe/mild version.
+
+Return ONLY valid JSON with exactly these keys:
+- comedy_score: integer 0-100
+- passes_bar: boolean (true only if genuinely funny and specific — most drafts should fail)
+- feedback: string, 1-3 sentences of SPECIFIC actionable critique — name the exact line that's
+  too generic/mild and say what direction to push it, don't just say "make it funnier"
+
+Return ONLY the JSON object, no other text."""
+
+
+def judge_script_comedy(script_result: dict) -> dict:
+    """Scores a freshly generated script against the same comedy-craft bar
+    the writer prompt was given, via a SEPARATE LLM call — a fresh critic,
+    not the same model grading its own output in the same turn. Mirrors
+    app/services/culturetoon_qa.py::run_ai_judge_qa's existing post-video
+    comedy scoring, just moved earlier (script-only, pre-video) where a
+    failing score costs one text call instead of a full paid video
+    generation. Advisory only, same posture as that QA judge — never
+    blocks or auto-discards a script, just surfaces score/feedback for the
+    user to act on (e.g. POST /scripts/{id}/regenerate) or ignore.
+    Fails open on any judge-call error — a broken judge shouldn't block
+    script suggestion/regeneration from returning its result."""
+    try:
+        parsed = _call_llm_json(_build_judge_prompt(script_result), temperature=0.3, max_tokens=400)
+    except ToonScriptGenerationError as exc:
+        logger.warning("Comedy judge call failed, leaving script unscored: %s", exc)
+        return {"comedy_score": None, "passes_bar": None, "feedback": None, "judge_failed": True}
+    return {
+        "comedy_score": parsed.get("comedy_score"),
+        "passes_bar": parsed.get("passes_bar"),
+        "feedback": parsed.get("feedback"),
+        "judge_failed": False,
+    }
+
+
 def generate_toon_script(persona_or_cluster, variants: Optional[list] = None, tone: str = "funny",
                           num_shots: int = 4, target_duration_seconds: int = 12,
                           character_personalities: Optional[dict] = None,
                           relationships: Optional[list] = None,
                           memories: Optional[list] = None,
                           cultures: Optional[list] = None,
-                          performance_context: Optional[str] = None) -> dict:
+                          performance_context: Optional[str] = None,
+                          critique_feedback: Optional[str] = None) -> dict:
     """variants: the full cast for this script (list of CharacterVariant-like
     objects) — one real character writes a monologue, two or more write an
     actual scene between them (see _cast_line). character_personalities:
@@ -512,13 +625,16 @@ def generate_toon_script(persona_or_cluster, variants: Optional[list] = None, to
     cast — see app/routers/culturetoons.py::resolve_relationships_for_cast.
     Both are how a character's identity stays deterministic across scripts
     instead of being re-improvised by the LLM each call — see
-    docs/culturix-comedy-architecture.md §3.2/§3.4. Returns {"hook_line":
+    docs/culturix-comedy-architecture.md §3.2/§3.4. critique_feedback:
+    optional prior judge_script_comedy() feedback to explicitly address —
+    see POST /scripts/{id}/regenerate. Returns {"hook_line":
     str, "tone": str, "shots": [{"shot_number", "duration_seconds",
     "action", "expression", "dialogue", "speaker_variant_id"}, ...],
     "total_duration_seconds": int}."""
     variants = variants or []
     prompt = _build_prompt(persona_or_cluster, variants, tone, num_shots, target_duration_seconds,
-                            character_personalities, relationships, memories, cultures, performance_context)
+                            character_personalities, relationships, memories, cultures, performance_context,
+                            critique_feedback)
     return _call_llm_for_script(prompt, tone, variants)
 
 
@@ -528,7 +644,8 @@ def generate_toon_script_from_idea(idea: str, variants: Optional[list] = None, t
                                     relationships: Optional[list] = None,
                                     memories: Optional[list] = None,
                                     cultures: Optional[list] = None,
-                                    performance_context: Optional[str] = None) -> dict:
+                                    performance_context: Optional[str] = None,
+                                    critique_feedback: Optional[str] = None) -> dict:
     """Same shape/contract as generate_toon_script, but grounded in the
     user's own free-text scenario idea instead of a live trending Persona
     or Cluster — for when someone already knows what they want the
@@ -538,7 +655,7 @@ def generate_toon_script_from_idea(idea: str, variants: Optional[list] = None, t
     prompt = _build_prompt_from_context("user-provided scenario idea", context, variants, tone,
                                          num_shots, target_duration_seconds,
                                          character_personalities, relationships, memories, cultures,
-                                         performance_context)
+                                         performance_context, critique_feedback)
     return _call_llm_for_script(prompt, tone, variants)
 
 
