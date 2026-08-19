@@ -29,53 +29,93 @@ RunPod console → **Storage** → **Network Volumes** → **New Network
 Volume**.
 
 - **Datacenter/region**: pick one and note it down — the Serverless
-  endpoint (step 4) needs GPU stock available in this same region to
+  endpoint (step 5) needs GPU stock available in this same region to
   attach it.
 - **Size**: 100GB+. The LTX-2 checkpoint and Gemma text encoder together
   run several GB, and every trained character's LoRA adds more.
 - **Name**: anything memorable — `culturix` is what these docs assume.
 
-## 3. Populate the volume with the LTX-2 model files
+## 3. Get S3 API access to the volume, and set `RUNPOD_S3_*`
 
-Deploy a temporary Pod (any GPU tier — this step barely uses compute)
-with the volume from step 2 attached:
+Every Network Volume also exposes an S3-compatible API (console → your
+volume → "Access via S3 API") — this is not optional/alternative
+plumbing, `app/media/runpod_s3.py` already requires it at runtime (it's
+how a trained LoRA actually lands on the volume once training finishes,
+called from `culturetoon_lora.py::train_character_lora`). Get these from
+that panel:
+
+- **Create an S3 API key** on that same panel (separate credential from
+  `RUNPOD_API_KEY` — a dedicated access-key-id/secret-access-key pair) →
+  set as `RUNPOD_S3_ACCESS_KEY_ID` / `RUNPOD_S3_SECRET_ACCESS_KEY`.
+- **Endpoint URL** shown on the panel (one fixed URL per datacenter, e.g.
+  `https://s3api-eu-ro-1.runpod.io`) → `RUNPOD_S3_ENDPOINT_URL`.
+- **Region** — the datacenter id from that same endpoint (e.g. `eu-ro-1`)
+  → `RUNPOD_S3_REGION`. boto3 requires this be set even though it's
+  implied by the endpoint — omitting it isn't cosmetic, requests fail
+  without it.
+- **Bucket name** shown on the panel (the volume itself acts as the
+  bucket, named after the volume's own id) → `RUNPOD_S3_BUCKET`.
+
+Set all five in Railway now — needed regardless of which method you use
+for step 4 below.
+
+## 4. Populate the volume with the LTX-2 model files
+
+Two ways to do this — pick one.
+
+**Option A — via the S3 API you just set up (no Pod needed):** download
+the two files locally, then push them to the bucket with the AWS CLI
+(`pip install awscli` if you don't have it) using the same credentials
+from step 3:
+
+```bash
+pip install -U "huggingface_hub[cli]"
+hf download Lightricks/LTX-2.3-fp8 ltx-2.3-22b-dev-fp8.safetensors --local-dir ./tmp-models
+hf download Comfy-Org/ltx-2 --include "split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" --local-dir ./tmp-models
+
+export AWS_ACCESS_KEY_ID=<RUNPOD_S3_ACCESS_KEY_ID>
+export AWS_SECRET_ACCESS_KEY=<RUNPOD_S3_SECRET_ACCESS_KEY>
+aws s3 cp ./tmp-models/ltx-2.3-22b-dev-fp8.safetensors \
+    "s3://<RUNPOD_S3_BUCKET>/models/checkpoints/ltx-2.3-22b-dev-fp8.safetensors" \
+    --region <RUNPOD_S3_REGION> --endpoint-url <RUNPOD_S3_ENDPOINT_URL>
+aws s3 cp "./tmp-models/split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" \
+    "s3://<RUNPOD_S3_BUCKET>/models/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" \
+    --region <RUNPOD_S3_REGION> --endpoint-url <RUNPOD_S3_ENDPOINT_URL>
+```
+
+Simpler (no Pod to manage), but both files download to your machine
+first, then re-upload — worth it unless your connection makes that
+double-hop painfully slow, in which case use Option B instead.
+
+**Option B — via a temporary Pod (cloud-to-cloud, faster on a slow home
+connection):**
 
 1. Console → **Pods** → **Deploy** → pick any GPU → under **Network
-   Volume**, select the volume you just created (only shows up if the
-   pod's region matches the volume's region) → Deploy.
+   Volume**, select the volume from step 2 (only shows up if the pod's
+   region matches the volume's region) → Deploy.
 2. Open a **Web Terminal** on the running pod (or SSH in).
 3. **Confirm where the volume actually mounted** before assuming a path —
    RunPod's own convention for a regular Pod (as opposed to a Serverless
    endpoint, which mounts at `/runpod-volume`) is typically `/workspace`,
    but verify rather than assume: `df -h` and look for a filesystem sized
-   to match what you picked in step 2. Whatever that mount path is,
-   create the directories under it — the *relative* structure below is
-   what matters, since the same underlying volume shows up as
-   `/runpod-volume/...` later when the Serverless endpoint mounts it.
-4. Download the two required files (exact names/paths confirmed in
-   `app/media/workflows/README.md` — always use `/resolve/main/` URLs if
-   downloading any other way, `/blob/main/` silently returns an HTML page
-   instead of the model):
+   to match what you picked in step 2.
+4. Download directly onto the volume:
 
 ```bash
 pip install -U "huggingface_hub[cli]"
-
-# Adjust MOUNT below to wherever step 3 confirmed the volume lives.
-MOUNT=/workspace
+MOUNT=/workspace   # adjust to whatever you confirmed above
 mkdir -p "$MOUNT/models/checkpoints" "$MOUNT/models/text_encoders"
-
-hf download Lightricks/LTX-2.3-fp8 ltx-2.3-22b-dev-fp8.safetensors \
-    --local-dir "$MOUNT/models/checkpoints"
-
-hf download Comfy-Org/ltx-2 \
-    --include "split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" \
-    --local-dir "$MOUNT/models/text_encoders"
+hf download Lightricks/LTX-2.3-fp8 ltx-2.3-22b-dev-fp8.safetensors --local-dir "$MOUNT/models/checkpoints"
+hf download Comfy-Org/ltx-2 --include "split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" --local-dir "$MOUNT/models/text_encoders"
 ```
 
-5. Terminate this temporary pod once both downloads finish — the files
+5. Terminate the temporary pod once both downloads finish — the files
    stay on the volume regardless.
 
-## 4. Build and deploy the Serverless inference worker
+Either way, always use `/resolve/main/` URLs if downloading any other
+way — `/blob/main/` silently returns an HTML page instead of the model.
+
+## 5. Build and deploy the Serverless inference worker
 
 ```bash
 cd deploy/runpod_serverless
@@ -88,7 +128,7 @@ Then console → **Serverless** → **New Endpoint**:
 - **Container Image**: the tag you just pushed.
 - **GPU**: RTX 4090 tier (what this image is sized for).
 - **Network Volume**: attach the same volume from step 2 (same region
-  requirement as the Pod above).
+  requirement as everything else that touches it).
 - **Advanced**: confirm the volume mounts at `/runpod-volume` once
   deployed — should be automatic, worth a one-time check rather than an
   assumption.
@@ -98,14 +138,14 @@ Set that as `RUNPOD_SERVERLESS_ENDPOINT_ID` in Railway.
 
 Full detail/troubleshooting: `deploy/runpod_serverless/README.md`.
 
-## 5. `RUNPOD_TRAINING_GPU_TYPE_ID`
+## 6. `RUNPOD_TRAINING_GPU_TYPE_ID`
 
 No lookup — set the literal string `NVIDIA A100 80GB PCIe` (PCIe
 specifically, not SXM; more broadly available stock). If a real pod
 create ever fails on this exact string, check RunPod's current GPU
 picker (Pods → Deploy → GPU list) for whether the naming has shifted.
 
-## 6. Build and push the training image
+## 7. Build and push the training image
 
 ```bash
 cd deploy/runpod_training
@@ -119,7 +159,7 @@ Pod directly from this image name per training run.
 
 Full detail: `deploy/runpod_training/README.md`.
 
-## 7. SSH keypair → `RUNPOD_SSH_PRIVATE_KEY`
+## 8. SSH keypair → `RUNPOD_SSH_PRIVATE_KEY`
 
 ```bash
 ssh-keygen -t ed25519 -f ./culturix_runpod_key -N ""
@@ -139,7 +179,7 @@ This writes `culturix_runpod_key` (private) and `culturix_runpod_key.pub`
    place to keep that file across deploys, so pasting the key content
    directly is the practical choice here.
 
-## 8. `HF_TOKEN`
+## 9. `HF_TOKEN`
 
 `google/gemma-3-12b-it` (the training text encoder) is a gated model —
 downloading it needs an authenticated, license-accepted token, not just
@@ -151,7 +191,7 @@ the repo name.
 2. Settings → Access Tokens → New Token (read access is enough) → copy it.
 3. Set `HF_TOKEN` in Railway.
 
-## 9. Validate end-to-end before trusting this for real characters
+## 10. Validate end-to-end before trusting this for real characters
 
 Once every var above is set in Railway and the app has redeployed:
 
