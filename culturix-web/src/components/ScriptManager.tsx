@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check, Target, Pencil, Trash2 } from "lucide-react";
+import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check, Target, Pencil, Trash2, Film } from "lucide-react";
 import type { ToonScript, CharacterVariant, ToonBackground } from "@/lib/types";
 import { TONE_OPTIONS, MAX_CHARACTERS_PER_VIDEO, ART_STYLES } from "@/lib/types";
 
@@ -99,6 +99,122 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
   const [bgStyleByScript, setBgStyleByScript] = useState<Record<string, string>>({});
   const [generatingBgFor, setGeneratingBgFor] = useState<string | null>(null);
   const [bgErrors, setBgErrors] = useState<Record<string, string>>({});
+
+  // "Compose episode" — the macro-script feature. Selection order matters
+  // (becomes part order), so this is an ordered array, not a Set.
+  const [composeIds, setComposeIds] = useState<string[]>([]);
+  const [composeTitle, setComposeTitle] = useState("");
+  const [composing, setComposing] = useState(false);
+  const [composeError, setComposeError] = useState<string | null>(null);
+  const [composeResult, setComposeResult] = useState<string | null>(null);
+  const [composeProgress, setComposeProgress] = useState<Record<string, "queued" | "generating" | "ready" | "failed">>({});
+  const MAX_COMPOSE_SCRIPTS = 10;
+
+  function toggleCompose(scriptId: string) {
+    setComposeIds((prev) => {
+      if (prev.includes(scriptId)) return prev.filter((id) => id !== scriptId);
+      if (prev.length >= MAX_COMPOSE_SCRIPTS) return prev;
+      return [...prev, scriptId];
+    });
+  }
+
+  async function pollToonUntilDone(toonId: string): Promise<{ status: string; error?: string | null }> {
+    // Same 4s interval as the existing per-toon polls elsewhere
+    // (ToonManager.tsx, EpisodeManager.tsx) — capped at 15 minutes, the
+    // longest either provider's generation is expected to reasonably take.
+    for (let i = 0; i < 225; i++) {
+      const res = await fetch(`/api/culturetoons/toons/${toonId}?brand_id=${brandId}`, { cache: "no-store" });
+      if (res.ok) {
+        const toon = await res.json();
+        if (toon.status !== "animating") return { status: toon.status, error: toon.generation_error };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+    }
+    return { status: "failed", error: "Timed out waiting for generation" };
+  }
+
+  async function composeEpisode() {
+    if (composeIds.length < 2) return;
+    setComposing(true);
+    setComposeError(null);
+    setComposeResult(null);
+    setComposeProgress(Object.fromEntries(composeIds.map((id) => [id, "queued"])));
+    try {
+      const episodeRes = await fetch("/api/culturetoons/episodes", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, title: composeTitle.trim() || undefined }),
+      });
+      if (!episodeRes.ok) {
+        const data = await episodeRes.json().catch(() => ({}));
+        setComposeError(typeof data.detail === "string" ? data.detail : `Couldn't create the episode (${episodeRes.status})`);
+        return;
+      }
+      const episode = await episodeRes.json();
+
+      let readyCount = 0;
+      for (const scriptId of composeIds) {
+        const script = scripts.find((s) => s.id === scriptId);
+        if (!script) continue;
+        setComposeProgress((prev) => ({ ...prev, [scriptId]: "generating" }));
+
+        const castVariantId = script.character_variant_ids?.[0] || script.character_variant_id || variants[0]?.id;
+        const toonRes = await fetch("/api/culturetoons/toons", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            brand_id: brandId, script_id: scriptId, character_variant_id: castVariantId,
+            background_id: script.background_id ?? undefined, title: script.hook_line || undefined,
+          }),
+        });
+        if (!toonRes.ok) {
+          setComposeProgress((prev) => ({ ...prev, [scriptId]: "failed" }));
+          continue;
+        }
+        const toon = await toonRes.json();
+
+        const genRes = await fetch(`/api/culturetoons/toons/${toon.id}/generate-video`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ brand_id: brandId }),
+        });
+        if (!genRes.ok) {
+          setComposeProgress((prev) => ({ ...prev, [scriptId]: "failed" }));
+          continue;
+        }
+
+        const { status } = await pollToonUntilDone(toon.id);
+        if (status !== "ready") {
+          setComposeProgress((prev) => ({ ...prev, [scriptId]: "failed" }));
+          continue;
+        }
+
+        const attachRes = await fetch(`/api/culturetoons/episodes/${episode.id}/parts`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ brand_id: brandId, toon_id: toon.id }),
+        });
+        if (!attachRes.ok) {
+          setComposeProgress((prev) => ({ ...prev, [scriptId]: "failed" }));
+          continue;
+        }
+        setComposeProgress((prev) => ({ ...prev, [scriptId]: "ready" }));
+        readyCount++;
+      }
+
+      if (readyCount >= 2) {
+        await fetch(`/api/culturetoons/episodes/${episode.id}/stitch`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ brand_id: brandId }),
+        });
+        setComposeResult(`Episode composed from ${readyCount}/${composeIds.length} scripts — stitching now, check the Episodes tab.`);
+      } else {
+        setComposeResult(`Only ${readyCount}/${composeIds.length} scripts made it to a finished video — not enough to stitch (need at least 2). The episode is still there in the Episodes tab if you want to add more parts manually.`);
+      }
+      setComposeIds([]);
+      setComposeTitle("");
+    } catch {
+      setComposeError("Network error partway through — some scripts above may have already generated a toon; check the Toons/Episodes tabs before retrying.");
+    } finally {
+      setComposing(false);
+    }
+  }
 
   const [idea, setIdea] = useState("");
   const [ideaVariantIds, setIdeaVariantIds] = useState<string[]>(variants[0] ? [variants[0].id] : []);
@@ -534,6 +650,68 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
         </div>
         {error && <p className="text-xs text-red-500 mt-2">{error}</p>}
       </div>
+
+      {scripts.filter((s) => s.shots && s.shots.length > 0).length >= 2 && (
+        <div className="rounded-2xl bg-white border border-gray-100 p-4">
+          <h3 className="text-sm font-semibold text-gray-900 mb-1 flex items-center gap-1.5">
+            <Film className="h-4 w-4 text-blue-500" /> Compose an episode from your scripts
+          </h3>
+          <p className="text-xs text-gray-400 mb-3">
+            Pick 2-{MAX_COMPOSE_SCRIPTS} scripts below (in the order you want them to play) — each becomes its
+            own generated toon, then they&apos;re stitched into one longer episode automatically. Only
+            shot-structured scripts (AI-suggested, not manual) can be picked. Keep this tab open while it runs —
+            each generation can take a few minutes.
+          </p>
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {scripts.filter((s) => s.shots && s.shots.length > 0).map((s) => {
+              const order = composeIds.indexOf(s.id);
+              const label = s.hook_line || s.dialogue || s.id.slice(0, 8);
+              return (
+                <CastChip
+                  key={s.id}
+                  label={order >= 0 ? `${order + 1}. ${label}` : label}
+                  selected={order >= 0}
+                  disabled={composing || (order < 0 && composeIds.length >= MAX_COMPOSE_SCRIPTS)}
+                  onClick={() => toggleCompose(s.id)}
+                />
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap gap-2 items-center">
+            <input
+              type="text" value={composeTitle} onChange={(e) => setComposeTitle(e.target.value)}
+              placeholder="Episode title (optional)"
+              className="flex-1 min-w-[10rem] rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs"
+            />
+            <button
+              onClick={composeEpisode}
+              disabled={composing || composeIds.length < 2}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium px-3 py-1.5 hover:bg-blue-700 transition-colors disabled:opacity-60"
+            >
+              {composing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Film className="h-3.5 w-3.5" />}
+              Compose episode
+            </button>
+          </div>
+          {composeIds.length > 0 && (
+            <div className="flex flex-wrap gap-2 mt-2">
+              {composeIds.map((id, i) => {
+                const s = scripts.find((sc) => sc.id === id);
+                const status = composeProgress[id];
+                return (
+                  <span key={id} className="inline-flex items-center gap-1 text-[10px] text-gray-500 rounded-full bg-gray-50 px-2 py-1">
+                    {status === "generating" && <Loader2 className="h-3 w-3 animate-spin text-amber-500" />}
+                    {status === "ready" && <Check className="h-3 w-3 text-emerald-500" />}
+                    {i + 1}. {(s?.hook_line || s?.dialogue || id.slice(0, 8)).slice(0, 24)}
+                    {status === "failed" && <span className="text-red-500">failed</span>}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+          {composeError && <p className="text-xs text-red-500 mt-2">{composeError}</p>}
+          {composeResult && <p className="text-xs text-primary-500 mt-2">{composeResult}</p>}
+        </div>
+      )}
 
       <div className="space-y-3">
         <h3 className="text-sm font-semibold text-gray-900">Step 2 · Your scripts</h3>

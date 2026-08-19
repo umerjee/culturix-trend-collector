@@ -156,6 +156,33 @@ class TestStitchEpisode:
         finally:
             session.close()
 
+    def test_per_segment_normalization_failure_marks_failed(self, mocker, db):
+        # Mixed-provider parts (Kling 1080p vs. self-hosted 720x1280) get a
+        # per-segment scale/pad pass before the final concat — confirm a
+        # failure there (the first ffmpeg call per segment) is caught and
+        # reported distinctly from a final-concat failure.
+        session = db()
+        brand_id = uuid.uuid4()
+        episode = _make_episode_with_parts(session, brand_id, ["https://example.com/a.mp4", "https://example.com/b.mp4"])
+        episode_id = str(episode.id)
+        session.close()
+
+        mocker.patch("app.services.culturetoon_episode.httpx.get", return_value=mocker.Mock(content=b"video-bytes", raise_for_status=lambda: None))
+        mocker.patch(
+            "app.services.culturetoon_episode.subprocess.run",
+            return_value=mocker.Mock(returncode=1, stderr="unsupported codec"),
+        )
+
+        stitch_episode(str(uuid.uuid4()), episode_id)
+
+        session = db()
+        try:
+            updated = session.query(ToonEpisode).filter_by(id=uuid.UUID(episode_id)).first()
+            assert updated.status == "failed"
+            assert "normalizing" in updated.generation_error.lower()
+        finally:
+            session.close()
+
 
 class TestAssembleEpisodeFromScenes:
     def _mock_ffmpeg_success(self, mocker, upload_url="https://supabase/episode-final.mp4"):

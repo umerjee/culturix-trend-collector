@@ -46,10 +46,32 @@ def _stitch_video_urls(video_urls: list, output_path: str, tmp_prefix: str = "st
         for i, url in enumerate(video_urls):
             resp = httpx.get(url, timeout=120)
             resp.raise_for_status()
-            seg_path = os.path.join(tmp_dir, f"part_{i}.mp4")
-            with open(seg_path, "wb") as f:
+            raw_path = os.path.join(tmp_dir, f"part_{i}_raw.mp4")
+            with open(raw_path, "wb") as f:
                 f.write(resp.content)
-            segment_paths.append(seg_path)
+
+            # Normalize resolution/fps per-segment before handing off to the
+            # concat demuxer below — segments can now come from two
+            # different providers with different canvases (Kling Omni's
+            # hardcoded 1080p vs. self-hosted LTX-2's 720x1280, both 9:16
+            # but not the same absolute size), which the concat demuxer
+            # itself doesn't reconcile. Scale+pad to a common canvas rather
+            # than switching to -filter_complex concat, which would need to
+            # handle a segment having no audio stream at all — a real
+            # possibility for self-hosted output — inside the filter graph;
+            # this keeps that complexity out and leaves the existing
+            # concat-demuxer + re-encode below doing the actual joining,
+            # unchanged.
+            norm_path = os.path.join(tmp_dir, f"part_{i}.mp4")
+            norm_result = subprocess.run(
+                ["ffmpeg", "-y", "-i", raw_path,
+                 "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30",
+                 "-c:a", "copy", norm_path],
+                capture_output=True, text=True, timeout=120,
+            )
+            if norm_result.returncode != 0:
+                raise StitchError(f"ffmpeg failed normalizing video segment {i}: {norm_result.stderr[-1000:]}")
+            segment_paths.append(norm_path)
 
         list_path = os.path.join(tmp_dir, "concat_list.txt")
         with open(list_path, "w", encoding="utf-8") as f:
@@ -58,15 +80,11 @@ def _stitch_video_urls(video_urls: list, output_path: str, tmp_prefix: str = "st
 
         stitched_path = os.path.join(tmp_dir, "stitched.mp4")
         # Re-encode rather than -c copy: segments come from separately
-        # issued Kling calls with no guaranteed identical codec/timebase,
-        # same category of ffmpeg gotcha culturetoon_clip_cutter.py already
-        # documents for its own re-encode choice. Known limitation: the
-        # concat demuxer doesn't normalize mismatched resolution/fps across
-        # inputs — currently safe because every segment is generated with
-        # an identical hardcoded settings block (1080p, 9:16, see
-        # culturetoon_video.py / culturetoon_scene.py), but would need
-        # -filter_complex concat with per-input scale if that ever becomes
-        # configurable.
+        # issued generation calls with no guaranteed identical codec/
+        # timebase, same category of ffmpeg gotcha
+        # culturetoon_clip_cutter.py already documents for its own
+        # re-encode choice. Resolution/fps mismatches are handled by the
+        # per-segment normalization pass above, not here.
         result = subprocess.run(
             ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
              "-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", stitched_path],
