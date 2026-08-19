@@ -591,6 +591,15 @@ export interface RelationshipDraft {
   b_to_a: RelationshipDraftDirection;
 }
 
+// One entry from POST /characters/{id}/relationships/suggest-with-cast —
+// a RelationshipDraft (character_a is always the character being
+// integrated) plus which castmate it's paired with, or an `error` instead
+// of draft fields if that one pair's generation failed (the endpoint
+// still returns the rest of the batch rather than failing the whole call).
+export type CastRelationshipSuggestion =
+  | (RelationshipDraft & { character_a_id: string; character_b_id: string; character_b_name: string; error?: undefined })
+  | { character_a_id: string; character_b_id: string; character_b_name: string; error: string };
+
 export const RELATIONSHIP_EVENT_TYPES = [
   "conflict", "bonding", "running_joke", "betrayal", "reconciliation", "milestone", "general",
 ] as const;

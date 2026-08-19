@@ -2965,6 +2965,97 @@ class TestRelationshipDirections:
         assert exc_info.value.status_code == 400
 
 
+class TestSuggestRelationshipsWithCast:
+    def _second_character(self, user_id, brand_id, name="Hans"):
+        return culturetoons.create_character({"user_id": user_id, "brand_id": brand_id, "name": name})
+
+    def test_drafts_one_relationship_per_other_active_character(self, db, user_id, brand_and_character, mocker):
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"], "Hans")
+        yuki = self._second_character(user_id, brand["id"], "Yuki")
+
+        mocker.patch(
+            "app.services.culturetoon_relationship.generate_relationship_dynamic",
+            return_value={"relationship_type": "friends", "relationship_type_label": "Friends",
+                          "description": "d", "comedy_chemistry": 5,
+                          "a_to_b": {}, "b_to_a": {}},
+        )
+
+        drafts = culturetoons.suggest_relationships_with_cast(kumar["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+        })
+
+        assert len(drafts) == 2
+        names = {d["character_b_name"] for d in drafts}
+        assert names == {"Hans", "Yuki"}
+        assert all(d["character_a_id"] == kumar["id"] for d in drafts)
+
+    def test_excludes_inactive_characters(self, db, user_id, brand_and_character, mocker):
+        brand, kumar, _variant = brand_and_character
+        hans = self._second_character(user_id, brand["id"], "Hans")
+        culturetoons.update_character(hans["id"], {"user_id": user_id, "brand_id": brand["id"], "is_active": False})
+        mock_generate = mocker.patch("app.services.culturetoon_relationship.generate_relationship_dynamic")
+
+        drafts = culturetoons.suggest_relationships_with_cast(kumar["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+        })
+
+        assert drafts == []
+        mock_generate.assert_not_called()
+
+    def test_empty_list_when_character_has_no_castmates_yet(self, db, user_id, brand_and_character):
+        brand, kumar, _variant = brand_and_character
+        drafts = culturetoons.suggest_relationships_with_cast(kumar["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+        })
+        assert drafts == []
+
+    def test_one_pair_failing_does_not_block_the_rest(self, db, user_id, brand_and_character, mocker):
+        from app.services.culturetoon_relationship import RelationshipGenerationError
+        brand, kumar, _variant = brand_and_character
+        self._second_character(user_id, brand["id"], "Hans")
+        self._second_character(user_id, brand["id"], "Yuki")
+
+        mocker.patch(
+            "app.services.culturetoon_relationship.generate_relationship_dynamic",
+            side_effect=[RelationshipGenerationError("model timeout"),
+                         {"relationship_type": "friends", "relationship_type_label": "Friends",
+                          "description": "d", "comedy_chemistry": 5, "a_to_b": {}, "b_to_a": {}}],
+        )
+
+        drafts = culturetoons.suggest_relationships_with_cast(kumar["id"], {
+            "user_id": user_id, "brand_id": brand["id"],
+        })
+
+        assert len(drafts) == 2
+        failed = [d for d in drafts if "error" in d]
+        succeeded = [d for d in drafts if "error" not in d]
+        assert len(failed) == 1 and "model timeout" in failed[0]["error"]
+        assert len(succeeded) == 1
+
+    def test_never_persists_anything(self, db, user_id, brand_and_character, mocker):
+        from app.models.character_relationship import CharacterRelationship
+        brand, kumar, _variant = brand_and_character
+        self._second_character(user_id, brand["id"], "Hans")
+        mocker.patch(
+            "app.services.culturetoon_relationship.generate_relationship_dynamic",
+            return_value={"relationship_type": "friends", "relationship_type_label": "Friends",
+                          "description": "d", "comedy_chemistry": 5, "a_to_b": {}, "b_to_a": {}},
+        )
+
+        culturetoons.suggest_relationships_with_cast(kumar["id"], {"user_id": user_id, "brand_id": brand["id"]})
+
+        session = db()
+        assert session.query(CharacterRelationship).count() == 0
+        session.close()
+
+    def test_requires_user_id_and_brand_id(self, db, user_id, brand_and_character):
+        brand, kumar, _variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.suggest_relationships_with_cast(kumar["id"], {"user_id": user_id})
+        assert exc_info.value.status_code == 400
+
+
 class TestRelationshipEvents:
     def _second_character(self, user_id, brand_id, name="Hans"):
         return culturetoons.create_character({"user_id": user_id, "brand_id": brand_id, "name": name})

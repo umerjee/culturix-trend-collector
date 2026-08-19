@@ -1206,6 +1206,75 @@ def generate_relationship(body: dict):
         session.close()
 
 
+@router.post("/characters/{character_id}/relationships/suggest-with-cast")
+def suggest_relationships_with_cast(character_id: str, body: dict):
+    """For a character that wasn't part of an AI-suggested cast batch (e.g.
+    created via the manual 'Create character' flow, or added after
+    "Suggest a cast" already ran) — drafts a relationship between it and
+    EVERY other active character in the brand, one AI call per pair, reusing
+    generate_relationship_dynamic exactly like /relationships/generate does
+    for a single pair. Cast-suggestion itself never recalibrates anything
+    after the fact (see generate_cast_plan's own docstring) — this is the
+    explicit, opt-in way to catch a character up on the relationships it
+    would have gotten if it'd been in the original batch.
+
+    Returns a list of drafts only, never persisted — same contract as
+    every other AI-draft endpoint in this file. The caller reviews/selects
+    which to keep and POSTs each to /relationships individually. One pair's
+    generation failure doesn't block the rest — a per-item "error" field
+    is included in the drafts list wherever that happened, rather than
+    502ing the whole request for one bad pair."""
+    from app.db import SessionLocal
+    from app.models.character import Character
+    from app.models.character_variant import CharacterVariant
+    from app.services.culturetoon_relationship import generate_relationship_dynamic, RelationshipGenerationError
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+
+    session = SessionLocal()
+    try:
+        brand = _get_brand_owned(session, brand_id, user_id)
+        new_character = _get_character_owned(session, character_id, brand_id, user_id)
+
+        others = (
+            session.query(Character)
+            .filter(Character.brand_id == brand.id, Character.is_active.is_(True), Character.id != new_character.id)
+            .order_by(Character.created_at.asc())
+            .all()
+        )
+
+        def _culture_summary(char_id):
+            tags = (
+                session.query(CharacterVariant.culture_tag)
+                .filter(CharacterVariant.character_id == char_id, CharacterVariant.culture_tag.isnot(None))
+                .distinct().all()
+            )
+            return ", ".join(t[0] for t in tags if t[0])
+
+        culture_new = _culture_summary(new_character.id)
+        drafts = []
+        for other in others:
+            try:
+                draft = generate_relationship_dynamic(
+                    new_character, other,
+                    culture_a=culture_new, culture_b=_culture_summary(other.id),
+                )
+                drafts.append({
+                    "character_a_id": str(new_character.id), "character_b_id": str(other.id),
+                    "character_b_name": other.name, **draft,
+                })
+            except RelationshipGenerationError as exc:
+                drafts.append({
+                    "character_a_id": str(new_character.id), "character_b_id": str(other.id),
+                    "character_b_name": other.name, "error": str(exc),
+                })
+        return drafts
+    finally:
+        session.close()
+
+
 @router.get("/relationships")
 def list_relationships(user_id: str, brand_id: str, character_id: Optional[str] = None, active_only: bool = True):
     from app.db import SessionLocal

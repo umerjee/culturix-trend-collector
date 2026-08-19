@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Plus, Loader2, Trash2, X, History, ChevronDown, ChevronUp, Sparkles, Pencil } from "lucide-react";
-import type { Character, CharacterRelationship, CharacterRelationshipEvent, RelationshipDraft } from "@/lib/types";
+import type { Character, CharacterRelationship, CharacterRelationshipEvent, RelationshipDraft, CastRelationshipSuggestion } from "@/lib/types";
 import { RELATIONSHIP_EVENT_TYPES, RELATIONSHIP_TYPES } from "@/lib/types";
 import InfoTooltip from "@/components/ui/Tooltip";
 
@@ -136,6 +136,20 @@ export default function RelationshipManager({ brandId }: Props) {
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [relationshipHint, setRelationshipHint] = useState("");
 
+  // "Suggest relationships with cast" — for a character that wasn't part
+  // of an AI-suggested cast batch (manually created, or added after
+  // "Suggest a cast" already ran): drafts a relationship with every other
+  // active character in one go, instead of running "Generate relationship"
+  // once per castmate by hand. Cast suggestion itself never recalibrates
+  // anything after the fact, so this is the explicit, opt-in way to catch
+  // a character up.
+  const [suggestCharacterId, setSuggestCharacterId] = useState("");
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<CastRelationshipSuggestion[]>([]);
+  const [savingSuggestionFor, setSavingSuggestionFor] = useState<string | null>(null);
+  const [savedSuggestionIds, setSavedSuggestionIds] = useState<Set<string>>(new Set());
+
   // History (events) — loaded lazily per relationship, not eagerly for
   // every relationship on mount.
   const [historyOpen, setHistoryOpen] = useState<Record<string, boolean>>({});
@@ -251,6 +265,65 @@ export default function RelationshipManager({ brandId }: Props) {
       });
     } finally {
       setGenerating(false);
+    }
+  }
+
+  async function suggestWithCast() {
+    if (!suggestCharacterId) {
+      setSuggestError("Pick a character first.");
+      return;
+    }
+    setSuggesting(true);
+    setSuggestError(null);
+    setSuggestions([]);
+    setSavedSuggestionIds(new Set());
+    try {
+      const res = await fetch(`/api/culturetoons/characters/${suggestCharacterId}/relationships/suggest-with-cast`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setSuggestError(typeof data.detail === "string" ? data.detail : "Suggestion failed");
+        return;
+      }
+      const list = data as CastRelationshipSuggestion[];
+      if (list.length === 0) setSuggestError("No other active characters to suggest relationships with yet.");
+      setSuggestions(list);
+    } finally {
+      setSuggesting(false);
+    }
+  }
+
+  async function saveSuggestion(s: CastRelationshipSuggestion) {
+    if ("error" in s) return;
+    setSavingSuggestionFor(s.character_b_id);
+    try {
+      const res = await fetch("/api/culturetoons/relationships", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          brand_id: brandId,
+          character_a_id: s.character_a_id,
+          character_b_id: s.character_b_id,
+          relationship_type: s.relationship_type,
+          relationship_type_label: s.relationship_type === "custom" ? s.relationship_type_label : undefined,
+          description: s.description ?? undefined,
+          comedy_chemistry: s.comedy_chemistry,
+          a_to_b: s.a_to_b,
+          b_to_a: s.b_to_a,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setSuggestError(typeof data.detail === "string" ? data.detail : "Failed to save relationship");
+        return;
+      }
+      setRelationships((prev) => [...prev, data]);
+      setSavedSuggestionIds((prev) => new Set(prev).add(s.character_b_id));
+    } finally {
+      setSavingSuggestionFor(null);
     }
   }
 
@@ -451,6 +524,73 @@ export default function RelationshipManager({ brandId }: Props) {
                         {r.comedy_chemistry !== null && <span>Comedy chemistry {r.comedy_chemistry}/10</span>}
                         <span>{r.episodes_together} episode{r.episodes_together === 1 ? "" : "s"} together</span>
                       </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-2xl bg-white border border-gray-100 p-4 space-y-3">
+            <div>
+              <p className="text-xs font-semibold text-gray-700">Suggest relationships with cast</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">
+                For a character that wasn&apos;t part of an AI-suggested cast batch — drafts a relationship with
+                every other active character at once, instead of running &quot;Generate relationship&quot; one
+                pair at a time. Nothing saves until you pick which drafts to keep.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 items-center">
+              <select
+                value={suggestCharacterId} onChange={(e) => setSuggestCharacterId(e.target.value)}
+                className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+              >
+                <option value="">Character to integrate…</option>
+                {characters.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <button
+                type="button"
+                onClick={suggestWithCast}
+                disabled={suggesting || !suggestCharacterId}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 text-blue-600 text-xs font-medium px-3 py-1.5 hover:bg-blue-50 transition-colors disabled:opacity-60"
+              >
+                {suggesting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                {suggesting ? "Drafting…" : "Suggest with cast"}
+              </button>
+            </div>
+            {suggestError && <p className="text-xs text-red-500">{suggestError}</p>}
+            {suggestions.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                {suggestions.map((s) => {
+                  const saved = savedSuggestionIds.has(s.character_b_id);
+                  return (
+                    <div key={s.character_b_id} className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                      <p className="text-xs font-medium text-gray-800">
+                        {characterName(s.character_a_id)} ↔ {s.character_b_name}
+                      </p>
+                      {"error" in s ? (
+                        <p className="text-[11px] text-red-500 mt-1">{s.error}</p>
+                      ) : (
+                        <>
+                          <p className="text-[11px] text-gray-500 mt-0.5">{s.relationship_type_label}</p>
+                          {s.description && <p className="text-[11px] text-gray-400 mt-1">{s.description}</p>}
+                          <div className="flex items-center justify-between mt-2">
+                            <span className="text-[10px] text-gray-400">Comedy chemistry {s.comedy_chemistry}/10</span>
+                            <button
+                              type="button"
+                              onClick={() => saveSuggestion(s)}
+                              disabled={saved || savingSuggestionFor === s.character_b_id}
+                              className={`text-[11px] font-medium rounded-lg px-2.5 py-1 transition-colors ${
+                                saved
+                                  ? "text-green-600 bg-green-50 cursor-default"
+                                  : "text-blue-600 border border-blue-200 hover:bg-blue-50 disabled:opacity-60"
+                              }`}
+                            >
+                              {saved ? "Saved ✓" : savingSuggestionFor === s.character_b_id ? "Saving…" : "Save"}
+                            </button>
+                          </div>
+                        </>
+                      )}
                     </div>
                   );
                 })}
