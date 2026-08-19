@@ -1,3 +1,4 @@
+import hmac
 import logging
 import os
 from fastapi import Header, HTTPException
@@ -14,7 +15,11 @@ ADMIN_API_SECRET = os.getenv("ADMIN_API_SECRET", "")
 
 
 def require_admin_secret(x_admin_secret: str = Header(default="")):
-    if not ADMIN_API_SECRET or x_admin_secret != ADMIN_API_SECRET:
+    # hmac.compare_digest, not !=, so matching this secret can't be sped up
+    # by timing how long the comparison takes on a byte-by-byte mismatch —
+    # mostly theoretical over real-world HTTP jitter, but free to close
+    # properly rather than lean on that.
+    if not ADMIN_API_SECRET or not hmac.compare_digest(x_admin_secret, ADMIN_API_SECRET):
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
@@ -58,5 +63,5 @@ def require_internal_secret(x_internal_secret: str = Header(default="")):
             )
             _warned_unset = True
         return
-    if x_internal_secret != INTERNAL_API_SECRET:
+    if not hmac.compare_digest(x_internal_secret, INTERNAL_API_SECRET):
         raise HTTPException(status_code=403, detail="Forbidden")
