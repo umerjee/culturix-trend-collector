@@ -343,7 +343,7 @@ def _serialize_variant(v) -> dict:
         "kling_voice_id": v.kling_voice_id, "element_status": v.element_status,
         "element_error": v.element_error,
         "voice_provider": v.voice_provider, "elevenlabs_voice_id": v.elevenlabs_voice_id,
-        "lora_path": v.lora_path, "lora_status": v.lora_status,
+        "lora_path": v.lora_path, "lora_status": v.lora_status, "lora_error": v.lora_error,
         "lora_training_images": v.lora_training_images or [],
         "created_at": v.created_at.isoformat() if v.created_at else None,
         "updated_at": v.updated_at.isoformat() if v.updated_at else None,
@@ -2076,6 +2076,7 @@ def train_variant_lora(variant_id: str, body: dict, background_tasks: Background
                 ),
             )
         variant.lora_status = "training"
+        variant.lora_error = None
         session.commit()
     finally:
         session.close()

@@ -77,6 +77,8 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>("kling");
   const [registering, setRegistering] = useState(false);
   const [registerError, setRegisterError] = useState<string | null>(null);
+  const [training, setTraining] = useState(false);
+  const [trainError, setTrainError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const [variantDescriptionDraft, setVariantDescriptionDraft] = useState("");
@@ -94,9 +96,10 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
   const characterVariants = variants.filter((v) => v.character_id === selectedCharacterId);
   const selectedVariant = variants.find((v) => v.id === selectedVariantId) ?? null;
 
-  // Poll while a variant's element registration is in flight.
+  // Poll while a variant's element registration or LoRA training is in flight.
   useEffect(() => {
-    if (!selectedVariant || selectedVariant.element_status !== "pending") return;
+    if (!selectedVariant) return;
+    if (selectedVariant.element_status !== "pending" && selectedVariant.lora_status !== "training") return;
     const interval = setInterval(async () => {
       const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}?brand_id=${brandId}`, { cache: "no-store" });
       if (res.ok) {
@@ -129,6 +132,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
     setVariantNameDraft(selectedVariant?.name ?? "");
     setSaveVariantNameError(null);
     setRegisterError(null);
+    setTrainError(null);
   }, [selectedVariantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleCharacterCreated(character: Character, defaultVariant: CharacterVariant | null) {
@@ -208,6 +212,29 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
       setRegisterError("Network error — check your connection and try again.");
     } finally {
       setRegistering(false);
+    }
+  }
+
+  async function trainLora() {
+    if (!selectedVariant) return;
+    setTraining(true);
+    setTrainError(null);
+    try {
+      const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}/train-lora`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId }),
+      });
+      if (res.ok) {
+        setVariants((prev) => prev.map((v) => (v.id === selectedVariant.id ? { ...v, lora_status: "training", lora_error: null } : v)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setTrainError(typeof data.detail === "string" ? data.detail : `Couldn't start training (${res.status})`);
+      }
+    } catch {
+      setTrainError("Network error — check your connection and try again.");
+    } finally {
+      setTraining(false);
     }
   }
 
@@ -753,6 +780,43 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, ini
                       key={selectedVariant.id} brandId={brandId} variantId={selectedVariant.id}
                       hasPortrait={!!selectedVariant.image_url}
                     />
+
+                    <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-semibold text-gray-700">Visual identity (self-hosted)</span>
+                        {selectedVariant.lora_status === "ready" && (
+                          <span className="inline-flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> Ready</span>
+                        )}
+                        {selectedVariant.lora_status === "training" && (
+                          <span className="inline-flex items-center gap-1 text-xs text-amber-600"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Training…</span>
+                        )}
+                        {selectedVariant.lora_status === "failed" && (
+                          <span className="inline-flex items-center gap-1 text-xs text-red-600"><XCircle className="h-3.5 w-3.5" /> Failed</span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-gray-500 mb-2">
+                        Trains this variant&apos;s own visual identity for self-hosted (RunPod/LTX-2) video
+                        generation — separate from Kling registration above, and required before self-hosted
+                        video can use this character. Uses this variant&apos;s Expression set above as training
+                        images automatically, so finishing that set is usually all that&apos;s needed here.
+                      </p>
+                      {selectedVariant.lora_error && (
+                        <p className="text-[11px] text-red-500 mb-2">{selectedVariant.lora_error}</p>
+                      )}
+                      <button
+                        onClick={trainLora}
+                        disabled={training || selectedVariant.lora_status === "training"}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 text-white text-xs font-medium px-3 py-1.5 hover:bg-gray-800 transition-colors disabled:opacity-60"
+                      >
+                        {training ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                        {selectedVariant.lora_status === "ready" || selectedVariant.lora_status === "failed" ? "Retrain" : "Start training"}
+                      </button>
+                      <p className="text-[11px] text-gray-400 mt-1.5">
+                        Training runs on a dedicated GPU pod and can take up to an hour — feel free to switch
+                        tabs or characters; it&apos;ll keep running and update here when done.
+                      </p>
+                      {trainError && <p className="text-[11px] text-red-500 mt-1.5">{trainError}</p>}
+                    </div>
 
                     <MemoryManager key={`memory-${selectedVariant.id}`} brandId={brandId} variantId={selectedVariant.id} />
                   </div>

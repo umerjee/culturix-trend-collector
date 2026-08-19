@@ -339,6 +339,19 @@ class TestTrainCharacterLora:
 
         mock_terminate.assert_called_once_with("pod-123")
         assert variant.lora_status == "failed"
+        assert "boom" in variant.lora_error
+
+    def test_lora_error_cleared_on_new_attempt(self, mocker):
+        # A retry after a prior failure shouldn't leave the old failure
+        # message sitting next to a fresh "training" status.
+        self._mock_success(mocker)
+        variant = self._training_variant(mocker)
+        variant.lora_error = "stale error from a previous attempt"
+
+        _train(mocker, variant)
+
+        assert variant.lora_status == "ready"
+        assert variant.lora_error is None
 
     def test_no_pod_created_means_no_termination_attempt(self, mocker):
         # too-few-images case: fails before create_training_pod is ever

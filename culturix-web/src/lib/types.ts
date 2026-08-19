@@ -494,6 +494,12 @@ export interface CharacterVariant {
   element_error: string | null;
   voice_provider: VoiceProvider;
   elevenlabs_voice_id: string | null;
+  // Self-hosted (RunPod + LTX-2) video's own character-consistency
+  // mechanism — analogous to element_status above but independent of it;
+  // a variant can have either, both, or neither ready.
+  lora_status: "none" | "training" | "ready" | "failed";
+  lora_error: string | null;
+  lora_training_images: { url: string; caption: string }[];
   created_at: string | null;
   updated_at: string | null;
 }

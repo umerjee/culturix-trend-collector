@@ -71,6 +71,11 @@ class CharacterVariant(Base):
     # LoraLoader node resolves it by.
     lora_path = Column(Text, nullable=True)
     lora_status = Column(String(12), nullable=False, default="none")  # none|training|ready|failed
+    # Mirrors element_error above — kept separate since the two statuses are
+    # independent. No detailed exception text (this pod ran on a since-
+    # terminated ephemeral training pod, no log capture back to the app
+    # yet) — just enough to tell the user training failed vs. never started.
+    lora_error = Column(Text, nullable=True)
     # List of {"url": str, "caption": str} — NOT a bare URL array. A LoRA
     # trained on identically-captioned images overfits to whatever's
     # constant across them (a pose, a background) instead of learning the

@@ -309,6 +309,7 @@ def train_character_lora(variant, session) -> None:
         )
 
     variant.lora_status = "training"
+    variant.lora_error = None
     pod_id = None
 
     try:
@@ -448,10 +449,12 @@ def train_character_lora(variant, session) -> None:
         logger.info("LoRA training complete for variant %s", variant.id)
     except LoraTrainingError as exc:
         variant.lora_status = "failed"
+        variant.lora_error = str(exc)[:2000]
         logger.error("LoRA training failed for variant %s: %s", variant.id, exc)
         raise
     except Exception as exc:
         variant.lora_status = "failed"
+        variant.lora_error = str(exc)[:2000]
         logger.exception("LoRA training failed unexpectedly for variant %s", variant.id)
         raise LoraTrainingError(str(exc)) from exc
     finally:
