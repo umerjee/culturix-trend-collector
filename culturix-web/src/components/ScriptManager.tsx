@@ -20,14 +20,19 @@ interface TrendSource {
   description: string | null;
 }
 
-// Bundles num_shots + target_duration_seconds into one intuitive control —
-// Kling Omni's real hard limits are 2-6 shots / 3-15s total (enforced
-// server-side too, see MIN_SHOTS/MAX_SHOTS/MIN_TOTAL_SECONDS/
-// MAX_TOTAL_SECONDS in app/services/culturetoon_script.py).
+// Bundles num_shots + target_duration_seconds into one intuitive control.
+// A script itself is provider-agnostic (server-side ceiling is now
+// MIN_SHOTS/MAX_SHOTS/MIN_TOTAL_SECONDS/MAX_TOTAL_SECONDS in
+// app/services/culturetoon_script.py, 2-15 shots / 3-60s) — these presets
+// match real short-form social lengths (TikTok/Reels/Shorts' own common
+// tiers) rather than Kling Omni's much smaller real per-call ceiling
+// (KLING_MAX_SHOTS/KLING_MAX_TOTAL_SECONDS, 6 shots/15s, enforced
+// separately at generate-time). Only "Quick" fits within that Kling
+// ceiling — Standard/Extended need self-hosted generation.
 const DURATION_PRESETS = [
-  { key: "quick", label: "Quick (~5s)", numShots: 2, duration: 5 },
-  { key: "standard", label: "Standard (~10s)", numShots: 4, duration: 10 },
-  { key: "extended", label: "Extended (~15s)", numShots: 6, duration: 15 },
+  { key: "quick", label: "Quick (~15s)", numShots: 5, duration: 15 },
+  { key: "standard", label: "Standard (~30s) — self-hosted only", numShots: 9, duration: 30 },
+  { key: "extended", label: "Extended (~60s) — self-hosted only", numShots: 14, duration: 60 },
 ] as const;
 
 interface Props {

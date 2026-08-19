@@ -2562,11 +2562,14 @@ def create_script(body: dict):
 
 def _validate_script_generation_params(body: dict) -> tuple:
     """Shared by suggest_script and suggest_script_from_idea. Bounds-checks
-    num_shots/target_duration_seconds against Kling Omni's real limits
-    (MIN_SHOTS/MAX_SHOTS/MIN_TOTAL_SECONDS/MAX_TOTAL_SECONDS in
-    culturetoon_script.py) before spending an LLM call — previously an
-    out-of-range value only failed later, inside build_kling_prompt, after
-    the script was already generated and persisted."""
+    num_shots/target_duration_seconds against the general, provider-agnostic
+    script-creation ceiling (MIN_SHOTS/MAX_SHOTS/MIN_TOTAL_SECONDS/
+    MAX_TOTAL_SECONDS in culturetoon_script.py — sized for self-hosted,
+    which has no real per-call duration limit) before spending an LLM call.
+    Kling Omni's own, much smaller, real ceiling (KLING_MAX_SHOTS/
+    KLING_MAX_TOTAL_SECONDS) is enforced separately, at generate-time in
+    generate_toon_video below, since a script isn't tied to a provider
+    until then."""
     from app.services.culturetoon_script import MIN_SHOTS, MAX_SHOTS, MIN_TOTAL_SECONDS, MAX_TOTAL_SECONDS
     num_shots = body.get("num_shots", 4)
     target_duration_seconds = body.get("target_duration_seconds", 12)
@@ -3150,6 +3153,17 @@ def generate_toon_video(toon_id: str, body: dict, background_tasks: BackgroundTa
         else:
             if variant.element_status != "ready":
                 raise HTTPException(status_code=400, detail="Character variant is not a ready Kling element — register it first")
+            from app.services.culturetoon_script import KLING_MAX_SHOTS, KLING_MAX_TOTAL_SECONDS
+            script_seconds = script.total_duration_seconds or sum(s.get("duration_seconds", 0) for s in script.shots)
+            if len(script.shots) > KLING_MAX_SHOTS or script_seconds > KLING_MAX_TOTAL_SECONDS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"This script ({len(script.shots)} shots, {script_seconds}s) is too long for Kling Omni "
+                        f"(max {KLING_MAX_SHOTS} shots / {KLING_MAX_TOTAL_SECONDS}s) — switch to self-hosted "
+                        "generation or shorten the script."
+                    ),
+                )
 
         toon.status = "animating"
         toon.generation_error = None

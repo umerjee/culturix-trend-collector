@@ -45,10 +45,27 @@ TONE_OPTIONS = ["funny", "dramatic", "satiric", "sad", "wholesome", "chaotic", "
 # user-supplied num_shots/target_duration_seconds against these before
 # calling the LLM, so an out-of-range request 400s immediately instead of
 # failing later inside build_kling_prompt after already spending a call.
+#
+# A script itself is provider-agnostic (self-hosted just flattens shots
+# into one continuous prompt, no per-shot DSL — see
+# culturetoon_selfhosted_video.py's build_prompt_from_script), so these are
+# the general script-creation ceiling, raised to cover real short-form
+# social durations (15s/30s/60s — see ScriptManager.tsx's DURATION_PRESETS)
+# now that self-hosted has no per-call duration limit in code. Kling Omni's
+# own, much lower, real ceiling is KLING_MAX_SHOTS/KLING_MAX_TOTAL_SECONDS
+# below — a script written for a 60s self-hosted clip still can't be
+# rendered via Kling, enforced separately at generate-time.
 MIN_SHOTS = 2
-MAX_SHOTS = 6
+MAX_SHOTS = 15
 MIN_TOTAL_SECONDS = 3
-MAX_TOTAL_SECONDS = 15
+MAX_TOTAL_SECONDS = 60
+# Kling Omni's real (unverified-but-assumed, see this module's own history)
+# per-call ceiling — used by build_kling_prompt below and by the router's
+# provider-specific check in generate_toon_video. Unchanged from the
+# original MAX_SHOTS/MAX_TOTAL_SECONDS values before self-hosted needed its
+# own, larger, general ceiling above.
+KLING_MAX_SHOTS = 6
+KLING_MAX_TOTAL_SECONDS = 15
 _MAX_SHOT_PROMPT_CHARS = 512
 
 
@@ -549,8 +566,8 @@ def build_kling_prompt(shots: list, element_names) -> str:
     reference."""
     if not shots:
         raise ToonScriptGenerationError("Cannot build a Kling prompt from an empty shots list")
-    if len(shots) > MAX_SHOTS:
-        raise ToonScriptGenerationError(f"Kling supports at most {MAX_SHOTS} shots, got {len(shots)}")
+    if len(shots) > KLING_MAX_SHOTS:
+        raise ToonScriptGenerationError(f"Kling supports at most {KLING_MAX_SHOTS} shots, got {len(shots)}")
 
     if isinstance(element_names, str):
         element_map: dict = {}
@@ -569,9 +586,9 @@ def build_kling_prompt(shots: list, element_names) -> str:
         )
 
     total_seconds = sum(s.get("duration_seconds", 0) for s in shots)
-    if not (MIN_TOTAL_SECONDS <= total_seconds <= MAX_TOTAL_SECONDS):
+    if not (MIN_TOTAL_SECONDS <= total_seconds <= KLING_MAX_TOTAL_SECONDS):
         raise ToonScriptGenerationError(
-            f"Total shot duration must be between {MIN_TOTAL_SECONDS} and {MAX_TOTAL_SECONDS}s, got {total_seconds}s"
+            f"Total shot duration must be between {MIN_TOTAL_SECONDS} and {KLING_MAX_TOTAL_SECONDS}s for Kling, got {total_seconds}s"
         )
 
     segments = []

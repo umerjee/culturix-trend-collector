@@ -1289,6 +1289,30 @@ class TestScripts:
             })
         assert exc_info.value.status_code == 400
 
+    def test_suggest_allows_self_hosted_length_scripts_past_klings_own_ceiling(self, db, user_id, brand_and_character, mocker):
+        # 45s/10 shots is well past Kling's own 15s/6-shot ceiling but valid
+        # for a script that isn't tied to a provider until generate-time —
+        # see KLING_MAX_SHOTS/KLING_MAX_TOTAL_SECONDS in
+        # app/services/culturetoon_script.py for where the Kling-specific
+        # ceiling is actually enforced instead (at generate-time).
+        brand, _character, variant = brand_and_character
+        session = db()
+        persona = Persona(name="Reality TV Stan", description="loves drama", motivations="gossip", interests="tv")
+        session.add(persona)
+        session.commit()
+        persona_id = persona.id
+        session.close()
+
+        mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script",
+            return_value={"hook_line": "H", "tone": "funny", "shots": [], "total_duration_seconds": 45},
+        )
+        result = culturetoons.suggest_script({
+            "user_id": user_id, "brand_id": brand["id"], "source_type": "persona", "source_id": persona_id,
+            "character_variant_id": variant["id"], "num_shots": 10, "target_duration_seconds": 45,
+        })
+        assert result["hook_line"] == "H"
+
     def test_suggest_with_multiple_character_variant_ids(self, db, user_id, brand_and_character, mocker):
         brand, character, variant = brand_and_character
         variant2 = culturetoons.create_variant({
@@ -1769,6 +1793,41 @@ class TestToons:
             )
         assert exc_info.value.status_code == 400
         assert "trained LoRA" in exc_info.value.detail
+
+    def test_generate_video_rejects_kling_when_script_too_long_for_kling(self, db, user_id, brand_and_character):
+        # A script within the general (self-hosted-sized) creation ceiling
+        # but past Kling's own much smaller real ceiling should 400
+        # immediately for the Kling path, not fail asynchronously inside
+        # the backgrounded task after already flipping to "animating".
+        brand, _character, variant = brand_and_character
+        session = db()
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        variant_row.element_status = "ready"
+        session.commit()
+        session.close()
+        script = culturetoons.create_script({"user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"]})
+        session = db()
+        script_row = session.query(ToonScript).filter_by(id=uuid.UUID(script["id"])).first()
+        script_row.shots = [
+            {"shot_number": i, "duration_seconds": 5, "action": "acts", "expression": "Happy", "dialogue": None}
+            for i in range(1, 11)  # 10 shots, 50s total — past Kling's 6/15s ceiling
+        ]
+        session.commit()
+        session.close()
+        toon = culturetoons.create_toon({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_variant_id": variant["id"], "script_id": script["id"],
+        })
+
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_toon_video(
+                toon["id"], {"user_id": user_id, "brand_id": brand["id"], "provider": "kling_omni"}, BackgroundTasks(),
+            )
+        assert exc_info.value.status_code == 400
+        assert "too long for Kling" in exc_info.value.detail
+        # Confirms this was caught before flipping to "animating".
+        unchanged = culturetoons.get_toon(toon["id"], user_id, brand["id"])
+        assert unchanged["status"] != "animating"
 
 
 class TestPublishToon:
