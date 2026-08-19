@@ -4,6 +4,7 @@ import { TrendingUp, Inbox, LayoutList, Sparkles } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { isSuperAdminEmail } from "@/lib/admin/superadmin";
 import { RAILWAY_API_BASE } from "@/lib/config/api";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 import AppNav from "@/components/AppNav";
 import TrendIdeaCard from "@/components/TrendIdeaCard";
 import RefreshButton from "@/components/RefreshButton";
@@ -21,7 +22,7 @@ async function fetchDigest(userId: string, profileId?: string): Promise<Digest |
       : `${apiUrl}/api/digest/${userId}`;
     const res = await fetch(url, {
       cache: "no-store",
-      headers: { "x-internal-token": process.env.INTERNAL_API_TOKEN ?? "" },
+      headers: internalApiHeaders(),
     });
     if (!res.ok) return null;
     return res.json();
@@ -33,7 +34,10 @@ async function fetchDigest(userId: string, profileId?: string): Promise<Digest |
 async function fetchProfiles(userId: string): Promise<ContentProfile[]> {
   const apiUrl = RAILWAY_API_BASE;
   try {
-    const res = await fetch(`${apiUrl}/users/${userId}/content-profiles`, { cache: "no-store" });
+    const res = await fetch(`${apiUrl}/users/${userId}/content-profiles`, {
+      cache: "no-store",
+      headers: internalApiHeaders(),
+    });
     if (!res.ok) return [];
     const data = await res.json();
     return Array.isArray(data) ? data : [];
@@ -48,7 +52,7 @@ async function fetchProfileContentPosts(userId: string, profileId?: string): Pro
   try {
     const res = await fetch(
       `${apiUrl}/api/content-posts?user_id=${userId}&content_profile_id=${profileId}`,
-      { cache: "no-store" }
+      { cache: "no-store", headers: internalApiHeaders() }
     );
     if (!res.ok) return [];
     const data: ContentPost[] = await res.json();
@@ -73,7 +77,7 @@ async function fetchPersonaAdvisory(userId: string, profileId?: string): Promise
     // is already known here, so the auth check is redundant anyway.
     const res = await fetch(
       `${apiUrl}/users/${userId}/content-profiles/${profileId}/persona-advisory`,
-      { cache: "no-store" }
+      { cache: "no-store", headers: internalApiHeaders() }
     );
     if (!res.ok) return { declining: [], dormant: [] };
     return await res.json();
@@ -92,7 +96,10 @@ interface RawConnectedAccount {
 async function fetchConnectedAccounts(userId: string): Promise<RawConnectedAccount[]> {
   const apiUrl = RAILWAY_API_BASE;
   try {
-    const res = await fetch(`${apiUrl}/api/social/accounts?user_id=${userId}`, { cache: "no-store" });
+    const res = await fetch(`${apiUrl}/api/social/accounts?user_id=${userId}`, {
+      cache: "no-store",
+      headers: internalApiHeaders(),
+    });
     if (!res.ok) return [];
     return await res.json();
   } catch {
@@ -143,7 +150,10 @@ export default async function DashboardPage({
   let plan: "free" | "pro" = isSuperAdmin ? "pro" : "free";
   if (!isSuperAdmin) {
     try {
-      const approvalRes = await fetch(`${apiUrl}/api/users/${user.id}/approved`, { cache: "no-store" });
+      const approvalRes = await fetch(`${apiUrl}/api/users/${user.id}/approved`, {
+        cache: "no-store",
+        headers: internalApiHeaders(),
+      });
       if (approvalRes.ok) {
         const info = await approvalRes.json();
         if (!info.approved) redirect("/pending");

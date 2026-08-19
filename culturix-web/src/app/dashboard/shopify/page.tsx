@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { isSuperAdminEmail } from "@/lib/admin/superadmin";
 import { RAILWAY_API_BASE } from "@/lib/config/api";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 import AppNav from "@/components/AppNav";
 import ShopifyConnectForm from "@/components/ShopifyConnectForm";
 import ShopifyDigest from "@/components/ShopifyDigest";
@@ -9,7 +10,10 @@ import type { ShopifyStore, ShopifyProduct } from "@/lib/types";
 
 async function fetchStore(userId: string): Promise<ShopifyStore | null> {
   try {
-    const res = await fetch(`${RAILWAY_API_BASE}/api/shopify/store?user_id=${userId}`, { cache: "no-store" });
+    const res = await fetch(`${RAILWAY_API_BASE}/api/shopify/store?user_id=${userId}`, {
+      cache: "no-store",
+      headers: internalApiHeaders(),
+    });
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -19,7 +23,10 @@ async function fetchStore(userId: string): Promise<ShopifyStore | null> {
 
 async function fetchProducts(userId: string): Promise<ShopifyProduct[]> {
   try {
-    const res = await fetch(`${RAILWAY_API_BASE}/api/shopify/products?user_id=${userId}`, { cache: "no-store" });
+    const res = await fetch(`${RAILWAY_API_BASE}/api/shopify/products?user_id=${userId}`, {
+      cache: "no-store",
+      headers: internalApiHeaders(),
+    });
     if (!res.ok) return [];
     const data = await res.json();
     return Array.isArray(data) ? data : [];

@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { Zap } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { RAILWAY_API_BASE } from "@/lib/config/api";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 import OnboardingWizard from "@/components/OnboardingWizard";
 
 export default async function OnboardingPage() {
@@ -16,7 +17,10 @@ export default async function OnboardingPage() {
   // wizard every time before the redirect-target fix in signup/page.tsx).
   let hasProfile = false;
   try {
-    const res = await fetch(`${RAILWAY_API_BASE}/users/${user.id}/content-profiles`, { cache: "no-store" });
+    const res = await fetch(`${RAILWAY_API_BASE}/users/${user.id}/content-profiles`, {
+      cache: "no-store",
+      headers: internalApiHeaders(),
+    });
     if (res.ok) {
       const profiles = await res.json();
       hasProfile = Array.isArray(profiles) && profiles.length > 0;

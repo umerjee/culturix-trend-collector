@@ -15,7 +15,6 @@ import {
 import PublishingSetupStatus from "@/components/PublishingSetupStatus";
 import { IOS_PUSH_NOTE, PUBLISH_MODE_DESCRIPTIONS, PUBLISH_MODE_LABELS } from "@/content/publishingCopy";
 import Chip from "@/components/ui/Chip";
-import { RAILWAY_API_BASE as RAILWAY } from "@/lib/config/api";
 
 const ALL_FORMAT_KEYS = CONTENT_FORMATS.map((f) => f.key);
 
@@ -228,15 +227,15 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
   async function loadConnectedAccounts() {
     setAccountsLoading(true);
     try {
-      const res = await fetch(`${RAILWAY}/api/social/accounts?user_id=${userId}`, { cache: "no-store" });
+      const res = await fetch(`/api/social/accounts`, { cache: "no-store" });
       if (res.ok) setConnectedAccounts(await res.json());
     } catch {}
     setAccountsLoading(false);
   }
 
   async function handleDisconnect(platform: string, contentProfileId: string | null) {
-    const qs = contentProfileId ? `&content_profile_id=${contentProfileId}` : "";
-    await fetch(`${RAILWAY}/api/social/${platform}/disconnect?user_id=${userId}${qs}`, { method: "DELETE" });
+    const qs = contentProfileId ? `?content_profile_id=${contentProfileId}` : "";
+    await fetch(`/api/social/${platform}/disconnect${qs}`, { method: "DELETE" });
     loadConnectedAccounts();
   }
 
@@ -245,7 +244,7 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
     setTestingPlatform(platform);
     try {
       await fetch(
-        `${RAILWAY}/api/social/${platform}/test?user_id=${userId}&content_profile_id=${selectedId}`,
+        `/api/social/${platform}/test?content_profile_id=${selectedId}`,
         { method: "POST" }
       );
       await loadConnectedAccounts();
@@ -286,7 +285,7 @@ function SettingsFormInner({ userId, initialPlan, initialProfileId }: Props) {
         // Re-check plan client-side too — picks up a just-completed Stripe
         // checkout redirect before the webhook-driven server value would.
         if (userId) {
-          const approvalRes = await fetch(`${RAILWAY}/api/users/${userId}/approved`, { cache: "no-store" });
+          const approvalRes = await fetch(`/api/approved`, { cache: "no-store" });
           if (approvalRes.ok) {
             const info = await approvalRes.json();
             if (info.plan) setPlan(info.plan);

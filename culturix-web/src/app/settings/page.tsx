@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { isSuperAdminEmail } from "@/lib/admin/superadmin";
 import { RAILWAY_API_BASE } from "@/lib/config/api";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 import AppNav from "@/components/AppNav";
 import SettingsForm from "@/components/SettingsForm";
 
@@ -20,7 +21,10 @@ export default async function SettingsPage({
   let plan: "free" | "pro" = isSuperAdmin ? "pro" : "free";
   if (!isSuperAdmin) {
     try {
-      const approvalRes = await fetch(`${RAILWAY_API_BASE}/api/users/${user.id}/approved`, { cache: "no-store" });
+      const approvalRes = await fetch(`${RAILWAY_API_BASE}/api/users/${user.id}/approved`, {
+        cache: "no-store",
+        headers: internalApiHeaders(),
+      });
       if (approvalRes.ok) {
         const info = await approvalRes.json();
         if (info.plan === "pro") plan = "pro";

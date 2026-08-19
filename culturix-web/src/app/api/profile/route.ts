@@ -26,7 +26,9 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const res = await fetch(`${API_URL}/api/users/profile?user_id=${user.id}`);
+  const res = await fetch(`${API_URL}/api/users/profile?user_id=${user.id}`, {
+    headers: internalApiHeaders(),
+  });
   const data = await res.json();
   return NextResponse.json(data, { status: res.status });
 }

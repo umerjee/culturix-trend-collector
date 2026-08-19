@@ -57,7 +57,7 @@ export default function PublishingWizard({
 
   async function runConnectionTest(): Promise<ConnectionTestResult> {
     const res = await fetch(
-      `${RAILWAY}/api/social/${platform}/test?user_id=${userId}&content_profile_id=${profile.id}`,
+      `/api/social/${platform}/test?content_profile_id=${profile.id}`,
       { method: "POST" }
     );
     return await res.json().catch(() => ({ ok: false }));

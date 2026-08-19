@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { isSuperAdminEmail } from "@/lib/admin/superadmin";
 import { RAILWAY_API_BASE } from "@/lib/config/api";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 import AppNav from "@/components/AppNav";
 import StatTile from "@/components/ui/StatTile";
 import EmptyState from "@/components/ui/EmptyState";
@@ -10,7 +11,10 @@ import type { ContentPost } from "@/lib/types";
 
 async function fetchContentPosts(userId: string): Promise<ContentPost[]> {
   try {
-    const res = await fetch(`${RAILWAY_API_BASE}/api/content-posts?user_id=${userId}`, { cache: "no-store" });
+    const res = await fetch(`${RAILWAY_API_BASE}/api/content-posts?user_id=${userId}`, {
+      cache: "no-store",
+      headers: internalApiHeaders(),
+    });
     if (!res.ok) return [];
     const data = await res.json();
     return Array.isArray(data) ? data : [];

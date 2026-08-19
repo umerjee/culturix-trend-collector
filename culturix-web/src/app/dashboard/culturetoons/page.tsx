@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { isSuperAdminEmail } from "@/lib/admin/superadmin";
 import { RAILWAY_API_BASE } from "@/lib/config/api";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 import AppNav from "@/components/AppNav";
 import CultureToonApp from "@/components/CultureToonApp";
 import type { CharacterBrand } from "@/lib/types";
@@ -15,7 +16,10 @@ export default async function CultureToonsPage() {
 
   let brands: CharacterBrand[] = [];
   try {
-    const res = await fetch(`${RAILWAY_API_BASE}/api/culturetoons/brands?user_id=${user.id}`, { cache: "no-store" });
+    const res = await fetch(`${RAILWAY_API_BASE}/api/culturetoons/brands?user_id=${user.id}`, {
+      cache: "no-store",
+      headers: internalApiHeaders(),
+    });
     if (res.ok) {
       const data = await res.json();
       brands = Array.isArray(data) ? data : [];

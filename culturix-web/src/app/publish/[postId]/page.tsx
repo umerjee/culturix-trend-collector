@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 import PublishLaunchCard from "@/components/PublishLaunchCard";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +21,10 @@ export default async function PublishLaunchPage({ params }: { params: { postId: 
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect(`/signup?next=/publish/${params.postId}`);
 
-  const res = await fetch(`${RAILWAY}/api/content-posts/${params.postId}/stage`, { cache: "no-store" });
+  const res = await fetch(`${RAILWAY}/api/content-posts/${params.postId}/stage`, {
+    cache: "no-store",
+    headers: internalApiHeaders(),
+  });
   if (!res.ok) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
