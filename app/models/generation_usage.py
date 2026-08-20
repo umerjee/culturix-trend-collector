@@ -31,7 +31,8 @@ class GenerationUsage(Base):
     model = Column(String(60), nullable=True)               # e.g. cloudflare_flux|qwen_image
     generation_type = Column(String(30), nullable=False)    # video|character_image|variant_image|
                                                               # background_image|voice_dubbing|
-                                                              # element_registration|voice_registration
+                                                              # element_registration|voice_registration|
+                                                              # toon_video_selfhosted|lora_preview
     input_units = Column(Integer, nullable=True)             # e.g. char count for voice
     output_units = Column(Integer, nullable=True)            # e.g. duration_seconds for video (int-rounded)
     cost_usd = Column(Numeric(10, 4), nullable=True)         # NULL = not yet priced, see class docstring

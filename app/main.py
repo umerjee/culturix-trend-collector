@@ -302,6 +302,11 @@ async def lifespan(_):
             # CharacterVariant.expressions_generating's docstring.
             "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS expressions_generating BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS expressions_generate_errors JSONB",
+            # One-click LoRA preview — see CharacterVariant.lora_preview_url's
+            # docstring.
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS lora_preview_url TEXT",
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS lora_preview_status VARCHAR(12) NOT NULL DEFAULT 'none'",
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS lora_preview_error TEXT",
         ]:
             try:
                 _conn.execute(_text(_stmt))

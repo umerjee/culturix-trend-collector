@@ -106,6 +106,8 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
   const [trainError, setTrainError] = useState<string | null>(null);
   const [startingGenerateAll, setStartingGenerateAll] = useState(false);
   const [generateAllStartError, setGenerateAllStartError] = useState<string | null>(null);
+  const [startingLoraPreview, setStartingLoraPreview] = useState(false);
+  const [loraPreviewStartError, setLoraPreviewStartError] = useState<string | null>(null);
 
   const [variantDescriptionDraft, setVariantDescriptionDraft] = useState("");
   const [variantCultureTagDraft, setVariantCultureTagDraft] = useState("");
@@ -122,13 +124,14 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
   const characterVariants = variants.filter((v) => v.character_id === selectedCharacterId);
   const selectedVariant = variants.find((v) => v.id === selectedVariantId) ?? null;
 
-  // Poll while a variant's element registration, LoRA training, or bulk
-  // expression generation is in flight.
+  // Poll while a variant's element registration, LoRA training, LoRA
+  // preview generation, or bulk expression generation is in flight.
   useEffect(() => {
     if (!selectedVariant) return;
     if (
       selectedVariant.element_status !== "pending"
       && selectedVariant.lora_status !== "training"
+      && selectedVariant.lora_preview_status !== "generating"
       && !selectedVariant.expressions_generating
     ) return;
     const interval = setInterval(async () => {
@@ -291,6 +294,29 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
       setGenerateAllStartError("Network error — check your connection and try again.");
     } finally {
       setStartingGenerateAll(false);
+    }
+  }
+
+  async function generateLoraPreview() {
+    if (!selectedVariant) return;
+    setStartingLoraPreview(true);
+    setLoraPreviewStartError(null);
+    try {
+      const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}/lora-preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId }),
+      });
+      if (res.ok) {
+        setVariants((prev) => prev.map((v) => (v.id === selectedVariant.id ? { ...v, lora_preview_status: "generating", lora_preview_error: null } : v)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setLoraPreviewStartError(typeof data.detail === "string" ? data.detail : `Couldn't start (${res.status})`);
+      }
+    } catch {
+      setLoraPreviewStartError("Network error — check your connection and try again.");
+    } finally {
+      setStartingLoraPreview(false);
     }
   }
 
@@ -795,6 +821,51 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
                   tabs or characters; it&apos;ll keep running and update here when done.
                 </p>
                 {trainError && <p className="text-[11px] text-red-500 mt-1.5">{trainError}</p>}
+
+                {selectedVariant.lora_status === "ready" && (
+                  <div className="mt-3 pt-3 border-t border-gray-200">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-gray-700">Preview</span>
+                      {selectedVariant.lora_preview_status === "ready" && (
+                        <span className="inline-flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> Ready</span>
+                      )}
+                      {selectedVariant.lora_preview_status === "generating" && (
+                        <span className="inline-flex items-center gap-1 text-xs text-amber-600"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating…</span>
+                      )}
+                      {selectedVariant.lora_preview_status === "failed" && (
+                        <span className="inline-flex items-center gap-1 text-xs text-red-600"><XCircle className="h-3.5 w-3.5" /> Failed</span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-gray-500 mb-2">
+                      There&apos;s no automated quality check for a trained LoRA — this generates one
+                      cheap, short test clip using it, so you can actually look at whether the character
+                      looks right before using it for real.
+                    </p>
+                    {selectedVariant.lora_preview_error && (
+                      <p className="text-[11px] text-red-500 mb-2">{selectedVariant.lora_preview_error}</p>
+                    )}
+                    <button
+                      onClick={generateLoraPreview}
+                      disabled={startingLoraPreview || selectedVariant.lora_preview_status === "generating"}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 text-white text-xs font-medium px-3 py-1.5 hover:bg-gray-800 transition-colors disabled:opacity-60"
+                    >
+                      {startingLoraPreview || selectedVariant.lora_preview_status === "generating"
+                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        : <Sparkles className="h-3.5 w-3.5" />}
+                      {selectedVariant.lora_preview_status === "ready" || selectedVariant.lora_preview_status === "failed"
+                        ? "Regenerate preview" : "Generate preview"}
+                    </button>
+                    {loraPreviewStartError && <p className="text-[11px] text-red-500 mt-1.5">{loraPreviewStartError}</p>}
+                    {selectedVariant.lora_preview_url && (
+                      <video
+                        key={selectedVariant.lora_preview_url}
+                        src={selectedVariant.lora_preview_url}
+                        controls
+                        className="mt-2 rounded-lg max-w-[240px] border border-gray-200"
+                      />
+                    )}
+                  </div>
+                )}
               </div>
 
               <MemoryManager key={`memory-${selectedVariant.id}`} brandId={brandId} variantId={selectedVariant.id} />

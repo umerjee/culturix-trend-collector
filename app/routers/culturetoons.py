@@ -345,6 +345,8 @@ def _serialize_variant(v) -> dict:
         "voice_provider": v.voice_provider, "elevenlabs_voice_id": v.elevenlabs_voice_id,
         "lora_path": v.lora_path, "lora_status": v.lora_status, "lora_error": v.lora_error,
         "lora_training_images": v.lora_training_images or [],
+        "lora_preview_url": v.lora_preview_url, "lora_preview_status": v.lora_preview_status,
+        "lora_preview_error": v.lora_preview_error,
         "expressions_generating": v.expressions_generating,
         "expressions_generate_errors": v.expressions_generate_errors or {},
         "created_at": v.created_at.isoformat() if v.created_at else None,
@@ -2109,6 +2111,35 @@ def train_variant_lora(variant_id: str, body: dict, background_tasks: Background
 
     background_tasks.add_task(run_lora_training, variant_id=variant_id)
     return {"status": "training_started"}
+
+
+@router.post("/variants/{variant_id}/lora-preview")
+def generate_lora_preview(variant_id: str, body: dict, background_tasks: BackgroundTasks):
+    """Backgrounded, same reasoning as /train-lora — a Serverless generation
+    call (cold start + sampling) can take minutes. Sets lora_preview_status
+    to 'generating' synchronously so the UI sees the state flip immediately.
+    See CharacterVariant.lora_preview_url's docstring for why this exists:
+    there's no automated quality signal for a trained LoRA otherwise."""
+    from app.db import SessionLocal
+    from app.services.culturetoon_lora import run_lora_preview
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+
+    session = SessionLocal()
+    try:
+        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
+        if variant.lora_status != "ready" or not variant.lora_path:
+            raise HTTPException(status_code=400, detail="This variant has no ready trained LoRA to preview")
+        variant.lora_preview_status = "generating"
+        variant.lora_preview_error = None
+        session.commit()
+    finally:
+        session.close()
+
+    background_tasks.add_task(run_lora_preview, variant_id=variant_id, user_id=user_id)
+    return {"status": "preview_started"}
 
 
 # ── expressions ───────────────────────────────────────────────────────────

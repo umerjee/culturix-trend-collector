@@ -88,6 +88,19 @@ class CharacterVariant(Base):
     # missing at training time.
     lora_training_images = Column(JSONB, nullable=True)
 
+    # One-click sanity check for a freshly-trained LoRA (POST /variants/
+    # {id}/lora-preview) — there is no automated quality signal for a
+    # trained LoRA at all (lora_status="ready" only means the training
+    # process completed and the file uploaded, not that it looks good);
+    # this generates one cheap, short self-hosted clip using the trained
+    # identity so a human can actually look at it, instead of only
+    # finding out via a real production generation later. Backgrounded
+    # the same way LoRA training itself is (Serverless generation can
+    # take minutes, well past any HTTP gateway timeout).
+    lora_preview_url = Column(Text, nullable=True)
+    lora_preview_status = Column(String(12), nullable=False, default="none")  # none|generating|ready|failed
+    lora_preview_error = Column(Text, nullable=True)
+
     # Bulk "Generate all expressions" tracking (POST /variants/{id}/
     # expressions/generate-all) — backgrounded the same way element/LoRA
     # registration above are, since 10 sequential paid image-generation

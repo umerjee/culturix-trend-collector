@@ -463,6 +463,133 @@ class TestLoraTrainingEndpoints:
         assert exc_info.value.status_code == 404
 
 
+class TestLoraPreview:
+    def test_requires_ready_lora(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_lora_preview(
+                variant["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=BackgroundTasks(),
+            )
+        assert exc_info.value.status_code == 400
+        assert "no ready trained LoRA" in exc_info.value.detail
+
+    def test_sets_generating_status_and_queues_background_task(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        session = db()
+        row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        row.lora_status = "ready"
+        row.lora_path = "trained.safetensors"
+        session.commit()
+        session.close()
+
+        bg = BackgroundTasks()
+        result = culturetoons.generate_lora_preview(
+            variant["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=bg,
+        )
+        assert result == {"status": "preview_started"}
+        assert len(bg.tasks) == 1
+
+        updated = culturetoons.get_variant(variant["id"], user_id, brand["id"])
+        assert updated["lora_preview_status"] == "generating"
+        assert updated["lora_preview_error"] is None
+
+    def test_unknown_variant_404s(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_lora_preview(
+                str(uuid.uuid4()), {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=BackgroundTasks(),
+            )
+        assert exc_info.value.status_code == 404
+
+
+class TestRunLoraPreview:
+    """The background-task function itself (POST /variants/{id}/
+    lora-preview backgrounds this) — real DB rows, RunPod/storage mocked
+    at the app.media boundary, same convention as
+    test_culturetoon_selfhosted_video.py's own tests for the sibling
+    toon-generation path."""
+
+    def _ready_variant(self, db, variant_id):
+        session = db()
+        row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant_id)).first()
+        row.lora_status = "ready"
+        row.lora_path = "trained.safetensors"
+        row.lora_preview_status = "generating"
+        session.commit()
+        session.close()
+
+    def test_success_sets_url_and_ready_status(self, db, user_id, brand_and_character, mocker, monkeypatch):
+        from app.services.culturetoon_lora import run_lora_preview
+        brand, _character, variant = brand_and_character
+        self._ready_variant(db, variant["id"])
+        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-1")
+
+        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mocker.patch(
+            "app.media.runpod_serverless_client.run_inference_job_with_allocation_retry",
+            return_value=b"preview-bytes",
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/preview.mp4")
+
+        run_lora_preview(variant["id"], user_id)
+
+        updated = culturetoons.get_variant(variant["id"], user_id, brand["id"])
+        assert updated["lora_preview_status"] == "ready"
+        assert updated["lora_preview_url"] == "https://supabase/preview.mp4"
+        assert updated["lora_preview_error"] is None
+
+    def test_missing_endpoint_id_marks_failed(self, db, user_id, brand_and_character, monkeypatch):
+        from app.services.culturetoon_lora import run_lora_preview
+        brand, _character, variant = brand_and_character
+        self._ready_variant(db, variant["id"])
+        monkeypatch.delenv("RUNPOD_SERVERLESS_ENDPOINT_ID", raising=False)
+
+        run_lora_preview(variant["id"], user_id)
+
+        updated = culturetoons.get_variant(variant["id"], user_id, brand["id"])
+        assert updated["lora_preview_status"] == "failed"
+        assert "RUNPOD_SERVERLESS_ENDPOINT_ID" in updated["lora_preview_error"]
+
+    def test_generation_failure_marks_failed_with_message(self, db, user_id, brand_and_character, mocker, monkeypatch):
+        from app.services.culturetoon_lora import run_lora_preview
+        brand, _character, variant = brand_and_character
+        self._ready_variant(db, variant["id"])
+        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-1")
+
+        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mocker.patch(
+            "app.media.runpod_serverless_client.run_inference_job_with_allocation_retry",
+            side_effect=RuntimeError("cold start timed out"),
+        )
+
+        run_lora_preview(variant["id"], user_id)
+
+        updated = culturetoons.get_variant(variant["id"], user_id, brand["id"])
+        assert updated["lora_preview_status"] == "failed"
+        assert "cold start timed out" in updated["lora_preview_error"]
+
+    def test_records_usage_regardless_of_outcome(self, db, user_id, brand_and_character, mocker, monkeypatch):
+        from app.services.culturetoon_lora import run_lora_preview
+        from app.models.generation_usage import GenerationUsage
+        brand, _character, variant = brand_and_character
+        self._ready_variant(db, variant["id"])
+        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-1")
+
+        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mocker.patch(
+            "app.media.runpod_serverless_client.run_inference_job_with_allocation_retry",
+            side_effect=RuntimeError("boom"),
+        )
+
+        run_lora_preview(variant["id"], user_id)
+
+        session = db()
+        rows = session.query(GenerationUsage).filter_by(generation_type="lora_preview").all()
+        assert len(rows) == 1
+        assert rows[0].provider == "runpod_ltx"
+        session.close()
+
+
 class TestCharacterImageGeneration:
     def test_generate_image_requires_description(self, db, user_id, brand_and_character):
         brand, character, _variant = brand_and_character

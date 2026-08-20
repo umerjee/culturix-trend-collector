@@ -500,6 +500,12 @@ export interface CharacterVariant {
   lora_status: "none" | "training" | "ready" | "failed";
   lora_error: string | null;
   lora_training_images: { url: string; caption: string }[];
+  // One-click sanity check for a freshly-trained LoRA — see
+  // CharacterVariant.lora_preview_url's backend docstring. There's no
+  // automated quality signal for a trained LoRA otherwise.
+  lora_preview_url: string | null;
+  lora_preview_status: "none" | "generating" | "ready" | "failed";
+  lora_preview_error: string | null;
   // Bulk "Generate all expressions" tracking — see
   // CharacterVariant.expressions_generating's backend docstring.
   expressions_generating: boolean;

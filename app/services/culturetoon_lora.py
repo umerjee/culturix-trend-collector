@@ -511,3 +511,86 @@ def run_lora_training(variant_id) -> None:
         session.commit()
     finally:
         session.close()
+
+
+_PREVIEW_DURATION_SECONDS = 3
+_PREVIEW_PROMPT = (
+    "The character waves hello at the camera with a warm, friendly smile, "
+    "standing in soft natural lighting."
+)
+
+
+class LoraPreviewError(Exception):
+    pass
+
+
+def run_lora_preview(variant_id, user_id) -> None:
+    """Background-task entry point (POST /variants/{id}/lora-preview) —
+    owns its own session lifecycle, same shape as run_lora_training.
+    Generates one cheap, short self-hosted clip grounded in the variant's
+    trained LoRA and nothing else (a fixed generic prompt, not a real
+    script) — this is a sanity check on the LoRA itself, not a production
+    generation. There's no automated quality signal for a trained LoRA
+    otherwise: lora_status="ready" only means training completed and the
+    file uploaded, not that it looks good — see this field's docstring on
+    CharacterVariant. Always uses the allocation-retry client, same
+    reasoning as generate_video_for_toon_selfhosted's interactive-button
+    path: a single ad-hoc call can't assume a warm Serverless worker the
+    way a batch runner's later jobs can. user_id is only needed for the
+    GenerationUsage row (a NOT NULL column) — the request already
+    authorized against it before backgrounding this."""
+    import os
+    import uuid as _uuid
+    from app.db import SessionLocal
+    from app.models.character import Character
+    from app.models.character_variant import CharacterVariant
+    from app.media import ltx_workflow, runpod_serverless_client, storage
+    from app.services.culturetoon_usage import record_usage, estimate_selfhosted_video_cost
+
+    session = SessionLocal()
+    variant = None
+    try:
+        variant = session.query(CharacterVariant).filter_by(id=_uuid.UUID(str(variant_id))).first()
+        if not variant:
+            return
+        try:
+            if variant.lora_status != "ready" or not variant.lora_path:
+                raise LoraPreviewError("This variant has no ready trained LoRA to preview")
+            endpoint_id = os.getenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "")
+            if not endpoint_id:
+                raise LoraPreviewError("RUNPOD_SERVERLESS_ENDPOINT_ID is not configured")
+
+            workflow = ltx_workflow.build_workflow(
+                _PREVIEW_PROMPT, _PREVIEW_DURATION_SECONDS, lora_path=variant.lora_path,
+            )
+            video_bytes = runpod_serverless_client.run_inference_job_with_allocation_retry(endpoint_id, workflow)
+
+            video_url = storage.upload(
+                video_bytes,
+                f"culturetoons/{variant.character_id}/variants/{variant.id}/lora-preview-{_uuid.uuid4().hex[:8]}.mp4",
+                "video/mp4",
+            )
+            variant.lora_preview_url = video_url
+            variant.lora_preview_status = "ready"
+            variant.lora_preview_error = None
+        except Exception as exc:
+            session.rollback()
+            variant.lora_preview_status = "failed"
+            variant.lora_preview_error = str(exc)[:2000]
+            logger.warning("LoRA preview failed for variant %s: %s", variant_id, exc)
+        session.commit()
+    finally:
+        if variant:
+            # Recorded regardless of outcome, same reasoning as the
+            # self-hosted toon-generation path — a failed generation
+            # still burns real GPU time.
+            character = session.query(Character).filter_by(id=variant.character_id).first()
+            if character:
+                record_usage(
+                    session, user_id=user_id, brand_id=character.brand_id,
+                    provider="runpod_ltx", generation_type="lora_preview",
+                    output_units=_PREVIEW_DURATION_SECONDS,
+                    cost_usd=estimate_selfhosted_video_cost(_PREVIEW_DURATION_SECONDS),
+                )
+                session.commit()
+        session.close()
