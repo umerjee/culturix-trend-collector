@@ -52,19 +52,14 @@ ls -lh "$MOUNT/ComfyUI/models/diffusion_models" "$MOUNT/ComfyUI/models/text_enco
 
 Expect ~20.4GB (diffusion model), ~9.4GB (text encoder), ~0.25GB (VAE).
 Neither file is gated — no `HF_TOKEN` needed for this one, unlike the LTX-2
-training text encoder. Note the diffusion model goes in a **new**
-`diffusion_models` folder — this is a different ComfyUI model category
-than `checkpoints` (which the video worker's LTX-2 checkpoint uses), and
-`extra_model_paths.yaml` already maps `unet: models/unet/`... actually
-**check**: `UNETLoader` in ComfyUI reads from the `unet`-mapped folder
-category by convention even when the on-disk folder is literally named
-`diffusion_models` upstream — if the model doesn't show up in the
-`UNETLoader` dropdown once deployed, the fix is adding a `diffusion_models:
-models/diffusion_models/` line to `extra_model_paths.yaml` (shared with
-the video worker) rather than assuming the existing `unet:` mapping covers
-it silently. Confirm against a live deployment before assuming either way
-— this specific mapping hasn't been validated live yet, unlike everything
-else in this file.
+training text encoder. The diffusion model goes in a **new**
+`diffusion_models` folder — a different ComfyUI model category than
+`checkpoints` (which the video worker's LTX-2 checkpoint uses) or `unet`.
+`extra_model_paths.yaml` (shared with the video worker) now has an explicit
+`diffusion_models: models/diffusion_models/` line for this — `UNETLoader`
+reads from the `diffusion_models`-registered folder type in current
+ComfyUI, and the pre-existing `unet:` mapping does not cover it. Still
+worth confirming the dropdown is populated on the first real deploy.
 
 Text encoder and VAE are **shared** with the (currently unused) base
 Qwen-Image text-to-image model — hence downloading from
@@ -127,9 +122,6 @@ open("test_output.png", "wb").write(image_bytes)
 
 - **GPU sizing** — see step 2's note above; genuinely unconfirmed until a
   real job runs.
-- **`diffusion_models` folder mapping** — see step 1's note; may need an
-  `extra_model_paths.yaml` update if `UNETLoader`'s dropdown comes back
-  empty.
 - **Cost per call** — `app/media/image_selfhosted.py`'s
   `_ESTIMATED_COST_USD = 0.01` is a placeholder, not a measured number
   (same posture as the video path's own per-second GPU cost estimate).
