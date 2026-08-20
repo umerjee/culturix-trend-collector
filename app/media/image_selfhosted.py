@@ -54,8 +54,14 @@ class SelfHostedImageProvider(ImageProvider):
         filename = runpod_serverless_image_client.unique_reference_filename()
         workflow = qwen_image_workflow.build_workflow(prompt, filename)
 
+        # timeout_seconds=300, not the client's 180s default — confirmed
+        # live 2026-08-20: a real character portrait (vs. a tiny synthetic
+        # test image) missed the 180s window on a cold worker and needed
+        # its automatic allocation-retry to succeed, costing an extra
+        # ~30s backoff plus a second full attempt for something that
+        # should just fit in one try.
         image_bytes = runpod_serverless_image_client.run_edit_job_with_allocation_retry(
-            endpoint_id, workflow, reference_bytes, filename,
+            endpoint_id, workflow, reference_bytes, filename, timeout_seconds=300,
         )
 
         return MediaResult(
