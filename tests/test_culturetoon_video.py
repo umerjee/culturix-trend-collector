@@ -374,3 +374,56 @@ class TestElevenLabsOptIn:
         mock_dub.assert_called_once()
         assert mock_dub.call_args.args[3] == "sk-real-key"  # decrypted correctly
         assert mock_dub.call_args.args[4] == "voice-1"
+
+
+class TestDubDialogue:
+    """Direct coverage of the ffmpeg command-building in _dub_dialogue —
+    subprocess.run and ElevenLabsProvider mocked, no real ffmpeg/network."""
+
+    def _run(self, mocker, tmp_path, shots):
+        from app.services.culturetoon_video import _dub_dialogue
+
+        mocker.patch(
+            "app.media.elevenlabs_voice.ElevenLabsProvider.synthesize",
+            return_value=b"fake-mp3-bytes",
+        )
+        mock_run = mocker.patch(
+            "subprocess.run",
+            return_value=mocker.Mock(returncode=0, stderr=""),
+        )
+        video_path = str(tmp_path / "video.mp4")
+        open(video_path, "wb").close()
+        result_path = _dub_dialogue(str(tmp_path), video_path, shots, "sk-key", "voice-1")
+        return mock_run, result_path
+
+    def test_mux_command_does_not_truncate_video_to_audio_length(self, mocker, tmp_path):
+        # Confirmed live: -shortest truncated the OUTPUT to whichever
+        # stream (video or dialogue audio) is shorter. Dialogue is placed
+        # sequentially, not time-aligned to Kling's actual output duration
+        # (see _dub_dialogue's own docstring), so audio is very often
+        # shorter than the video — -shortest was silently cutting off
+        # everything after the last line of dialogue instead of letting
+        # the video play out with silence for the remainder.
+        mock_run, _ = self._run(mocker, tmp_path, [
+            {"dialogue": "Hello there"}, {"dialogue": None},
+        ])
+        mux_call = mock_run.call_args_list[-1]
+        mux_args = mux_call.args[0]
+        assert "-shortest" not in mux_args
+
+    def test_mux_command_maps_video_and_audio_streams_correctly(self, mocker, tmp_path):
+        mock_run, _ = self._run(mocker, tmp_path, [{"dialogue": "Hi"}])
+        mux_args = mock_run.call_args_list[-1].args[0]
+        assert "-map" in mux_args
+        assert "0:v:0" in mux_args
+        assert "1:a:0" in mux_args
+        assert "-c:v" in mux_args and "copy" in mux_args
+        assert "-c:a" in mux_args and "aac" in mux_args
+
+    def test_no_dialogue_anywhere_returns_original_video_untouched(self, mocker, tmp_path):
+        mock_run = mocker.patch("subprocess.run")
+        from app.services.culturetoon_video import _dub_dialogue
+        video_path = str(tmp_path / "video.mp4")
+        result = _dub_dialogue(str(tmp_path), video_path, [{"dialogue": None}, {"dialogue": ""}], "sk-key", "voice-1")
+        assert result == video_path
+        mock_run.assert_not_called()

@@ -71,8 +71,15 @@ def _dub_dialogue(tmp_dir: str, video_path: str, shots: list, api_key: str, voic
 
     dubbed_path = os.path.join(tmp_dir, "dubbed.mp4")
     mux_result = subprocess.run(
+        # Deliberately NOT -shortest — confirmed live: dialogue audio is
+        # placed sequentially, not time-aligned to Kling's actual output
+        # duration (see this function's own docstring), so the audio
+        # track is very often shorter than the video. -shortest truncates
+        # the OUTPUT to the shorter stream, which was silently cutting off
+        # the tail of the video (everything after the last line of
+        # dialogue finishes) instead of just letting it play out silent.
         ["ffmpeg", "-y", "-i", video_path, "-i", audio_path,
-         "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0", "-shortest", dubbed_path],
+         "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0", dubbed_path],
         capture_output=True, text=True, timeout=60,
     )
     if mux_result.returncode != 0:
