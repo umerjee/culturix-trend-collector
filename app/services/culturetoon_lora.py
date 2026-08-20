@@ -439,6 +439,18 @@ def train_character_lora(variant, session) -> None:
             f"--output-dir {q(precomputed_dir)}"
         )
         _run(runpod_ssh, host, port, preprocess_cmd, _TRAINING_TIMEOUT_SECONDS, "ltx-trainer dataset preprocessing failed")
+        # TEMPORARY diagnostic 2026-08-21: preprocessing exits 0 but
+        # train.py's PrecomputedDataset then finds no *.pt files under
+        # {precomputed_dir}/latents — _run() only surfaces stdout/stderr on
+        # a NONZERO exit, so a successful-but-wrong preprocessing run gives
+        # zero visibility into what it actually wrote. Print the real
+        # directory tree unconditionally so the next failure (if any) is
+        # diagnosable from real evidence instead of guessed. Remove once
+        # the actual cause is confirmed and fixed.
+        _diag_code, _diag_out, _diag_err = runpod_ssh.run_remote_command(
+            host, port, f"find {q(precomputed_dir)} -maxdepth 3", timeout_seconds=30,
+        )
+        print(f"[diag] precomputed_dir tree (exit {_diag_code}):\n{_diag_out}\n{_diag_err}")
 
         config_yaml = (
             f"seed: 42\n"
