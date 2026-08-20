@@ -282,9 +282,13 @@ def curate_training_images(session, variant) -> list:
 
 
 def _run(runpod_ssh, host, port, command, timeout_seconds, error_prefix):
-    exit_code, _stdout, stderr = runpod_ssh.run_remote_command(host, port, command, timeout_seconds=timeout_seconds)
+    exit_code, stdout, stderr = runpod_ssh.run_remote_command(host, port, command, timeout_seconds=timeout_seconds)
     if exit_code != 0:
-        raise LoraTrainingError(f"{error_prefix}: {stderr[-2000:]}")
+        # Confirmed live 2026-08-20: stderr alone can be just boilerplate
+        # hint/warning noise (e.g. hf CLI's Rich-formatted output goes to
+        # stdout even on failure) — discarding stdout hid the actual error.
+        combined = (stdout + "\n" + stderr) if stdout else stderr
+        raise LoraTrainingError(f"{error_prefix}: {combined[-2000:]}")
 
 
 def train_character_lora(variant, session) -> None:
