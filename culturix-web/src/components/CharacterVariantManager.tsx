@@ -42,12 +42,30 @@ function ElementStatusIcon({ status }: { status: CharacterVariant["element_statu
   return null;
 }
 
+// The variant create_character auto-creates alongside every new character
+// (same name, no description/culture_tag of its own) — this is "the
+// character itself" for registration/Expressions/LoRA purposes, as opposed
+// to a deliberately-created cultural recast. There's no explicit
+// is_default flag in the schema, so name-match (falling back to whichever
+// variant is oldest/first) is the same heuristic the backend's own
+// portrait-propagation fix uses.
+function resolveDefaultVariantId(
+  characterId: string | null, chars: Character[], vars: CharacterVariant[],
+): string | null {
+  if (!characterId) return null;
+  const character = chars.find((c) => c.id === characterId);
+  const owned = vars.filter((v) => v.character_id === characterId);
+  return (character ? owned.find((v) => v.name === character.name) : undefined)?.id ?? owned[0]?.id ?? null;
+}
+
 export default function CharacterVariantManager({ brandId, hasElevenLabsKey, characters, setCharacters, variants, setVariants, focusVariantId }: Props) {
   const focusedVariant = focusVariantId ? variants.find((v) => v.id === focusVariantId) : null;
   const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(
     focusedVariant?.character_id ?? characters[0]?.id ?? null
   );
-  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(focusedVariant?.id ?? null);
+  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(
+    focusedVariant?.id ?? resolveDefaultVariantId(characters[0]?.id ?? null, characters, variants)
+  );
 
   useEffect(() => {
     if (!focusVariantId) return;
@@ -86,7 +104,6 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
   const [registerError, setRegisterError] = useState<string | null>(null);
   const [training, setTraining] = useState(false);
   const [trainError, setTrainError] = useState<string | null>(null);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const [variantDescriptionDraft, setVariantDescriptionDraft] = useState("");
   const [variantCultureTagDraft, setVariantCultureTagDraft] = useState("");
@@ -135,7 +152,6 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
     setVariantCultureTagDraft(selectedVariant?.culture_tag ?? "");
     setVariantImageGenError(null);
     setVariantImageGenWarning(null);
-    setAdvancedOpen(!!selectedVariant?.image_url);
     setVariantNameDraft(selectedVariant?.name ?? "");
     setSaveVariantNameError(null);
     setRegisterError(null);
@@ -245,6 +261,19 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
     }
   }
 
+  // Mirrors the backend's own propagation rule (see
+  // app/routers/culturetoons.py::_propagate_portrait_to_untouched_default_variants)
+  // so the UI reflects it immediately instead of only after a refetch —
+  // only fills in a variant that's still exactly as auto-created (no
+  // image/description/culture_tag of its own yet).
+  function propagatePortraitToUntouchedVariants(characterId: string, imageUrl: string) {
+    setVariants((prev) => prev.map((v) => (
+      v.character_id === characterId && !v.image_url && !v.description && !v.culture_tag
+        ? { ...v, image_url: imageUrl }
+        : v
+    )));
+  }
+
   async function generateCharacterImage() {
     if (!selectedCharacter) return;
     if (!descriptionDraft.trim()) {
@@ -265,6 +294,9 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
         return;
       }
       setCharacters((prev) => prev.map((c) => (c.id === selectedCharacter.id ? (data as Character) : c)));
+      if (typeof data.base_image_url === "string") {
+        propagatePortraitToUntouchedVariants(selectedCharacter.id, data.base_image_url);
+      }
     } finally {
       setGeneratingImage(false);
     }
@@ -453,7 +485,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
           {characters.map((c) => (
             <button
               key={c.id}
-              onClick={() => { setSelectedCharacterId(c.id); setSelectedVariantId(null); }}
+              onClick={() => { setSelectedCharacterId(c.id); setSelectedVariantId(resolveDefaultVariantId(c.id, characters, variants)); }}
               className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
                 c.id === selectedCharacterId ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
               }`}
@@ -524,7 +556,12 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
             portraitUploadUrl={`/api/culturetoons/characters/${selectedCharacter.id}/image`}
             extraFields={{ brand_id: brandId }}
             onReferenceUploaded={(data) => setCharacters((prev) => prev.map((c) => (c.id === selectedCharacter.id ? { ...c, ...data } as Character : c)))}
-            onPortraitUploaded={(data) => setCharacters((prev) => prev.map((c) => (c.id === selectedCharacter.id ? { ...c, ...data } as Character : c)))}
+            onPortraitUploaded={(data) => {
+              setCharacters((prev) => prev.map((c) => (c.id === selectedCharacter.id ? { ...c, ...data } as Character : c)));
+              if (typeof data.base_image_url === "string") {
+                propagatePortraitToUntouchedVariants(selectedCharacter.id, data.base_image_url);
+              }
+            }}
             onGenerate={generateCharacterImage}
             generating={generatingImage}
             error={imageGenError}
@@ -606,20 +643,149 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
         )}
       </div>
 
-      {/* Step 2 — Variants & Related Characters. "Variants" (below) is
+      {/* Step 2 — Expressions & video readiness. Operates on selectedVariant,
+          which defaults to the character's own auto-created identity (see
+          resolveDefaultVariantId) — the common case never needs to touch
+          Step 3 at all. Selecting a different variant chip in Step 3
+          re-targets this section at that variant instead. Deliberately
+          placed above Variants: building out the expression catalogue for
+          the character's own identity is the thing nearly everyone needs
+          first, Variants (cultural recasts) is an optional later step. */}
+      {selectedCharacter && (
+        <div className="rounded-2xl bg-white border border-gray-100 p-4">
+          <h3 className="text-sm font-semibold text-gray-900 mb-1 flex items-center gap-1.5">
+            Step 2 · Expressions &amp; video readiness
+            {selectedVariant && <ElementStatusIcon status={selectedVariant.element_status} />}
+          </h3>
+          <p className="text-xs text-gray-400 mb-3">
+            {selectedVariant && selectedVariant.name !== selectedCharacter.name
+              ? `Editing the "${selectedVariant.name}" variant instead of ${selectedCharacter.name}'s own identity — switch back in Step 3 below.`
+              : `${selectedCharacter.name}'s own expression catalogue and video registration — most characters only ever need this.`}
+          </p>
+
+          {selectedVariant ? (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-gray-700">Kling character registration</span>
+                  {selectedVariant.element_status === "ready" && (
+                    <span className="inline-flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> Ready</span>
+                  )}
+                  {selectedVariant.element_status === "pending" && (
+                    <span className="inline-flex items-center gap-1 text-xs text-amber-600"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Registering…</span>
+                  )}
+                  {selectedVariant.element_status === "failed" && (
+                    <span className="inline-flex items-center gap-1 text-xs text-red-600"><XCircle className="h-3.5 w-3.5" /> Failed</span>
+                  )}
+                </div>
+                <p className="text-[11px] text-gray-500 mb-2">
+                  Registers this variant&apos;s image as a reusable Kling character so it stays visually
+                  consistent across every video generated for it. Required before generating any video.
+                </p>
+                {selectedVariant.element_error && (
+                  <p className="text-[11px] text-red-500 mb-2">{selectedVariant.element_error}</p>
+                )}
+                <div className="flex items-center gap-2">
+                  <select
+                    value={voiceProvider}
+                    onChange={(e) => setVoiceProvider(e.target.value as VoiceProvider)}
+                    className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
+                  >
+                    <option value="kling">Auto (Kling picks a voice)</option>
+                    <option value="elevenlabs" disabled={!hasElevenLabsKey}>
+                      ElevenLabs {!hasElevenLabsKey && "(add API key in brand settings)"}
+                    </option>
+                  </select>
+                  <button
+                    onClick={registerElement}
+                    disabled={registering || !selectedVariant.image_url || selectedVariant.element_status === "pending"}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 text-white text-xs font-medium px-3 py-1.5 hover:bg-gray-800 transition-colors disabled:opacity-60"
+                  >
+                    {registering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                    {selectedVariant.element_status === "ready" ? "Re-register" : "Register"}
+                  </button>
+                </div>
+                <p className="text-[11px] text-gray-400 mt-1.5">
+                  Neither option lets you preview a voice ahead of time — &quot;Auto&quot; means Kling
+                  assigns one automatically when a video is generated, no specific voice chosen now.
+                  ElevenLabs is only meaningfully different once you have a specific cloned or
+                  pre-selected voice for this character (not yet supported from this screen).
+                </p>
+                {!selectedVariant.image_url && (
+                  <p className="text-[11px] text-gray-400 mt-1.5">Build {selectedCharacter.name}&apos;s portrait in Step 1 above first.</p>
+                )}
+                {registerError && <p className="text-[11px] text-red-500 mt-1.5">{registerError}</p>}
+              </div>
+
+              <ExpressionUploadGrid
+                key={selectedVariant.id} brandId={brandId} variantId={selectedVariant.id}
+                hasPortrait={!!selectedVariant.image_url}
+              />
+
+              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-gray-700">Visual identity (self-hosted)</span>
+                  {selectedVariant.lora_status === "ready" && (
+                    <span className="inline-flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> Ready</span>
+                  )}
+                  {selectedVariant.lora_status === "training" && (
+                    <span className="inline-flex items-center gap-1 text-xs text-amber-600"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Training…</span>
+                  )}
+                  {selectedVariant.lora_status === "failed" && (
+                    <span className="inline-flex items-center gap-1 text-xs text-red-600"><XCircle className="h-3.5 w-3.5" /> Failed</span>
+                  )}
+                </div>
+                <p className="text-[11px] text-gray-500 mb-2">
+                  Trains this variant&apos;s own visual identity for self-hosted (RunPod/LTX-2) video
+                  generation — separate from Kling registration above, and required before self-hosted
+                  video can use this character. Uses the Expression set above as training images
+                  automatically, so finishing that set is usually all that&apos;s needed here.
+                </p>
+                {selectedVariant.lora_error && (
+                  <p className="text-[11px] text-red-500 mb-2">{selectedVariant.lora_error}</p>
+                )}
+                <button
+                  onClick={trainLora}
+                  disabled={training || selectedVariant.lora_status === "training"}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 text-white text-xs font-medium px-3 py-1.5 hover:bg-gray-800 transition-colors disabled:opacity-60"
+                >
+                  {training ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  {selectedVariant.lora_status === "ready" || selectedVariant.lora_status === "failed" ? "Retrain" : "Start training"}
+                </button>
+                <p className="text-[11px] text-gray-400 mt-1.5">
+                  Training runs on a dedicated GPU pod and can take up to an hour — feel free to switch
+                  tabs or characters; it&apos;ll keep running and update here when done.
+                </p>
+                {trainError && <p className="text-[11px] text-red-500 mt-1.5">{trainError}</p>}
+              </div>
+
+              <MemoryManager key={`memory-${selectedVariant.id}`} brandId={brandId} variantId={selectedVariant.id} />
+            </div>
+          ) : (
+            <p className="text-xs text-gray-400">This character has no variant yet — create one in Step 3 below.</p>
+          )}
+        </div>
+      )}
+
+      {/* Step 3 — Variants & Related Characters. "Variants" (below) is
           THIS character recast for a different context — same identity,
           personality, and backstory, just a different cultural look.
           "Related Characters" (a separate person, e.g. Kumar's wife or
           neighbour, with their own personality) is deliberately NOT here —
           see the Relationships tab, which links two independent Character
-          records instead of creating a variant of one. */}
+          records instead of creating a variant of one. Optional/later —
+          Step 2 above already covers the common "just this character"
+          case via its auto-selected default variant. */}
       {selectedCharacter && (
         <div className="rounded-2xl bg-white border border-gray-100 p-4">
-          <h3 className="text-sm font-semibold text-gray-900 mb-1">Step 2 · Variants of {selectedCharacter.name}</h3>
+          <h3 className="text-sm font-semibold text-gray-900 mb-1">
+            Step 3 · Variants of {selectedCharacter.name} <span className="text-gray-400 font-normal">(optional, for later)</span>
+          </h3>
           <p className="text-xs text-gray-400 mb-3">
             The same character, recast for a different cultural context (e.g. &quot;Chinese version&quot;, &quot;Swiss
             version&quot;) — same identity and personality, different look. Each one stays visually connected
-            to {selectedCharacter.name} unless it has its own reference photo. Looking for a{" "}
+            to {selectedCharacter.name} unless it has its own reference photo, and needs its own Expression
+            set (Step 2 above, once selected below). Looking for a{" "}
             <strong>different</strong> person connected to {selectedCharacter.name} (a wife, a neighbour, a
             friend) instead? That&apos;s a separate character — create it on this tab, then link the two on
             the <strong>Relationships</strong> tab.
@@ -634,7 +800,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
               <XCircle className="h-3 w-3 text-red-500" /> registration failed
               <span className="mx-1">·</span>
               no icon = not registered yet
-              <InfoTooltip text="Registration is a one-time step (Step 3 below, per variant) that teaches Kling this character's face so future videos stay visually consistent — required before generating any video." />
+              <InfoTooltip text="Registration is a one-time step (Step 2 above, per variant) that teaches Kling this character's face so future videos stay visually consistent — required before generating any video." />
             </div>
           )}
 
@@ -717,118 +883,6 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
                     : `No reference photo of its own — generation stays visually connected to ${selectedCharacter.name} while following this description for who the variant actually is (gender, ethnicity, etc.).`
                 }
               />
-
-              <div className="rounded-xl border border-gray-100">
-                <button
-                  onClick={() => setAdvancedOpen((v) => !v)}
-                  className="w-full flex items-center justify-between px-3 py-2.5 text-xs font-semibold text-gray-700"
-                >
-                  <span className="flex items-center gap-1.5">
-                    {advancedOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                    Step 3 · Register for video &amp; add expressions
-                  </span>
-                  <ElementStatusIcon status={selectedVariant.element_status} />
-                </button>
-                {advancedOpen && (
-                  <div className="px-3 pb-3 space-y-4">
-                    <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs font-semibold text-gray-700">Kling character registration</span>
-                        {selectedVariant.element_status === "ready" && (
-                          <span className="inline-flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> Ready</span>
-                        )}
-                        {selectedVariant.element_status === "pending" && (
-                          <span className="inline-flex items-center gap-1 text-xs text-amber-600"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Registering…</span>
-                        )}
-                        {selectedVariant.element_status === "failed" && (
-                          <span className="inline-flex items-center gap-1 text-xs text-red-600"><XCircle className="h-3.5 w-3.5" /> Failed</span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-gray-500 mb-2">
-                        Registers this variant&apos;s image as a reusable Kling character so it stays visually
-                        consistent across every video generated for it. Required before generating any video.
-                      </p>
-                      {selectedVariant.element_error && (
-                        <p className="text-[11px] text-red-500 mb-2">{selectedVariant.element_error}</p>
-                      )}
-                      <div className="flex items-center gap-2">
-                        <select
-                          value={voiceProvider}
-                          onChange={(e) => setVoiceProvider(e.target.value as VoiceProvider)}
-                          className="rounded-lg border border-gray-200 px-2 py-1.5 text-xs"
-                        >
-                          <option value="kling">Auto (Kling picks a voice)</option>
-                          <option value="elevenlabs" disabled={!hasElevenLabsKey}>
-                            ElevenLabs {!hasElevenLabsKey && "(add API key in brand settings)"}
-                          </option>
-                        </select>
-                        <button
-                          onClick={registerElement}
-                          disabled={registering || !selectedVariant.image_url || selectedVariant.element_status === "pending"}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 text-white text-xs font-medium px-3 py-1.5 hover:bg-gray-800 transition-colors disabled:opacity-60"
-                        >
-                          {registering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                          {selectedVariant.element_status === "ready" ? "Re-register" : "Register"}
-                        </button>
-                      </div>
-                      <p className="text-[11px] text-gray-400 mt-1.5">
-                        Neither option lets you preview a voice ahead of time — &quot;Auto&quot; means Kling
-                        assigns one automatically when a video is generated, no specific voice chosen now.
-                        ElevenLabs is only meaningfully different once you have a specific cloned or
-                        pre-selected voice for this character (not yet supported from this screen).
-                      </p>
-                      {!selectedVariant.image_url && (
-                        <p className="text-[11px] text-gray-400 mt-1.5">Build a variant image above first.</p>
-                      )}
-                      {registerError && <p className="text-[11px] text-red-500 mt-1.5">{registerError}</p>}
-                    </div>
-
-                    <ExpressionUploadGrid
-                      key={selectedVariant.id} brandId={brandId} variantId={selectedVariant.id}
-                      hasPortrait={!!selectedVariant.image_url}
-                    />
-
-                    <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs font-semibold text-gray-700">Visual identity (self-hosted)</span>
-                        {selectedVariant.lora_status === "ready" && (
-                          <span className="inline-flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> Ready</span>
-                        )}
-                        {selectedVariant.lora_status === "training" && (
-                          <span className="inline-flex items-center gap-1 text-xs text-amber-600"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Training…</span>
-                        )}
-                        {selectedVariant.lora_status === "failed" && (
-                          <span className="inline-flex items-center gap-1 text-xs text-red-600"><XCircle className="h-3.5 w-3.5" /> Failed</span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-gray-500 mb-2">
-                        Trains this variant&apos;s own visual identity for self-hosted (RunPod/LTX-2) video
-                        generation — separate from Kling registration above, and required before self-hosted
-                        video can use this character. Uses this variant&apos;s Expression set above as training
-                        images automatically, so finishing that set is usually all that&apos;s needed here.
-                      </p>
-                      {selectedVariant.lora_error && (
-                        <p className="text-[11px] text-red-500 mb-2">{selectedVariant.lora_error}</p>
-                      )}
-                      <button
-                        onClick={trainLora}
-                        disabled={training || selectedVariant.lora_status === "training"}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 text-white text-xs font-medium px-3 py-1.5 hover:bg-gray-800 transition-colors disabled:opacity-60"
-                      >
-                        {training ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                        {selectedVariant.lora_status === "ready" || selectedVariant.lora_status === "failed" ? "Retrain" : "Start training"}
-                      </button>
-                      <p className="text-[11px] text-gray-400 mt-1.5">
-                        Training runs on a dedicated GPU pod and can take up to an hour — feel free to switch
-                        tabs or characters; it&apos;ll keep running and update here when done.
-                      </p>
-                      {trainError && <p className="text-[11px] text-red-500 mt-1.5">{trainError}</p>}
-                    </div>
-
-                    <MemoryManager key={`memory-${selectedVariant.id}`} brandId={brandId} variantId={selectedVariant.id} />
-                  </div>
-                )}
-              </div>
             </div>
           ) : (
             <p className="text-xs text-gray-400">Name a variant above, or skip this if {selectedCharacter.name} doesn&apos;t need one.</p>
