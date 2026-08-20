@@ -90,22 +90,31 @@ RUN pip install --no-cache-dir \
     sentencepiece soundfile wandb \
     einops numpy "scipy>=1.14" "transformers>=5.8.0,<5.15"
 
-# Confirmed live 2026-08-20, twice: this base image's own torchaudio
-# doesn't match its torch build — `import torchaudio` (pulled in by
-# ltx-trainer's decode_latents.py) raised `OSError: undefined symbol:
-# _ZNK5torch8autograd4Node4nameEv` loading libtorchaudio.so, the classic
-# signature of a torch/torchaudio ABI mismatch, not a missing package.
-# First fix attempt placed this reinstall BEFORE the dependency list above
-# and it silently got undone — one of those packages' own torch
-# requirement made pip's resolver touch torch again, sourced from the
-# plain PyPI index (no cu124 suffix), re-desyncing it from the
-# already-installed cu124 torchaudio. Placing this LAST guarantees it's
-# the final word: explicitly (re)install the matched official trio for
-# this exact CUDA pairing — torch 2.4.0 / torchvision 0.19.0 /
-# torchaudio 2.4.0 is the PyTorch project's own released cu124 set.
+# Confirmed live 2026-08-20, three times now:
+#  1. This base image's own torchaudio doesn't match its torch build —
+#     `import torchaudio` raised `OSError: undefined symbol:
+#     _ZNK5torch8autograd4Node4nameEv` loading libtorchaudio.so, the
+#     classic signature of a torch/torchaudio ABI mismatch.
+#  2. Placing the fix for #1 BEFORE the dependency list above got silently
+#     undone by pip touching torch again from the plain PyPI index while
+#     satisfying one of those packages — moved to LAST so nothing
+#     downstream can override it.
+#  3. Pinning torch==2.4.0 (matching this base image) was itself wrong:
+#     ltx-core's own pyproject.toml requires torch~=2.7, and its real
+#     video_vae code uses it — `det_attn_rope.py`'s
+#     @torch.library.custom_op-decorated function failed schema inference
+#     under 2.4.0 (`infer_schema(func): Parameter x has unsupported type
+#     torch.Tensor` — a torch.library API behavior difference between
+#     versions, not a missing/misnamed type). cu124's official wheel index
+#     only goes up to torch 2.6.0, so this needs cu126 instead — the
+#     installed CUDA *runtime* comes bundled in the torch wheel itself
+#     (this doesn't need to match the base image's apt-level 12.4.1
+#     toolkit, only the actual GPU driver needs to be new enough, which
+#     RunPod's fleet is). torch 2.7.1 / torchvision 0.22.1 / torchaudio
+#     2.7.1 is the PyTorch project's own released cu126 set.
 RUN pip install --no-cache-dir \
-    torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 \
-    --index-url https://download.pytorch.org/whl/cu124
+    torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
+    --index-url https://download.pytorch.org/whl/cu126
 
 # No CMD/ENTRYPOINT override — inherited from the base image, which starts
 # sshd (see header comment) and otherwise just idles, exactly what an
