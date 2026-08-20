@@ -322,7 +322,7 @@ def train_character_lora(variant, session) -> None:
     pod_id = None
 
     try:
-        pod_id = runpod_client.create_training_pod()
+        pod_id = runpod_client.create_training_pod_with_retry()
         host, port = runpod_client.wait_for_ssh_ready(pod_id)
 
         # Every value interpolated into a shell command below is passed

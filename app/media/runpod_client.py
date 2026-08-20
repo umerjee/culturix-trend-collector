@@ -199,7 +199,15 @@ def create_training_pod() -> str:
             podFindAndDeployOnDemand(input: $input) { id desiredStatus }
         }""",
         {"input": {
-            "cloudType": "SECURE",
+            # COMMUNITY, not SECURE — confirmed live 2026-08-20:
+            # SECURE-cloud (RunPod's own guaranteed datacenters) A100 80GB
+            # PCIe stock hit a real SUPPLY_CONSTRAINT error on the very
+            # first live attempt. COMMUNITY (third-party host pool) is a
+            # much broader, generally better-available supply; an
+            # ephemeral one-shot training pod is exactly the case where
+            # COMMUNITY's lower per-host reliability guarantee is an easy
+            # tradeoff to accept versus SECURE's tighter capacity.
+            "cloudType": "COMMUNITY",
             "gpuTypeId": gpu_type_id,
             "imageName": image_name,
             "name": "culturix-lora-training",
@@ -211,6 +219,46 @@ def create_training_pod() -> str:
         raise RunPodError(f"RunPod did not return a new pod id: {data}")
     logger.info("Training pod %s created", pod["id"])
     return pod["id"]
+
+
+# Defaults for create_training_pod_with_retry — overridable via
+# RUNPOD_TRAINING_ALLOCATION_MAX_RETRIES/_BACKOFF_SECONDS, same knob shape
+# as app/media/runpod_serverless_client.py's allocation retry. A training
+# run is backgrounded (see culturetoon_lora.py::run_lora_training) with up
+# to an hour of budget total, so a more generous backoff than the
+# Serverless side's is affordable here.
+_DEFAULT_TRAINING_ALLOCATION_MAX_RETRIES = 2
+_DEFAULT_TRAINING_ALLOCATION_BACKOFF_SECONDS = 60
+
+
+def create_training_pod_with_retry(max_retries: int = None, backoff_seconds: float = None) -> str:
+    """Wraps create_training_pod with a retry around allocation failures
+    (SUPPLY_CONSTRAINT and similar — RunPod couldn't find a matching host
+    right now) — confirmed live this is a real, not hypothetical, failure
+    mode for A100 80GB PCIe specifically. Plain create_training_pod() has
+    no retry of its own; this is the one train_character_lora actually
+    calls."""
+    if max_retries is None:
+        max_retries = int(os.getenv("RUNPOD_TRAINING_ALLOCATION_MAX_RETRIES", str(_DEFAULT_TRAINING_ALLOCATION_MAX_RETRIES)))
+    if backoff_seconds is None:
+        backoff_seconds = float(os.getenv("RUNPOD_TRAINING_ALLOCATION_BACKOFF_SECONDS", str(_DEFAULT_TRAINING_ALLOCATION_BACKOFF_SECONDS)))
+
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return create_training_pod()
+        except RunPodError as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                logger.warning(
+                    "Training pod allocation attempt %d/%d failed: %s — retrying in %ss",
+                    attempt + 1, max_retries + 1, exc, backoff_seconds,
+                )
+                time.sleep(backoff_seconds)
+
+    raise RunPodError(
+        f"Training pod failed to allocate after {max_retries + 1} attempt(s): {last_exc}"
+    ) from last_exc
 
 
 def wait_for_ssh_ready(pod_id: str, timeout_seconds: int = 180) -> tuple:

@@ -8,7 +8,9 @@ os.environ.setdefault("RUNPOD_API_KEY", "test-key")
 
 import pytest
 
-from app.media.runpod_client import create_training_pod, terminate_pod, wait_for_ssh_ready, RunPodError
+from app.media.runpod_client import (
+    create_training_pod, create_training_pod_with_retry, terminate_pod, wait_for_ssh_ready, RunPodError,
+)
 
 
 def _mock_graphql_response(mocker, data=None, errors=None):
@@ -50,6 +52,20 @@ class TestCreateTrainingPod:
         sent_variables = mock_post.call_args.kwargs["json"]["variables"]
         assert "networkVolumeId" not in sent_variables["input"]
 
+    def test_uses_community_cloud_not_secure(self, mocker, monkeypatch):
+        # Confirmed live 2026-08-20: SECURE-cloud A100 80GB PCIe hit a real
+        # SUPPLY_CONSTRAINT error on the first live attempt. COMMUNITY is a
+        # broader, generally better-available pool — an acceptable
+        # tradeoff for an ephemeral one-shot training pod.
+        monkeypatch.setenv("RUNPOD_TRAINING_GPU_TYPE_ID", "NVIDIA A100 80GB PCIe")
+        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
+        mock_post = mocker.patch("httpx.post", return_value=_mock_graphql_response(
+            mocker, data={"podFindAndDeployOnDemand": {"id": "pod-new", "desiredStatus": "RUNNING"}},
+        ))
+        create_training_pod()
+        sent_variables = mock_post.call_args.kwargs["json"]["variables"]
+        assert sent_variables["input"]["cloudType"] == "COMMUNITY"
+
     def test_no_pod_returned_raises(self, mocker, monkeypatch):
         monkeypatch.setenv("RUNPOD_TRAINING_GPU_TYPE_ID", "NVIDIA A100 80GB PCIe")
         monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
@@ -67,6 +83,42 @@ class TestCreateTrainingPod:
         ))
         with pytest.raises(RunPodError, match="insufficient GPU availability"):
             create_training_pod()
+
+
+class TestCreateTrainingPodWithRetry:
+    def test_succeeds_immediately_without_sleeping(self, mocker):
+        mocker.patch("app.media.runpod_client.create_training_pod", return_value="pod-1")
+        mock_sleep = mocker.patch("time.sleep")
+        assert create_training_pod_with_retry() == "pod-1"
+        mock_sleep.assert_not_called()
+
+    def test_retries_past_a_supply_constraint_then_succeeds(self, mocker):
+        # Real error confirmed live: RunPod's own SUPPLY_CONSTRAINT
+        # message when a GPU tier has no matching host available.
+        mock_create = mocker.patch(
+            "app.media.runpod_client.create_training_pod",
+            side_effect=[RunPodError("SUPPLY_CONSTRAINT: no instances available"), "pod-2"],
+        )
+        mocker.patch("time.sleep")
+        assert create_training_pod_with_retry(max_retries=2, backoff_seconds=0.01) == "pod-2"
+        assert mock_create.call_count == 2
+
+    def test_raises_after_exhausting_retries(self, mocker):
+        mocker.patch("app.media.runpod_client.create_training_pod", side_effect=RunPodError("still no supply"))
+        mocker.patch("time.sleep")
+        with pytest.raises(RunPodError, match="failed to allocate after 3 attempt"):
+            create_training_pod_with_retry(max_retries=2, backoff_seconds=0.01)
+
+    def test_retry_knobs_read_from_env_when_not_passed(self, mocker, monkeypatch):
+        monkeypatch.setenv("RUNPOD_TRAINING_ALLOCATION_MAX_RETRIES", "1")
+        monkeypatch.setenv("RUNPOD_TRAINING_ALLOCATION_BACKOFF_SECONDS", "0.01")
+        mock_create = mocker.patch(
+            "app.media.runpod_client.create_training_pod",
+            side_effect=[RunPodError("no supply"), "pod-3"],
+        )
+        mocker.patch("time.sleep")
+        assert create_training_pod_with_retry() == "pod-3"
+        assert mock_create.call_count == 2
 
 
 class TestTerminatePod:
