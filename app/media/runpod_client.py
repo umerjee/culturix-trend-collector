@@ -247,6 +247,20 @@ def create_training_pod() -> str:
             "imageName": image_name,
             "name": "culturix-lora-training",
             "ports": ["22/tcp"],
+            # Confirmed live 2026-08-20: the training checkpoint alone
+            # (Lightricks/LTX-2.3, full precision — a DIFFERENT, larger
+            # file than the fp8 one used for inference) is 46.15GB, plus
+            # ~24GB for the Gemma text encoder — ~70GB before any working-
+            # directory margin for the converted training clips,
+            # preprocessed dataset cache, or LoRA output. With no
+            # containerDiskInGb specified at all, RunPod's default was too
+            # small and the checkpoint download failed mid-write (out of
+            # disk, not a network/xet issue — confirmed by the traceback
+            # failing in temp_file.write(chunk), past the point where any
+            # download-transport problem would surface). 150GB leaves
+            # real headroom; container-disk billing is a small fraction of
+            # GPU-hour cost, not worth cutting close on.
+            "containerDiskInGb": 150,
         },
         timeout=30,
     )

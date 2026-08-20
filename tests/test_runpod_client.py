@@ -93,6 +93,20 @@ class TestCreateTrainingPod:
         sent = mock_post.call_args.kwargs["json"]
         assert "networkVolumeId" not in sent
 
+    def test_requests_enough_disk_for_both_model_downloads(self, mocker, monkeypatch):
+        # Confirmed live 2026-08-20: with no containerDiskInGb specified at
+        # all, the checkpoint download (46.15GB, a different and larger
+        # file than the fp8 one used for inference) failed mid-write —
+        # ran out of disk, not a network/xet issue.
+        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
+        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
+        mock_post = mocker.patch("httpx.post", return_value=_mock_rest_response(
+            mocker, json_body={"id": "pod-new"},
+        ))
+        create_training_pod()
+        sent = mock_post.call_args.kwargs["json"]
+        assert sent["containerDiskInGb"] >= 100
+
     def test_uses_community_cloud_not_secure(self, mocker, monkeypatch):
         # Confirmed live 2026-08-20: SECURE-cloud hit a real
         # SUPPLY_CONSTRAINT error on the first live attempt. COMMUNITY is a
