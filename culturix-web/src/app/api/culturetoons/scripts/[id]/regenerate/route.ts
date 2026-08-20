@@ -12,12 +12,19 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => ({}));
-  const res = await fetch(`${RAILWAY}/api/culturetoons/scripts/${params.id}/regenerate`, {
-    method: "POST",
-    headers: internalApiHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ ...body, user_id: user.id }),
-    signal: AbortSignal.timeout(30000),
-  });
-  const data = await res.json().catch(() => ({}));
-  return NextResponse.json(data, { status: res.status });
+  try {
+    // Two sequential LLM calls (regenerate the script, then judge it) —
+    // see scripts/suggest/route.ts's comment for why this needed to move
+    // past 30000ms.
+    const res = await fetch(`${RAILWAY}/api/culturetoons/scripts/${params.id}/regenerate`, {
+      method: "POST",
+      headers: internalApiHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ ...body, user_id: user.id }),
+      signal: AbortSignal.timeout(60000),
+    });
+    const data = await res.json().catch(() => ({}));
+    return NextResponse.json(data, { status: res.status });
+  } catch {
+    return NextResponse.json({ detail: "Regeneration timed out — try again." }, { status: 504 });
+  }
 }
