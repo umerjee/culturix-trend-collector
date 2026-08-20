@@ -49,16 +49,38 @@ RUN pip install --no-cache-dir -U "huggingface_hub[cli]>=0.24"
 # code is needed here, not full history.
 RUN git clone --depth 1 https://github.com/Lightricks/LTX-2.git /workspace/LTX-2
 
-# ltx-trainer's own dependencies. UNVERIFIED which exact requirements
-# file(s) the repo ships and whether they fully cover process_dataset.py +
-# train.py's needs beyond what the base image's own PyTorch/CUDA stack
-# already provides — install whatever requirements.txt exists at either
-# the package level or repo root, tolerating either being absent, and
-# treat a clean run of both scripts (not just a clean `pip install`) as
-# the real confirmation. Flag and fix here if the first real training run
-# hits an ImportError this doesn't cover.
-RUN (pip install --no-cache-dir -r /workspace/LTX-2/packages/ltx-trainer/requirements.txt 2>/dev/null || true) \
-    && (pip install --no-cache-dir -r /workspace/LTX-2/requirements.txt 2>/dev/null || true)
+# Confirmed live 2026-08-20: the requirements.txt-only approach that used
+# to be here left ltx_trainer itself unimportable at all (process_dataset.py
+# failed on `import typer` before ever reaching `from ltx_trainer import
+# logger`) — plain pip install -r never actually installs the ltx_trainer/
+# ltx-core packages themselves, just loose dependencies.
+#
+# This repo is a uv workspace (root pyproject.toml: [tool.uv.workspace]
+# members = ["packages/*"]) — the "correct" install is `uv sync`, but that
+# pulls torch>=2.6.0 / torchcodec from a custom cu132 wheel index, which
+# would fight this base image's already-working torch 2.4.0/CUDA 12.4.1
+# stack (their own pyproject.toml comment even flags a real
+# CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH history from exactly this kind
+# of cuDNN/torch version drift). Deliberately NOT doing that here — instead:
+#   1. Register ltx-core and ltx-trainer as importable local packages
+#      (--no-deps: skip pyproject.toml's strict/custom-indexed pins
+#      entirely, keep using whatever torch/torchvision this base image
+#      already has working).
+#   2. Explicitly install ltx-trainer's actual runtime dependencies
+#      (from its pyproject.toml `dependencies = [...]` list, confirmed by
+#      reading it directly) with no version pins, letting pip pick
+#      whatever's compatible with the already-installed torch — EXCLUDING
+#      torch/torchvision/torchaudio/torchcodec themselves (version-
+#      sensitive, leave the base image's own) and ltx-kernels (an
+#      optional compiled-CUDA-extension extra this project doesn't use).
+RUN pip install --no-cache-dir --no-deps \
+    -e /workspace/LTX-2/packages/ltx-core \
+    -e /workspace/LTX-2/packages/ltx-trainer
+RUN pip install --no-cache-dir \
+    typer rich pyyaml accelerate av "bitsandbytes; sys_platform=='linux'" \
+    google-genai imageio imageio-ffmpeg openai opencv-python optimum-quanto \
+    pandas peft pillow-heif pydantic safetensors scenedetect \
+    sentencepiece soundfile wandb
 
 # No CMD/ENTRYPOINT override — inherited from the base image, which starts
 # sshd (see header comment) and otherwise just idles, exactly what an
