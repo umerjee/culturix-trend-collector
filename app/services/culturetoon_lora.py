@@ -350,18 +350,26 @@ def train_character_lora(variant, session) -> None:
         # download actually needs it — the LTX checkpoint repo is public)
         # keeps it out of shell history / any other command run on the pod.
         hf_env = f"HF_TOKEN={q(_HF_TOKEN)} " if _HF_TOKEN else ""
+        # HF_HUB_DISABLE_XET=1 on every hf download here — confirmed live
+        # 2026-08-20, twice: hf_xet's accelerated transfer path stalled
+        # indefinitely (manual Gemma-repo download on a Pod) and separately
+        # raised "File reconstruction error: Internal Wr..." (this training
+        # pod's checkpoint download) on the exact same class of large/gated
+        # repo fetch. Plain HTTP download (what disabling xet falls back
+        # to) is slower but has been reliable both times it was tried.
+        xet_env = "HF_HUB_DISABLE_XET=1 "
 
         # This pod's own model copy — the Network Volume isn't mounted here.
         checkpoint_path = f"{models_dir}/checkpoint/{_CHECKPOINT_FILE}"
         _run(runpod_ssh, host, port,
-             f"hf download {q(_CHECKPOINT_REPO)} {q(_CHECKPOINT_FILE)} --local-dir {q(models_dir + '/checkpoint')}",
+             f"{xet_env}hf download {q(_CHECKPOINT_REPO)} {q(_CHECKPOINT_FILE)} --local-dir {q(models_dir + '/checkpoint')}",
              _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training checkpoint")
         text_encoder_dir = f"{models_dir}/text_encoder"
         # google/gemma-3-12b-it is gated — this download will fail with an
         # authentication error if HF_TOKEN isn't set to a token whose
         # account has accepted Gemma's license on huggingface.co.
         _run(runpod_ssh, host, port,
-             f"{hf_env}hf download {q(_TEXT_ENCODER_REPO)} --local-dir {q(text_encoder_dir)}",
+             f"{xet_env}{hf_env}hf download {q(_TEXT_ENCODER_REPO)} --local-dir {q(text_encoder_dir)}",
              _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training text encoder (is HF_TOKEN set and Gemma's license accepted on huggingface.co for that account?)")
 
         # Stage each reference image, then loop it into a short static clip
