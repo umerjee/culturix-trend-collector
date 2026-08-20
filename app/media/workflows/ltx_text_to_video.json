@@ -7,12 +7,12 @@
   "2": {
     "class_type": "CLIPTextEncode",
     "_meta": { "title": "Positive prompt (injected by ltx_workflow.py)" },
-    "inputs": { "text": "", "clip": ["1", 1] }
+    "inputs": { "text": "", "clip": ["10", 0] }
   },
   "3": {
     "class_type": "CLIPTextEncode",
     "_meta": { "title": "Negative prompt (static)" },
-    "inputs": { "text": "blurry, low quality, distorted, deformed, watermark, text overlay", "clip": ["1", 1] }
+    "inputs": { "text": "blurry, low quality, distorted, deformed, watermark, text overlay", "clip": ["10", 0] }
   },
   "4": {
     "class_type": "EmptyLTXVLatentVideo",
@@ -47,5 +47,10 @@
     "class_type": "CreateVideo",
     "_meta": { "title": "Mux frames into a VIDEO object (fps injected by ltx_workflow.py, kept in sync with EmptyLTXVLatentVideo's frame count)" },
     "inputs": { "images": ["7", 0], "fps": 24 }
+  },
+  "10": {
+    "class_type": "LTXVGemmaCLIPModelLoader",
+    "_meta": { "title": "Load Gemma text encoder — LTX-2's checkpoint does not bundle a CLIP/text-encoder at all (confirmed live: CheckpointLoaderSimple's clip output is None), this dedicated ComfyUI-LTXVideo node loads the separate Gemma text encoder file instead, per Lightricks' own gemma_encoder.py::LTXVGemmaCLIPModelLoader" },
+    "inputs": { "gemma_path": "gemma_3_12B_it_fp4_mixed.safetensors", "ltxv_path": "ltx-2.3-22b-dev.safetensors", "max_length": 1024 }
   }
 }
