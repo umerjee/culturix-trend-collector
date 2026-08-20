@@ -42,6 +42,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # floor matters, not just "some huggingface_hub version."
 RUN pip install --no-cache-dir -U "huggingface_hub[cli]>=0.24"
 
+# Confirmed live 2026-08-20: this base image's own torchaudio doesn't
+# actually match its torch build — `import torchaudio` (pulled in by
+# ltx-trainer's decode_latents.py) raised `OSError: undefined symbol:
+# _ZNK5torch8autograd4Node4nameEv` loading libtorchaudio.so, the classic
+# signature of a torch/torchaudio ABI mismatch, not a missing package.
+# Fix: explicitly (re)install the matched official trio for this exact
+# torch/CUDA pairing rather than trusting whatever the base image shipped
+# — torch 2.4.0 / torchvision 0.19.0 / torchaudio 2.4.0 is the PyTorch
+# project's own released cu124 set.
+RUN pip install --no-cache-dir \
+    torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 \
+    --index-url https://download.pytorch.org/whl/cu124
+
 # Lightricks/LTX-2 — contains packages/ltx-trainer/scripts/
 # {process_dataset.py,train.py}, the two-stage CLI train_character_lora()
 # runs (confirmed against Lightricks' own docs, 2026-08-18 — see
