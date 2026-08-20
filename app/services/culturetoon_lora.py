@@ -97,7 +97,17 @@ _DOWNLOAD_TIMEOUT_SECONDS = 1800  # training pod fetches its own models fresh ev
 # same directory ComfyUI's LoraLoaderModelOnly node reads from
 # (app/media/ltx_workflow.py).
 _VOLUME_LORA_KEY_PREFIX = "ComfyUI/models/loras"
-_RESOLUTION_BUCKET = "768x1360x49"  # vertical 9:16, ~2s at 24fps — matches the inference canvas
+# Confirmed live 2026-08-21: the previous 768x1360 value was wrong on two
+# counts — ltx-trainer's process_dataset.py rejected it outright
+# ("Width and height must be multiples of 32x32"; 1360 isn't), and even if
+# it had passed, it didn't actually match the real inference canvas — the
+# self-hosted video workflow (app/media/workflows/ltx_text_to_video.json)
+# renders 720x1280, not 768x1360, so the old comment's "matches the
+# inference canvas" claim was itself stale. 720 also isn't a multiple of
+# 32; 704 is the nearest one (16px under, vs. 736's 16px over — picked the
+# smaller/cheaper option since the deviation from a true 9:16 canvas is
+# identical either way).
+_RESOLUTION_BUCKET = "704x1280x49"  # vertical ~9:16, ~2s at 24fps — nearest 32-multiple to the real 720x1280 inference canvas
 # UNVERIFIED (see module docstring's open question #2) — override via env
 # vars once confirmed against a real training run rather than editing code.
 _CHECKPOINT_REPO = os.getenv("LTX_TRAINING_CHECKPOINT_REPO", "Lightricks/LTX-2.3")
