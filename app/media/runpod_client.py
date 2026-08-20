@@ -174,50 +174,88 @@ def wait_for_pod_ready(pod_id: Optional[str] = None, comfyui_port: int = _DEFAUL
     raise TimeoutError(f"ComfyUI at {comfyui_url} did not become ready within {timeout_seconds}s")
 
 
+# Fallback-ordered list of confirmed-valid (fetched live from RunPod's own
+# gpuTypes query, 2026-08-20) 80GB+ GPU type ids suitable for LTX-2 LoRA
+# training (needs bf16/more VRAM than the 4090-class inference tier
+# comfortably provides). Live availability for any single one of these
+# turned out to be highly volatile within the same session — A100 80GB
+# PCIe on SECURE, then A100 on COMMUNITY, then H100 80GB HBM3 (the console
+# calls this "H100 SXM", but RunPod's actual gpuTypeId uses "HBM3" not
+# "SXM" — confirmed via the gpuTypes query after a guessed "...SXM" string
+# was rejected outright as unknown) all failed with SUPPLY_CONSTRAINT or
+# INVALID_INPUT in quick succession, including one the console had just
+# shown as having strong stock. A single hardcoded gpuTypeId is fighting a
+# moving target; RunPod's REST API instead accepts a priority-ordered list
+# and its own gpuTypePriority="availability" picks whichever is actually
+# free right now — structurally the right fix instead of guessing again.
+_DEFAULT_TRAINING_GPU_TYPE_IDS = [
+    "NVIDIA A100 80GB PCIe",
+    "NVIDIA A100-SXM4-80GB",
+    "NVIDIA H100 PCIe",
+    "NVIDIA H100 80GB HBM3",
+    "NVIDIA H100 NVL",
+]
+_REST_API_BASE = "https://rest.runpod.io/v1"
+
+
 def create_training_pod() -> str:
-    """Creates a fresh, ephemeral training pod — A100 80GB **PCIe**
-    specifically, not SXM (SXM lives in dedicated NVLink/HGX chassis that
-    rarely co-locate in the same region as RTX 4090 stock; PCIe is the more
-    broadly available form factor). LTX-2's training path needs bf16/more
-    VRAM than the 4090-class inference tier comfortably provides.
+    """Creates a fresh, ephemeral training pod on whichever GPU type in
+    _DEFAULT_TRAINING_GPU_TYPE_IDS (or RUNPOD_TRAINING_GPU_TYPE_ID first,
+    if set — kept as an optional override, not a requirement, precisely
+    because pinning one exact type proved too fragile against real
+    availability swings) RunPod's own availability-priority selection
+    finds free right now, via their REST API (not the older GraphQL
+    podFindAndDeployOnDemand mutation, which only accepts a single
+    gpuTypeId).
 
     Does NOT mount the Network Volume — training-capacity and
-    inference-capacity regions frequently don't overlap for the reason
-    above, so this pod writes ltx-trainer's output to its own local
-    container disk, and the resulting file is pushed to the volume
-    afterward via the S3-compatible API (app/media/runpod_s3.py) instead of
-    a filesystem write. Returns the new pod's id. Caller
-    (culturetoon_lora.py) is responsible for terminate_pod()-ing it when
-    done, success or failure — this is meant to exist only for the
-    duration of one training run, not as standing infrastructure."""
-    gpu_type_id = os.getenv("RUNPOD_TRAINING_GPU_TYPE_ID", "")
+    inference-capacity regions frequently don't overlap, so this pod
+    writes ltx-trainer's output to its own local container disk, and the
+    resulting file is pushed to the volume afterward via the
+    S3-compatible API (app/media/runpod_s3.py) instead of a filesystem
+    write. Returns the new pod's id. Caller (culturetoon_lora.py) is
+    responsible for terminate_pod()-ing it when done, success or failure —
+    this is meant to exist only for the duration of one training run, not
+    as standing infrastructure."""
     image_name = os.getenv("RUNPOD_TRAINING_IMAGE", "")
-    if not gpu_type_id or not image_name:
-        raise RuntimeError("RUNPOD_TRAINING_GPU_TYPE_ID and RUNPOD_TRAINING_IMAGE must both be set")
-    data = _graphql(
-        """mutation deployPod($input: PodFindAndDeployOnDemandInput!) {
-            podFindAndDeployOnDemand(input: $input) { id desiredStatus }
-        }""",
-        {"input": {
-            # COMMUNITY, not SECURE — confirmed live 2026-08-20:
-            # SECURE-cloud (RunPod's own guaranteed datacenters) A100 80GB
-            # PCIe stock hit a real SUPPLY_CONSTRAINT error on the very
-            # first live attempt. COMMUNITY (third-party host pool) is a
-            # much broader, generally better-available supply; an
-            # ephemeral one-shot training pod is exactly the case where
-            # COMMUNITY's lower per-host reliability guarantee is an easy
-            # tradeoff to accept versus SECURE's tighter capacity.
+    if not image_name:
+        raise RuntimeError("RUNPOD_TRAINING_IMAGE must be set")
+
+    gpu_type_ids = list(_DEFAULT_TRAINING_GPU_TYPE_IDS)
+    override = os.getenv("RUNPOD_TRAINING_GPU_TYPE_ID", "")
+    if override:
+        # Move to front rather than skip-if-present — an explicit override
+        # should win the priority order even when it happens to already
+        # be one of the defaults.
+        if override in gpu_type_ids:
+            gpu_type_ids.remove(override)
+        gpu_type_ids.insert(0, override)
+
+    resp = httpx.post(
+        f"{_REST_API_BASE}/pods",
+        headers={"Authorization": f"Bearer {_api_key()}", "Content-Type": "application/json"},
+        json={
+            "gpuTypeIds": gpu_type_ids,
+            "gpuTypePriority": "availability",
+            # COMMUNITY, not SECURE — confirmed live 2026-08-20: SECURE
+            # (RunPod's own guaranteed datacenters) hit a real
+            # SUPPLY_CONSTRAINT on the very first live attempt. COMMUNITY
+            # (third-party host pool) is a broader, generally
+            # better-available supply — an easy tradeoff for an ephemeral
+            # one-shot training pod.
             "cloudType": "COMMUNITY",
-            "gpuTypeId": gpu_type_id,
             "imageName": image_name,
             "name": "culturix-lora-training",
-            "ports": "22/tcp",
-        }},
+            "ports": ["22/tcp"],
+        },
+        timeout=30,
     )
-    pod = data.get("podFindAndDeployOnDemand")
+    if resp.status_code >= 400:
+        raise RunPodError(f"RunPod pod creation failed ({resp.status_code}): {resp.text}")
+    pod = resp.json()
     if not pod or not pod.get("id"):
-        raise RunPodError(f"RunPod did not return a new pod id: {data}")
-    logger.info("Training pod %s created", pod["id"])
+        raise RunPodError(f"RunPod did not return a new pod id: {pod}")
+    logger.info("Training pod %s created on %s", pod["id"], pod.get("machine", {}).get("gpuDisplayName", "?"))
     return pod["id"]
 
 

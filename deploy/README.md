@@ -193,12 +193,31 @@ instead, `deploy/runpod_serverless/README.md` has that path too.)
 
 Full detail/troubleshooting: `deploy/runpod_serverless/README.md`.
 
-## 6. `RUNPOD_TRAINING_GPU_TYPE_ID`
+## 6. `RUNPOD_TRAINING_GPU_TYPE_ID` — optional, usually skip this one
 
-No lookup — set the literal string `NVIDIA A100 80GB PCIe` (PCIe
-specifically, not SXM; more broadly available stock). If a real pod
-create ever fails on this exact string, check RunPod's current GPU
-picker (Pods → Deploy → GPU list) for whether the naming has shifted.
+Live experience (2026-08-20): pinning training to one exact GPU type
+string is fragile — availability for any single 80GB-class GPU swung
+within the same session (A100 PCIe on SECURE, A100 on COMMUNITY, then
+H100 80GB HBM3, all hit SUPPLY_CONSTRAINT in quick succession, including
+one the console had just shown as having strong stock moments earlier).
+`create_training_pod()` now requests a priority-ordered list of several
+confirmed-valid 80GB+ types (`_DEFAULT_TRAINING_GPU_TYPE_IDS` in
+`app/media/runpod_client.py`) via RunPod's REST API with
+`gpuTypePriority: "availability"`, letting RunPod itself pick whichever
+is actually free — no env var needed for the common case.
+
+Only set `RUNPOD_TRAINING_GPU_TYPE_ID` if you want to force one specific
+type ahead of the built-in list (it gets prepended, not replaced). Use
+the **exact `gpuTypeId` string**, not the console's display label — they
+differ (e.g. the console shows "H100 SXM" but the real id is
+`NVIDIA H100 80GB HBM3`, not `...SXM`). Get the authoritative list
+straight from RunPod rather than guessing from the console:
+
+```bash
+curl -s -X POST "https://api.runpod.io/graphql" \
+    -H "Authorization: Bearer <RUNPOD_API_KEY>" -H "Content-Type: application/json" \
+    -d '{"query":"query { gpuTypes { id displayName memoryInGb } }"}'
+```
 
 ## 7. Build and push the training image
 

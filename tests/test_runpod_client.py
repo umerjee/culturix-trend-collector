@@ -1,7 +1,8 @@
 """Tests for the training-pod lifecycle additions in
 app/media/runpod_client.py (create_training_pod/terminate_pod/
-wait_for_ssh_ready) — mocked at the httpx boundary, RunPod's real GraphQL
-API is never touched."""
+wait_for_ssh_ready). create_training_pod uses RunPod's REST API (a list of
+fallback GPU types), the rest still use the GraphQL API — both mocked at
+the httpx boundary, RunPod's real APIs are never touched."""
 import os
 
 os.environ.setdefault("RUNPOD_API_KEY", "test-key")
@@ -10,6 +11,7 @@ import pytest
 
 from app.media.runpod_client import (
     create_training_pod, create_training_pod_with_retry, terminate_pod, wait_for_ssh_ready, RunPodError,
+    _DEFAULT_TRAINING_GPU_TYPE_IDS,
 )
 
 
@@ -20,66 +22,105 @@ def _mock_graphql_response(mocker, data=None, errors=None):
     return resp
 
 
+def _mock_rest_response(mocker, status_code=201, json_body=None, text=""):
+    resp = mocker.Mock()
+    resp.status_code = status_code
+    resp.json.return_value = json_body
+    resp.text = text
+    return resp
+
+
 class TestCreateTrainingPod:
-    def test_missing_config_raises_without_calling_runpod(self, mocker, monkeypatch):
-        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
+    def test_missing_image_raises_without_calling_runpod(self, mocker, monkeypatch):
         monkeypatch.delenv("RUNPOD_TRAINING_IMAGE", raising=False)
         mock_post = mocker.patch("httpx.post")
         with pytest.raises(RuntimeError):
             create_training_pod()
         mock_post.assert_not_called()
 
-    def test_success_returns_pod_id(self, mocker, monkeypatch):
-        monkeypatch.setenv("RUNPOD_TRAINING_GPU_TYPE_ID", "NVIDIA A100 80GB PCIe")
+    def test_gpu_type_id_env_var_is_optional(self, mocker, monkeypatch):
+        # Confirmed live 2026-08-20: pinning to one exact GPU type is too
+        # fragile against real availability swings — the built-in fallback
+        # list is used automatically when this isn't set at all.
+        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
         monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        mocker.patch("httpx.post", return_value=_mock_graphql_response(
-            mocker, data={"podFindAndDeployOnDemand": {"id": "pod-new", "desiredStatus": "RUNNING"}},
+        mocker.patch("httpx.post", return_value=_mock_rest_response(
+            mocker, json_body={"id": "pod-new"},
         ))
         assert create_training_pod() == "pod-new"
 
-    def test_does_not_request_a_network_volume_mount(self, mocker, monkeypatch):
-        # The training pod (A100 PCIe) and the Network Volume's inference
-        # region (RTX 4090) frequently aren't the same region — see
-        # app/services/culturetoon_lora.py's docstring — so pod creation
-        # must not request a volume mount at all.
-        monkeypatch.setenv("RUNPOD_TRAINING_GPU_TYPE_ID", "NVIDIA A100 80GB PCIe")
+    def test_success_returns_pod_id(self, mocker, monkeypatch):
+        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
         monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        monkeypatch.delenv("RUNPOD_NETWORK_VOLUME_ID", raising=False)
-        mock_post = mocker.patch("httpx.post", return_value=_mock_graphql_response(
-            mocker, data={"podFindAndDeployOnDemand": {"id": "pod-new", "desiredStatus": "RUNNING"}},
+        mocker.patch("httpx.post", return_value=_mock_rest_response(
+            mocker, json_body={"id": "pod-new"},
+        ))
+        assert create_training_pod() == "pod-new"
+
+    def test_requests_fallback_list_with_availability_priority(self, mocker, monkeypatch):
+        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
+        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
+        mock_post = mocker.patch("httpx.post", return_value=_mock_rest_response(
+            mocker, json_body={"id": "pod-new"},
         ))
         create_training_pod()
-        sent_variables = mock_post.call_args.kwargs["json"]["variables"]
-        assert "networkVolumeId" not in sent_variables["input"]
+        sent = mock_post.call_args.kwargs["json"]
+        assert sent["gpuTypeIds"] == _DEFAULT_TRAINING_GPU_TYPE_IDS
+        assert sent["gpuTypePriority"] == "availability"
+
+    def test_gpu_type_id_override_is_prepended_not_replaced(self, mocker, monkeypatch):
+        monkeypatch.setenv("RUNPOD_TRAINING_GPU_TYPE_ID", "NVIDIA H100 80GB HBM3")
+        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
+        mock_post = mocker.patch("httpx.post", return_value=_mock_rest_response(
+            mocker, json_body={"id": "pod-new"},
+        ))
+        create_training_pod()
+        sent = mock_post.call_args.kwargs["json"]
+        assert sent["gpuTypeIds"][0] == "NVIDIA H100 80GB HBM3"
+        assert set(sent["gpuTypeIds"]) == {"NVIDIA H100 80GB HBM3", *_DEFAULT_TRAINING_GPU_TYPE_IDS}
+
+    def test_does_not_request_a_network_volume_mount(self, mocker, monkeypatch):
+        # The training pod and the Network Volume's inference region
+        # frequently aren't the same region — see
+        # app/services/culturetoon_lora.py's docstring — so pod creation
+        # must not request a volume mount at all.
+        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
+        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
+        mock_post = mocker.patch("httpx.post", return_value=_mock_rest_response(
+            mocker, json_body={"id": "pod-new"},
+        ))
+        create_training_pod()
+        sent = mock_post.call_args.kwargs["json"]
+        assert "networkVolumeId" not in sent
 
     def test_uses_community_cloud_not_secure(self, mocker, monkeypatch):
-        # Confirmed live 2026-08-20: SECURE-cloud A100 80GB PCIe hit a real
+        # Confirmed live 2026-08-20: SECURE-cloud hit a real
         # SUPPLY_CONSTRAINT error on the first live attempt. COMMUNITY is a
         # broader, generally better-available pool — an acceptable
         # tradeoff for an ephemeral one-shot training pod.
-        monkeypatch.setenv("RUNPOD_TRAINING_GPU_TYPE_ID", "NVIDIA A100 80GB PCIe")
+        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
         monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        mock_post = mocker.patch("httpx.post", return_value=_mock_graphql_response(
-            mocker, data={"podFindAndDeployOnDemand": {"id": "pod-new", "desiredStatus": "RUNNING"}},
+        mock_post = mocker.patch("httpx.post", return_value=_mock_rest_response(
+            mocker, json_body={"id": "pod-new"},
         ))
         create_training_pod()
-        sent_variables = mock_post.call_args.kwargs["json"]["variables"]
-        assert sent_variables["input"]["cloudType"] == "COMMUNITY"
+        sent = mock_post.call_args.kwargs["json"]
+        assert sent["cloudType"] == "COMMUNITY"
 
     def test_no_pod_returned_raises(self, mocker, monkeypatch):
-        monkeypatch.setenv("RUNPOD_TRAINING_GPU_TYPE_ID", "NVIDIA A100 80GB PCIe")
+        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
         monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        mocker.patch("httpx.post", return_value=_mock_graphql_response(
-            mocker, data={"podFindAndDeployOnDemand": None},
+        mocker.patch("httpx.post", return_value=_mock_rest_response(
+            mocker, json_body={},
         ))
         with pytest.raises(RunPodError):
             create_training_pod()
 
-    def test_graphql_error_raises(self, mocker, monkeypatch):
-        monkeypatch.setenv("RUNPOD_TRAINING_GPU_TYPE_ID", "NVIDIA A100 80GB PCIe")
+    def test_error_status_raises(self, mocker, monkeypatch):
+        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
         monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        mocker.patch("httpx.post", return_value=_mock_graphql_response(
-            mocker, errors=[{"message": "insufficient GPU availability"}],
+        mocker.patch("httpx.post", return_value=_mock_rest_response(
+            mocker, status_code=400, text="insufficient GPU availability",
         ))
         with pytest.raises(RunPodError, match="insufficient GPU availability"):
             create_training_pod()
