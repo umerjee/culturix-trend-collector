@@ -88,5 +88,19 @@ class CharacterVariant(Base):
     # missing at training time.
     lora_training_images = Column(JSONB, nullable=True)
 
+    # Bulk "Generate all expressions" tracking (POST /variants/{id}/
+    # expressions/generate-all) — backgrounded the same way element/LoRA
+    # registration above are, since 10 sequential paid image-generation
+    # calls run well past any HTTP gateway's timeout (confirmed live: a
+    # synchronous version of this got killed mid-batch by Vercel's own
+    # serverless function execution limit, independent of anything the
+    # client-side fetch allowed). The frontend polls while
+    # expressions_generating is true, same shape as element_status/
+    # lora_status polling. expressions_generate_errors holds the last
+    # run's {name: error} map (not a running log) — cleared at the start
+    # of each new run, read once generating flips back to false.
+    expressions_generating = Column(Boolean, nullable=False, default=False)
+    expressions_generate_errors = Column(JSONB, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

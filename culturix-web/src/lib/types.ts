@@ -500,6 +500,10 @@ export interface CharacterVariant {
   lora_status: "none" | "training" | "ready" | "failed";
   lora_error: string | null;
   lora_training_images: { url: string; caption: string }[];
+  // Bulk "Generate all expressions" tracking — see
+  // CharacterVariant.expressions_generating's backend docstring.
+  expressions_generating: boolean;
+  expressions_generate_errors: Record<string, string>;
   created_at: string | null;
   updated_at: string | null;
 }

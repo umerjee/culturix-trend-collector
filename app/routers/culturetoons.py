@@ -345,6 +345,8 @@ def _serialize_variant(v) -> dict:
         "voice_provider": v.voice_provider, "elevenlabs_voice_id": v.elevenlabs_voice_id,
         "lora_path": v.lora_path, "lora_status": v.lora_status, "lora_error": v.lora_error,
         "lora_training_images": v.lora_training_images or [],
+        "expressions_generating": v.expressions_generating,
+        "expressions_generate_errors": v.expressions_generate_errors or {},
         "created_at": v.created_at.isoformat() if v.created_at else None,
         "updated_at": v.updated_at.isoformat() if v.updated_at else None,
     }
@@ -2250,38 +2252,35 @@ def generate_expression_image(variant_id: str, name: str, body: dict):
         session.close()
 
 
-@router.post("/variants/{variant_id}/expressions/generate-all")
-def generate_all_expression_images(variant_id: str, body: dict):
-    """One-click version of generate_expression_image — fills in every
-    EXPRESSION_NAMES slot that doesn't already have an image, so a user
-    doesn't have to click "Generate" ten separate times after building a
-    character. Skips names that already have an image (idempotent/safe to
-    call again after manually regenerating a couple — doesn't burn cost
-    re-generating choices the user already kept) rather than requiring the
-    caller to compute the missing set itself. Continues past a single
-    name's failure instead of aborting the whole batch — partial progress
-    (e.g. 8 of 10 succeeded) is still useful, and the frontend's existing
-    per-expression Regenerate button already covers retrying whichever
-    ones are listed in `errors`. Returns every expression row for this
-    variant (generated this call or already existing) plus any per-name
-    errors, not just the newly-created ones, so the frontend can replace
-    its whole list from the response in one shot."""
-    if not EXPRESSION_NAMES:
-        return {"expressions": [], "errors": {}}
+def run_generate_all_expressions(variant_id: str) -> None:
+    """Background-task entry point (POST /variants/{id}/expressions/
+    generate-all) — owns its own session lifecycle since it runs after the
+    request's own session has already closed, same shape as
+    run_lora_training. Fills every EXPRESSION_NAMES slot that doesn't
+    already have an image, skipping ones that do (idempotent/safe to
+    re-run — doesn't burn cost regenerating choices the user already
+    kept). Continues past a single name's failure instead of aborting the
+    whole batch — partial progress (e.g. 8 of 10 succeeded) is still
+    useful, and the frontend's existing per-expression Regenerate button
+    already covers retrying whichever ones end up in
+    expressions_generate_errors. Confirmed live 2026-08-20: running this
+    synchronously inside one HTTP request got killed mid-batch by Vercel's
+    own serverless function execution limit — ten sequential paid
+    image-generation calls run well past it regardless of what the
+    client-side fetch allows, so this has to be backgrounded and polled
+    like element/LoRA registration, not just given a longer timeout."""
+    import uuid as _uuid
     from app.db import SessionLocal
+    from app.models.character_variant import CharacterVariant
     from app.models.character import Character
     from app.models.expression import Expression
 
-    user_id, brand_id = body.get("user_id"), body.get("brand_id")
-    if not user_id or not brand_id:
-        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
-
     session = SessionLocal()
     try:
-        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
+        variant = session.query(CharacterVariant).filter_by(id=_uuid.UUID(str(variant_id))).first()
+        if not variant:
+            return
         character = session.query(Character).filter_by(id=variant.character_id).first()
-        if not variant.image_url:
-            raise HTTPException(status_code=400, detail="Build this variant's own portrait first — expressions are generated from it")
 
         existing = {
             e.name: e for e in session.query(Expression).filter_by(character_variant_id=variant.id).all()
@@ -2295,12 +2294,45 @@ def generate_all_expression_images(variant_id: str, body: dict):
             except HTTPException as exc:
                 errors[name] = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
 
-        return {
-            "expressions": [_serialize_expression(e) for e in existing.values()],
-            "errors": errors,
-        }
+        variant.expressions_generating = False
+        variant.expressions_generate_errors = errors
+        session.commit()
     finally:
         session.close()
+
+
+@router.post("/variants/{variant_id}/expressions/generate-all")
+def generate_all_expression_images(variant_id: str, body: dict, background_tasks: BackgroundTasks):
+    """One-click version of generate_expression_image — fills in every
+    EXPRESSION_NAMES slot that doesn't already have an image, so a user
+    doesn't have to click "Generate" ten separate times after building a
+    character. Backgrounded (see run_generate_all_expressions) — sets
+    expressions_generating=True synchronously so the UI sees the state
+    flip immediately, same pattern as register_variant_element/
+    train_variant_lora. The frontend polls the variant (existing
+    element_status/lora_status poll effect, extended to also watch this
+    flag) rather than this endpoint returning the results directly."""
+    if not EXPRESSION_NAMES:
+        return {"status": "nothing_to_generate"}
+    from app.db import SessionLocal
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+
+    session = SessionLocal()
+    try:
+        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
+        if not variant.image_url:
+            raise HTTPException(status_code=400, detail="Build this variant's own portrait first — expressions are generated from it")
+        variant.expressions_generating = True
+        variant.expressions_generate_errors = None
+        session.commit()
+    finally:
+        session.close()
+
+    background_tasks.add_task(run_generate_all_expressions, variant_id=variant_id)
+    return {"status": "generation_started"}
 
 
 @router.delete("/expressions/{expression_id}")

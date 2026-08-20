@@ -298,6 +298,10 @@ async def lifespan(_):
             "ALTER TABLE clusters ADD COLUMN IF NOT EXISTS relevance_embedding JSON",
             # Cinematic shot production — see app/models/toon_shot.py.
             "ALTER TABLE generation_usage ADD COLUMN IF NOT EXISTS shot_id UUID",
+            # Backgrounded "Generate all expressions" tracking — see
+            # CharacterVariant.expressions_generating's docstring.
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS expressions_generating BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS expressions_generate_errors JSONB",
         ]:
             try:
                 _conn.execute(_text(_stmt))

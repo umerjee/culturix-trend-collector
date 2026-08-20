@@ -104,6 +104,8 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
   const [registerError, setRegisterError] = useState<string | null>(null);
   const [training, setTraining] = useState(false);
   const [trainError, setTrainError] = useState<string | null>(null);
+  const [startingGenerateAll, setStartingGenerateAll] = useState(false);
+  const [generateAllStartError, setGenerateAllStartError] = useState<string | null>(null);
 
   const [variantDescriptionDraft, setVariantDescriptionDraft] = useState("");
   const [variantCultureTagDraft, setVariantCultureTagDraft] = useState("");
@@ -120,10 +122,15 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
   const characterVariants = variants.filter((v) => v.character_id === selectedCharacterId);
   const selectedVariant = variants.find((v) => v.id === selectedVariantId) ?? null;
 
-  // Poll while a variant's element registration or LoRA training is in flight.
+  // Poll while a variant's element registration, LoRA training, or bulk
+  // expression generation is in flight.
   useEffect(() => {
     if (!selectedVariant) return;
-    if (selectedVariant.element_status !== "pending" && selectedVariant.lora_status !== "training") return;
+    if (
+      selectedVariant.element_status !== "pending"
+      && selectedVariant.lora_status !== "training"
+      && !selectedVariant.expressions_generating
+    ) return;
     const interval = setInterval(async () => {
       const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}?brand_id=${brandId}`, { cache: "no-store" });
       if (res.ok) {
@@ -258,6 +265,32 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
       setTrainError("Network error — check your connection and try again.");
     } finally {
       setTraining(false);
+    }
+  }
+
+  async function generateAllExpressions() {
+    if (!selectedVariant) return;
+    setStartingGenerateAll(true);
+    setGenerateAllStartError(null);
+    try {
+      const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}/expressions/generate-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId }),
+      });
+      if (res.ok) {
+        // Optimistic flip, same pattern as registerElement/trainLora above —
+        // the poll effect (keyed on expressions_generating) picks up from
+        // here and keeps refetching until the background job finishes.
+        setVariants((prev) => prev.map((v) => (v.id === selectedVariant.id ? { ...v, expressions_generating: true, expressions_generate_errors: {} } : v)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setGenerateAllStartError(typeof data.detail === "string" ? data.detail : `Couldn't start (${res.status})`);
+      }
+    } catch {
+      setGenerateAllStartError("Network error — check your connection and try again.");
+    } finally {
+      setStartingGenerateAll(false);
     }
   }
 
@@ -720,6 +753,11 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
               <ExpressionUploadGrid
                 key={selectedVariant.id} brandId={brandId} variantId={selectedVariant.id}
                 hasPortrait={!!selectedVariant.image_url}
+                generatingAll={selectedVariant.expressions_generating}
+                generateAllErrors={selectedVariant.expressions_generate_errors}
+                onGenerateAll={generateAllExpressions}
+                startingGenerateAll={startingGenerateAll}
+                generateAllStartError={generateAllStartError}
               />
 
               <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
