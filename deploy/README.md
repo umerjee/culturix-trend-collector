@@ -202,15 +202,41 @@ picker (Pods → Deploy → GPU list) for whether the naming has shifted.
 
 ## 7. Build and push the training image
 
+Two ways — pick whichever matches what you have available. Unlike the
+Serverless endpoint (step 5), RunPod Pods don't have a "build from GitHub"
+console option — either way you need a real image reference in a registry.
+
+**Option A — GitHub Actions builds it for you, no local Docker needed
+(recommended):** `.github/workflows/build-training-image.yml` builds
+`deploy/runpod_training/Dockerfile` and pushes it to GitHub Container
+Registry automatically on every push that touches that folder (or trigger
+it manually: repo → **Actions** → **Build RunPod training image** → **Run
+workflow**). Once it's run at least once:
+
+1. Go to the repo's **Packages** page (right sidebar on the repo's main
+   page, or `https://github.com/<owner>/<repo>/pkgs/container/culturix-ltx-training`).
+2. **Package settings** → change visibility to **Public**. This step is
+   not optional — `create_training_pod()` (`app/media/runpod_client.py`)
+   passes RunPod the image name with no registry credentials at all, so
+   RunPod can only pull it if it's public. A `GITHUB_TOKEN`-pushed package
+   defaults to private regardless of whether the repo itself is public.
+3. Set `RUNPOD_TRAINING_IMAGE` in Railway to
+   `ghcr.io/<owner>/culturix-ltx-training:latest`.
+
+**Option B — build locally and push to Docker Hub**, if you have Docker
+installed:
+
 ```bash
 cd deploy/runpod_training
 docker build -t <your-dockerhub-username>/culturix-ltx-training:latest .
 docker push <your-dockerhub-username>/culturix-ltx-training:latest
 ```
 
-Set `RUNPOD_TRAINING_IMAGE` in Railway to that tag. No separate "deploy"
-step here (unlike Serverless) — `create_training_pod()` creates a fresh
-Pod directly from this image name per training run.
+Set `RUNPOD_TRAINING_IMAGE` in Railway to that tag.
+
+Either way, no separate "deploy" step here (unlike Serverless) —
+`create_training_pod()` creates a fresh Pod directly from this image name
+per training run.
 
 Full detail: `deploy/runpod_training/README.md`.
 
