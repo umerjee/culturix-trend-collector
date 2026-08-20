@@ -1,0 +1,60 @@
+{
+  "8": {
+    "class_type": "VAEDecode",
+    "_meta": { "title": "VAE Decode" },
+    "inputs": { "samples": ["65", 0], "vae": ["10", 0] }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "_meta": { "title": "Output" },
+    "inputs": { "filename_prefix": "culturix", "images": ["8", 0] }
+  },
+  "10": {
+    "class_type": "VAELoader",
+    "_meta": { "title": "Load VAE" },
+    "inputs": { "vae_name": "qwen_image_vae.safetensors" }
+  },
+  "12": {
+    "class_type": "UNETLoader",
+    "_meta": { "title": "Load Qwen-Image-Edit diffusion model" },
+    "inputs": { "unet_name": "qwen_image_edit_2509_fp8_e4m3fn.safetensors", "weight_dtype": "default" }
+  },
+  "41": {
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference image (filename injected by qwen_image_workflow.py, uploaded via the job's input.images)" },
+    "inputs": { "image": "" }
+  },
+  "61": {
+    "class_type": "CLIPLoader",
+    "_meta": { "title": "Load Qwen2.5-VL text encoder" },
+    "inputs": { "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image", "device": "default" }
+  },
+  "65": {
+    "class_type": "KSampler",
+    "_meta": { "title": "Sampler" },
+    "inputs": {
+      "seed": 0, "steps": 20, "cfg": 4.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0,
+      "model": ["67", 0], "positive": ["68", 0], "negative": ["69", 0], "latent_image": ["66", 0]
+    }
+  },
+  "66": {
+    "class_type": "EmptySD3LatentImage",
+    "_meta": { "title": "Output canvas" },
+    "inputs": { "width": 1024, "height": 1024, "batch_size": 1 }
+  },
+  "67": {
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": { "title": "Model sampling shift" },
+    "inputs": { "shift": 3.1, "model": ["12", 0] }
+  },
+  "68": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "_meta": { "title": "Positive prompt (injected by qwen_image_workflow.py)" },
+    "inputs": { "prompt": "", "clip": ["61", 0], "vae": ["10", 0], "image1": ["41", 0] }
+  },
+  "69": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "_meta": { "title": "Negative (empty prompt, same reference image — matches Comfy-Org's own official example exactly)" },
+    "inputs": { "prompt": "", "clip": ["61", 0], "vae": ["10", 0], "image1": ["41", 0] }
+  }
+}
