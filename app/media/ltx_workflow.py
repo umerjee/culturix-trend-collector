@@ -108,12 +108,35 @@ def build_workflow(prompt_text: str, duration_seconds: float, lora_path: Optiona
     for node_id in _select_positive_prompt_nodes(workflow, prompt_nodes):
         workflow[node_id]["inputs"]["text"] = prompt_text
 
+    lora_nodes = _nodes_of_class(workflow, _LORA_NODE_CLASS)
     if lora_path:
-        lora_nodes = _nodes_of_class(workflow, _LORA_NODE_CLASS)
         if not lora_nodes:
             raise LTXWorkflowError(f"lora_path given but no {_LORA_NODE_CLASS} node found in the workflow template")
         for node_id in lora_nodes:
             workflow[node_id]["inputs"]["lora_name"] = lora_path
+    else:
+        # The node's own _meta.title says "skipped if none" — this is that
+        # skip. Confirmed live 2026-08-20 against the real Serverless
+        # endpoint: leaving the node in the graph with an empty lora_name
+        # is NOT a safe no-op — ComfyUI validates lora_name against the
+        # actual files under models/loras/ on the volume, and with zero
+        # LoRAs trained yet that dropdown has no valid values at all, so
+        # even "" gets rejected ("lora_name: '' not in []"). Removing the
+        # node and rewiring whatever consumed its output to its own
+        # upstream `model` input bypasses it cleanly instead.
+        for node_id in lora_nodes:
+            upstream_model = (workflow[node_id].get("inputs") or {}).get("model")
+            if upstream_model is None:
+                logger.warning(
+                    "%s node %s has no upstream 'model' input to rewire around — leaving it in place, "
+                    "downstream nodes may fail validation", _LORA_NODE_CLASS, node_id,
+                )
+                continue
+            for other_node in workflow.values():
+                for key, value in (other_node.get("inputs") or {}).items():
+                    if isinstance(value, list) and len(value) == 2 and value[0] == node_id:
+                        other_node["inputs"][key] = upstream_model
+            del workflow[node_id]
 
     if seed is not None:
         for class_type, seed_key in _SEED_NODE_CANDIDATES:

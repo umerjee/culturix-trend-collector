@@ -49,9 +49,17 @@ class TestBuildWorkflow:
         workflow = build_workflow("prompt", duration_seconds=5, lora_path="my_character.safetensors")
         assert workflow["5"]["inputs"]["lora_name"] == "my_character.safetensors"
 
-    def test_no_lora_path_leaves_lora_node_untouched(self):
+    def test_no_lora_path_removes_lora_node_and_rewires_around_it(self):
+        # Confirmed live 2026-08-20: leaving the node in place with an empty
+        # lora_name is not a safe no-op — ComfyUI validates lora_name
+        # against the volume's actual LoRA files, and with zero trained
+        # yet that dropdown has no valid values, so even "" gets rejected.
         workflow = build_workflow("prompt", duration_seconds=5)
-        assert workflow["5"]["inputs"]["lora_name"] == ""
+        assert "5" not in workflow
+        # KSampler's model input pointed at the LoRA node (["5", 0]) —
+        # it must now point directly at the LoRA node's own upstream
+        # model input instead (["1", 0], the checkpoint's model output).
+        assert workflow["6"]["inputs"]["model"] == ["1", 0]
 
     def test_injects_duration_as_frames(self):
         workflow = build_workflow("prompt", duration_seconds=5)
