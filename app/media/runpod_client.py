@@ -303,10 +303,24 @@ def wait_for_ssh_ready(pod_id: str, timeout_seconds: int = 180) -> tuple:
     """Same RUNNING-status wait as wait_for_pod_ready, but returns SSH
     connection info instead of a ComfyUI URL — a training pod doesn't run
     ComfyUI's HTTP server, just needs to be reachable over SSH to run
-    ltx-trainer."""
+    ltx-trainer.
+
+    Polls get_pod_ssh_info within the remaining deadline instead of
+    checking it once — confirmed live 2026-08-20: a pod can report
+    desiredStatus=RUNNING before RunPod's own port-forwarding info has
+    populated in runtime.ports, so a single immediate check can raise
+    "no SSH port exposed yet" on a pod that becomes reachable moments
+    later. This is a timing race, not a broken pod — a single-shot check
+    was wrongly treating the two as the same thing."""
     deadline = time.time() + timeout_seconds
     _wait_until_running(pod_id, deadline)
-    return get_pod_ssh_info(pod_id)
+    while True:
+        try:
+            return get_pod_ssh_info(pod_id)
+        except RunPodError:
+            if time.time() >= deadline:
+                raise
+            time.sleep(_POD_READY_POLL_INTERVAL)
 
 
 def terminate_pod(pod_id: str) -> None:
