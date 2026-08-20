@@ -66,13 +66,20 @@ RUN git clone --depth 1 https://github.com/Lightricks/LTX-2.git /workspace/LTX-2
 #      (--no-deps: skip pyproject.toml's strict/custom-indexed pins
 #      entirely, keep using whatever torch/torchvision this base image
 #      already has working).
-#   2. Explicitly install ltx-trainer's actual runtime dependencies
-#      (from its pyproject.toml `dependencies = [...]` list, confirmed by
-#      reading it directly) with no version pins, letting pip pick
-#      whatever's compatible with the already-installed torch — EXCLUDING
-#      torch/torchvision/torchaudio/torchcodec themselves (version-
-#      sensitive, leave the base image's own) and ltx-kernels (an
-#      optional compiled-CUDA-extension extra this project doesn't use).
+#   2. Explicitly install both packages' actual runtime dependencies (from
+#      their real pyproject.toml `dependencies = [...]` lists — ltx-trainer's
+#      AND ltx-core's, confirmed live 2026-08-20 that skipping ltx-core's own
+#      list left `einops`/`scipy`/`transformers` unimportable, since --no-deps
+#      above skips a package's own transitive deps too, not just the top-level
+#      one) with no version pins except transformers' real upper bound
+#      (ltx-core's own pyproject.toml comment: 5.15+ breaks the Gemma 4 text
+#      encoder's config attribute access — routes through a heterogeneity
+#      layer that raises AmbiguousGlobalPerLayerAttributeError on
+#      `config.head_dim`), letting pip pick whatever's otherwise compatible
+#      with the already-installed torch — EXCLUDING torch/torchvision/
+#      torchaudio/torchcodec themselves (version-sensitive, pinned separately
+#      below) and ltx-kernels/mps-sdpa/natten (optional compiled-extension
+#      extras this project doesn't use).
 RUN pip install --no-cache-dir --no-deps \
     -e /workspace/LTX-2/packages/ltx-core \
     -e /workspace/LTX-2/packages/ltx-trainer
@@ -80,7 +87,8 @@ RUN pip install --no-cache-dir \
     typer rich pyyaml accelerate av "bitsandbytes; sys_platform=='linux'" \
     google-genai imageio imageio-ffmpeg openai opencv-python optimum-quanto \
     pandas peft pillow-heif pydantic safetensors scenedetect \
-    sentencepiece soundfile wandb
+    sentencepiece soundfile wandb \
+    einops numpy "scipy>=1.14" "transformers>=5.8.0,<5.15"
 
 # Confirmed live 2026-08-20, twice: this base image's own torchaudio
 # doesn't match its torch build — `import torchaudio` (pulled in by
