@@ -357,7 +357,16 @@ def train_character_lora(variant, session) -> None:
         # pod's checkpoint download) on the exact same class of large/gated
         # repo fetch. Plain HTTP download (what disabling xet falls back
         # to) is slower but has been reliable both times it was tried.
-        xet_env = "HF_HUB_DISABLE_XET=1 "
+        # HF_HUB_DISABLE_PROGRESS_BARS=1 alongside it — confirmed live: a
+        # failed download's captured stderr was missing the actual
+        # exception message entirely, cut off right at the last traceback
+        # frame. hf's progress bar repaints its line via carriage returns,
+        # not real terminal control, over a non-interactive SSH
+        # exec_command channel (no real TTY) — raw \r-separated output
+        # captured as a plain string is a likely source of that lost tail.
+        # Disabling the progress bar removes that whole class of
+        # non-interactive-terminal corruption, not just this one guess.
+        xet_env = "HF_HUB_DISABLE_XET=1 HF_HUB_DISABLE_PROGRESS_BARS=1 "
 
         # This pod's own model copy — the Network Volume isn't mounted here.
         checkpoint_path = f"{models_dir}/checkpoint/{_CHECKPOINT_FILE}"
@@ -477,12 +486,17 @@ def train_character_lora(variant, session) -> None:
         logger.info("LoRA training complete for variant %s", variant.id)
     except LoraTrainingError as exc:
         variant.lora_status = "failed"
-        variant.lora_error = str(exc)[:2000]
+        # Tail, not head — confirmed live: a head slice here was cutting
+        # off the actual exception message (the useful, specific part) at
+        # the very end of a long remote traceback, leaving only generic
+        # framework frames stored. See _run()'s own stderr[-N:] for the
+        # same reasoning, one layer down.
+        variant.lora_error = str(exc)[-2000:]
         logger.error("LoRA training failed for variant %s: %s", variant.id, exc)
         raise
     except Exception as exc:
         variant.lora_status = "failed"
-        variant.lora_error = str(exc)[:2000]
+        variant.lora_error = str(exc)[-2000:]
         logger.exception("LoRA training failed unexpectedly for variant %s", variant.id)
         raise LoraTrainingError(str(exc)) from exc
     finally:
