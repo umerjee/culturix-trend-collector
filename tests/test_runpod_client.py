@@ -93,7 +93,7 @@ class TestCreateTrainingPod:
         sent = mock_post.call_args.kwargs["json"]
         assert "networkVolumeId" not in sent
 
-    def test_requests_enough_disk_for_both_model_downloads(self, mocker, monkeypatch):
+    def test_requests_enough_container_disk_for_both_model_downloads(self, mocker, monkeypatch):
         # Confirmed live 2026-08-20: with no containerDiskInGb specified at
         # all, the checkpoint download (46.15GB, a different and larger
         # file than the fp8 one used for inference) failed mid-write —
@@ -106,6 +106,27 @@ class TestCreateTrainingPod:
         create_training_pod()
         sent = mock_post.call_args.kwargs["json"]
         assert sent["containerDiskInGb"] >= 100
+
+    def test_requests_enough_volume_disk_where_work_dir_actually_lives(self, mocker, monkeypatch):
+        # Confirmed live 2026-08-20 via a real pod's own df -h:
+        # containerDiskInGb and volumeInGb are TWO SEPARATE allocations —
+        # containerDiskInGb governs `/` (overlay), NOT /workspace, which
+        # is a distinct mount defaulting to 20GB regardless of
+        # containerDiskInGb. train_character_lora's work_dir writes to
+        # /workspace/lora_training/{variant.id}/... — setting only
+        # containerDiskInGb (the earlier fix) did not touch the disk the
+        # training process actually writes to at all, and the exact same
+        # "No space left on device" recurred even with containerDiskInGb
+        # at 150.
+        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
+        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
+        mock_post = mocker.patch("httpx.post", return_value=_mock_rest_response(
+            mocker, json_body={"id": "pod-new"},
+        ))
+        create_training_pod()
+        sent = mock_post.call_args.kwargs["json"]
+        assert sent["volumeInGb"] >= 100
+        assert sent["volumeMountPath"] == "/workspace"
 
     def test_uses_community_cloud_not_secure(self, mocker, monkeypatch):
         # Confirmed live 2026-08-20: SECURE-cloud hit a real
