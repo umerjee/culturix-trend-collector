@@ -1052,6 +1052,91 @@ class TestVariantsAndExpressions:
         expressions = culturetoons.list_expressions(variant["id"], user_id, brand["id"])
         assert len(expressions) == 1
 
+    def test_generate_all_requires_variant_portrait(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.generate_all_expression_images(
+                variant["id"], {"user_id": user_id, "brand_id": brand["id"]},
+            )
+        assert exc_info.value.status_code == 400
+
+    def test_generate_all_fills_every_missing_slot(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, _character, variant = brand_and_character
+        session = db()
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        variant_row.image_url = "https://supabase/variant-portrait.png"
+        session.commit()
+        session.close()
+
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/expr.png")
+
+        result = culturetoons.generate_all_expression_images(
+            variant["id"], {"user_id": user_id, "brand_id": brand["id"]},
+        )
+
+        assert len(result["expressions"]) == len(culturetoons.EXPRESSION_NAMES)
+        assert result["errors"] == {}
+        assert mock_generate.call_count == len(culturetoons.EXPRESSION_NAMES)
+        expressions = culturetoons.list_expressions(variant["id"], user_id, brand["id"])
+        assert len(expressions) == len(culturetoons.EXPRESSION_NAMES)
+
+    def test_generate_all_skips_already_generated_slots(self, db, user_id, brand_and_character, mocker):
+        # Idempotent/cost-aware: an expression the user already kept
+        # shouldn't be silently regenerated just by clicking "Generate all".
+        from app.media.base import MediaResult
+        brand, _character, variant = brand_and_character
+        session = db()
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        variant_row.image_url = "https://supabase/variant-portrait.png"
+        session.add(Expression(character_variant_id=uuid.UUID(variant["id"]), name="Angry", image_url="https://supabase/kept-angry.png"))
+        session.commit()
+        session.close()
+
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/expr.png")
+
+        result = culturetoons.generate_all_expression_images(
+            variant["id"], {"user_id": user_id, "brand_id": brand["id"]},
+        )
+
+        assert mock_generate.call_count == len(culturetoons.EXPRESSION_NAMES) - 1
+        angry = next(e for e in result["expressions"] if e["name"] == "Angry")
+        assert angry["image_url"] == "https://supabase/kept-angry.png"  # untouched
+
+    def test_generate_all_continues_past_one_failure(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, _character, variant = brand_and_character
+        session = db()
+        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        variant_row.image_url = "https://supabase/variant-portrait.png"
+        session.commit()
+        session.close()
+
+        def fake_generate(prompt, reference_image_url=None):
+            if "shocked" in prompt.lower():
+                raise RuntimeError("provider hiccup")
+            return MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png")
+
+        mocker.patch("app.media.image_hybrid.HybridImageProvider.generate", side_effect=fake_generate)
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/expr.png")
+
+        result = culturetoons.generate_all_expression_images(
+            variant["id"], {"user_id": user_id, "brand_id": brand["id"]},
+        )
+
+        assert "Shocked" in result["errors"]
+        succeeded = [e for e in result["expressions"] if e["name"] != "Shocked"]
+        assert len(succeeded) == len(culturetoons.EXPRESSION_NAMES) - 1
+        assert all(e["image_url"] for e in succeeded)
+
     def test_expression_unique_constraint_enforced_at_db_level(self, db, brand_and_character):
         _brand, _character, variant = brand_and_character
         session = db()

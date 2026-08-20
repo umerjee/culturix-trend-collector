@@ -2166,6 +2166,58 @@ async def upload_expression_image(variant_id: str, name: str, user_id: str = For
         session.close()
 
 
+def _generate_one_expression_image(session, variant, character, name: str):
+    """Core of generate_expression_image, extracted so
+    generate_all_expression_images can call it per-name in a loop without
+    duplicating the prompt/provider/storage logic. Raises on failure (same
+    exceptions as before extraction) — callers decide whether that should
+    abort the whole request (single-expression endpoint) or just be
+    recorded as one failure among many (bulk endpoint)."""
+    from app.models.expression import Expression
+
+    hint = EXPRESSION_PROMPT_HINTS.get(name, f"a {name.lower()} facial expression")
+    style = ART_STYLES.get(character.art_style if character else DEFAULT_ART_STYLE, ART_STYLES[DEFAULT_ART_STYLE])
+    # Deliberately NOT _build_cartoon_prompt's preserve_identity=True
+    # branch — that one is written for regenerating a fresh portrait
+    # from a reference photo (explicitly wants "a different framing and
+    # setting... redraw everything else, including clothing"), which is
+    # the opposite of what an expression variant needs: the SAME pose,
+    # clothing, and framing as the base portrait, with only the face
+    # changed.
+    prompt = (
+        f"Same character, same {style['prompt']}, same pose, same clothing, same framing and "
+        f"background as the reference image — change ONLY the facial expression to {hint}. "
+        "Everything else about the character must stay identical to the reference."
+    )
+
+    from app.media.image_hybrid import HybridImageProvider
+    try:
+        result = HybridImageProvider().generate(prompt, reference_image_url=variant.image_url)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}")
+
+    path = f"culturetoons/{variant.character_id}/variants/{variant.id}/expressions/{name}-{_uuid.uuid4().hex[:8]}.png"
+    from app.services.culturetoon_media import save_image, ImageUploadError
+    try:
+        url = save_image(result.asset_bytes, result.content_type, path)
+    except ImageUploadError as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to store generated image: {exc}")
+
+    expression = (
+        session.query(Expression)
+        .filter_by(character_variant_id=variant.id, name=name)
+        .first()
+    )
+    if expression:
+        expression.image_url = url
+    else:
+        expression = Expression(character_variant_id=variant.id, name=name, image_url=url)
+        session.add(expression)
+    session.commit()
+    session.refresh(expression)
+    return expression
+
+
 @router.post("/variants/{variant_id}/expressions/{name}/generate-image")
 def generate_expression_image(variant_id: str, name: str, body: dict):
     """AI-generates one expression image, grounded on this variant's own
@@ -2179,7 +2231,6 @@ def generate_expression_image(variant_id: str, name: str, body: dict):
     if name not in EXPRESSION_NAMES:
         raise HTTPException(status_code=400, detail=f"name must be one of {EXPRESSION_NAMES}")
     from app.db import SessionLocal
-    from app.models.expression import Expression
     from app.models.character import Character
 
     user_id, brand_id = body.get("user_id"), body.get("brand_id")
@@ -2193,47 +2244,61 @@ def generate_expression_image(variant_id: str, name: str, body: dict):
         if not variant.image_url:
             raise HTTPException(status_code=400, detail="Build this variant's own portrait first — expressions are generated from it")
 
-        hint = EXPRESSION_PROMPT_HINTS.get(name, f"a {name.lower()} facial expression")
-        style = ART_STYLES.get(character.art_style if character else DEFAULT_ART_STYLE, ART_STYLES[DEFAULT_ART_STYLE])
-        # Deliberately NOT _build_cartoon_prompt's preserve_identity=True
-        # branch — that one is written for regenerating a fresh portrait
-        # from a reference photo (explicitly wants "a different framing and
-        # setting... redraw everything else, including clothing"), which is
-        # the opposite of what an expression variant needs: the SAME pose,
-        # clothing, and framing as the base portrait, with only the face
-        # changed.
-        prompt = (
-            f"Same character, same {style['prompt']}, same pose, same clothing, same framing and "
-            f"background as the reference image — change ONLY the facial expression to {hint}. "
-            "Everything else about the character must stay identical to the reference."
-        )
-
-        from app.media.image_hybrid import HybridImageProvider
-        try:
-            result = HybridImageProvider().generate(prompt, reference_image_url=variant.image_url)
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}")
-
-        path = f"culturetoons/{variant.character_id}/variants/{variant.id}/expressions/{name}-{_uuid.uuid4().hex[:8]}.png"
-        from app.services.culturetoon_media import save_image, ImageUploadError
-        try:
-            url = save_image(result.asset_bytes, result.content_type, path)
-        except ImageUploadError as exc:
-            raise HTTPException(status_code=502, detail=f"Failed to store generated image: {exc}")
-
-        expression = (
-            session.query(Expression)
-            .filter_by(character_variant_id=_uuid.UUID(variant_id), name=name)
-            .first()
-        )
-        if expression:
-            expression.image_url = url
-        else:
-            expression = Expression(character_variant_id=_uuid.UUID(variant_id), name=name, image_url=url)
-            session.add(expression)
-        session.commit()
-        session.refresh(expression)
+        expression = _generate_one_expression_image(session, variant, character, name)
         return _serialize_expression(expression)
+    finally:
+        session.close()
+
+
+@router.post("/variants/{variant_id}/expressions/generate-all")
+def generate_all_expression_images(variant_id: str, body: dict):
+    """One-click version of generate_expression_image — fills in every
+    EXPRESSION_NAMES slot that doesn't already have an image, so a user
+    doesn't have to click "Generate" ten separate times after building a
+    character. Skips names that already have an image (idempotent/safe to
+    call again after manually regenerating a couple — doesn't burn cost
+    re-generating choices the user already kept) rather than requiring the
+    caller to compute the missing set itself. Continues past a single
+    name's failure instead of aborting the whole batch — partial progress
+    (e.g. 8 of 10 succeeded) is still useful, and the frontend's existing
+    per-expression Regenerate button already covers retrying whichever
+    ones are listed in `errors`. Returns every expression row for this
+    variant (generated this call or already existing) plus any per-name
+    errors, not just the newly-created ones, so the frontend can replace
+    its whole list from the response in one shot."""
+    if not EXPRESSION_NAMES:
+        return {"expressions": [], "errors": {}}
+    from app.db import SessionLocal
+    from app.models.character import Character
+    from app.models.expression import Expression
+
+    user_id, brand_id = body.get("user_id"), body.get("brand_id")
+    if not user_id or not brand_id:
+        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
+
+    session = SessionLocal()
+    try:
+        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
+        character = session.query(Character).filter_by(id=variant.character_id).first()
+        if not variant.image_url:
+            raise HTTPException(status_code=400, detail="Build this variant's own portrait first — expressions are generated from it")
+
+        existing = {
+            e.name: e for e in session.query(Expression).filter_by(character_variant_id=variant.id).all()
+        }
+        errors: dict = {}
+        for name in EXPRESSION_NAMES:
+            if name in existing and existing[name].image_url:
+                continue
+            try:
+                existing[name] = _generate_one_expression_image(session, variant, character, name)
+            except HTTPException as exc:
+                errors[name] = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+
+        return {
+            "expressions": [_serialize_expression(e) for e in existing.values()],
+            "errors": errors,
+        }
     finally:
         session.close()
 

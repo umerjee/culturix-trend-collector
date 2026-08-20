@@ -18,6 +18,8 @@ export default function ExpressionUploadGrid({ brandId, variantId, hasPortrait }
   const [expressions, setExpressions] = useState<Expression[] | null>(null);
   const [generatingName, setGeneratingName] = useState<string | null>(null);
   const [genError, setGenError] = useState<Record<string, string>>({});
+  const [generatingAll, setGeneratingAll] = useState(false);
+  const [generateAllError, setGenerateAllError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,11 +66,51 @@ export default function ExpressionUploadGrid({ brandId, variantId, hasPortrait }
     }
   }
 
+  async function generateAll() {
+    setGeneratingAll(true);
+    setGenerateAllError(null);
+    setGenError({});
+    try {
+      const res = await fetch(`/api/culturetoons/variants/${variantId}/expressions/generate-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setGenerateAllError(typeof data.detail === "string" ? data.detail : `Couldn't generate expressions (${res.status})`);
+        return;
+      }
+      if (Array.isArray(data.expressions)) setExpressions(data.expressions as Expression[]);
+      if (data.errors && typeof data.errors === "object") setGenError(data.errors);
+    } catch {
+      setGenerateAllError("Network error — check your connection and try again.");
+    } finally {
+      setGeneratingAll(false);
+    }
+  }
+
+  const missingCount = EXPRESSION_NAMES.filter((name) => !byName(name)?.image_url).length;
+
   return (
     <div>
       {!hasPortrait && (
         <p className="text-[11px] text-gray-400 mb-2">Build this variant&apos;s own portrait above to unlock AI-generated expressions.</p>
       )}
+      {hasPortrait && missingCount > 0 && (
+        <div className="flex items-center gap-2 mb-3">
+          <button
+            type="button"
+            onClick={generateAll}
+            disabled={generatingAll || generatingName !== null}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 text-white text-xs font-medium px-3 py-1.5 hover:bg-gray-800 transition-colors disabled:opacity-60"
+          >
+            {generatingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+            {generatingAll ? `Generating ${missingCount} expression${missingCount === 1 ? "" : "s"}…` : `Generate all ${missingCount} missing expression${missingCount === 1 ? "" : "s"}`}
+          </button>
+        </div>
+      )}
+      {generateAllError && <p className="text-[11px] text-red-500 mb-2">{generateAllError}</p>}
       <div className="grid grid-cols-5 gap-3">
         {EXPRESSION_NAMES.map((name) => {
           const existing = byName(name);
@@ -92,7 +134,7 @@ export default function ExpressionUploadGrid({ brandId, variantId, hasPortrait }
               <button
                 type="button"
                 onClick={() => generate(name)}
-                disabled={!hasPortrait || generating}
+                disabled={!hasPortrait || generating || generatingAll}
                 title={hasPortrait ? "Generate this expression with AI, from your portrait" : "Build a portrait first"}
                 className="inline-flex items-center gap-1 text-[10px] text-blue-500 hover:text-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
               >
