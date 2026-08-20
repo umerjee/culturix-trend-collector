@@ -50,7 +50,7 @@
   },
   "10": {
     "class_type": "LTXVGemmaCLIPModelLoader",
-    "_meta": { "title": "Load Gemma text encoder — LTX-2's checkpoint does not bundle a CLIP/text-encoder at all (confirmed live: CheckpointLoaderSimple's clip output is None), this dedicated ComfyUI-LTXVideo node loads the separate Gemma text encoder file instead, per Lightricks' own gemma_encoder.py::LTXVGemmaCLIPModelLoader" },
-    "inputs": { "gemma_path": "gemma_3_12B_it_fp4_mixed.safetensors", "ltxv_path": "ltx-2.3-22b-dev.safetensors", "max_length": 1024 }
+    "_meta": { "title": "Load Gemma text encoder — LTX-2's checkpoint does not bundle a CLIP/text-encoder at all (confirmed live: CheckpointLoaderSimple's clip output is None). Needs the FULL google/gemma-3-12b-it-qat-q4_0-unquantized HF repo (config.json + tokenizer files + sharded weights) in its own subfolder under models/text_encoders/, per gemma_encoder.py::gemma_model_dir() which requires a config.json next to whichever shard is selected here — a single repackaged .safetensors file (no config/tokenizer) is NOT sufficient, confirmed live via 'No config.json found for the selected Gemma model'. See deploy/README.md step 4 for the exact download command." },
+    "inputs": { "gemma_path": "gemma-3-12b-it-qat-q4_0-unquantized/model-00001-of-00005.safetensors", "ltxv_path": "ltx-2.3-22b-dev.safetensors", "max_length": 1024 }
   }
 }

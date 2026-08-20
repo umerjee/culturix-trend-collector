@@ -63,54 +63,108 @@ for step 4 below.
 
 Two ways to do this — pick one.
 
+Both options below write under a `ComfyUI/` prefix (`ComfyUI/models/checkpoints/…`,
+not bare `models/checkpoints/…`) and rename the checkpoint to drop its
+`-fp8` suffix. Neither is cosmetic: `deploy/runpod_serverless/extra_model_paths.yaml`'s
+`base_path` is `/runpod-volume/ComfyUI` (confirmed live 2026-08-19 via a
+real S3 listing — everything actually landed under that prefix, matching
+`culturetoon_lora.py`'s `_VOLUME_LORA_KEY_PREFIX = "ComfyUI/models/loras"`
+convention), and `app/media/workflows/ltx_text_to_video.json` hardcodes
+`"ckpt_name": "ltx-2.3-22b-dev.safetensors"` — no `-fp8`. Skipping either
+one reproduces the exact "checkpoint dropdown empty" bug already hit and
+fixed once this session — don't re-derive it from scratch.
+
+**The Gemma text encoder needs the FULL `google/gemma-3-12b-it-qat-q4_0-unquantized`
+HF repo, not a single repackaged weights file** — confirmed live 2026-08-20
+against the real Serverless endpoint. `LTXVGemmaCLIPModelLoader` (the
+ComfyUI-LTXVideo node that actually loads it, wired in
+`app/media/workflows/ltx_text_to_video.json`'s node `10`) requires a
+`config.json` next to the weights (`gemma_encoder.py::gemma_model_dir()`
+raises `FileNotFoundError` otherwise), plus tokenizer/processor files —
+none of which exist in `Comfy-Org/ltx-2`'s single-file `split_files/text_encoders/`
+variants (those are for a different, simpler loader). This is a gated
+model — download needs `HF_TOKEN` set to a token from an account that's
+accepted the license at that repo's page, same token already used for
+LoRA training's gated Gemma download (step 9 below). All 18 files
+(~24.5GB: 5 sharded `.safetensors`, `config.json`, tokenizer/processor
+files, `model.safetensors.index.json`) go into their OWN subfolder —
+`ComfyUI/models/text_encoders/gemma-3-12b-it-qat-q4_0-unquantized/`, not
+flat in `text_encoders/` — matching `hf download`'s default layout when
+you download a whole repo instead of `--include`-ing one file.
+
 **Option A — via the S3 API you just set up (no Pod needed):** download
-the two files locally, then push them to the bucket with the AWS CLI
+the files locally, then push them to the bucket with the AWS CLI
 (`pip install awscli` if you don't have it) using the same credentials
-from step 3:
+from step 3. This means the whole checkpoint transfers over your own
+connection twice (down from HuggingFace, up to RunPod) — for anything
+other than a fast, stable connection, use Option B instead; a dropped
+upload this size means restarting the whole 27GB transfer, not resuming
+just the missing part.
 
 ```bash
 pip install -U "huggingface_hub[cli]"
 hf download Lightricks/LTX-2.3-fp8 ltx-2.3-22b-dev-fp8.safetensors --local-dir ./tmp-models
-hf download Comfy-Org/ltx-2 --include "split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" --local-dir ./tmp-models
+HF_TOKEN=<your gated-access token> hf download google/gemma-3-12b-it-qat-q4_0-unquantized --local-dir ./tmp-models/gemma-3-12b-it-qat-q4_0-unquantized
+mv ./tmp-models/ltx-2.3-22b-dev-fp8.safetensors ./tmp-models/ltx-2.3-22b-dev.safetensors
 
 export AWS_ACCESS_KEY_ID=<RUNPOD_S3_ACCESS_KEY_ID>
 export AWS_SECRET_ACCESS_KEY=<RUNPOD_S3_SECRET_ACCESS_KEY>
-aws s3 cp ./tmp-models/ltx-2.3-22b-dev-fp8.safetensors \
-    "s3://<RUNPOD_S3_BUCKET>/models/checkpoints/ltx-2.3-22b-dev-fp8.safetensors" \
+aws s3 cp ./tmp-models/ltx-2.3-22b-dev.safetensors \
+    "s3://<RUNPOD_S3_BUCKET>/ComfyUI/models/checkpoints/ltx-2.3-22b-dev.safetensors" \
     --region <RUNPOD_S3_REGION> --endpoint-url <RUNPOD_S3_ENDPOINT_URL>
-aws s3 cp "./tmp-models/split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" \
-    "s3://<RUNPOD_S3_BUCKET>/models/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" \
-    --region <RUNPOD_S3_REGION> --endpoint-url <RUNPOD_S3_ENDPOINT_URL>
+aws s3 cp ./tmp-models/gemma-3-12b-it-qat-q4_0-unquantized \
+    "s3://<RUNPOD_S3_BUCKET>/ComfyUI/models/text_encoders/gemma-3-12b-it-qat-q4_0-unquantized" \
+    --recursive --region <RUNPOD_S3_REGION> --endpoint-url <RUNPOD_S3_ENDPOINT_URL>
 ```
 
-Simpler (no Pod to manage), but both files download to your machine
-first, then re-upload — worth it unless your connection makes that
-double-hop painfully slow, in which case use Option B instead.
+**Option B — via a temporary Pod (cloud-to-cloud, and the recommended
+default — much faster and more reliable than Option A on anything but a
+fast, stable connection, since the download happens entirely inside
+RunPod's own network with no re-upload from your machine at all):**
 
-**Option B — via a temporary Pod (cloud-to-cloud, faster on a slow home
-connection):**
-
-1. Console → **Pods** → **Deploy** → pick any GPU → under **Network
-   Volume**, select the volume from step 2 (only shows up if the pod's
-   region matches the volume's region) → Deploy.
+1. Console → **Pods** → **Deploy** → pick any GPU (doesn't need to match
+   the inference tier — this pod only downloads files, it never runs the
+   model; pick the cheapest available) → under **Network Volume**, select
+   the volume from step 2 (only shows up if the pod's region matches the
+   volume's region) → Deploy. Use a plain, generic template (e.g. "Runpod
+   Pytorch") — NOT a ComfyUI-branded one; confirmed live 2026-08-20 that
+   RunPod's own `runpod/comfyui:cuda12.8` template ships a start script
+   that unconditionally sources a venv at a fixed path
+   (`/workspace/runpod-slim/ComfyUI/.venv-cu128/bin/activate`) that isn't
+   actually present, crash-looping the pod before Web Terminal can even
+   attach — this pod needs nothing but `pip` and a shell.
 2. Open a **Web Terminal** on the running pod (or SSH in).
 3. **Confirm where the volume actually mounted** before assuming a path —
    RunPod's own convention for a regular Pod (as opposed to a Serverless
    endpoint, which mounts at `/runpod-volume`) is typically `/workspace`,
    but verify rather than assume: `df -h` and look for a filesystem sized
    to match what you picked in step 2.
-4. Download directly onto the volume:
+4. Download directly onto the volume, under the `ComfyUI/` prefix, with
+   the checkpoint's final filename already correct (no separate rename
+   step needed since `-o` controls the saved name directly). The Gemma
+   download needs `HF_TOKEN` exported first (step 9 below covers getting
+   one) and downloads the whole repo (no `--include`) straight into its
+   own subfolder:
 
 ```bash
 pip install -U "huggingface_hub[cli]"
 MOUNT=/workspace   # adjust to whatever you confirmed above
-mkdir -p "$MOUNT/models/checkpoints" "$MOUNT/models/text_encoders"
-hf download Lightricks/LTX-2.3-fp8 ltx-2.3-22b-dev-fp8.safetensors --local-dir "$MOUNT/models/checkpoints"
-hf download Comfy-Org/ltx-2 --include "split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors" --local-dir "$MOUNT/models/text_encoders"
+mkdir -p "$MOUNT/ComfyUI/models/checkpoints" "$MOUNT/ComfyUI/models/text_encoders"
+hf download Lightricks/LTX-2.3-fp8 ltx-2.3-22b-dev-fp8.safetensors --local-dir "$MOUNT/ComfyUI/models/checkpoints"
+mv "$MOUNT/ComfyUI/models/checkpoints/ltx-2.3-22b-dev-fp8.safetensors" "$MOUNT/ComfyUI/models/checkpoints/ltx-2.3-22b-dev.safetensors"
+
+export HF_TOKEN=<your gated-access token>
+hf download google/gemma-3-12b-it-qat-q4_0-unquantized \
+    --local-dir "$MOUNT/ComfyUI/models/text_encoders/gemma-3-12b-it-qat-q4_0-unquantized"
 ```
 
-5. Terminate the temporary pod once both downloads finish — the files
-   stay on the volume regardless.
+5. Confirm everything landed at the right size (`ls -lh` — checkpoint is
+   ~27GB, the Gemma folder ~24.5GB across its files; a short/zero-byte
+   file means the download silently failed, see the `/resolve/main/` note
+   below) before terminating the pod.
+6. Terminate the temporary pod once all downloads finish — the files
+   stay on the volume regardless. Billing is per-second while the pod
+   runs, so terminate promptly once step 5 confirms success.
 
 Either way, always use `/resolve/main/` URLs if downloading any other
 way — `/blob/main/` silently returns an HTML page instead of the model.
