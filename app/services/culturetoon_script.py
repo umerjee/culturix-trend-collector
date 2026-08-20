@@ -357,17 +357,45 @@ def _build_prompt_from_context(source_type: str, context: str, variants: list, t
                                 memories: Optional[list] = None,
                                 cultures: Optional[list] = None,
                                 performance_context: Optional[str] = None,
-                                critique_feedback: Optional[str] = None) -> str:
+                                critique_feedback: Optional[str] = None,
+                                previous_draft: Optional[dict] = None) -> str:
     cast_line = _cast_line(variants, source_type, character_personalities)
     relationship_line = _relationship_context(relationships)
     memory_line = _memory_context(memories)
     culture_line = _culture_context(cultures)
     performance_line = performance_context or ""
-    critique_line = (
-        f"\nA critic reviewed an earlier draft of this exact premise and said: \"{critique_feedback}\" "
-        "— this revision MUST specifically fix that, not just produce another similar draft.\n"
-        if critique_feedback else ""
-    )
+    # Showing the model the ACTUAL previous draft (not just abstract
+    # feedback text) is what makes this a targeted revision instead of a
+    # fresh rewrite — confirmed live: without the previous draft's real
+    # content to anchor to, the model had nothing to "keep" and would
+    # regenerate a whole new take on the premise, drifting to a different
+    # storyline/scenario even when the critic only flagged one shot.
+    if critique_feedback and previous_draft:
+        critique_line = f"""
+REVISION MODE — you are revising the EXISTING draft below, not writing a new story from
+scratch. Keep the same characters, premise, story beats, and shots that are already working.
+Make ONLY the minimal, targeted change needed to fix what the critic flagged below — do not
+rewrite the whole scene, do not change the storyline or invent a different scenario. If the
+critic pointed at one specific shot or line, revise JUST that shot; leave every other shot as
+close to the original wording as possible.
+
+PREVIOUS DRAFT:
+{_format_script_for_prompt(previous_draft)}
+
+CRITIC'S FEEDBACK ON THE DRAFT ABOVE: "{critique_feedback}"
+
+Output the REVISED version of this exact script, addressing only what the critic flagged.
+"""
+    elif critique_feedback:
+        # previous_draft missing (e.g. an old script row with no shots
+        # stored) — fall back to feedback-only, same as before, better
+        # than nothing but without the anchor a full rewrite is more likely.
+        critique_line = (
+            f"\nA critic reviewed an earlier draft of this exact premise and said: \"{critique_feedback}\" "
+            "— address that specifically.\n"
+        )
+    else:
+        critique_line = ""
     speaker_field = (
         '\n- "speaker_name" is the exact name of which listed character is acting/speaking in '
         "that shot (required when more than one character is listed; omit or null otherwise)."
@@ -476,11 +504,12 @@ Return ONLY the JSON object, no other text."""
 def _build_prompt(persona_or_cluster, variants: list, tone: str, num_shots: int, target_duration_seconds: int,
                    character_personalities: Optional[dict] = None, relationships: Optional[list] = None,
                    memories: Optional[list] = None, cultures: Optional[list] = None,
-                   performance_context: Optional[str] = None, critique_feedback: Optional[str] = None) -> str:
+                   performance_context: Optional[str] = None, critique_feedback: Optional[str] = None,
+                   previous_draft: Optional[dict] = None) -> str:
     source_type, context = _source_type_and_context(persona_or_cluster)
     return _build_prompt_from_context(source_type, context, variants, tone, num_shots, target_duration_seconds,
                                        character_personalities, relationships, memories, cultures, performance_context,
-                                       critique_feedback)
+                                       critique_feedback, previous_draft)
 
 
 def _assign_speakers(shots: list, variants: list) -> list:
@@ -556,11 +585,16 @@ def _call_llm_for_script(prompt: str, tone: str, variants: list) -> dict:
     }
 
 
-def _build_judge_prompt(script_result: dict) -> str:
+def _format_script_for_prompt(script_result: dict) -> str:
+    """Renders a {hook_line, shots} dict as readable text for an LLM
+    prompt — shared by the judge prompt and the revision-mode prompt
+    below, so both see the script in the exact same shape."""
     hook = script_result.get("hook_line") or ""
     shot_lines = []
     for s in script_result.get("shots") or []:
         parts = [f"Shot {s.get('shot_number')}"]
+        if s.get("shot_type"):
+            parts.append(f"[{s['shot_type']} shot" + (f", {s['camera_movement']}]" if s.get("camera_movement") else "]"))
         if s.get("visual"):
             parts.append(f"Visual: {s['visual']}")
         if s.get("action"):
@@ -569,16 +603,18 @@ def _build_judge_prompt(script_result: dict) -> str:
             delivery = f" ({s['dialogue_delivery']})" if s.get("dialogue_delivery") else ""
             parts.append(f'Dialogue{delivery}: "{s["dialogue"]}"')
         shot_lines.append(" | ".join(parts))
-    shots_text = "\n".join(shot_lines)
+    return f"Hook: {hook}\n\n" + "\n".join(shot_lines)
+
+
+def _build_judge_prompt(script_result: dict) -> str:
+    script_text = _format_script_for_prompt(script_result)
 
     return f"""You are a blunt, strict comedy critic reviewing a short skit script before it
 gets turned into video. Score it honestly — most first drafts are too safe and should NOT
 pass; a passing score should be rare, reserved for scripts that are genuinely specific and
 committed, not just "fine."
 
-Hook: {hook}
-
-{shots_text}
+{script_text}
 
 Score against these specific criteria (the exact bar the writer was given):
 - SPECIFICITY: concrete props/numbers/particulars, not generic statements a real person might
@@ -627,7 +663,8 @@ def generate_toon_script(persona_or_cluster, variants: Optional[list] = None, to
                           memories: Optional[list] = None,
                           cultures: Optional[list] = None,
                           performance_context: Optional[str] = None,
-                          critique_feedback: Optional[str] = None) -> dict:
+                          critique_feedback: Optional[str] = None,
+                          previous_draft: Optional[dict] = None) -> dict:
     """variants: the full cast for this script (list of CharacterVariant-like
     objects) — one real character writes a monologue, two or more write an
     actual scene between them (see _cast_line). character_personalities:
@@ -637,15 +674,19 @@ def generate_toon_script(persona_or_cluster, variants: Optional[list] = None, to
     Both are how a character's identity stays deterministic across scripts
     instead of being re-improvised by the LLM each call — see
     docs/culturix-comedy-architecture.md §3.2/§3.4. critique_feedback:
-    optional prior judge_script_comedy() feedback to explicitly address —
-    see POST /scripts/{id}/regenerate. Returns {"hook_line":
+    optional prior judge_script_comedy() feedback (optionally combined with
+    a human note) to explicitly address; previous_draft: the
+    {hook_line, shots} dict being revised — passing both together switches
+    the prompt into REVISION MODE so the model anchors on and minimally
+    edits the existing draft instead of writing a new story — see
+    POST /scripts/{id}/regenerate. Returns {"hook_line":
     str, "tone": str, "shots": [{"shot_number", "duration_seconds",
     "action", "expression", "dialogue", "speaker_variant_id"}, ...],
     "total_duration_seconds": int}."""
     variants = variants or []
     prompt = _build_prompt(persona_or_cluster, variants, tone, num_shots, target_duration_seconds,
                             character_personalities, relationships, memories, cultures, performance_context,
-                            critique_feedback)
+                            critique_feedback, previous_draft)
     return _call_llm_for_script(prompt, tone, variants)
 
 
@@ -656,7 +697,8 @@ def generate_toon_script_from_idea(idea: str, variants: Optional[list] = None, t
                                     memories: Optional[list] = None,
                                     cultures: Optional[list] = None,
                                     performance_context: Optional[str] = None,
-                                    critique_feedback: Optional[str] = None) -> dict:
+                                    critique_feedback: Optional[str] = None,
+                                    previous_draft: Optional[dict] = None) -> dict:
     """Same shape/contract as generate_toon_script, but grounded in the
     user's own free-text scenario idea instead of a live trending Persona
     or Cluster — for when someone already knows what they want the
@@ -666,7 +708,7 @@ def generate_toon_script_from_idea(idea: str, variants: Optional[list] = None, t
     prompt = _build_prompt_from_context("user-provided scenario idea", context, variants, tone,
                                          num_shots, target_duration_seconds,
                                          character_personalities, relationships, memories, cultures,
-                                         performance_context, critique_feedback)
+                                         performance_context, critique_feedback, previous_draft)
     return _call_llm_for_script(prompt, tone, variants)
 
 

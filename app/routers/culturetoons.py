@@ -2910,8 +2910,24 @@ def regenerate_script(script_id: str, body: dict):
         # the loop from judge_script_comedy's own feedback without the
         # frontend needing to pass anything extra; the "Regenerate with
         # this feedback" button relies on this happening automatically.
+        # Combined with an optional human-typed note (e.g. "make the ending
+        # bigger") — either, both, or neither may be present.
         prior_judgment = script.comedy_judgment or {}
-        critique_feedback = prior_judgment.get("feedback") if prior_judgment.get("passes_bar") is False else None
+        ai_feedback = prior_judgment.get("feedback") if prior_judgment.get("passes_bar") is False else None
+        human_note = (body.get("note") or "").strip() or None
+        feedback_parts = []
+        if ai_feedback:
+            feedback_parts.append(f"AI comedy critic said: {ai_feedback}")
+        if human_note:
+            feedback_parts.append(f"The user specifically asked: {human_note}")
+        critique_feedback = " | ".join(feedback_parts) or None
+        # The actual previous draft, so the revision prompt has something
+        # concrete to anchor to and edit minimally instead of rewriting the
+        # whole story — see _build_prompt_from_context's REVISION MODE.
+        previous_draft = (
+            {"hook_line": script.hook_line, "shots": script.shots}
+            if critique_feedback and script.shots else None
+        )
 
         try:
             if script.source_type in ("persona", "cluster") and script.source_id is not None:
@@ -2926,7 +2942,7 @@ def regenerate_script(script_id: str, body: dict):
                     num_shots=num_shots, target_duration_seconds=target_duration_seconds,
                     character_personalities=character_personalities, relationships=relationships,
                     memories=memories, cultures=cultures, performance_context=performance_context,
-                    critique_feedback=critique_feedback,
+                    critique_feedback=critique_feedback, previous_draft=previous_draft,
                 )
             elif script.idea_text:
                 result = generate_toon_script_from_idea(
@@ -2934,7 +2950,7 @@ def regenerate_script(script_id: str, body: dict):
                     num_shots=num_shots, target_duration_seconds=target_duration_seconds,
                     character_personalities=character_personalities, relationships=relationships,
                     memories=memories, cultures=cultures, performance_context=performance_context,
-                    critique_feedback=critique_feedback,
+                    critique_feedback=critique_feedback, previous_draft=previous_draft,
                 )
             else:
                 raise HTTPException(

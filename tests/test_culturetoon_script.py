@@ -512,6 +512,63 @@ class TestBuildKlingPrompt:
             build_kling_prompt(_VALID_SHOTS, {})
 
 
+class TestRevisionModePrompt:
+    # Regression coverage for the regenerate-drift bug: feedback alone gave
+    # the model nothing to anchor to and it would invent a new storyline.
+    # previous_draft must show up verbatim so the model edits, not rewrites.
+    def test_critique_with_previous_draft_triggers_revision_mode(self, mocker):
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        variant = mocker.Mock(); variant.name = "Kumar"; variant.description = "loud"; variant.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H2", "shots": _VALID_SHOTS})
+        previous_draft = {
+            "hook_line": "When the AC breaks in July",
+            "shots": [{"shot_number": 1, "duration_seconds": 4, "action": "sweats dramatically",
+                       "dialogue": "It's fine. I'm fine.", "expression": "Strained"}],
+        }
+        generate_toon_script(
+            cluster, variants=[variant], tone="funny",
+            critique_feedback="Shot 1's dialogue is too mild — make it more absurd.",
+            previous_draft=previous_draft,
+        )
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "REVISION MODE" in sent_prompt
+        assert "When the AC breaks in July" in sent_prompt
+        assert "sweats dramatically" in sent_prompt
+        assert "It's fine. I'm fine." in sent_prompt
+        assert "Shot 1's dialogue is too mild — make it more absurd." in sent_prompt
+        assert "minimal, targeted change" in sent_prompt
+
+    def test_critique_without_previous_draft_falls_back_to_feedback_only(self, mocker):
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        variant = mocker.Mock(); variant.name = "Kumar"; variant.description = "loud"; variant.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H2", "shots": _VALID_SHOTS})
+        generate_toon_script(
+            cluster, variants=[variant], tone="funny",
+            critique_feedback="Too generic — be specific.",
+        )
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "REVISION MODE" not in sent_prompt
+        assert "Too generic — be specific." in sent_prompt
+
+    def test_no_critique_no_previous_draft_omits_revision_language(self, mocker):
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        variant = mocker.Mock(); variant.name = "Kumar"; variant.description = "loud"; variant.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H2", "shots": _VALID_SHOTS})
+        generate_toon_script(cluster, variants=[variant], tone="funny")
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "REVISION MODE" not in sent_prompt
+        assert "critic reviewed an earlier draft" not in sent_prompt
+
+
 class TestJudgeScriptComedy:
     def test_scores_and_returns_feedback(self, mocker):
         fake_client = _mock_qwen_response(mocker, {

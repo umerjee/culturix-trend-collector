@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check, Target, Pencil, Trash2, Film, AlertTriangle, CheckCircle2, Camera } from "lucide-react";
+import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check, Target, Pencil, Trash2, Film, AlertTriangle, CheckCircle2, Camera, MessageSquarePlus } from "lucide-react";
 import type { ToonScript, ToonScriptShot, CharacterVariant, ToonBackground } from "@/lib/types";
 import { TONE_OPTIONS, MAX_CHARACTERS_PER_VIDEO, ART_STYLES, EXPRESSION_NAMES, SHOT_TYPES, CAMERA_MOVEMENTS } from "@/lib/types";
 
@@ -106,6 +106,8 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
   // Re-run AI generation for an existing script, in place.
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
   const [regenerateErrors, setRegenerateErrors] = useState<Record<string, string>>({});
+  const [regenerateNoteOpenId, setRegenerateNoteOpenId] = useState<string | null>(null);
+  const [regenerateNoteDrafts, setRegenerateNoteDrafts] = useState<Record<string, string>>({});
 
   const [extraDescByScript, setExtraDescByScript] = useState<Record<string, string>>({});
   const [bgStyleByScript, setBgStyleByScript] = useState<Record<string, string>>({});
@@ -471,17 +473,19 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
     }
   }
 
-  async function regenerateScript(scriptId: string) {
+  async function regenerateScript(scriptId: string, note?: string) {
     setRegeneratingId(scriptId);
     setRegenerateErrors((prev) => ({ ...prev, [scriptId]: "" }));
     try {
       const res = await fetch(`/api/culturetoons/scripts/${scriptId}/regenerate`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brand_id: brandId }),
+        body: JSON.stringify({ brand_id: brandId, ...(note ? { note } : {}) }),
       });
       if (res.ok) {
         const updated = await res.json();
         setScripts((prev) => prev.map((s) => (s.id === scriptId ? updated : s)));
+        setRegenerateNoteOpenId((prev) => (prev === scriptId ? null : prev));
+        setRegenerateNoteDrafts((prev) => ({ ...prev, [scriptId]: "" }));
       } else {
         const data = await res.json().catch(() => ({}));
         setRegenerateErrors((prev) => ({ ...prev, [scriptId]: typeof data.detail === "string" ? data.detail : `Couldn't regenerate (${res.status})` }));
@@ -845,6 +849,16 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                       {regeneratingId === s.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                     </button>
                   )}
+                  {s.generation_source !== "manual" && (
+                    <button
+                      onClick={() => setRegenerateNoteOpenId((prev) => (prev === s.id ? null : s.id))}
+                      disabled={regeneratingId === s.id || editingScriptId === s.id}
+                      title="Regenerate with your own note (e.g. 'make the ending bigger')"
+                      className="text-gray-300 hover:text-blue-500 transition-colors disabled:opacity-40"
+                    >
+                      <MessageSquarePlus className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                   <button
                     onClick={() => (editingScriptId === s.id ? cancelEdit() : startEdit(s))}
                     title={editingScriptId === s.id ? "Cancel editing" : "Edit this script"}
@@ -862,6 +876,30 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                 </span>
               </div>
               {regenerateErrors[s.id] && <p className="text-[11px] text-red-500 mb-2">{regenerateErrors[s.id]}</p>}
+              {regenerateNoteOpenId === s.id && (
+                <div className="flex items-center gap-2 rounded-lg bg-blue-50 border border-blue-100 px-2.5 py-2 mb-2">
+                  <input
+                    type="text"
+                    autoFocus
+                    value={regenerateNoteDrafts[s.id] ?? ""}
+                    onChange={(e) => setRegenerateNoteDrafts((prev) => ({ ...prev, [s.id]: e.target.value }))}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (regenerateNoteDrafts[s.id] ?? "").trim()) {
+                        regenerateScript(s.id, (regenerateNoteDrafts[s.id] ?? "").trim());
+                      }
+                    }}
+                    placeholder="What should change? e.g. 'make the ending bigger'"
+                    className="flex-1 text-xs bg-white border border-blue-200 rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-300"
+                  />
+                  <button
+                    onClick={() => regenerateScript(s.id, (regenerateNoteDrafts[s.id] ?? "").trim())}
+                    disabled={regeneratingId === s.id || !(regenerateNoteDrafts[s.id] ?? "").trim()}
+                    className="text-[11px] font-medium text-blue-700 hover:text-blue-900 disabled:opacity-40 shrink-0"
+                  >
+                    {regeneratingId === s.id ? "Regenerating…" : "Regenerate →"}
+                  </button>
+                </div>
+              )}
               {s.comedy_judgment && !s.comedy_judgment.judge_failed && s.comedy_judgment.passes_bar === false && (
                 <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-100 px-2.5 py-2 mb-2">
                   <AlertTriangle className="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" />

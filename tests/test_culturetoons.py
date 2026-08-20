@@ -1435,7 +1435,122 @@ class TestRegenerateScript:
         )
         culturetoons.regenerate_script(script["id"], {"user_id": user_id, "brand_id": brand["id"]})
 
-        assert mock_regen.call_args.kwargs["critique_feedback"] == "Too generic — be specific."
+        assert mock_regen.call_args.kwargs["critique_feedback"] == "AI comedy critic said: Too generic — be specific."
+
+    def test_regenerate_with_human_note_only(self, db, user_id, brand_and_character, mocker):
+        brand, _character, variant = brand_and_character
+        mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H", "tone": "funny", "shots": [], "total_duration_seconds": 4},
+        )
+        mocker.patch(
+            "app.services.culturetoon_script.judge_script_comedy",
+            return_value={"comedy_score": 90, "passes_bar": True, "feedback": "Great.", "judge_failed": False},
+        )
+        script = culturetoons.suggest_script_from_idea({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "idea": "A birthday party", "tone": "funny",
+        })
+
+        mock_regen = mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H2", "tone": "funny", "shots": [], "total_duration_seconds": 4},
+        )
+        culturetoons.regenerate_script(
+            script["id"], {"user_id": user_id, "brand_id": brand["id"], "note": "Make the ending bigger"},
+        )
+
+        # Passing bar means no AI critique is auto-fed — only the human note should show up.
+        assert mock_regen.call_args.kwargs["critique_feedback"] == "The user specifically asked: Make the ending bigger"
+
+    def test_regenerate_combines_ai_feedback_and_human_note(self, db, user_id, brand_and_character, mocker):
+        brand, _character, variant = brand_and_character
+        mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H", "tone": "funny", "shots": [], "total_duration_seconds": 4},
+        )
+        mocker.patch(
+            "app.services.culturetoon_script.judge_script_comedy",
+            return_value={"comedy_score": 30, "passes_bar": False, "feedback": "Too generic.", "judge_failed": False},
+        )
+        script = culturetoons.suggest_script_from_idea({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "idea": "A birthday party", "tone": "funny",
+        })
+
+        mock_regen = mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H2", "tone": "funny", "shots": [], "total_duration_seconds": 4},
+        )
+        culturetoons.regenerate_script(
+            script["id"], {"user_id": user_id, "brand_id": brand["id"], "note": "Keep it PG"},
+        )
+
+        combined = mock_regen.call_args.kwargs["critique_feedback"]
+        assert "AI comedy critic said: Too generic." in combined
+        assert "The user specifically asked: Keep it PG" in combined
+
+    def test_regenerate_anchors_on_previous_draft_when_shots_exist(self, db, user_id, brand_and_character, mocker):
+        # The drift-fix regression test: when there's feedback to apply AND
+        # the script actually has stored shots, the previous draft must be
+        # passed through so the writer prompt can anchor on it instead of
+        # inventing a new storyline.
+        brand, _character, variant = brand_and_character
+        mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={
+                "hook_line": "Original hook", "tone": "funny",
+                "shots": [{"shot_number": 1, "duration_seconds": 4, "action": "a", "expression": None, "dialogue": None}],
+                "total_duration_seconds": 4,
+            },
+        )
+        mocker.patch(
+            "app.services.culturetoon_script.judge_script_comedy",
+            return_value={"comedy_score": 30, "passes_bar": False, "feedback": "Too generic.", "judge_failed": False},
+        )
+        script = culturetoons.suggest_script_from_idea({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "idea": "A birthday party", "tone": "funny",
+        })
+
+        mock_regen = mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H2", "tone": "funny", "shots": [], "total_duration_seconds": 4},
+        )
+        culturetoons.regenerate_script(script["id"], {"user_id": user_id, "brand_id": brand["id"]})
+
+        previous_draft = mock_regen.call_args.kwargs["previous_draft"]
+        assert previous_draft["hook_line"] == "Original hook"
+        assert previous_draft["shots"][0]["action"] == "a"
+
+    def test_regenerate_no_previous_draft_when_no_feedback_to_apply(self, db, user_id, brand_and_character, mocker):
+        # No critique to apply (judge passed) means nothing to anchor a
+        # revision against — should regenerate fresh, previous_draft=None.
+        brand, _character, variant = brand_and_character
+        mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={
+                "hook_line": "Original hook", "tone": "funny",
+                "shots": [{"shot_number": 1, "duration_seconds": 4, "action": "a", "expression": None, "dialogue": None}],
+                "total_duration_seconds": 4,
+            },
+        )
+        mocker.patch(
+            "app.services.culturetoon_script.judge_script_comedy",
+            return_value={"comedy_score": 90, "passes_bar": True, "feedback": "Great.", "judge_failed": False},
+        )
+        script = culturetoons.suggest_script_from_idea({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "idea": "A birthday party", "tone": "funny",
+        })
+
+        mock_regen = mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H2", "tone": "funny", "shots": [], "total_duration_seconds": 4},
+        )
+        culturetoons.regenerate_script(script["id"], {"user_id": user_id, "brand_id": brand["id"]})
+
+        assert mock_regen.call_args.kwargs["previous_draft"] is None
 
     def test_manual_script_has_no_source_400s(self, db, user_id, brand_and_character):
         brand, _character, variant = brand_and_character
