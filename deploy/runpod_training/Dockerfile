@@ -110,10 +110,18 @@ RUN pip install --no-cache-dir \
 #     installed CUDA *runtime* comes bundled in the torch wheel itself
 #     (this doesn't need to match the base image's apt-level 12.4.1
 #     toolkit, only the actual GPU driver needs to be new enough, which
-#     RunPod's fleet is). torch 2.7.1 / torchvision 0.22.1 / torchaudio
-#     2.7.1 is the PyTorch project's own released cu126 set.
+#     RunPod's fleet is).
+#  4. torch==2.7.1 turned out to still be too old: ltx-core's
+#     attn.py calls `torch.compiler.nested_compile_region`, which doesn't
+#     exist until torch 2.8.0 (confirmed against PyTorch's own source per
+#     version tag) — ltx-core's `torch~=2.7` pin in its pyproject.toml is
+#     looser than what its actual code requires. Jumped to torch==2.9.1
+#     rather than the minimum 2.8.0, to reduce the odds of hitting yet
+#     another one-version-short gap — torchvision's own PyPI metadata for
+#     0.24.1 declares `torch==2.9.1` exactly, confirming this pairing
+#     rather than assuming the usual version-offset convention.
 RUN pip install --no-cache-dir \
-    torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
+    torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 \
     --index-url https://download.pytorch.org/whl/cu126
 
 # No CMD/ENTRYPOINT override — inherited from the base image, which starts
