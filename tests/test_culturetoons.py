@@ -538,6 +538,64 @@ class TestCharacterImageGeneration:
         assert result["reference_image_url"] == "https://supabase/char-ref.png"
         assert result["base_image_url"] is None
 
+    def test_generate_image_propagates_to_untouched_default_variant(self, db, user_id, brand_and_character, mocker):
+        # The default variant create_character auto-creates (name == the
+        # character's own name, everything else blank) should pick up the
+        # character's new portrait automatically — otherwise Expressions
+        # stay blocked behind a redundant second portrait-generation step.
+        from app.media.base import MediaResult
+        brand, character, _explicit_variant = brand_and_character
+        mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/char-gen.png")
+
+        culturetoons.generate_character_image(character["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "description": "A character",
+        })
+
+        session = db()
+        default_variant = session.query(CharacterVariant).filter_by(
+            character_id=uuid.UUID(character["id"]), name=character["name"],
+        ).first()
+        assert default_variant.image_url == "https://supabase/char-gen.png"
+        session.close()
+
+    def test_generate_image_does_not_overwrite_customized_variant(self, db, user_id, brand_and_character, mocker):
+        from app.media.base import MediaResult
+        brand, character, explicit_variant = brand_and_character
+        mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/char-gen.png")
+
+        culturetoons.generate_character_image(character["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "description": "A character",
+        })
+
+        session = db()
+        row = session.query(CharacterVariant).filter_by(id=uuid.UUID(explicit_variant["id"])).first()
+        assert row.image_url is None  # has its own culture_tag set — left untouched
+        session.close()
+
+    def test_upload_character_image_propagates_to_untouched_default_variant(self, db, user_id, brand_and_character, mocker):
+        brand, character, _explicit_variant = brand_and_character
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/char-upload.png")
+
+        _run(culturetoons.upload_character_image(
+            character["id"], user_id=user_id, brand_id=brand["id"],
+            file=_FakeUploadFile(_TINY_PNG_BYTES, "image/png"),
+        ))
+
+        session = db()
+        default_variant = session.query(CharacterVariant).filter_by(
+            character_id=uuid.UUID(character["id"]), name=character["name"],
+        ).first()
+        assert default_variant.image_url == "https://supabase/char-upload.png"
+        session.close()
+
     def test_new_character_defaults_to_cartoon_3d_art_style(self, db, user_id):
         brand = culturetoons.create_brand({"user_id": user_id})
         character = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "X"})

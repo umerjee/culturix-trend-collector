@@ -1575,6 +1575,27 @@ def _gather_script_generation_context(session, brand_id, variants: list, query_t
     return character_personalities, relationships, memories, cultures, performance_context
 
 
+def _propagate_portrait_to_untouched_default_variants(session, character):
+    """When a character's own portrait changes, any variant that's still
+    exactly as create_character auto-created it — no image, no
+    description, no culture_tag, i.e. never customized — picks up the
+    same portrait. That default variant exists purely so "register for
+    video"/Expressions have somewhere to attach for the common "just use
+    this character as-is" case; without this, every character needs a
+    second, redundant portrait-generation step on the variant before
+    Expressions unlock at all (confirmed live: this blocked Expression
+    generation with no obvious next action). A variant the user has
+    started customizing (any of those three fields set) is left alone —
+    this only ever fills in a blank, never overwrites intent."""
+    from app.models.character_variant import CharacterVariant
+    session.query(CharacterVariant).filter(
+        CharacterVariant.character_id == character.id,
+        CharacterVariant.image_url.is_(None),
+        CharacterVariant.description.is_(None),
+        CharacterVariant.culture_tag.is_(None),
+    ).update({"image_url": character.base_image_url})
+
+
 @router.post("/characters/{character_id}/image")
 async def upload_character_image(character_id: str, user_id: str = Form(...), brand_id: str = Form(...),
                                   file: UploadFile = File(...)):
@@ -1590,6 +1611,7 @@ async def upload_character_image(character_id: str, user_id: str = Form(...), br
         except ImageUploadError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         character.base_image_url = url
+        _propagate_portrait_to_untouched_default_variants(session, character)
         session.commit()
         session.refresh(character)
         return _serialize_character(character)
@@ -1679,6 +1701,7 @@ def generate_character_image(character_id: str, body: dict):
         if character.base_image_url:
             character.previous_image_urls = (character.previous_image_urls or []) + [character.base_image_url]
         character.base_image_url = url
+        _propagate_portrait_to_untouched_default_variants(session, character)
         session.commit()
         session.refresh(character)
         serialized = _serialize_character(character)
