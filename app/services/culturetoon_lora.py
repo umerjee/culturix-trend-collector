@@ -408,9 +408,18 @@ def train_character_lora(variant, session) -> None:
             img_path = f"{work_dir}/img_{i:03d}.png"
             clip_path = f"{work_dir}/clip_{i:03d}.mp4"
             width, height, frames = _RESOLUTION_BUCKET.split("x")
+            # Confirmed live 2026-08-21: `frames` was parsed but never
+            # actually applied — the old `-t 2 -r 24` targets ~48 frames,
+            # not exactly the bucket's declared 49, and process_dataset.py's
+            # resolution-bucket matching requires an EXACT frame-count
+            # match. Every clip silently failed to match any bucket during
+            # Phase 2 (video latents) while Phase 1 (captions, which don't
+            # need exact frame counts) succeeded fine — exit code 0, no
+            # error, just an empty latents/ directory. -frames:v guarantees
+            # the exact count regardless of ffmpeg's -t/-r rounding.
             stage_cmd = (
                 f"curl -sL --fail {q(url)} -o {q(img_path)} && "
-                f"ffmpeg -y -loop 1 -i {q(img_path)} -t 2 -r 24 -pix_fmt yuv420p "
+                f"ffmpeg -y -loop 1 -i {q(img_path)} -frames:v {frames} -r 24 -pix_fmt yuv420p "
                 f"-vf scale={width}:{height} {q(clip_path)}"
             )
             _run(runpod_ssh, host, port, stage_cmd, 120, f"Failed to stage/convert training image {i}")
