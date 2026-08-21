@@ -448,19 +448,6 @@ def train_character_lora(variant, session) -> None:
             f"--output-dir {q(precomputed_dir)}"
         )
         _run(runpod_ssh, host, port, preprocess_cmd, _TRAINING_TIMEOUT_SECONDS, "ltx-trainer dataset preprocessing failed")
-        # TEMPORARY diagnostic 2026-08-21: preprocessing exits 0 but
-        # train.py's PrecomputedDataset then finds no *.pt files under
-        # {precomputed_dir}/latents — _run() only surfaces stdout/stderr on
-        # a NONZERO exit, so a successful-but-wrong preprocessing run gives
-        # zero visibility into what it actually wrote. Print the real
-        # directory tree unconditionally so the next failure (if any) is
-        # diagnosable from real evidence instead of guessed. Remove once
-        # the actual cause is confirmed and fixed.
-        _diag_code, _diag_out, _diag_err = runpod_ssh.run_remote_command(
-            host, port, f"find {q(precomputed_dir)} -maxdepth 3", timeout_seconds=30,
-        )
-        print(f"[diag] precomputed_dir tree (exit {_diag_code}):\n{_diag_out}\n{_diag_err}")
-
         config_yaml = (
             f"seed: 42\n"
             f"output_dir: \"{output_dir}\"\n"
@@ -475,6 +462,16 @@ def train_character_lora(variant, session) -> None:
             f"  learning_rate: 1e-4\n"
             f"  steps: 1000\n"
             f"  batch_size: 1\n"
+            # Confirmed live 2026-08-21: the base checkpoint is a 22B-param
+            # transformer — even training LoRA-only (base weights frozen),
+            # activation memory during the forward/backward pass exhausted
+            # an 80GB GPU by just 98MiB (torch.OutOfMemoryError deep inside
+            # a peft LoRA layer's forward). enable_gradient_checkpointing
+            # trades recompute for a large activation-memory cut, the
+            # standard fix for exactly this shape of near-miss OOM —
+            # confirmed available in ltx_trainer.config.OptimizationConfig
+            # by reading it directly, not assumed.
+            f"  enable_gradient_checkpointing: true\n"
             f"data:\n"
             f"  preprocessed_data_root: \"{precomputed_dir}\"\n"
         )
