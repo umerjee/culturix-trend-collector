@@ -54,6 +54,19 @@ def _connect(host: str, port: int):
         hostname=host, port=port, username=_SSH_USER, pkey=_load_private_key(),
         timeout=_CONNECT_TIMEOUT,
     )
+    # Confirmed live 2026-08-23, twice, with zero concurrent SSH activity on
+    # either occasion: a long-running training command (ltx-trainer produces
+    # no stdout for 60-90+ minutes between "Starting training..." and the
+    # final checkpoint, since intermediate checkpointing is disabled by
+    # default) got its connection forcibly closed partway through
+    # ("Socket exception: An existing connection was forcibly closed by the
+    # remote host (10054)") — the exact signature of an idle-connection
+    # timeout somewhere in the network path (most likely RunPod's own SSH
+    # proxy) killing a session with no traffic on it, not an actual failure
+    # on either end. set_keepalive sends periodic SSH-level keepalive
+    # packets so the connection looks active even during a long silent
+    # training run.
+    client.get_transport().set_keepalive(15)
     return client
 
 
