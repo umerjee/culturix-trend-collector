@@ -311,6 +311,38 @@ def curate_training_images(session, variant) -> list:
     return entries
 
 
+_FINALIZE_RETRY_ATTEMPTS = 6
+_FINALIZE_RETRY_BACKOFF_SECONDS = 15
+
+
+def _resilient(fn, *args, **kwargs):
+    """Retries a network call a few times with a short backoff before
+    giving up. Confirmed live 2026-08-23: a transient LOCAL connection
+    blip during the SFTP checkpoint download (after training had already
+    fully succeeded — 1001/1001 steps, real checkpoint on disk) crashed
+    the whole finalize step, which then hit the unconditional `finally:
+    terminate_pod()` in train_character_lora and threw the entire
+    completed run away over what was a recoverable hiccup, not a real
+    failure. The training step itself already tolerates this class of
+    blip (backgrounded + polled with short-lived connections); the
+    finalize steps (find checkpoint, SFTP download, S3 upload/verify)
+    didn't, despite being just as exposed to the same local network
+    instability. This wraps those calls the same way."""
+    last_exc = None
+    for attempt in range(_FINALIZE_RETRY_ATTEMPTS):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "Finalize step %s attempt %d/%d failed: %s",
+                getattr(fn, "__name__", repr(fn)), attempt + 1, _FINALIZE_RETRY_ATTEMPTS, exc,
+            )
+            if attempt < _FINALIZE_RETRY_ATTEMPTS - 1:
+                time.sleep(_FINALIZE_RETRY_BACKOFF_SECONDS)
+    raise last_exc
+
+
 def _run(runpod_ssh, host, port, command, timeout_seconds, error_prefix):
     exit_code, stdout, stderr = runpod_ssh.run_remote_command(host, port, command, timeout_seconds=timeout_seconds)
     if exit_code != 0:
@@ -628,7 +660,8 @@ def train_character_lora(variant, session) -> None:
         # glob suffix is deliberately left outside shlex.quote() (quoting
         # it would defeat shell glob expansion); only the safe, UUID-built
         # output_dir prefix is quoted.
-        exit_code, stdout, stderr = runpod_ssh.run_remote_command(
+        exit_code, stdout, stderr = _resilient(
+            runpod_ssh.run_remote_command,
             host, port,
             f"ls -1 {q(output_dir)}/checkpoints/lora_weights_step_*.safetensors 2>/dev/null | sort | tail -n 1",
             timeout_seconds=30,
@@ -638,14 +671,14 @@ def train_character_lora(variant, session) -> None:
             raise LoraTrainingError(f"Could not find a trained LoRA checkpoint under {output_dir}/checkpoints: {stderr[-1000:]}")
 
         lora_filename = f"{variant.id}.safetensors"
-        lora_bytes = runpod_ssh.download_file(host, port, local_output_path)
+        lora_bytes = _resilient(runpod_ssh.download_file, host, port, local_output_path)
 
         volume_key = f"{_VOLUME_LORA_KEY_PREFIX}/{lora_filename}"
         try:
-            runpod_s3.upload_lora(lora_bytes, volume_key)
+            _resilient(runpod_s3.upload_lora, lora_bytes, volume_key)
         except runpod_s3.RunPodS3Error as exc:
             raise LoraTrainingError(str(exc)) from exc
-        if not runpod_s3.verify_exists(volume_key):
+        if not _resilient(runpod_s3.verify_exists, volume_key):
             raise LoraTrainingError(
                 f"Uploaded {volume_key} to the Network Volume but a HEAD check couldn't confirm it landed"
             )
@@ -708,7 +741,30 @@ def run_lora_training(variant_id) -> None:
             train_character_lora(variant, session)
         except LoraTrainingError:
             pass  # already logged + lora_status="failed" set by train_character_lora
-        session.commit()
+        # Confirmed live 2026-08-23: this exact commit died mid-flight to a
+        # transient local network blip (psycopg2.OperationalError, server
+        # closed the connection unexpectedly) immediately after a fully
+        # successful training run — pool_pre_ping only detects a STALE
+        # connection at checkout, it can't help a connection that dies
+        # mid-request. A bare commit retry isn't enough here: SQLAlchemy
+        # marks the session's transaction as needing rollback after a
+        # failed flush, so a second commit() without rolling back first
+        # would just raise PendingRollbackError instead of actually
+        # retrying — roll back before each retry attempt.
+        last_exc = None
+        for attempt in range(_FINALIZE_RETRY_ATTEMPTS):
+            try:
+                session.commit()
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                session.rollback()
+                logger.warning("session.commit() attempt %d/%d failed: %s", attempt + 1, _FINALIZE_RETRY_ATTEMPTS, exc)
+                if attempt < _FINALIZE_RETRY_ATTEMPTS - 1:
+                    time.sleep(_FINALIZE_RETRY_BACKOFF_SECONDS)
+        if last_exc is not None:
+            raise last_exc
     finally:
         session.close()
 

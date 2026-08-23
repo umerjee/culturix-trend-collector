@@ -16,6 +16,15 @@ _VARIANT_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 _FOUND_CHECKPOINT = f"/workspace/lora_training/{_VARIANT_ID}/output/checkpoints/lora_weights_step_001000.safetensors"
 
 
+@pytest.fixture(autouse=True)
+def _no_real_retry_backoff(monkeypatch):
+    """_resilient() (finalize-step network retries) and the commit-retry
+    loop both sleep for real between attempts — fine in production, but a
+    genuinely-failing test would otherwise burn 6 attempts x 15s for
+    nothing. Zero it out everywhere in this test module."""
+    monkeypatch.setattr("app.services.culturetoon_lora._FINALIZE_RETRY_BACKOFF_SECONDS", 0)
+
+
 def _variant(mocker, name="Kumar", training_images=None, image_url=None):
     v = mocker.Mock()
     v.id = _VARIANT_ID
