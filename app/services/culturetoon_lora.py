@@ -559,7 +559,21 @@ def train_character_lora(variant, session) -> None:
             f"  alpha: 32\n"
             f"optimization:\n"
             f"  learning_rate: 1e-4\n"
-            f"  steps: 1000\n"
+            # Confirmed live 2026-08-23: 1000 (an exact multiple of
+            # checkpoints.interval below) is a real, upstream ltx-trainer
+            # bug trigger — training's very last step is BOTH a periodic
+            # checkpoint-interval boundary AND the unconditional
+            # end-of-training save, so it saves the same
+            # lora_weights_step_01000.safetensors twice under the same
+            # filename, and the second save's keep_last_n=1 cleanup deletes
+            # the file it just re-wrote (confirmed via the real training
+            # log: "Lora weights for step 1000 saved" followed immediately
+            # by "Removed old checkpoint: ...lora_weights_step_01000...").
+            # This is how a fully successful training run still ended with
+            # zero recoverable output. 1001 is not a multiple of 250, so
+            # the periodic save (step 1000) and the final save (step 1001)
+            # land on genuinely different filenames and never collide.
+            f"  steps: 1001\n"
             f"  batch_size: 1\n"
             # Confirmed live 2026-08-21: the base checkpoint is a 22B-param
             # transformer — even training LoRA-only (base weights frozen),
