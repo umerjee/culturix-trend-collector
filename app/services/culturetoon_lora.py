@@ -92,7 +92,18 @@ from urllib.parse import urlparse
 logger = logging.getLogger("culturix.services.culturetoon_lora")
 
 MIN_LORA_TRAINING_IMAGES = 10
-_TRAINING_TIMEOUT_SECONDS = 3600  # ~1hr ceiling for one character's LoRA run
+# Confirmed live 2026-08-23: a real, previously fully-successful training
+# run's own train.py process alone (from "Starting training..." to the
+# final checkpoint) took ~70+ minutes — already close to the old 3600s
+# (1hr) ceiling with zero margin. A later retry (1001 steps, one more than
+# before) then genuinely exceeded 3600s, and the poll loop's own timeout
+# path terminated the pod via the normal cleanup flow while training was
+# still legitimately running — an entire near-complete run lost to an
+# overly tight ceiling, not a real failure. There's no cost to a generous
+# timeout here (the poll loop returns as soon as the process actually
+# finishes, whatever that takes), only cost to cutting a real job short,
+# so this errs well past the largest duration observed so far.
+_TRAINING_TIMEOUT_SECONDS = 7200  # ~2hr ceiling for one character's LoRA run
 _DOWNLOAD_TIMEOUT_SECONDS = 1800  # training pod fetches its own models fresh every run
 # Where the LoRA lands on the Network Volume, relative to the volume root —
 # same directory ComfyUI's LoraLoaderModelOnly node reads from
