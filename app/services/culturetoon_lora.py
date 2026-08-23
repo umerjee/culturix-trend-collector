@@ -86,6 +86,7 @@ import logging
 import os
 import shlex
 import socket
+import time
 from urllib.parse import urlparse
 
 logger = logging.getLogger("culturix.services.culturetoon_lora")
@@ -532,8 +533,25 @@ def train_character_lora(variant, session) -> None:
         logger.exception("LoRA training failed unexpectedly for variant %s", variant.id)
         raise LoraTrainingError(str(exc)) from exc
     finally:
+        # Confirmed live 2026-08-21: a single terminate_pod() call left a
+        # training pod running (and billing) for over an hour after a
+        # transient local network blip made this one attempt fail (DNS
+        # resolution error) — the exact class of failure most likely to
+        # transiently break a single call, right when correctness matters
+        # most. Retry a few times before giving up and logging loudly.
         if pod_id:
-            runpod_client.terminate_pod(pod_id)
+            for attempt in range(3):
+                try:
+                    runpod_client.terminate_pod(pod_id)
+                    break
+                except Exception:
+                    if attempt == 2:
+                        logger.exception(
+                            "Failed to terminate RunPod training pod %s after 3 attempts — "
+                            "check the RunPod console manually, it may still be billing", pod_id,
+                        )
+                    else:
+                        time.sleep(5)
 
 
 def run_lora_training(variant_id) -> None:
