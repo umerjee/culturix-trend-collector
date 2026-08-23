@@ -72,11 +72,34 @@ def _fake_run_remote_command(fail_on_substring=None, fail_result=(1, "", "boom")
     except one identified by a substring of the command (e.g. "ffmpeg" or
     "process_dataset.py"), and always answers the final "find the trained
     checkpoint" `ls` lookup with a realistic path so later steps (SFTP
-    download, S3 push) have something to act on."""
+    download, S3 push) have something to act on.
+
+    Training itself (scripts/train.py) runs backgrounded (nohup) and is
+    polled via separate kill -0/status-file/log-tail commands rather than
+    one blocking call — see _run_training_backgrounded — so a simulated
+    training failure (fail_on_substring="scripts/train.py") surfaces
+    through THOSE commands, not the script-launch commands (which always
+    succeed instantly; they just start a background process). The launch
+    script's heredoc body embeds the real train_cmd text verbatim
+    (including the substring "scripts/train.py"), so heredoc writes are
+    special-cased to always succeed regardless of fail_on_substring —
+    otherwise a "scripts/train.py" failure would be misattributed to
+    writing the launch script instead of the simulated training run."""
     def fake(host, port, command, timeout_seconds=1800):
+        first_line = command.split("\n", 1)[0].strip()
+        if first_line.startswith("cat > "):
+            return (0, "", "")
+        if first_line.endswith("& echo $!"):
+            return (0, "12345\n", "")
+        if first_line.startswith("kill -0"):
+            return (0, "DEAD\n", "")
+        if first_line.startswith("cat ") and "train.status" in first_line:
+            return (0, "EXIT:1\n" if fail_on_substring == "scripts/train.py" else "EXIT:0\n", "")
+        if first_line.startswith("tail") and "train.log" in first_line:
+            return (0, fail_result[2] if fail_on_substring == "scripts/train.py" else "", "")
         if fail_on_substring and fail_on_substring in command:
             return fail_result
-        if command.strip().startswith("ls -1") and "lora_weights_step_" in command:
+        if first_line.startswith("ls -1") and "lora_weights_step_" in first_line:
             return (0, f"{_FOUND_CHECKPOINT}\n", "")
         return (0, "", "")
     return fake
@@ -394,10 +417,12 @@ class TestTrainCharacterLora:
         mocker.patch("app.media.runpod_client.terminate_pod")
         mocker.patch("app.media.runpod_client.wait_for_ssh_ready", return_value=("1.2.3.4", 2222))
 
+        base_fake = _fake_run_remote_command()
+
         def fake_run(host, port, command, timeout_seconds=1800):
             if command.strip().startswith("ls -1") and "lora_weights_step_" in command:
                 return (0, "", "")  # nothing found
-            return (0, "", "")
+            return base_fake(host, port, command, timeout_seconds)
         mocker.patch("app.media.runpod_ssh.run_remote_command", side_effect=fake_run)
         variant = self._training_variant(mocker)
 

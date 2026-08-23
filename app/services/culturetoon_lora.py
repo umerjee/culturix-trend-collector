@@ -302,6 +302,67 @@ def _run(runpod_ssh, host, port, command, timeout_seconds, error_prefix):
         raise LoraTrainingError(f"{error_prefix}: {combined[-2000:]}")
 
 
+_TRAINING_POLL_INTERVAL_SECONDS = 30
+
+
+def _run_training_backgrounded(runpod_ssh, host, port, q, work_dir, train_cmd, timeout_seconds):
+    """Launches train_cmd detached (nohup) and polls its liveness with short,
+    separate SSH connections instead of blocking on one connection held open
+    for the whole run. Confirmed live 2026-08-23, twice, with no concurrent
+    SSH activity either time: a single exec_command channel held open across
+    a ~70-90 minute silent training run (ltx-trainer produces no stdout
+    between "Starting training..." and the final checkpoint, since
+    intermediate checkpointing was disabled) got forcibly closed partway
+    through — the remote process kept running and completed successfully
+    moments later BOTH times, but the whole run's result was lost anyway
+    because reading it depended on that one connection surviving. Backgrounding
+    the process and polling with fresh short-lived connections means no
+    single connection needs to survive the full run — if one poll's
+    connection has an issue, the training process itself is entirely
+    unaffected and the next poll just reconnects."""
+    log_path = f"{work_dir}/train.log"
+    status_path = f"{work_dir}/train.status"
+    script_path = f"{work_dir}/run_training.sh"
+    script_content = f"{train_cmd}\necho EXIT:$? > {status_path}\n"
+    _run(runpod_ssh, host, port,
+         f"cat > {q(script_path)} << 'CULTURIX_EOF'\n{script_content}\nCULTURIX_EOF",
+         30, "Failed to write the training launch script on the training pod")
+
+    launch_cmd = f"nohup bash {q(script_path)} > {q(log_path)} 2>&1 & echo $!"
+    exit_code, stdout, stderr = runpod_ssh.run_remote_command(host, port, launch_cmd, timeout_seconds=30)
+    pid = (stdout or "").strip()
+    if exit_code != 0 or not pid.isdigit():
+        raise LoraTrainingError(f"Failed to launch backgrounded training process: {(stderr or stdout)[-1000:]}")
+    logger.info("Training launched on pod as PID %s, polling every %ds", pid, _TRAINING_POLL_INTERVAL_SECONDS)
+
+    # Check first, then sleep only if still alive — so a process that's
+    # already finished by the time we get here (or a test double that
+    # answers DEAD immediately) doesn't pay a full poll interval's wait
+    # for nothing.
+    deadline = time.time() + timeout_seconds
+    while True:
+        _, check_out, _ = runpod_ssh.run_remote_command(
+            host, port, f"kill -0 {pid} 2>/dev/null && echo ALIVE || echo DEAD", timeout_seconds=20,
+        )
+        if (check_out or "").strip() == "DEAD":
+            break
+        if time.time() >= deadline:
+            raise LoraTrainingError(
+                f"Training did not finish within {timeout_seconds}s (pid {pid} may still be running on the pod — "
+                "check the RunPod console manually before assuming it's stuck)"
+            )
+        time.sleep(_TRAINING_POLL_INTERVAL_SECONDS)
+
+    _, status_out, _ = runpod_ssh.run_remote_command(host, port, f"cat {q(status_path)} 2>/dev/null", timeout_seconds=20)
+    _, log_out, _ = runpod_ssh.run_remote_command(host, port, f"tail -c 4000 {q(log_path)} 2>/dev/null", timeout_seconds=20)
+    status_out = (status_out or "").strip()
+    if not status_out.startswith("EXIT:"):
+        raise LoraTrainingError(f"Training process exited but no status file was found — log tail: {(log_out or '')[-2000:]}")
+    train_exit_code = int(status_out.split(":", 1)[1].strip() or "1")
+    if train_exit_code != 0:
+        raise LoraTrainingError(f"ltx-trainer training run failed (exit {train_exit_code}): {(log_out or '')[-2000:]}")
+
+
 def train_character_lora(variant, session) -> None:
     """Synchronous end-to-end training run: curates the training set
     (curate_training_images() — Culturix's own already-generated Expression
@@ -473,6 +534,19 @@ def train_character_lora(variant, session) -> None:
             # confirmed available in ltx_trainer.config.OptimizationConfig
             # by reading it directly, not assumed.
             f"  enable_gradient_checkpointing: true\n"
+            # Confirmed live 2026-08-23 by reading Lightricks' own example
+            # config (configs/t2v_lora.yaml): their own default demo sets
+            # checkpoints.interval: 250 — our config never set this,
+            # silently taking CheckpointsConfig's own most fragile default
+            # (None = intermediate checkpoints disabled entirely), which is
+            # exactly why every connection interruption this session lost
+            # the ENTIRE run instead of a partial one. keep_last_n: 1 (the
+            # library default) is fine — this is a safety net against
+            # losing all progress, not a full resume feature (each retry
+            # still starts a fresh pod/directory), but it costs nothing and
+            # matches the officially documented default.
+            f"checkpoints:\n"
+            f"  interval: 250\n"
             f"data:\n"
             f"  preprocessed_data_root: \"{precomputed_dir}\"\n"
         )
@@ -485,7 +559,7 @@ def train_character_lora(variant, session) -> None:
              30, "Failed to write training config on the training pod")
 
         train_cmd = f"cd /workspace/LTX-2/packages/ltx-trainer && python scripts/train.py {q(config_path)}"
-        _run(runpod_ssh, host, port, train_cmd, _TRAINING_TIMEOUT_SECONDS, "ltx-trainer training run failed")
+        _run_training_backgrounded(runpod_ssh, host, port, q, work_dir, train_cmd, _TRAINING_TIMEOUT_SECONDS)
 
         # The final checkpoint's exact step-count suffix isn't known ahead
         # of time — find the highest-numbered one ltx-trainer wrote. The
