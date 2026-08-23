@@ -94,3 +94,18 @@ def verify_exists(key: str) -> bool:
         return True
     except ClientError:
         return False
+
+
+def presigned_get_url(key: str, expires_in: int = 3600) -> str:
+    """A time-limited, read-only signed URL for `key` — lets an untrusted
+    ephemeral pod `curl` a large cached file (e.g. a training checkpoint)
+    directly, the same way it already curls HuggingFace/storage URLs
+    elsewhere in this codebase, without ever putting real S3 credentials
+    on that machine. Used to cache large training model files on the
+    Network Volume so repeat LoRA training runs don't re-download the
+    same ~tens-of-GB checkpoint/text-encoder from HuggingFace every time
+    (see culturetoon_lora.py's checkpoint-caching logic)."""
+    client = _client()
+    return client.generate_presigned_url(
+        "get_object", Params={"Bucket": os.environ["RUNPOD_S3_BUCKET"], "Key": key}, ExpiresIn=expires_in,
+    )

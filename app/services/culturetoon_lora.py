@@ -114,6 +114,14 @@ _RESOLUTION_BUCKET = "704x1280x49"  # vertical ~9:16, ~2s at 24fps — nearest 3
 _CHECKPOINT_REPO = os.getenv("LTX_TRAINING_CHECKPOINT_REPO", "Lightricks/LTX-2.3")
 _CHECKPOINT_FILE = os.getenv("LTX_TRAINING_CHECKPOINT_FILE", "ltx-2.3-22b-dev.safetensors")
 _TEXT_ENCODER_REPO = os.getenv("LTX_TRAINING_TEXT_ENCODER_REPO", "google/gemma-3-12b-it")
+# Network Volume cache keys for the above — see the caching logic in
+# train_character_lora for why (repeat runs re-downloading the same
+# ~30-40GB+ from HuggingFace on an expensive GPU-hour pod, for a phase
+# that's purely network/disk-bound). Keyed by repo name so a changed
+# LTX_TRAINING_*_REPO env var naturally misses the old cache instead of
+# silently serving a stale/wrong model.
+_CHECKPOINT_CACHE_KEY = f"training-cache/checkpoint/{_CHECKPOINT_REPO.replace('/', '_')}/{_CHECKPOINT_FILE}"
+_TEXT_ENCODER_CACHE_KEY = f"training-cache/text_encoder/{_TEXT_ENCODER_REPO.replace('/', '_')}.tar"
 # google/gemma-3-12b-it is a gated HuggingFace model — downloading it needs
 # an authenticated token whose account has accepted Gemma's license, not
 # just a repo name. Read here (not baked into the training image) so the
@@ -445,17 +453,46 @@ def train_character_lora(variant, session) -> None:
         xet_env = "HF_HUB_DISABLE_XET=1 HF_HUB_DISABLE_PROGRESS_BARS=1 "
 
         # This pod's own model copy — the Network Volume isn't mounted here.
+        # Confirmed live 2026-08-23: this ~30-40GB+ checkpoint (and the text
+        # encoder below) was getting re-downloaded from HuggingFace from
+        # scratch on EVERY run, on an expensive GPU-hour pod, for a phase
+        # that's purely network/disk-bound and doesn't need the GPU at all
+        # — real, compounding cost across every run and every retry.
+        # Caching a copy on the Network Volume (checked via a cheap HEAD
+        # request, fetched via a time-limited presigned URL — no S3
+        # credentials ever touch this less-trusted pod, same trust level as
+        # any other `curl <url>` already in this file) lets every run AFTER
+        # the first skip HuggingFace entirely. Falls back to today's
+        # unmodified hf download if the cache doesn't exist yet (the very
+        # first run, or a different checkpoint/text-encoder configured via
+        # the LTX_TRAINING_* env vars). Cache population itself isn't done
+        # here — a one-time backfill, not a per-run concern.
         checkpoint_path = f"{models_dir}/checkpoint/{_CHECKPOINT_FILE}"
-        _run(runpod_ssh, host, port,
-             f"{xet_env}hf download {q(_CHECKPOINT_REPO)} {q(_CHECKPOINT_FILE)} --local-dir {q(models_dir + '/checkpoint')}",
-             _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training checkpoint")
+        if runpod_s3.verify_exists(_CHECKPOINT_CACHE_KEY):
+            checkpoint_url = runpod_s3.presigned_get_url(_CHECKPOINT_CACHE_KEY)
+            _run(runpod_ssh, host, port,
+                 f"curl -sL --fail {q(checkpoint_url)} -o {q(checkpoint_path)}",
+                 _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the cached training checkpoint from the Network Volume")
+        else:
+            _run(runpod_ssh, host, port,
+                 f"{xet_env}hf download {q(_CHECKPOINT_REPO)} {q(_CHECKPOINT_FILE)} --local-dir {q(models_dir + '/checkpoint')}",
+                 _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training checkpoint")
+
         text_encoder_dir = f"{models_dir}/text_encoder"
-        # google/gemma-3-12b-it is gated — this download will fail with an
-        # authentication error if HF_TOKEN isn't set to a token whose
-        # account has accepted Gemma's license on huggingface.co.
-        _run(runpod_ssh, host, port,
-             f"{xet_env}{hf_env}hf download {q(_TEXT_ENCODER_REPO)} --local-dir {q(text_encoder_dir)}",
-             _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training text encoder (is HF_TOKEN set and Gemma's license accepted on huggingface.co for that account?)")
+        if runpod_s3.verify_exists(_TEXT_ENCODER_CACHE_KEY):
+            text_encoder_url = runpod_s3.presigned_get_url(_TEXT_ENCODER_CACHE_KEY)
+            text_encoder_tar = f"{models_dir}/text_encoder.tar"
+            _run(runpod_ssh, host, port,
+                 f"curl -sL --fail {q(text_encoder_url)} -o {q(text_encoder_tar)} && "
+                 f"mkdir -p {q(text_encoder_dir)} && tar -xf {q(text_encoder_tar)} -C {q(text_encoder_dir)}",
+                 _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download/extract the cached text encoder from the Network Volume")
+        else:
+            # google/gemma-3-12b-it is gated — this download will fail with an
+            # authentication error if HF_TOKEN isn't set to a token whose
+            # account has accepted Gemma's license on huggingface.co.
+            _run(runpod_ssh, host, port,
+                 f"{xet_env}{hf_env}hf download {q(_TEXT_ENCODER_REPO)} --local-dir {q(text_encoder_dir)}",
+                 _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training text encoder (is HF_TOKEN set and Gemma's license accepted on huggingface.co for that account?)")
 
         # Stage each reference image, then loop it into a short static clip
         # — see module docstring's open question #1 on why. Each clip keeps

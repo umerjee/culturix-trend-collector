@@ -274,7 +274,16 @@ class TestTrainCharacterLora:
         )
         mocker.patch("app.media.runpod_ssh.download_file", return_value=b"lora-bytes")
         mock_upload = mocker.patch("app.media.runpod_s3.upload_lora")
-        mocker.patch("app.media.runpod_s3.verify_exists", return_value=True)
+        # verify_exists is called for two unrelated things: the checkpoint/
+        # text-encoder Network Volume CACHE check (must be False here, so
+        # tests exercise the already-covered `hf download` fallback path
+        # rather than the cache-hit path, which would need a real
+        # presigned_get_url call) and the final trained-LoRA upload
+        # confirmation (must be True, as before).
+        mocker.patch(
+            "app.media.runpod_s3.verify_exists",
+            side_effect=lambda key: key.endswith(".safetensors") and "training-cache" not in key,
+        )
         return mock_terminate, mock_run, mock_upload
 
     def _training_variant(self, mocker, captioned=True):
@@ -416,6 +425,7 @@ class TestTrainCharacterLora:
         mocker.patch("app.media.runpod_client.create_training_pod", return_value="pod-123")
         mocker.patch("app.media.runpod_client.terminate_pod")
         mocker.patch("app.media.runpod_client.wait_for_ssh_ready", return_value=("1.2.3.4", 2222))
+        mocker.patch("app.media.runpod_s3.verify_exists", return_value=False)  # no cache hit
 
         base_fake = _fake_run_remote_command()
 
