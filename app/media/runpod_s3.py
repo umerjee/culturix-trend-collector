@@ -97,7 +97,20 @@ def verify_exists(key: str) -> bool:
 
 
 def presigned_get_url(key: str, expires_in: int = 3600) -> str:
-    """A time-limited, read-only signed URL for `key` — lets an untrusted
+    """DO NOT USE against RunPod's own S3-compatible API — confirmed live
+    2026-08-24: RunPod's backend rejects every presigned GET URL this
+    generates with `401 AccessDenied: missing Authorization header`, even
+    with signature_version explicitly set to s3v4 and a correctly-formed
+    SigV4 query-string signature (`X-Amz-Algorithm=AWS4-HMAC-SHA256` and
+    all). This isn't a boto3 misconfiguration — RunPod's S3-compatible
+    endpoint apparently only accepts header-based Authorization, not the
+    query-string presigned-URL auth scheme real AWS S3 supports. Left here
+    only in case a future, real S3-compatible target supports it properly
+    — culturetoon_lora.py's checkpoint/text-encoder cache download now
+    uses credential-injected boto3 running ON the pod instead (see
+    _download_from_cache in that module).
+
+    A time-limited, read-only signed URL for `key` — lets an untrusted
     ephemeral pod `curl` a large cached file (e.g. a training checkpoint)
     directly, the same way it already curls HuggingFace/storage URLs
     elsewhere in this codebase, without ever putting real S3 credentials

@@ -417,6 +417,59 @@ def _run_backgrounded(runpod_ssh, host, port, q, work_dir, command, timeout_seco
     return log_out
 
 
+_S3_ENV_VARS = (
+    "RUNPOD_S3_ACCESS_KEY_ID", "RUNPOD_S3_SECRET_ACCESS_KEY",
+    "RUNPOD_S3_ENDPOINT_URL", "RUNPOD_S3_REGION", "RUNPOD_S3_BUCKET",
+)
+
+
+def _download_from_cache(runpod_ssh, host, port, q, work_dir, key, local_path, label):
+    """Downloads `key` from the Network Volume straight to `local_path` on
+    the pod, via credential-injected boto3 running ON the pod — NOT a
+    presigned URL. Confirmed live 2026-08-24: RunPod's S3-compatible API
+    rejects every presigned GET URL boto3 can generate with `401
+    AccessDenied: missing Authorization header`, even with a correctly
+    SigV4-signed query string — it only accepts header-based auth, not
+    real S3's query-string presigned-URL scheme (see
+    runpod_s3.presigned_get_url's docstring). This does put real,
+    read-only S3 credentials on the ephemeral training pod, which the
+    original presigned-URL design deliberately avoided — an acceptable
+    relaxation here since (a) it's the only way this actually works
+    against RunPod's backend, (b) these credentials only grant read
+    access to a shared, non-sensitive model checkpoint, not any user
+    data, and (c) the pod is terminated right after this function
+    returns either way. Downloads (unlike RunPod's own broken multipart
+    uploads) use plain ranged GET requests under the hood, a much
+    simpler and more universally-supported mechanism, via boto3's own
+    managed transfer (multi-threaded, resumable per-chunk internally)."""
+    missing = [var for var in _S3_ENV_VARS if not os.environ.get(var)]
+    if missing:
+        raise LoraTrainingError(f"Cannot download cached {label}: missing env var(s) {', '.join(missing)}")
+
+    download_script = f"""
+import boto3
+s3 = boto3.client(
+    "s3",
+    aws_access_key_id={os.environ['RUNPOD_S3_ACCESS_KEY_ID']!r},
+    aws_secret_access_key={os.environ['RUNPOD_S3_SECRET_ACCESS_KEY']!r},
+    endpoint_url={os.environ['RUNPOD_S3_ENDPOINT_URL']!r},
+    region_name={os.environ['RUNPOD_S3_REGION']!r},
+)
+s3.download_file({os.environ['RUNPOD_S3_BUCKET']!r}, {key!r}, {local_path!r})
+"""
+    script_path = f"{work_dir}/{label}_download.py"
+    _run(runpod_ssh, host, port,
+         f"cat > {q(script_path)} << 'CULTURIX_EOF'\n{download_script}\nCULTURIX_EOF",
+         30, f"Failed to write the {label} download script on the training pod")
+    _run(runpod_ssh, host, port, "pip install -q boto3", 300, "Failed to install boto3 on the training pod")
+    _run_backgrounded(
+        runpod_ssh, host, port, q, work_dir,
+        f"python3 -u {q(script_path)}",
+        _DOWNLOAD_TIMEOUT_SECONDS, label,
+        f"Failed to download the cached {label} from the Network Volume",
+    )
+
+
 def train_character_lora(variant, session) -> None:
     """Synchronous end-to-end training run: curates the training set
     (curate_training_images() — Culturix's own already-generated Expression
@@ -505,29 +558,15 @@ def train_character_lora(variant, session) -> None:
         # that's purely network/disk-bound and doesn't need the GPU at all
         # — real, compounding cost across every run and every retry.
         # Caching a copy on the Network Volume (checked via a cheap HEAD
-        # request, fetched via a time-limited presigned URL — no S3
-        # credentials ever touch this less-trusted pod, same trust level as
-        # any other `curl <url>` already in this file) lets every run AFTER
-        # the first skip HuggingFace entirely. Falls back to today's
-        # unmodified hf download if the cache doesn't exist yet (the very
-        # first run, or a different checkpoint/text-encoder configured via
-        # the LTX_TRAINING_* env vars). Cache population itself isn't done
-        # here — a one-time backfill, not a per-run concern.
-        # Confirmed live 2026-08-24: this cache-hit curl download is a
-        # single blocking exec_command for a file that can be 40GB+ — the
-        # exact same fragile pattern already fixed for training. A local
-        # connection blip mid-transfer lost the whole attempt with an
-        # empty error message even though the underlying transfer would
-        # likely have kept going. Backgrounding + polling avoids that.
+        # request) lets every run AFTER the first skip HuggingFace entirely.
+        # Falls back to today's unmodified hf download if the cache doesn't
+        # exist yet (the very first run, or a different checkpoint/text-
+        # encoder configured via the LTX_TRAINING_* env vars). Cache
+        # population itself isn't done here — a one-time backfill, not a
+        # per-run concern.
         checkpoint_path = f"{models_dir}/checkpoint/{_CHECKPOINT_FILE}"
         if runpod_s3.verify_exists(_CHECKPOINT_CACHE_KEY):
-            checkpoint_url = runpod_s3.presigned_get_url(_CHECKPOINT_CACHE_KEY)
-            _run_backgrounded(
-                runpod_ssh, host, port, q, work_dir,
-                f"curl -sL --fail {q(checkpoint_url)} -o {q(checkpoint_path)}",
-                _DOWNLOAD_TIMEOUT_SECONDS, "checkpoint_cache_dl",
-                "Failed to download the cached training checkpoint from the Network Volume",
-            )
+            _download_from_cache(runpod_ssh, host, port, q, work_dir, _CHECKPOINT_CACHE_KEY, checkpoint_path, "checkpoint_cache_dl")
         else:
             _run(runpod_ssh, host, port,
                  f"{xet_env}hf download {q(_CHECKPOINT_REPO)} {q(_CHECKPOINT_FILE)} --local-dir {q(models_dir + '/checkpoint')}",
@@ -535,15 +574,11 @@ def train_character_lora(variant, session) -> None:
 
         text_encoder_dir = f"{models_dir}/text_encoder"
         if runpod_s3.verify_exists(_TEXT_ENCODER_CACHE_KEY):
-            text_encoder_url = runpod_s3.presigned_get_url(_TEXT_ENCODER_CACHE_KEY)
             text_encoder_tar = f"{models_dir}/text_encoder.tar"
-            _run_backgrounded(
-                runpod_ssh, host, port, q, work_dir,
-                f"curl -sL --fail {q(text_encoder_url)} -o {q(text_encoder_tar)} && "
-                f"mkdir -p {q(text_encoder_dir)} && tar -xf {q(text_encoder_tar)} -C {q(text_encoder_dir)}",
-                _DOWNLOAD_TIMEOUT_SECONDS, "text_encoder_cache_dl",
-                "Failed to download/extract the cached text encoder from the Network Volume",
-            )
+            _download_from_cache(runpod_ssh, host, port, q, work_dir, _TEXT_ENCODER_CACHE_KEY, text_encoder_tar, "text_encoder_cache_dl")
+            _run(runpod_ssh, host, port,
+                 f"mkdir -p {q(text_encoder_dir)} && tar -xf {q(text_encoder_tar)} -C {q(text_encoder_dir)}",
+                 300, "Failed to extract the cached text encoder tar")
         else:
             # google/gemma-3-12b-it is gated — this download will fail with an
             # authentication error if HF_TOKEN isn't set to a token whose
