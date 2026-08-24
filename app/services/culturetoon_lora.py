@@ -353,38 +353,40 @@ def _run(runpod_ssh, host, port, command, timeout_seconds, error_prefix):
         raise LoraTrainingError(f"{error_prefix}: {combined[-2000:]}")
 
 
-_TRAINING_POLL_INTERVAL_SECONDS = 30
+_BACKGROUNDED_POLL_INTERVAL_SECONDS = 30
 
 
-def _run_training_backgrounded(runpod_ssh, host, port, q, work_dir, train_cmd, timeout_seconds):
-    """Launches train_cmd detached (nohup) and polls its liveness with short,
-    separate SSH connections instead of blocking on one connection held open
-    for the whole run. Confirmed live 2026-08-23, twice, with no concurrent
-    SSH activity either time: a single exec_command channel held open across
-    a ~70-90 minute silent training run (ltx-trainer produces no stdout
-    between "Starting training..." and the final checkpoint, since
-    intermediate checkpointing was disabled) got forcibly closed partway
-    through — the remote process kept running and completed successfully
-    moments later BOTH times, but the whole run's result was lost anyway
-    because reading it depended on that one connection surviving. Backgrounding
-    the process and polling with fresh short-lived connections means no
-    single connection needs to survive the full run — if one poll's
-    connection has an issue, the training process itself is entirely
-    unaffected and the next poll just reconnects."""
-    log_path = f"{work_dir}/train.log"
-    status_path = f"{work_dir}/train.status"
-    script_path = f"{work_dir}/run_training.sh"
-    script_content = f"{train_cmd}\necho EXIT:$? > {status_path}\n"
+def _run_backgrounded(runpod_ssh, host, port, q, work_dir, command, timeout_seconds, label, error_prefix):
+    """Launches `command` detached (nohup) and polls its liveness with
+    short, separate SSH connections instead of blocking on one connection
+    held open for the whole run. Confirmed live 2026-08-23/24, repeatedly,
+    with no concurrent SSH activity: a single exec_command channel held
+    open across a long-running, mostly-silent command (training, or a
+    large curl/S3 transfer) got forcibly closed partway through — the
+    remote process kept running and completed successfully moments later
+    every time, but the result was lost anyway because reading it depended
+    on that one connection surviving. Backgrounding the process and
+    polling with fresh short-lived connections means no single connection
+    needs to survive the full run — if one poll's connection has an
+    issue, the remote process itself is entirely unaffected and the next
+    poll just reconnects. `label` namespaces the log/status/script files
+    so concurrent uses (e.g. checkpoint download vs. training) don't
+    collide. Returns the log output on success (exit 0); raises
+    LoraTrainingError otherwise."""
+    log_path = f"{work_dir}/{label}.log"
+    status_path = f"{work_dir}/{label}.status"
+    script_path = f"{work_dir}/{label}.sh"
+    script_content = f"{command}\necho EXIT:$? > {status_path}\n"
     _run(runpod_ssh, host, port,
          f"cat > {q(script_path)} << 'CULTURIX_EOF'\n{script_content}\nCULTURIX_EOF",
-         30, "Failed to write the training launch script on the training pod")
+         30, f"Failed to write the {label} launch script on the training pod")
 
     launch_cmd = f"nohup bash {q(script_path)} > {q(log_path)} 2>&1 & echo $!"
     exit_code, stdout, stderr = runpod_ssh.run_remote_command(host, port, launch_cmd, timeout_seconds=30)
     pid = (stdout or "").strip()
     if exit_code != 0 or not pid.isdigit():
-        raise LoraTrainingError(f"Failed to launch backgrounded training process: {(stderr or stdout)[-1000:]}")
-    logger.info("Training launched on pod as PID %s, polling every %ds", pid, _TRAINING_POLL_INTERVAL_SECONDS)
+        raise LoraTrainingError(f"Failed to launch backgrounded {label}: {(stderr or stdout)[-1000:]}")
+    logger.info("%s launched on pod as PID %s, polling every %ds", label, pid, _BACKGROUNDED_POLL_INTERVAL_SECONDS)
 
     # Check first, then sleep only if still alive — so a process that's
     # already finished by the time we get here (or a test double that
@@ -399,19 +401,20 @@ def _run_training_backgrounded(runpod_ssh, host, port, q, work_dir, train_cmd, t
             break
         if time.time() >= deadline:
             raise LoraTrainingError(
-                f"Training did not finish within {timeout_seconds}s (pid {pid} may still be running on the pod — "
+                f"{label} did not finish within {timeout_seconds}s (pid {pid} may still be running on the pod — "
                 "check the RunPod console manually before assuming it's stuck)"
             )
-        time.sleep(_TRAINING_POLL_INTERVAL_SECONDS)
+        time.sleep(_BACKGROUNDED_POLL_INTERVAL_SECONDS)
 
     _, status_out, _ = runpod_ssh.run_remote_command(host, port, f"cat {q(status_path)} 2>/dev/null", timeout_seconds=20)
     _, log_out, _ = runpod_ssh.run_remote_command(host, port, f"tail -c 4000 {q(log_path)} 2>/dev/null", timeout_seconds=20)
     status_out = (status_out or "").strip()
     if not status_out.startswith("EXIT:"):
-        raise LoraTrainingError(f"Training process exited but no status file was found — log tail: {(log_out or '')[-2000:]}")
-    train_exit_code = int(status_out.split(":", 1)[1].strip() or "1")
-    if train_exit_code != 0:
-        raise LoraTrainingError(f"ltx-trainer training run failed (exit {train_exit_code}): {(log_out or '')[-2000:]}")
+        raise LoraTrainingError(f"{label} exited but no status file was found — log tail: {(log_out or '')[-2000:]}")
+    remote_exit_code = int(status_out.split(":", 1)[1].strip() or "1")
+    if remote_exit_code != 0:
+        raise LoraTrainingError(f"{error_prefix} (exit {remote_exit_code}): {(log_out or '')[-2000:]}")
+    return log_out
 
 
 def train_character_lora(variant, session) -> None:
@@ -510,12 +513,21 @@ def train_character_lora(variant, session) -> None:
         # first run, or a different checkpoint/text-encoder configured via
         # the LTX_TRAINING_* env vars). Cache population itself isn't done
         # here — a one-time backfill, not a per-run concern.
+        # Confirmed live 2026-08-24: this cache-hit curl download is a
+        # single blocking exec_command for a file that can be 40GB+ — the
+        # exact same fragile pattern already fixed for training. A local
+        # connection blip mid-transfer lost the whole attempt with an
+        # empty error message even though the underlying transfer would
+        # likely have kept going. Backgrounding + polling avoids that.
         checkpoint_path = f"{models_dir}/checkpoint/{_CHECKPOINT_FILE}"
         if runpod_s3.verify_exists(_CHECKPOINT_CACHE_KEY):
             checkpoint_url = runpod_s3.presigned_get_url(_CHECKPOINT_CACHE_KEY)
-            _run(runpod_ssh, host, port,
-                 f"curl -sL --fail {q(checkpoint_url)} -o {q(checkpoint_path)}",
-                 _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the cached training checkpoint from the Network Volume")
+            _run_backgrounded(
+                runpod_ssh, host, port, q, work_dir,
+                f"curl -sL --fail {q(checkpoint_url)} -o {q(checkpoint_path)}",
+                _DOWNLOAD_TIMEOUT_SECONDS, "checkpoint_cache_dl",
+                "Failed to download the cached training checkpoint from the Network Volume",
+            )
         else:
             _run(runpod_ssh, host, port,
                  f"{xet_env}hf download {q(_CHECKPOINT_REPO)} {q(_CHECKPOINT_FILE)} --local-dir {q(models_dir + '/checkpoint')}",
@@ -525,10 +537,13 @@ def train_character_lora(variant, session) -> None:
         if runpod_s3.verify_exists(_TEXT_ENCODER_CACHE_KEY):
             text_encoder_url = runpod_s3.presigned_get_url(_TEXT_ENCODER_CACHE_KEY)
             text_encoder_tar = f"{models_dir}/text_encoder.tar"
-            _run(runpod_ssh, host, port,
-                 f"curl -sL --fail {q(text_encoder_url)} -o {q(text_encoder_tar)} && "
-                 f"mkdir -p {q(text_encoder_dir)} && tar -xf {q(text_encoder_tar)} -C {q(text_encoder_dir)}",
-                 _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download/extract the cached text encoder from the Network Volume")
+            _run_backgrounded(
+                runpod_ssh, host, port, q, work_dir,
+                f"curl -sL --fail {q(text_encoder_url)} -o {q(text_encoder_tar)} && "
+                f"mkdir -p {q(text_encoder_dir)} && tar -xf {q(text_encoder_tar)} -C {q(text_encoder_dir)}",
+                _DOWNLOAD_TIMEOUT_SECONDS, "text_encoder_cache_dl",
+                "Failed to download/extract the cached text encoder from the Network Volume",
+            )
         else:
             # google/gemma-3-12b-it is gated — this download will fail with an
             # authentication error if HF_TOKEN isn't set to a token whose
@@ -653,7 +668,7 @@ def train_character_lora(variant, session) -> None:
              30, "Failed to write training config on the training pod")
 
         train_cmd = f"cd /workspace/LTX-2/packages/ltx-trainer && python scripts/train.py {q(config_path)}"
-        _run_training_backgrounded(runpod_ssh, host, port, q, work_dir, train_cmd, _TRAINING_TIMEOUT_SECONDS)
+        _run_backgrounded(runpod_ssh, host, port, q, work_dir, train_cmd, _TRAINING_TIMEOUT_SECONDS, "train", "ltx-trainer training run failed")
 
         # The final checkpoint's exact step-count suffix isn't known ahead
         # of time — find the highest-numbered one ltx-trainer wrote. The
