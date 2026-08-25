@@ -82,15 +82,25 @@ def run_remote_command(host: str, port: int, command: str, timeout_seconds: int 
         client.close()
 
 
-def download_file(host: str, port: int, remote_path: str) -> bytes:
+def download_file(host: str, port: int, remote_path: str, timeout_seconds: int = 300) -> bytes:
     """Fetches a file from the pod via SFTP — used for retrieving trained
     LoRA files (can be tens-hundreds of MB), where piping through
     exec_command's stdout (e.g. base64-encoded) would be both slower and
-    memory-heavier than a proper file transfer."""
+    memory-heavier than a proper file transfer.
+
+    Confirmed live 2026-08-25: with no timeout set, a half-dead connection
+    (the underlying TCP session goes silent instead of cleanly resetting —
+    a known characteristic of connections routed through a proxy/gateway
+    layer, which is how RunPod's Pod SSH access works) made f.read() block
+    forever instead of raising, so the caller's own retry-with-backoff
+    logic never got a chance to run — it can't retry an exception that
+    never gets thrown. Setting the channel's socket timeout makes a truly
+    dead connection fail promptly instead of hanging indefinitely."""
     client = _connect(host, port)
     try:
         sftp = client.open_sftp()
         try:
+            sftp.get_channel().settimeout(timeout_seconds)
             with sftp.open(remote_path, "rb") as f:
                 return f.read()
         finally:
