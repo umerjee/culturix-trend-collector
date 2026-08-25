@@ -48,7 +48,9 @@ _DEFAULT_ALLOCATION_BACKOFF_SECONDS = 45
 
 
 class RunPodServerlessError(Exception):
-    pass
+    def __init__(self, message, job_id=None):
+        super().__init__(message)
+        self.job_id = job_id
 
 
 def _api_key() -> str:
@@ -104,10 +106,28 @@ def run_inference_job(endpoint_id: str, workflow_json: dict, timeout_seconds: in
         if status == "COMPLETED":
             return _extract_output_bytes(data.get("output"))
         if status == "FAILED":
-            raise RunPodServerlessError(f"Serverless job {job_id} failed: {data.get('error') or data}")
+            raise RunPodServerlessError(f"Serverless job {job_id} failed: {data.get('error') or data}", job_id=job_id)
         time.sleep(poll_interval)
 
-    raise TimeoutError(f"Serverless job {job_id} did not complete within {timeout_seconds}s")
+    timeout_exc = TimeoutError(f"Serverless job {job_id} did not complete within {timeout_seconds}s")
+    timeout_exc.job_id = job_id
+    raise timeout_exc
+
+
+def cancel_job(endpoint_id: str, job_id: str) -> None:
+    """Stops a queued or in-progress Serverless job — confirmed against
+    RunPod's own docs (POST /v2/{endpoint_id}/cancel/{job_id}). Used by
+    run_inference_job_with_allocation_retry so a timed-out attempt doesn't
+    leave its job orphaned in the queue when a fresh one is submitted —
+    confirmed live 2026-08-25: without this, a single allocation-retry
+    left TWO jobs queued against the same endpoint for one user click,
+    since the first job was never told to stop. Best-effort: a failure to
+    cancel here shouldn't block moving on to the retry."""
+    try:
+        resp = httpx.post(f"{_API_BASE}/{endpoint_id}/cancel/{job_id}", headers=_headers(), timeout=20)
+        resp.raise_for_status()
+    except Exception as exc:
+        logger.warning("Failed to cancel orphaned Serverless job %s on endpoint %s: %s", job_id, endpoint_id, exc)
 
 
 def run_inference_job_with_allocation_retry(endpoint_id: str, workflow_json: dict, timeout_seconds: int = 600,
@@ -136,6 +156,16 @@ def run_inference_job_with_allocation_retry(endpoint_id: str, workflow_json: dic
             return run_inference_job(endpoint_id, workflow_json, timeout_seconds=timeout_seconds, poll_interval=poll_interval)
         except (RunPodServerlessError, TimeoutError) as exc:
             last_exc = exc
+            # Confirmed live 2026-08-25: without cancelling here, a single
+            # allocation-retry left the ORIGINAL job still queued on
+            # RunPod's side (nothing ever told it to stop) while this loop
+            # submitted a brand-new one for the same request — two jobs
+            # queued against the endpoint for one user click, doubling
+            # queue pressure and potential GPU spend if both ever get
+            # picked up.
+            orphaned_job_id = getattr(exc, "job_id", None)
+            if orphaned_job_id:
+                cancel_job(endpoint_id, orphaned_job_id)
             if attempt < max_retries:
                 logger.warning(
                     "Serverless allocation attempt %d/%d failed for endpoint %s: %s — retrying in %ss",

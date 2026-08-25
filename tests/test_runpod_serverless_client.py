@@ -11,7 +11,7 @@ os.environ.setdefault("RUNPOD_API_KEY", "test-key")
 import pytest
 
 from app.media.runpod_serverless_client import (
-    run_inference_job, run_inference_job_with_allocation_retry, RunPodServerlessError,
+    run_inference_job, run_inference_job_with_allocation_retry, cancel_job, RunPodServerlessError,
 )
 
 
@@ -99,6 +99,49 @@ class TestRunInferenceJob:
         with pytest.raises(TimeoutError):
             run_inference_job("endpoint-1", {"1": {}}, timeout_seconds=30)
 
+    def test_timeout_exception_carries_job_id(self, mocker):
+        """Confirmed live 2026-08-25: run_inference_job_with_allocation_retry
+        needs the job_id off a timed-out attempt to cancel it before
+        retrying — without this, a retry left the original job orphaned
+        in RunPod's queue instead of replaced."""
+        submit_resp = _mock_response(mocker, 200, {"id": "job-orphan-1"})
+        queued_resp = _mock_response(mocker, 200, {"status": "IN_QUEUE"})
+        mocker.patch("httpx.post", return_value=submit_resp)
+        mocker.patch("httpx.get", return_value=queued_resp)
+        mocker.patch("time.sleep")
+        fake_time = mocker.patch("time.time")
+        fake_time.side_effect = [0, 0, 1000]
+
+        with pytest.raises(TimeoutError) as exc_info:
+            run_inference_job("endpoint-1", {"1": {}}, timeout_seconds=30)
+        assert exc_info.value.job_id == "job-orphan-1"
+
+    def test_failed_exception_carries_job_id(self, mocker):
+        submit_resp = _mock_response(mocker, 200, {"id": "job-failed-1"})
+        status_resp = _mock_response(mocker, 200, {"status": "FAILED", "error": "OOM"})
+        mocker.patch("httpx.post", return_value=submit_resp)
+        mocker.patch("httpx.get", return_value=status_resp)
+        mocker.patch("time.sleep")
+
+        with pytest.raises(RunPodServerlessError) as exc_info:
+            run_inference_job("endpoint-1", {"1": {}})
+        assert exc_info.value.job_id == "job-failed-1"
+
+
+class TestCancelJob:
+    def test_posts_to_the_documented_cancel_path(self, mocker):
+        mock_post = mocker.patch("httpx.post", return_value=_mock_response(mocker, 200, {}))
+
+        cancel_job("endpoint-1", "job-1")
+
+        mock_post.assert_called_once()
+        assert mock_post.call_args.args[0] == "https://api.runpod.ai/v2/endpoint-1/cancel/job-1"
+
+    def test_failure_to_cancel_is_swallowed_not_raised(self, mocker):
+        mocker.patch("httpx.post", side_effect=RuntimeError("network blip"))
+
+        cancel_job("endpoint-1", "job-1")  # must not raise
+
     def test_missing_api_key_raises(self, mocker, monkeypatch):
         monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
         with pytest.raises(RuntimeError):
@@ -130,6 +173,41 @@ class TestRunInferenceJobWithAllocationRetry:
         assert result == b"video-bytes"
         assert mock_job.call_count == 2
         mock_sleep.assert_called_once_with(45)
+
+    def test_cancels_the_orphaned_job_before_retrying(self, mocker):
+        """Confirmed live 2026-08-25: a single allocation-retry left the
+        FIRST job still queued on RunPod's side (nothing ever told it to
+        stop) while a brand-new job got submitted for the same request —
+        two jobs queued against the endpoint for one user click."""
+        timed_out = TimeoutError("no worker available")
+        timed_out.job_id = "job-orphan-1"
+        mocker.patch(
+            "app.media.runpod_serverless_client.run_inference_job",
+            side_effect=[timed_out, b"video-bytes"],
+        )
+        mock_cancel = mocker.patch("app.media.runpod_serverless_client.cancel_job")
+        mocker.patch("time.sleep")
+
+        result = run_inference_job_with_allocation_retry("endpoint-1", {"1": {}}, max_retries=1, backoff_seconds=1)
+
+        assert result == b"video-bytes"
+        mock_cancel.assert_called_once_with("endpoint-1", "job-orphan-1")
+
+    def test_no_cancel_attempted_when_exception_carries_no_job_id(self, mocker):
+        # Some failure paths (e.g. "no job id in submit response") never
+        # got far enough to have a job_id at all — must not crash trying
+        # to cancel something that doesn't exist.
+        mocker.patch(
+            "app.media.runpod_serverless_client.run_inference_job",
+            side_effect=[RunPodServerlessError("no job id"), b"video-bytes"],
+        )
+        mock_cancel = mocker.patch("app.media.runpod_serverless_client.cancel_job")
+        mocker.patch("time.sleep")
+
+        result = run_inference_job_with_allocation_retry("endpoint-1", {"1": {}}, max_retries=1, backoff_seconds=1)
+
+        assert result == b"video-bytes"
+        mock_cancel.assert_not_called()
 
     def test_raises_after_exhausting_retries(self, mocker):
         mocker.patch(
