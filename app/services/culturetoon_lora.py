@@ -582,19 +582,6 @@ def train_character_lora(variant, session) -> None:
              f"mkdir -p {q(work_dir)} {q(models_dir + '/checkpoint')} {q(models_dir + '/text_encoder')} {q(output_dir)}",
              120, "Failed to set up the training pod's working directory")
 
-        # --token flag rather than an HF_TOKEN= env-var prefix or a
-        # persistent `hf auth login` on the pod — confirmed live 2026-08-26:
-        # `HF_TOKEN={token} hf download ...` reached the pod (checkpoint
-        # download and pod setup both succeeded in the same run) but the
-        # gated text-encoder download still came back as an unauthenticated
-        # request, meaning the inline env-var prefix wasn't actually
-        # reaching the `hf` process on this image for reasons not fully
-        # root-caused (a wrapper/shim around the `hf` entrypoint is one
-        # plausible explanation). Passing the token as an explicit CLI
-        # argument removes that whole layer of indirection. This pod is
-        # ephemeral and terminated at the end of this function either way,
-        # so there's nothing to log out of.
-        hf_token_flag = f" --token {q(_HF_TOKEN)}" if _HF_TOKEN else ""
         # HF_HUB_DISABLE_XET=1 on every hf download here — confirmed live
         # 2026-08-20, twice: hf_xet's accelerated transfer path stalled
         # indefinitely (manual Gemma-repo download on a Pod) and separately
@@ -645,8 +632,31 @@ def train_character_lora(variant, session) -> None:
             # google/gemma-3-12b-it is gated — this download will fail with an
             # authentication error if HF_TOKEN isn't set to a token whose
             # account has accepted Gemma's license on huggingface.co.
+            #
+            # Goes through huggingface_hub's Python API (snapshot_download),
+            # not the `hf` CLI, specifically for the token to actually reach
+            # it — confirmed live 2026-08-26, twice: neither an `HF_TOKEN=`
+            # env-var prefix nor an explicit `--token` flag on `hf download`
+            # stopped this exact call from hitting "Access denied. This
+            # repository requires approval." / "sending unauthenticated
+            # requests", even with a token independently verified (direct
+            # HTTPS GET against a real gated file in this repo, from this
+            # process, using this exact token) to have real access. Whatever
+            # the training image's installed `hf` CLI is doing with a token
+            # handed to it, it isn't using it — calling snapshot_download()
+            # directly with token= as an explicit function argument removes
+            # the CLI's own token-resolution logic from the picture entirely
+            # instead of guessing at another flag/env spelling for it.
+            hf_download_script = f"""
+from huggingface_hub import snapshot_download
+snapshot_download(repo_id={_TEXT_ENCODER_REPO!r}, local_dir={text_encoder_dir!r}, token={_HF_TOKEN!r})
+"""
+            hf_script_path = f"{work_dir}/hf_text_encoder_download.py"
             _run(runpod_ssh, host, port,
-                 f"{xet_env}hf download {q(_TEXT_ENCODER_REPO)} --local-dir {q(text_encoder_dir)}{hf_token_flag}",
+                 f"cat > {q(hf_script_path)} << 'CULTURIX_EOF'\n{hf_download_script}\nCULTURIX_EOF",
+                 30, "Failed to write the text encoder download script on the training pod")
+            _run(runpod_ssh, host, port,
+                 f"{xet_env}python3 -u {q(hf_script_path)}",
                  _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training text encoder (is HF_TOKEN set and Gemma's license accepted on huggingface.co for that account?)")
             # Self-healing cache population: the standalone one-time backfill
             # script for this exact tar kept failing on its own upload step
