@@ -3,6 +3,7 @@ Culturix's own auto-curation of the training set, LoRA training bookkeeping,
 and the remote-training orchestration against an ephemeral training pod,
 mocked at the runpod_client/runpod_ssh/runpod_s3 boundary (paramiko/
 boto3/RunPod's real APIs are never touched)."""
+import re
 import uuid
 
 import pytest
@@ -23,6 +24,19 @@ def _no_real_retry_backoff(monkeypatch):
     genuinely-failing test would otherwise burn 6 attempts x 15s for
     nothing. Zero it out everywhere in this test module."""
     monkeypatch.setattr("app.services.culturetoon_lora._FINALIZE_RETRY_BACKOFF_SECONDS", 0)
+
+
+@pytest.fixture(autouse=True)
+def _s3_env_vars(monkeypatch):
+    """_download_from_cache/_upload_to_volume_from_pod both require these
+    to build the pod-side boto3 script — set for every test in this
+    module regardless of whether that specific test exercises the S3
+    path, same as the other autouse fixture above."""
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY_ID", "test-access-key")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_ACCESS_KEY", "test-secret-key")
+    monkeypatch.setenv("RUNPOD_S3_ENDPOINT_URL", "https://s3api-test.runpod.io")
+    monkeypatch.setenv("RUNPOD_S3_REGION", "test-region")
+    monkeypatch.setenv("RUNPOD_S3_BUCKET", "test-bucket")
 
 
 def _variant(mocker, name="Kumar", training_images=None, image_url=None):
@@ -76,24 +90,39 @@ def _entries(n, captioned=True):
     ]
 
 
+# Maps a _run_backgrounded label to the distinguishing substring its own
+# launch command contains — lets _fake_run_remote_command simulate a
+# specific backgrounded step failing (fail_on_substring=<value here>)
+# without hardcoding to just the training step, now that the LoRA upload
+# also runs backgrounded via the same generic helper.
+_BACKGROUNDED_STEP_FAIL_MARKERS = {
+    "train": "scripts/train.py",
+    "lora_upload": "lora_upload.py",
+}
+
+
 def _fake_run_remote_command(fail_on_substring=None, fail_result=(1, "", "boom")):
     """Builds a run_remote_command side_effect that succeeds for every step
     except one identified by a substring of the command (e.g. "ffmpeg" or
     "process_dataset.py"), and always answers the final "find the trained
-    checkpoint" `ls` lookup with a realistic path so later steps (SFTP
-    download, S3 push) have something to act on.
+    checkpoint" `ls` lookup with a realistic path so later steps (LoRA
+    upload) have something to act on.
 
-    Training itself (scripts/train.py) runs backgrounded (nohup) and is
-    polled via separate kill -0/status-file/log-tail commands rather than
-    one blocking call — see _run_training_backgrounded — so a simulated
-    training failure (fail_on_substring="scripts/train.py") surfaces
-    through THOSE commands, not the script-launch commands (which always
-    succeed instantly; they just start a background process). The launch
-    script's heredoc body embeds the real train_cmd text verbatim
-    (including the substring "scripts/train.py"), so heredoc writes are
+    Both training (scripts/train.py) and the LoRA upload (lora_upload.py)
+    run backgrounded (nohup) via the shared _run_backgrounded helper and
+    are polled via separate kill -0/status-file/log-tail commands rather
+    than one blocking call — so a simulated failure for either
+    (fail_on_substring set to that step's marker in
+    _BACKGROUNDED_STEP_FAIL_MARKERS) surfaces through THOSE status/log
+    commands, not the script-launch commands (which always succeed
+    instantly; they just start a background process). Each launch
+    script's heredoc body embeds the real work command text verbatim
+    (including its own marker substring), so heredoc writes are
     special-cased to always succeed regardless of fail_on_substring —
-    otherwise a "scripts/train.py" failure would be misattributed to
+    otherwise e.g. a "scripts/train.py" failure would be misattributed to
     writing the launch script instead of the simulated training run."""
+    import re
+
     def fake(host, port, command, timeout_seconds=1800):
         first_line = command.split("\n", 1)[0].strip()
         if first_line.startswith("cat > "):
@@ -102,10 +131,16 @@ def _fake_run_remote_command(fail_on_substring=None, fail_result=(1, "", "boom")
             return (0, "12345\n", "")
         if first_line.startswith("kill -0"):
             return (0, "DEAD\n", "")
-        if first_line.startswith("cat ") and "train.status" in first_line:
-            return (0, "EXIT:1\n" if fail_on_substring == "scripts/train.py" else "EXIT:0\n", "")
-        if first_line.startswith("tail") and "train.log" in first_line:
-            return (0, fail_result[2] if fail_on_substring == "scripts/train.py" else "", "")
+        status_match = re.search(r"([\w.-]+)\.status", first_line) if first_line.startswith("cat ") else None
+        if status_match:
+            label = status_match.group(1)
+            failed = fail_on_substring is not None and fail_on_substring == _BACKGROUNDED_STEP_FAIL_MARKERS.get(label)
+            return (0, "EXIT:1\n" if failed else "EXIT:0\n", "")
+        log_match = re.search(r"([\w.-]+)\.log", first_line) if first_line.startswith("tail") else None
+        if log_match:
+            label = log_match.group(1)
+            failed = fail_on_substring is not None and fail_on_substring == _BACKGROUNDED_STEP_FAIL_MARKERS.get(label)
+            return (0, fail_result[2] if failed else "", "")
         if fail_on_substring and fail_on_substring in command:
             return fail_result
         if first_line.startswith("ls -1") and "lora_weights_step_" in first_line:
@@ -281,19 +316,20 @@ class TestTrainCharacterLora:
             "app.media.runpod_ssh.run_remote_command",
             side_effect=_fake_run_remote_command(fail_on_substring, fail_result),
         )
-        mocker.patch("app.media.runpod_ssh.download_file", return_value=b"lora-bytes")
-        mock_upload = mocker.patch("app.media.runpod_s3.upload_lora")
         # verify_exists is called for two unrelated things: the checkpoint/
         # text-encoder Network Volume CACHE check (must be False here, so
         # tests exercise the already-covered `hf download` fallback path
         # rather than the cache-hit path, which would need a real
         # presigned_get_url call) and the final trained-LoRA upload
-        # confirmation (must be True, as before).
+        # confirmation (must be True, as before). The upload itself now
+        # happens pod-side via _upload_to_volume_from_pod (backgrounded
+        # nohup, handled by _fake_run_remote_command above), not a direct
+        # runpod_s3.upload_lora call from this process.
         mocker.patch(
             "app.media.runpod_s3.verify_exists",
             side_effect=lambda key: key.endswith(".safetensors") and "training-cache" not in key,
         )
-        return mock_terminate, mock_run, mock_upload
+        return mock_terminate, mock_run
 
     def _training_variant(self, mocker, captioned=True):
         return _variant(mocker, training_images=_entries(MIN_LORA_TRAINING_IMAGES, captioned=captioned))
@@ -320,7 +356,7 @@ class TestTrainCharacterLora:
         assert variant.lora_path == f"{_VARIANT_ID}.safetensors"
 
     def test_uses_each_image_own_caption_in_the_dataset_manifest(self, mocker):
-        _, mock_run, _ = self._mock_success(mocker)
+        _, mock_run = self._mock_success(mocker)
         variant = self._training_variant(mocker)
 
         _train(mocker, variant)
@@ -332,7 +368,7 @@ class TestTrainCharacterLora:
         assert "Kumar waving, shot 9" in written
 
     def test_blank_caption_falls_back_to_variant_name(self, mocker):
-        _, mock_run, _ = self._mock_success(mocker)
+        _, mock_run = self._mock_success(mocker)
         variant = self._training_variant(mocker, captioned=False)
 
         _train(mocker, variant)
@@ -341,25 +377,27 @@ class TestTrainCharacterLora:
         written = dataset_write_calls[0].args[2]
         assert '"caption": "Kumar"' in written
 
-    def test_uploads_downloaded_bytes_to_the_expected_volume_key(self, mocker):
-        _, _, mock_upload = self._mock_success(mocker)
+    def test_uploads_the_located_checkpoint_to_the_expected_volume_key(self, mocker):
+        """The LoRA upload now happens pod-side (_upload_to_volume_from_pod)
+        via a boto3 script written to the pod, not a direct
+        runpod_ssh.download_file/runpod_s3.upload_lora call from this
+        process — assert on the script's own content instead."""
+        _, mock_run = self._mock_success(mocker)
         variant = self._training_variant(mocker)
 
         _train(mocker, variant)
 
-        mock_upload.assert_called_once_with(b"lora-bytes", f"ComfyUI/models/loras/{_VARIANT_ID}.safetensors")
-
-    def test_downloads_the_located_checkpoint_via_sftp(self, mocker):
-        self._mock_success(mocker)
-        mock_download = mocker.patch("app.media.runpod_ssh.download_file", return_value=b"lora-bytes")
-        variant = self._training_variant(mocker)
-
-        _train(mocker, variant)
-
-        mock_download.assert_called_once_with("1.2.3.4", 2222, _FOUND_CHECKPOINT)
+        upload_script_writes = [
+            c for c in mock_run.call_args_list
+            if re.match(r"cat > \S*lora_upload\.py << ", c.args[2])
+        ]
+        assert len(upload_script_writes) == 1
+        written = upload_script_writes[0].args[2]
+        assert _FOUND_CHECKPOINT in written
+        assert f"ComfyUI/models/loras/{_VARIANT_ID}.safetensors" in written
 
     def test_pod_created_and_terminated_on_success(self, mocker):
-        mock_terminate, _, _ = self._mock_success(mocker)
+        mock_terminate, _ = self._mock_success(mocker)
         mock_create = mocker.patch("app.media.runpod_client.create_training_pod", return_value="pod-123")
         mocker.patch("app.media.runpod_client.wait_for_ssh_ready", return_value=("1.2.3.4", 2222))
         variant = self._training_variant(mocker)
@@ -451,10 +489,7 @@ class TestTrainCharacterLora:
         assert variant.lora_status == "failed"
 
     def test_s3_upload_failure_sets_failed_status(self, mocker):
-        from app.media.runpod_s3 import RunPodS3Error
-
-        self._mock_success(mocker)
-        mocker.patch("app.media.runpod_s3.upload_lora", side_effect=RunPodS3Error("connection refused"))
+        self._mock_success(mocker, fail_on_substring="lora_upload.py", fail_result=(1, "", "connection refused"))
         variant = self._training_variant(mocker)
 
         with pytest.raises(LoraTrainingError, match="connection refused"):

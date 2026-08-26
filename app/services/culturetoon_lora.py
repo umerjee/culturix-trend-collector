@@ -470,6 +470,52 @@ s3.download_file({os.environ['RUNPOD_S3_BUCKET']!r}, {key!r}, {local_path!r})
     )
 
 
+def _upload_to_volume_from_pod(runpod_ssh, host, port, q, work_dir, local_path, key):
+    """Uploads `local_path` (on the pod) straight to the Network Volume at
+    `key`, via credential-injected boto3 running ON the pod — instead of
+    SFTPing the file back to our own orchestrator first and pushing it to
+    S3 from there in a second hop. Confirmed live 2026-08-25: the SFTP-
+    then-S3-push design left a FULLY successful training run stuck —
+    paramiko's SFTP read hung/dropped repeatedly on the same proxy-layer
+    connection instability documented elsewhere in this file, and even
+    with a socket timeout and retries in place, the user ended up having
+    to manually log into the pod's web terminal and push the file to S3
+    themselves to unblock it. Cutting the SFTP hop entirely removes that
+    whole failure class rather than adding more retries around it — the
+    LoRA file is small (rank-32 adapter weights, well under RunPod's
+    500MB single-PutObject cap), so this is a plain, non-multipart
+    upload, the same operation that worked cleanly by hand. Same
+    accepted trust relaxation as _download_from_cache: real (this time
+    write-capable) S3 credentials briefly touch the ephemeral,
+    terminated-right-after training pod."""
+    missing = [var for var in _S3_ENV_VARS if not os.environ.get(var)]
+    if missing:
+        raise LoraTrainingError(f"Cannot upload trained LoRA: missing env var(s) {', '.join(missing)}")
+
+    upload_script = f"""
+import boto3
+s3 = boto3.client(
+    "s3",
+    aws_access_key_id={os.environ['RUNPOD_S3_ACCESS_KEY_ID']!r},
+    aws_secret_access_key={os.environ['RUNPOD_S3_SECRET_ACCESS_KEY']!r},
+    endpoint_url={os.environ['RUNPOD_S3_ENDPOINT_URL']!r},
+    region_name={os.environ['RUNPOD_S3_REGION']!r},
+)
+s3.upload_file({local_path!r}, {os.environ['RUNPOD_S3_BUCKET']!r}, {key!r})
+"""
+    script_path = f"{work_dir}/lora_upload.py"
+    _run(runpod_ssh, host, port,
+         f"cat > {q(script_path)} << 'CULTURIX_EOF'\n{upload_script}\nCULTURIX_EOF",
+         30, "Failed to write the LoRA upload script on the training pod")
+    _run(runpod_ssh, host, port, "pip install -q boto3", 300, "Failed to install boto3 on the training pod")
+    _run_backgrounded(
+        runpod_ssh, host, port, q, work_dir,
+        f"python3 -u {q(script_path)}",
+        _DOWNLOAD_TIMEOUT_SECONDS, "lora_upload",
+        "Failed to upload the trained LoRA to the Network Volume",
+    )
+
+
 def train_character_lora(variant, session) -> None:
     """Synchronous end-to-end training run: curates the training set
     (curate_training_images() — Culturix's own already-generated Expression
@@ -721,13 +767,8 @@ def train_character_lora(variant, session) -> None:
             raise LoraTrainingError(f"Could not find a trained LoRA checkpoint under {output_dir}/checkpoints: {stderr[-1000:]}")
 
         lora_filename = f"{variant.id}.safetensors"
-        lora_bytes = _resilient(runpod_ssh.download_file, host, port, local_output_path)
-
         volume_key = f"{_VOLUME_LORA_KEY_PREFIX}/{lora_filename}"
-        try:
-            _resilient(runpod_s3.upload_lora, lora_bytes, volume_key)
-        except runpod_s3.RunPodS3Error as exc:
-            raise LoraTrainingError(str(exc)) from exc
+        _upload_to_volume_from_pod(runpod_ssh, host, port, q, work_dir, local_output_path, volume_key)
         if not _resilient(runpod_s3.verify_exists, volume_key):
             raise LoraTrainingError(
                 f"Uploaded {volume_key} to the Network Volume but a HEAD check couldn't confirm it landed"
