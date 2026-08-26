@@ -794,7 +794,24 @@ snapshot_download(repo_id={_TEXT_ENCODER_REPO!r}, local_dir={text_encoder_dir!r}
              f"cat > {q(config_path)} << 'CULTURIX_EOF'\n{config_yaml}\nCULTURIX_EOF",
              30, "Failed to write training config on the training pod")
 
-        train_cmd = f"cd /workspace/LTX-2/packages/ltx-trainer && python scripts/train.py {q(config_path)}"
+        # HF_TOKEN= prefix here even though the text encoder is already on
+        # local disk by this point — confirmed live 2026-08-26: the training
+        # process itself (not our own download step, which already
+        # completed successfully) failed with huggingface_hub's
+        # `httpx.LocalProtocolError: Illegal header value b'Bearer '`
+        # bubbling out of ltx-trainer/transformers' own text-encoder loading
+        # code, which apparently still reaches out to the Hub (e.g. for
+        # revision/config resolution) even when given a local directory, and
+        # was picking up some empty/stale cached token on the image rather
+        # than no token at all. This env var is a real, well-supported
+        # mechanism for huggingface_hub/transformers specifically (unlike
+        # the training image's `hf` CLI, which — see the snapshot_download
+        # switch above — did not honor it) — it can't fix a root cause that
+        # isn't fully identified without live pod access, but it does make
+        # sure any Hub call this process makes has the correct real token
+        # available instead of whatever it was otherwise finding.
+        hf_env = f"HF_TOKEN={q(_HF_TOKEN)} " if _HF_TOKEN else ""
+        train_cmd = f"cd /workspace/LTX-2/packages/ltx-trainer && {hf_env}python scripts/train.py {q(config_path)}"
         _run_backgrounded(runpod_ssh, host, port, q, work_dir, train_cmd, _TRAINING_TIMEOUT_SECONDS, "train", "ltx-trainer training run failed")
 
         # The final checkpoint's exact step-count suffix isn't known ahead
