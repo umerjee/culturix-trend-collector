@@ -480,7 +480,7 @@ s3.download_file({os.environ['RUNPOD_S3_BUCKET']!r}, {key!r}, {local_path!r})
     )
 
 
-def _upload_to_volume_from_pod(runpod_ssh, host, port, q, work_dir, local_path, key):
+def _upload_to_volume_from_pod(runpod_ssh, host, port, q, work_dir, local_path, key, label="lora_upload"):
     """Uploads `local_path` (on the pod) straight to the Network Volume at
     `key`, via credential-injected boto3 running ON the pod — instead of
     SFTPing the file back to our own orchestrator first and pushing it to
@@ -513,16 +513,16 @@ s3 = boto3.client(
 )
 s3.upload_file({local_path!r}, {os.environ['RUNPOD_S3_BUCKET']!r}, {key!r})
 """
-    script_path = f"{work_dir}/lora_upload.py"
+    script_path = f"{work_dir}/{label}.py"
     _run(runpod_ssh, host, port,
          f"cat > {q(script_path)} << 'CULTURIX_EOF'\n{upload_script}\nCULTURIX_EOF",
-         30, "Failed to write the LoRA upload script on the training pod")
+         30, f"Failed to write the {label} script on the training pod")
     _run(runpod_ssh, host, port, "pip install -q boto3", 300, "Failed to install boto3 on the training pod")
     _run_backgrounded(
         runpod_ssh, host, port, q, work_dir,
         f"python3 -u {q(script_path)}",
-        _DOWNLOAD_TIMEOUT_SECONDS, "lora_upload",
-        "Failed to upload the trained LoRA to the Network Volume",
+        _DOWNLOAD_TIMEOUT_SECONDS, label,
+        f"Failed to upload {key} to the Network Volume",
     )
 
 
@@ -648,6 +648,26 @@ def train_character_lora(variant, session) -> None:
             _run(runpod_ssh, host, port,
                  f"{xet_env}hf download {q(_TEXT_ENCODER_REPO)} --local-dir {q(text_encoder_dir)}{hf_token_flag}",
                  _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training text encoder (is HF_TOKEN set and Gemma's license accepted on huggingface.co for that account?)")
+            # Self-healing cache population: the standalone one-time backfill
+            # script for this exact tar kept failing on its own upload step
+            # (never confirmed to complete), leaving every run since paying
+            # this same slow gated HF download. Populating it here instead —
+            # right after we already have a fresh, known-good copy on disk —
+            # means the run that hits the cache miss is also the run that
+            # fixes it for everyone after it. Best-effort: a cache-population
+            # failure shouldn't fail a training run that otherwise has
+            # everything it needs to proceed.
+            try:
+                text_encoder_tar = f"{models_dir}/text_encoder.tar"
+                _run(runpod_ssh, host, port,
+                     f"tar -cf {q(text_encoder_tar)} -C {q(text_encoder_dir)} .",
+                     300, "Failed to tar the downloaded text encoder for caching")
+                _upload_to_volume_from_pod(
+                    runpod_ssh, host, port, q, work_dir, text_encoder_tar, _TEXT_ENCODER_CACHE_KEY,
+                    label="text_encoder_cache_ul",
+                )
+            except Exception:
+                logger.warning("Failed to populate the text-encoder Network Volume cache — will retry on a future run", exc_info=True)
 
         # Stage each reference image, then loop it into a short static clip
         # — see module docstring's open question #1 on why. Each clip keeps

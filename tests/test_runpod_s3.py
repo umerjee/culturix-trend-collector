@@ -1,16 +1,22 @@
 """Tests for app/media/runpod_s3.py — upload/verify against a RunPod
 Network Volume's S3-compatible API, mocked at the boto3 client boundary."""
-import os
-
-os.environ.setdefault("RUNPOD_S3_ACCESS_KEY_ID", "test-key-id")
-os.environ.setdefault("RUNPOD_S3_SECRET_ACCESS_KEY", "test-secret")
-os.environ.setdefault("RUNPOD_S3_ENDPOINT_URL", "https://s3api-eu-ro-1.runpod.io")
-os.environ.setdefault("RUNPOD_S3_REGION", "EU-RO-1")
-os.environ.setdefault("RUNPOD_S3_BUCKET", "vol-123")
-
 import pytest
 
 from app.media.runpod_s3 import upload_lora, verify_exists, RunPodS3Error
+
+
+@pytest.fixture(autouse=True)
+def _s3_env_vars(monkeypatch):
+    """monkeypatch.setenv, not os.environ.setdefault — app/db.py's own
+    load_dotenv() (imported transitively by most test modules) can populate
+    these from a real local .env before this module's setdefault would ever
+    run, making setdefault a silent no-op against real RunPod credentials
+    and a real bucket name instead of these tests' fixed expected values."""
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY_ID", "test-key-id")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_ACCESS_KEY", "test-secret")
+    monkeypatch.setenv("RUNPOD_S3_ENDPOINT_URL", "https://s3api-eu-ro-1.runpod.io")
+    monkeypatch.setenv("RUNPOD_S3_REGION", "EU-RO-1")
+    monkeypatch.setenv("RUNPOD_S3_BUCKET", "vol-123")
 
 
 class TestUploadLora:
