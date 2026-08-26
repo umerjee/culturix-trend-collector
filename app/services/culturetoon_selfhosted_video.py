@@ -26,14 +26,55 @@ out of scope for wiring the button; QA parity for self-hosted can follow
 separately.
 """
 import logging
+import time
 import uuid as _uuid
 from typing import Optional
 
 logger = logging.getLogger("culturix.services.culturetoon_selfhosted_video")
 
+_COMMIT_RETRY_ATTEMPTS = 6
+_COMMIT_RETRY_BACKOFF_SECONDS = 15
+
 
 class SelfHostedVideoGenerationError(Exception):
     pass
+
+
+def _resilient_commit(session, mutate) -> None:
+    """Confirmed live 2026-08-26, twice in a row: this module holds one
+    SessionLocal() open across the whole generation attempt, including
+    RunPod's own allocation-retry wait (up to 600s+ per attempt). The
+    connection can go stale server-side during that wait (Supabase/pgbouncer
+    idle timeout) — pool_pre_ping only catches a stale connection at
+    checkout, not one that dies while just sitting open — so the exact
+    commit meant to record the *original* failure (RunPodServerlessError/
+    TimeoutError) instead raised its own unrelated psycopg2.OperationalError
+    and masked it, leaving the Toon stuck in status='animating' forever.
+
+    Takes `mutate` (re-applies the intended field assignments) rather than
+    just retrying a bare commit() — confirmed live in this fix's own test:
+    session.rollback() expires every object in the session by default, so a
+    naive "rollback, then commit() again" retry silently commits *nothing*,
+    since the in-memory attribute changes set before the first failed
+    commit are gone the moment rollback() runs. Re-running `mutate` each
+    attempt (idempotent field assignments, safe to repeat) is what actually
+    makes the retry do something."""
+    last_exc = None
+    for attempt in range(_COMMIT_RETRY_ATTEMPTS):
+        try:
+            mutate()
+            session.commit()
+            return
+        except Exception as exc:
+            last_exc = exc
+            session.rollback()
+            logger.warning(
+                "session.commit() attempt %d/%d failed: %s",
+                attempt + 1, _COMMIT_RETRY_ATTEMPTS, exc,
+            )
+            if attempt < _COMMIT_RETRY_ATTEMPTS - 1:
+                time.sleep(_COMMIT_RETRY_BACKOFF_SECONDS)
+    raise last_exc
 
 
 def build_prompt_from_script(script) -> str:
@@ -188,37 +229,54 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
         # batch runner never regenerates) used to silently lose whatever
         # take was there before.
         previous_url = toon.final_video_url or toon.raw_video_url
-        if previous_url:
-            toon.previous_video_urls = (toon.previous_video_urls or []) + [previous_url]
-        toon.raw_video_url = video_url
-        toon.final_video_url = video_url
-        toon.status = "ready"
-        session.commit()
+
+        def _apply_success():
+            if previous_url:
+                toon.previous_video_urls = (toon.previous_video_urls or []) + [previous_url]
+            toon.raw_video_url = video_url
+            toon.final_video_url = video_url
+            toon.status = "ready"
+
+        _resilient_commit(session, _apply_success)
         logger.info("Self-hosted video generation complete for toon %s", toon_id)
 
     except (ValueError, SelfHostedVideoGenerationError, runpod_serverless_client.RunPodServerlessError, TimeoutError) as exc:
         session.rollback()
         if toon:
-            toon.status = "failed"
-            toon.generation_error = str(exc)[:2000]
-            session.commit()
+            error_text = str(exc)[:2000]
+
+            def _apply_failure():
+                toon.status = "failed"
+                toon.generation_error = error_text
+
+            _resilient_commit(session, _apply_failure)
         logger.warning("Self-hosted generation failed for toon %s: %s", toon_id, exc)
     except Exception as exc:
         session.rollback()
         if toon:
-            toon.status = "failed"
-            toon.generation_error = f"Unexpected error: {exc}"[:2000]
-            session.commit()
+            error_text = f"Unexpected error: {exc}"[:2000]
+
+            def _apply_unexpected_failure():
+                toon.status = "failed"
+                toon.generation_error = error_text
+
+            _resilient_commit(session, _apply_unexpected_failure)
         logger.exception("Self-hosted generation failed unexpectedly for toon %s", toon_id)
     finally:
         if toon:
-            # Recorded regardless of outcome, same reasoning as the batch
-            # runner's own record_usage call — a failed generation still
-            # burns GPU time.
-            record_usage(
-                session, user_id=user_id, brand_id=toon.brand_id, toon_id=toon.id,
-                provider="runpod_ltx", generation_type="toon_video_selfhosted",
-                output_units=int(duration), cost_usd=estimate_selfhosted_video_cost(duration),
-            )
-            session.commit()
+            def _apply_usage():
+                # Recorded regardless of outcome, same reasoning as the
+                # batch runner's own record_usage call — a failed
+                # generation still burns GPU time. record_usage() adds a
+                # new row rather than mutating a tracked one, so it must be
+                # re-run (not just the commit) on every retry attempt too —
+                # a rollback discards a pending-but-uncommitted insert
+                # entirely, it doesn't leave it around to recommit.
+                record_usage(
+                    session, user_id=user_id, brand_id=toon.brand_id, toon_id=toon.id,
+                    provider="runpod_ltx", generation_type="toon_video_selfhosted",
+                    output_units=int(duration), cost_usd=estimate_selfhosted_video_cost(duration),
+                )
+
+            _resilient_commit(session, _apply_usage)
         session.close()

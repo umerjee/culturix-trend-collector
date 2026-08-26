@@ -19,7 +19,13 @@ from app.models.generation_usage import GenerationUsage
 from app.services.culturetoon_selfhosted_video import (
     build_prompt_from_script, resolve_ready_lora, generate_toon_video_selfhosted,
     generate_video_for_toon_selfhosted, SelfHostedVideoGenerationError,
+    _resilient_commit,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleep(mocker):
+    mocker.patch("app.services.culturetoon_selfhosted_video._COMMIT_RETRY_BACKOFF_SECONDS", 0)
 
 
 def _script(mocker, hook_line=None, shots=None, total_duration_seconds=None):
@@ -268,3 +274,54 @@ class TestGenerateVideoForToonSelfhosted:
         toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
         assert toon.status == "failed"
         assert "worker allocation timed out" in toon.generation_error
+
+    def test_stale_connection_on_the_failure_commit_does_not_leave_toon_stuck_animating(self, db, seeded, mocker):
+        """Confirmed live 2026-08-26, twice in a row: a RunPod allocation
+        failure's own commit() (writing status='failed') hit a stale
+        Postgres connection after the long allocation-retry wait and raised
+        its own OperationalError, masking the original failure and leaving
+        the Toon stuck at status='animating' forever. _resilient_commit
+        should retry past exactly this and still land status='failed'."""
+        from app.media.runpod_serverless_client import RunPodServerlessError
+        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
+        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mocker.patch(
+            "app.media.runpod_serverless_client.run_inference_job_with_allocation_retry",
+            side_effect=RunPodServerlessError("worker allocation timed out"),
+        )
+        # Call 1 is the early status='animating' write (before RunPod even
+        # runs) — must succeed so the flow actually reaches the RunPod
+        # failure. Call 2 is the failure-commit this test targets: the
+        # first attempt inside _resilient_commit, right after the
+        # RunPodServerlessError — this is the one confirmed live to hit a
+        # stale connection.
+        real_commit = __import__("sqlalchemy").orm.Session.commit
+        call_count = {"n": 0}
+
+        def flaky_commit(self):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise Exception("server closed the connection unexpectedly")
+            return real_commit(self)
+
+        mocker.patch("sqlalchemy.orm.Session.commit", flaky_commit)
+
+        generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
+
+        session = db()
+        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
+        assert toon.status == "failed"
+        assert "worker allocation timed out" in toon.generation_error
+
+    def test_resilient_commit_raises_after_exhausting_retries(self, mocker):
+        session = mocker.Mock()
+        session.commit.side_effect = Exception("still dead")
+        mutate = mocker.Mock()
+
+        with pytest.raises(Exception, match="still dead"):
+            _resilient_commit(session, mutate)
+
+        assert session.rollback.call_count == session.commit.call_count
+        # mutate must be re-run on every attempt, not just the first — a
+        # rollback expires/discards whatever it set the first time.
+        assert mutate.call_count == session.commit.call_count
