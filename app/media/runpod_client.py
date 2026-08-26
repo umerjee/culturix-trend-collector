@@ -188,12 +188,26 @@ def wait_for_pod_ready(pod_id: Optional[str] = None, comfyui_port: int = _DEFAUL
 # moving target; RunPod's REST API instead accepts a priority-ordered list
 # and its own gpuTypePriority="availability" picks whichever is actually
 # free right now — structurally the right fix instead of guessing again.
+
+# Checked live against RunPod's GraphQL pricing/stock API 2026-08-26: "NVIDIA
+# A100 80GB PCIe" and "NVIDIA H100 PCIe" return no current price/stock data
+# at all (dead weight in this list), and every remaining candidate — priced
+# from $1.39-$3.59/hr — shows the same "Low" aggregate stock regardless of
+# price, so a higher tier buys no real availability edge here. What
+# actually moves the odds is trying genuinely separate GPU pools, not
+# paying more within the same contested A100/H100 pool ltx-trainer's own
+# near-miss OOM at 80GB (even with gradient checkpointing) sets our real
+# floor — every entry below is >=80GB. RTX PRO 6000 Blackwell is a
+# different, newer architecture than A100/H100 (Community-priced cheaper
+# than either, at more VRAM), so its scarcity is plausibly uncorrelated
+# with theirs — a second independent pool to try, not just a pricier draw
+# from the same one.
 _DEFAULT_TRAINING_GPU_TYPE_IDS = [
-    "NVIDIA A100 80GB PCIe",
     "NVIDIA A100-SXM4-80GB",
-    "NVIDIA H100 PCIe",
-    "NVIDIA H100 80GB HBM3",
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
     "NVIDIA H100 NVL",
+    "NVIDIA H100 80GB HBM3",
 ]
 _REST_API_BASE = "https://rest.runpod.io/v1"
 
