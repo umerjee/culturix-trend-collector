@@ -104,6 +104,16 @@ MIN_LORA_TRAINING_IMAGES = 10
 # finishes, whatever that takes), only cost to cutting a real job short,
 # so this errs well past the largest duration observed so far.
 _TRAINING_TIMEOUT_SECONDS = 7200  # ~2hr ceiling for one character's LoRA run
+# Confirmed live 2026-08-26: wait_for_ssh_ready's own 180s default was too
+# tight for this training image specifically — a freshly-allocated COMMUNITY
+# pod pulling ghcr.io/.../culturix-ltx-training:latest (a large custom torch/
+# cu126 + ltx-trainer image) cold, with no layer cache on that host, can
+# still be mid-pull when the default deadline hits, surfacing as "no SSH
+# port exposed yet" even though the pod was never actually broken — just
+# still booting. Same reasoning as _TRAINING_TIMEOUT_SECONDS above: no cost
+# to a generous timeout here since the poll loop returns the moment SSH is
+# actually reachable.
+_SSH_READY_TIMEOUT_SECONDS = 900
 _DOWNLOAD_TIMEOUT_SECONDS = 1800  # training pod fetches its own models fresh every run
 # Where the LoRA lands on the Network Volume, relative to the volume root —
 # same directory ComfyUI's LoraLoaderModelOnly node reads from
@@ -552,7 +562,7 @@ def train_character_lora(variant, session) -> None:
 
     try:
         pod_id = runpod_client.create_training_pod_with_retry()
-        host, port = runpod_client.wait_for_ssh_ready(pod_id)
+        host, port = runpod_client.wait_for_ssh_ready(pod_id, timeout_seconds=_SSH_READY_TIMEOUT_SECONDS)
 
         # Every value interpolated into a shell command below is passed
         # through shlex.quote(), including ones built purely from a UUID/
