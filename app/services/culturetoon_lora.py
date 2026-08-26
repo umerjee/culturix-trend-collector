@@ -582,13 +582,19 @@ def train_character_lora(variant, session) -> None:
              f"mkdir -p {q(work_dir)} {q(models_dir + '/checkpoint')} {q(models_dir + '/text_encoder')} {q(output_dir)}",
              120, "Failed to set up the training pod's working directory")
 
-        # HF_TOKEN= prefix rather than a persistent `hf auth login` on the
-        # pod — this pod is ephemeral and terminated at the end of this
-        # function either way, so there's nothing to log out of; scoping
-        # the token to just these two commands (only the text encoder
-        # download actually needs it — the LTX checkpoint repo is public)
-        # keeps it out of shell history / any other command run on the pod.
-        hf_env = f"HF_TOKEN={q(_HF_TOKEN)} " if _HF_TOKEN else ""
+        # --token flag rather than an HF_TOKEN= env-var prefix or a
+        # persistent `hf auth login` on the pod — confirmed live 2026-08-26:
+        # `HF_TOKEN={token} hf download ...` reached the pod (checkpoint
+        # download and pod setup both succeeded in the same run) but the
+        # gated text-encoder download still came back as an unauthenticated
+        # request, meaning the inline env-var prefix wasn't actually
+        # reaching the `hf` process on this image for reasons not fully
+        # root-caused (a wrapper/shim around the `hf` entrypoint is one
+        # plausible explanation). Passing the token as an explicit CLI
+        # argument removes that whole layer of indirection. This pod is
+        # ephemeral and terminated at the end of this function either way,
+        # so there's nothing to log out of.
+        hf_token_flag = f" --token {q(_HF_TOKEN)}" if _HF_TOKEN else ""
         # HF_HUB_DISABLE_XET=1 on every hf download here — confirmed live
         # 2026-08-20, twice: hf_xet's accelerated transfer path stalled
         # indefinitely (manual Gemma-repo download on a Pod) and separately
@@ -640,7 +646,7 @@ def train_character_lora(variant, session) -> None:
             # authentication error if HF_TOKEN isn't set to a token whose
             # account has accepted Gemma's license on huggingface.co.
             _run(runpod_ssh, host, port,
-                 f"{xet_env}{hf_env}hf download {q(_TEXT_ENCODER_REPO)} --local-dir {q(text_encoder_dir)}",
+                 f"{xet_env}hf download {q(_TEXT_ENCODER_REPO)} --local-dir {q(text_encoder_dir)}{hf_token_flag}",
                  _DOWNLOAD_TIMEOUT_SECONDS, "Failed to download the training text encoder (is HF_TOKEN set and Gemma's license accepted on huggingface.co for that account?)")
 
         # Stage each reference image, then loop it into a short static clip
