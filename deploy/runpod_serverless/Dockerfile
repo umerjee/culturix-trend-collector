@@ -16,6 +16,18 @@ FROM runpod/worker-comfyui:5.8.6-base
 
 WORKDIR /comfyui
 
+# Confirmed against RunPod's own docs (docs.runpod.io/serverless/troubleshooting)
+# 2026-08-28: this base image's requirements.txt pins runpod~=1.7.12 — squarely
+# inside the documented 1.7.11-1.10.0 range that "corrupt[s] per-worker job
+# tracking on endpoints that use a network volume... most workers stop
+# pulling new jobs," with symptoms of "jobs remain stuck in queue even with
+# available workers" and "multiple workers available but jobs funnel to a
+# single worker." Matches live behavior exactly: two smoke-test jobs hung
+# in IN_PROGRESS for 5-8 minutes on this exact network-volume-attached
+# endpoint before being manually cancelled. Fix is upgrade only, no code
+# changes needed per RunPod's own docs.
+RUN pip install --upgrade "runpod>=1.10.1"
+
 # ComfyUI-LTXVideo custom node — same package validated live this session.
 RUN git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo.git custom_nodes/ComfyUI-LTXVideo \
     && pip install -r custom_nodes/ComfyUI-LTXVideo/requirements.txt
