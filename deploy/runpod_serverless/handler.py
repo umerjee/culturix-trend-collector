@@ -79,23 +79,62 @@ def _wait_for_completion(prompt_id: str) -> dict:
     raise TimeoutError(f"ComfyUI job {prompt_id} did not complete within {_JOB_TIMEOUT_SECONDS}s")
 
 
-def _download_output_bytes(history_entry: dict) -> bytes:
-    outputs = history_entry.get("outputs") or {}
+def _first_output_file(outputs: dict):
     for node_output in outputs.values():
         for key in ("gifs", "videos", "images"):
             files = node_output.get(key)
-            if not files:
-                continue
-            file_info = files[0]
-            params = {
-                "filename": file_info["filename"],
-                "subfolder": file_info.get("subfolder", ""),
-                "type": file_info.get("type", "output"),
-            }
-            resp = httpx.get(f"{_COMFYUI_URL}/view", params=params, timeout=120)
-            resp.raise_for_status()
-            return resp.content
-    raise RuntimeError(f"No file output found in ComfyUI history entry: {history_entry}")
+            if files:
+                return files[0]
+    return None
+
+
+def _fetch_file_bytes(file_info: dict) -> bytes:
+    params = {
+        "filename": file_info["filename"],
+        "subfolder": file_info.get("subfolder", ""),
+        "type": file_info.get("type", "output"),
+    }
+    resp = httpx.get(f"{_COMFYUI_URL}/view", params=params, timeout=120)
+    resp.raise_for_status()
+    return resp.content
+
+
+def _download_output_bytes(history_entry: dict, prompt_id: str) -> bytes:
+    file_info = _first_output_file(history_entry.get("outputs") or {})
+    if file_info:
+        return _fetch_file_bytes(file_info)
+
+    # Confirmed live 2026-08-28: a retried submission of an IDENTICAL
+    # workflow (same seed/prompt/duration — e.g. run_inference_job_with_
+    # allocation_retry resubmitting after a client-side timeout, when the
+    # first attempt actually finished server-side) hits ComfyUI's own
+    # execution cache. status_str is "success" and every node shows up
+    # under execution_cached, but THIS prompt_id's own history entry never
+    # gets its outputs populated — the real file reference lives on
+    # whichever earlier prompt_id first computed it. Fall back to
+    # scanning the bulk /history for the most recent entry (any prompt_id)
+    # that actually has a file output, rather than failing a job whose
+    # result already exists.
+    logger.warning(
+        "Prompt %s completed with empty outputs (likely a ComfyUI cache hit on a "
+        "retried/duplicate submission) — scanning /history for the real output.",
+        prompt_id,
+    )
+    resp = httpx.get(f"{_COMFYUI_URL}/history", params={"max_items": 50}, timeout=20)
+    resp.raise_for_status()
+    entries = resp.json()
+    candidates = [
+        (entry.get("prompt", [0])[0], pid, entry)
+        for pid, entry in entries.items()
+        if pid != prompt_id and _first_output_file(entry.get("outputs") or {})
+    ]
+    if not candidates:
+        raise RuntimeError(f"No file output found in ComfyUI history entry: {history_entry}")
+    # prompt[0] is ComfyUI's own monotonically increasing queue number —
+    # a reliable recency ordering independent of any timestamp field.
+    candidates.sort(key=lambda c: c[0])
+    _, _, best_entry = candidates[-1]
+    return _fetch_file_bytes(_first_output_file(best_entry["outputs"]))
 
 
 def handler(event: dict) -> dict:
@@ -108,7 +147,7 @@ def handler(event: dict) -> dict:
         prompt_id = _submit_workflow(workflow_json)
         logger.info("Submitted ComfyUI prompt %s", prompt_id)
         history_entry = _wait_for_completion(prompt_id)
-        video_bytes = _download_output_bytes(history_entry)
+        video_bytes = _download_output_bytes(history_entry, prompt_id)
         return {"video_base64": base64.b64encode(video_bytes).decode("ascii")}
     except Exception as exc:
         logger.exception("Job failed")
