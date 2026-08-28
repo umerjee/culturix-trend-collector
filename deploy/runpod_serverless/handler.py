@@ -93,7 +93,7 @@ def _first_output_file(outputs: dict):
     return None, False
 
 
-def _ensure_faststart(video_bytes: bytes) -> bytes:
+def _ensure_faststart(video_bytes: bytes) -> tuple:
     """ComfyUI's SaveVideo node (via av/ffmpeg muxing) writes the moov atom
     AFTER the mdat box by default — confirmed live 2026-08-29 by inspecting
     a real generated file's box layout (ftyp, free, mdat, moov, in that
@@ -105,21 +105,35 @@ def _ensure_faststart(video_bytes: bytes) -> bytes:
     remuxes losslessly (stream copy, no re-encode) to move moov to the
     front. Applied here once, server-side, so every caller of this
     endpoint gets a playable file rather than needing to know to remux it
-    themselves."""
+    themselves.
+
+    Returns (bytes, diagnostic) rather than swallowing failures silently —
+    confirmed live 2026-08-29: even on a freshly-built image running on a
+    provably brand-new worker (never-before-seen workerId, ~9.5min cold
+    execution time ruling out a stale cached image), the delivered file
+    STILL came back non-faststart, meaning this remux is failing inside
+    its own try/except for a reason not yet identified — there's no way
+    to see this container's internal logs from the caller side, so the
+    previous silent fallback left that failure completely invisible.
+    Surfacing the actual exception in the response is what a future
+    debugging pass needs instead of guessing again."""
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as src:
         src.write(video_bytes)
         src_path = src.name
     dst_path = src_path + ".faststart.mp4"
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["ffmpeg", "-y", "-i", src_path, "-c", "copy", "-movflags", "+faststart", dst_path],
-            check=True, capture_output=True, timeout=60,
+            capture_output=True, timeout=60,
         )
+        if result.returncode != 0:
+            stderr_tail = result.stderr.decode("utf-8", errors="replace")[-800:]
+            return video_bytes, f"ffmpeg exit {result.returncode}: {stderr_tail}"
         with open(dst_path, "rb") as f:
-            return f.read()
-    except Exception:
+            return f.read(), None
+    except Exception as exc:
         logger.exception("faststart remux failed — returning the original (non-faststart) bytes")
-        return video_bytes
+        return video_bytes, f"{type(exc).__name__}: {exc}"
     finally:
         for path in (src_path, dst_path):
             try:
@@ -128,7 +142,7 @@ def _ensure_faststart(video_bytes: bytes) -> bytes:
                 pass
 
 
-def _fetch_file_bytes(file_info: dict, is_video: bool) -> bytes:
+def _fetch_file_bytes(file_info: dict, is_video: bool) -> tuple:
     params = {
         "filename": file_info["filename"],
         "subfolder": file_info.get("subfolder", ""),
@@ -136,10 +150,12 @@ def _fetch_file_bytes(file_info: dict, is_video: bool) -> bytes:
     }
     resp = httpx.get(f"{_COMFYUI_URL}/view", params=params, timeout=120)
     resp.raise_for_status()
-    return _ensure_faststart(resp.content) if is_video else resp.content
+    if is_video:
+        return _ensure_faststart(resp.content)
+    return resp.content, None
 
 
-def _download_output_bytes(history_entry: dict, prompt_id: str) -> bytes:
+def _download_output_bytes(history_entry: dict, prompt_id: str) -> tuple:
     file_info, is_video = _first_output_file(history_entry.get("outputs") or {})
     if file_info:
         return _fetch_file_bytes(file_info, is_video)
@@ -188,8 +204,15 @@ def handler(event: dict) -> dict:
         prompt_id = _submit_workflow(workflow_json)
         logger.info("Submitted ComfyUI prompt %s", prompt_id)
         history_entry = _wait_for_completion(prompt_id)
-        video_bytes = _download_output_bytes(history_entry, prompt_id)
-        return {"video_base64": base64.b64encode(video_bytes).decode("ascii")}
+        video_bytes, faststart_error = _download_output_bytes(history_entry, prompt_id)
+        result = {"video_base64": base64.b64encode(video_bytes).decode("ascii")}
+        if faststart_error:
+            # Non-fatal — the caller still gets a valid (just non-faststart)
+            # file — but surfaced instead of silently swallowed, since a
+            # prior version of this hid a real, still-unexplained remux
+            # failure completely from the caller.
+            result["faststart_error"] = faststart_error
+        return result
     except Exception as exc:
         logger.exception("Job failed")
         return {"error": str(exc)}
