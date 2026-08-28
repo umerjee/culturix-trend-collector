@@ -21,6 +21,8 @@ needed to runpod_serverless_client.py as a result.
 import base64
 import logging
 import os
+import subprocess
+import tempfile
 import time
 
 import httpx
@@ -80,15 +82,53 @@ def _wait_for_completion(prompt_id: str) -> dict:
 
 
 def _first_output_file(outputs: dict):
+    """Returns (file_info, is_video) — is_video distinguishes the "videos"
+    key (needs the faststart remux below) from "gifs"/"images" (not mp4
+    containers, remuxing would be meaningless or break them)."""
     for node_output in outputs.values():
         for key in ("gifs", "videos", "images"):
             files = node_output.get(key)
             if files:
-                return files[0]
-    return None
+                return files[0], key == "videos"
+    return None, False
 
 
-def _fetch_file_bytes(file_info: dict) -> bytes:
+def _ensure_faststart(video_bytes: bytes) -> bytes:
+    """ComfyUI's SaveVideo node (via av/ffmpeg muxing) writes the moov atom
+    AFTER the mdat box by default — confirmed live 2026-08-29 by inspecting
+    a real generated file's box layout (ftyp, free, mdat, moov, in that
+    order). Most web/mobile video players and preview surfaces require (or
+    strongly prefer) moov before mdat to start playback without fetching
+    the entire file first; some refuse to open a non-faststart file at
+    all, which is exactly what happened live — a delivered video "would
+    not open" despite being a byte-valid MP4. `-movflags +faststart`
+    remuxes losslessly (stream copy, no re-encode) to move moov to the
+    front. Applied here once, server-side, so every caller of this
+    endpoint gets a playable file rather than needing to know to remux it
+    themselves."""
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as src:
+        src.write(video_bytes)
+        src_path = src.name
+    dst_path = src_path + ".faststart.mp4"
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", src_path, "-c", "copy", "-movflags", "+faststart", dst_path],
+            check=True, capture_output=True, timeout=60,
+        )
+        with open(dst_path, "rb") as f:
+            return f.read()
+    except Exception:
+        logger.exception("faststart remux failed — returning the original (non-faststart) bytes")
+        return video_bytes
+    finally:
+        for path in (src_path, dst_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def _fetch_file_bytes(file_info: dict, is_video: bool) -> bytes:
     params = {
         "filename": file_info["filename"],
         "subfolder": file_info.get("subfolder", ""),
@@ -96,13 +136,13 @@ def _fetch_file_bytes(file_info: dict) -> bytes:
     }
     resp = httpx.get(f"{_COMFYUI_URL}/view", params=params, timeout=120)
     resp.raise_for_status()
-    return resp.content
+    return _ensure_faststart(resp.content) if is_video else resp.content
 
 
 def _download_output_bytes(history_entry: dict, prompt_id: str) -> bytes:
-    file_info = _first_output_file(history_entry.get("outputs") or {})
+    file_info, is_video = _first_output_file(history_entry.get("outputs") or {})
     if file_info:
-        return _fetch_file_bytes(file_info)
+        return _fetch_file_bytes(file_info, is_video)
 
     # Confirmed live 2026-08-28: a retried submission of an IDENTICAL
     # workflow (same seed/prompt/duration — e.g. run_inference_job_with_
@@ -126,7 +166,7 @@ def _download_output_bytes(history_entry: dict, prompt_id: str) -> bytes:
     candidates = [
         (entry.get("prompt", [0])[0], pid, entry)
         for pid, entry in entries.items()
-        if pid != prompt_id and _first_output_file(entry.get("outputs") or {})
+        if pid != prompt_id and _first_output_file(entry.get("outputs") or {})[0]
     ]
     if not candidates:
         raise RuntimeError(f"No file output found in ComfyUI history entry: {history_entry}")
@@ -134,7 +174,8 @@ def _download_output_bytes(history_entry: dict, prompt_id: str) -> bytes:
     # a reliable recency ordering independent of any timestamp field.
     candidates.sort(key=lambda c: c[0])
     _, _, best_entry = candidates[-1]
-    return _fetch_file_bytes(_first_output_file(best_entry["outputs"]))
+    best_file_info, best_is_video = _first_output_file(best_entry["outputs"])
+    return _fetch_file_bytes(best_file_info, best_is_video)
 
 
 def handler(event: dict) -> dict:

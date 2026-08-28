@@ -28,6 +28,18 @@ WORKDIR /comfyui
 # changes needed per RunPod's own docs.
 RUN pip install --upgrade "runpod>=1.10.1"
 
+# ffmpeg CLI — not guaranteed present in the base image, which mostly relies
+# on PyAV's own bundled/statically-linked ffmpeg libraries for ComfyUI's
+# video muxing rather than a system binary. handler.py shells out to the
+# `ffmpeg` binary directly (subprocess) to remux SaveVideo's output with
+# -movflags +faststart — confirmed live 2026-08-29: without faststart, the
+# moov atom lands after the mdat box (ffmpeg/PyAV's default), which several
+# real players/preview surfaces either refuse to open or can't start
+# playback on without fetching the whole file first. Installed explicitly
+# rather than assumed present.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # ComfyUI-LTXVideo custom node — same package validated live this session.
 RUN git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo.git custom_nodes/ComfyUI-LTXVideo \
     && pip install -r custom_nodes/ComfyUI-LTXVideo/requirements.txt
