@@ -26,6 +26,7 @@ out of scope for wiring the button; QA parity for self-hosted can follow
 separately.
 """
 import logging
+import random
 import time
 import uuid as _uuid
 from typing import Optional
@@ -150,7 +151,23 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
         or 5
     )
 
-    workflow = ltx_workflow.build_workflow(prompt_text, total_duration, lora_path=lora_path)
+    # Explicit random seed — confirmed live 2026-08-28: with no seed
+    # passed, build_workflow() leaves the template's hardcoded seed=0 in
+    # place, so any two calls with identical prompt/duration/lora (e.g.
+    # retrying the same Toon, which is the normal shape of a failed-then-
+    # retried generation) produce byte-identical ComfyUI inputs. ComfyUI
+    # then serves a server-side CACHED result instead of re-executing —
+    # and its /history response for a fully-cached prompt leaves
+    # `outputs` empty even though status_str is "success", which
+    # handler.py's _download_output_bytes can't extract a file from
+    # ("No file output found in ComfyUI history entry"). A random seed
+    # per call sidesteps the whole cache-hit class rather than patching
+    # the worker's output-extraction logic for an edge case production
+    # never actually wants (identical output on retry isn't desirable
+    # here anyway).
+    workflow = ltx_workflow.build_workflow(
+        prompt_text, total_duration, lora_path=lora_path, seed=random.randint(1, 2**31 - 1),
+    )
     if use_allocation_retry:
         return runpod_serverless_client.run_inference_job_with_allocation_retry(endpoint_id, workflow)
     return runpod_serverless_client.run_inference_job(endpoint_id, workflow)
