@@ -26,7 +26,10 @@ out of scope for wiring the button; QA parity for self-hosted can follow
 separately.
 """
 import logging
+import os
 import random
+import subprocess
+import tempfile
 import time
 import uuid as _uuid
 from typing import Optional
@@ -126,6 +129,94 @@ def resolve_ready_lora(variants: list) -> str:
     return variants[0].lora_path
 
 
+def _gather_dialogue(script) -> str:
+    """Joins every shot's dialogue line, in order, into one narration
+    script — this pipeline generates one continuous clip (no per-shot
+    cuts, see module docstring), so audio is synthesized as one
+    continuous narration track rather than per-shot lines that would need
+    cut boundaries this pipeline doesn't have."""
+    lines = [(shot.get("dialogue") or "").strip() for shot in (script.shots or [])]
+    return " ... ".join(line for line in lines if line)
+
+
+def _synthesize_narration(script) -> Optional[bytes]:
+    """Returns MP3 bytes for the script's full dialogue via the same
+    free edge-tts provider already used by the trend engine's faceless
+    reels (app/media/voice.py) — None if the script has no dialogue at
+    all (a pure-action/silent script), since there'd be nothing to
+    narrate. Best-effort: this pipeline had NO audio at all before this
+    change, so a synthesis failure here should degrade to the prior
+    silent-video behavior, not fail a generation that would otherwise
+    succeed."""
+    from app.media.voice import EdgeTTSProvider
+
+    dialogue = _gather_dialogue(script)
+    if not dialogue:
+        return None
+    try:
+        result = EdgeTTSProvider().synthesize(dialogue)
+        return result.asset_bytes
+    except Exception:
+        logger.warning("Narration synthesis failed — video will be delivered silent", exc_info=True)
+        return None
+
+
+def _probe_audio_duration_seconds(audio_bytes: bytes) -> Optional[float]:
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        f.write(audio_bytes)
+        path = f.name
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=20,
+        )
+        if result.returncode != 0:
+            return None
+        return float(result.stdout.strip())
+    except Exception:
+        return None
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _mux_narration_onto_video(video_bytes: bytes, audio_bytes: bytes) -> bytes:
+    """Muxes narration audio onto the (silent) generated video — same
+    ffmpeg invocation shape as app/services/clip_render.py's own
+    audio+video mux, the trend engine's proven pattern for this exact
+    operation. -shortest trims to whichever of the two is shorter rather
+    than leaving a trailing silent/frozen tail, since the video's
+    requested duration is only an approximation of the synthesized
+    narration's real length (see generate_toon_video_selfhosted)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        video_path = os.path.join(tmp_dir, "video.mp4")
+        audio_path = os.path.join(tmp_dir, "audio.mp3")
+        output_path = os.path.join(tmp_dir, "output.mp4")
+        with open(video_path, "wb") as f:
+            f.write(video_bytes)
+        with open(audio_path, "wb") as f:
+            f.write(audio_bytes)
+
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", video_path, "-i", audio_path,
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-shortest",
+                output_path,
+            ],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed muxing narration onto video (exit {result.returncode}): {result.stderr[-2000:]}")
+
+        with open(output_path, "rb") as f:
+            return f.read()
+
+
 def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
                                     duration_seconds: Optional[float] = None,
                                     use_allocation_retry: bool = False) -> bytes:
@@ -151,6 +242,24 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
         or sum(s.get("duration_seconds", 0) for s in (script.shots or []))
         or 5
     )
+
+    # This pipeline generated silent video only until now — no equivalent
+    # to Kling Omni's native audio/lip-sync. Synthesizing narration BEFORE
+    # requesting the video (rather than after) lets the real synthesized
+    # length drive the requested video duration, so the two land close in
+    # total runtime instead of the video's length being a pure guess from
+    # script.total_duration_seconds while the narration runs whatever
+    # length the dialogue actually takes to speak. Only does this when the
+    # CALLER didn't already pass an explicit duration_seconds — an
+    # explicit override (e.g. a caller deliberately requesting a shorter
+    # clip to stay under this GPU tier's VRAM ceiling) must win, or a
+    # long-dialogue script would silently blow the override right back up
+    # to its full narrated length.
+    narration_bytes = _synthesize_narration(script)
+    if narration_bytes and duration_seconds is None:
+        narration_duration = _probe_audio_duration_seconds(narration_bytes)
+        if narration_duration:
+            total_duration = narration_duration
 
     # Explicit random seed — confirmed live 2026-08-28: with no seed
     # passed, build_workflow() leaves the template's hardcoded seed=0 in
@@ -192,10 +301,18 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
         reference_image_filename="reference.png" if reference_image_bytes else None,
     )
     if use_allocation_retry:
-        return runpod_serverless_client.run_inference_job_with_allocation_retry(
+        video_bytes = runpod_serverless_client.run_inference_job_with_allocation_retry(
             endpoint_id, workflow, reference_image_bytes=reference_image_bytes,
         )
-    return runpod_serverless_client.run_inference_job(endpoint_id, workflow, reference_image_bytes=reference_image_bytes)
+    else:
+        video_bytes = runpod_serverless_client.run_inference_job(endpoint_id, workflow, reference_image_bytes=reference_image_bytes)
+
+    if narration_bytes:
+        try:
+            return _mux_narration_onto_video(video_bytes, narration_bytes)
+        except Exception:
+            logger.warning("Failed to mux narration onto the generated video — delivering it silent", exc_info=True)
+    return video_bytes
 
 
 def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:

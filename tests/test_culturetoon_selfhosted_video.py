@@ -19,7 +19,7 @@ from app.models.generation_usage import GenerationUsage
 from app.services.culturetoon_selfhosted_video import (
     build_prompt_from_script, resolve_ready_lora, generate_toon_video_selfhosted,
     generate_video_for_toon_selfhosted, SelfHostedVideoGenerationError,
-    _resilient_commit,
+    _resilient_commit, _gather_dialogue,
 )
 
 
@@ -86,6 +86,20 @@ class TestBuildPromptFromScript:
     def test_no_content_falls_back_to_generic_prompt(self, mocker):
         script = _script(mocker, hook_line=None, shots=[])
         assert build_prompt_from_script(script) == "A character reacts to their day."
+
+
+class TestGatherDialogue:
+    def test_joins_dialogue_lines_in_order(self, mocker):
+        script = _script(mocker, shots=[
+            {"action": "waves", "dialogue": "Hello there"},
+            {"action": "frowns", "dialogue": None},
+            {"action": "points", "dialogue": "Rule 1: be on time"},
+        ])
+        assert _gather_dialogue(script) == "Hello there ... Rule 1: be on time"
+
+    def test_no_dialogue_at_all_returns_empty_string(self, mocker):
+        script = _script(mocker, shots=[{"action": "waves", "dialogue": None}])
+        assert _gather_dialogue(script) == ""
 
 
 class TestResolveReadyLora:
@@ -159,6 +173,113 @@ class TestGenerateToonVideoSelfhosted:
         assert result == b"video-bytes"
         assert mock_build.call_args.kwargs["reference_image_filename"] is None
         mock_run.assert_called_once_with("endpoint-1", {"1": {}}, reference_image_bytes=None)
+
+    def test_dialogue_present_synthesizes_and_muxes_narration(self, mocker):
+        # This pipeline generated silent video only before this — no
+        # equivalent to Kling Omni's native audio. Confirms the full
+        # wire-up: dialogue gathered from shots -> narrated via the same
+        # free edge-tts provider the trend engine's faceless reels already
+        # use -> narration's real duration drives the requested video
+        # length -> narration muxed onto the finished video.
+        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
+        mock_build = mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"silent-video-bytes")
+        mock_synthesize = mocker.patch(
+            "app.media.voice.EdgeTTSProvider.synthesize",
+            return_value=mocker.Mock(asset_bytes=b"narration-bytes"),
+        )
+        mocker.patch(
+            "app.services.culturetoon_selfhosted_video._probe_audio_duration_seconds", return_value=6.5,
+        )
+        mock_mux = mocker.patch(
+            "app.services.culturetoon_selfhosted_video._mux_narration_onto_video",
+            return_value=b"video-with-audio",
+        )
+
+        script = _script(mocker, hook_line="hi", shots=[
+            {"action": "waves", "dialogue": "Hello there"},
+        ], total_duration_seconds=8)
+        variants = [_variant(mocker)]
+        result = generate_toon_video_selfhosted(script, variants, "endpoint-1")
+
+        assert result == b"video-with-audio"
+        mock_synthesize.assert_called_once_with("Hello there")
+        # The synthesized narration's real (probed) duration overrides the
+        # script's own total_duration_seconds guess.
+        assert mock_build.call_args.args[1] == 6.5
+        mock_mux.assert_called_once_with(b"silent-video-bytes", b"narration-bytes")
+
+    def test_explicit_duration_override_wins_over_narration_length(self, mocker):
+        # A caller-supplied duration_seconds (e.g. deliberately staying
+        # under this GPU tier's VRAM ceiling) must not get silently
+        # overridden back up to the full narrated length of a long-
+        # dialogue script — narration audio still gets muxed on, just
+        # trimmed to the shorter of the two (see _mux_narration_onto_video's
+        # own -shortest flag).
+        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
+        mock_build = mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"silent-video-bytes")
+        mocker.patch(
+            "app.media.voice.EdgeTTSProvider.synthesize",
+            return_value=mocker.Mock(asset_bytes=b"narration-bytes"),
+        )
+        mock_probe = mocker.patch("app.services.culturetoon_selfhosted_video._probe_audio_duration_seconds")
+        mocker.patch(
+            "app.services.culturetoon_selfhosted_video._mux_narration_onto_video",
+            return_value=b"video-with-audio",
+        )
+
+        script = _script(mocker, hook_line="hi", shots=[
+            {"action": "waves", "dialogue": "A very long line of dialogue that would narrate for way longer than ten seconds"},
+        ], total_duration_seconds=31)
+        variants = [_variant(mocker)]
+        result = generate_toon_video_selfhosted(script, variants, "endpoint-1", duration_seconds=10)
+
+        assert result == b"video-with-audio"
+        assert mock_build.call_args.args[1] == 10
+        mock_probe.assert_not_called()
+
+    def test_no_dialogue_skips_narration_entirely(self, mocker):
+        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
+        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"silent-video-bytes")
+        mock_synthesize = mocker.patch("app.media.voice.EdgeTTSProvider.synthesize")
+        mock_mux = mocker.patch("app.services.culturetoon_selfhosted_video._mux_narration_onto_video")
+
+        script = _script(mocker, hook_line="hi", shots=[
+            {"action": "waves", "dialogue": None},
+        ], total_duration_seconds=8)
+        variants = [_variant(mocker)]
+        result = generate_toon_video_selfhosted(script, variants, "endpoint-1")
+
+        assert result == b"silent-video-bytes"
+        mock_synthesize.assert_not_called()
+        mock_mux.assert_not_called()
+
+    def test_mux_failure_falls_back_to_silent_video(self, mocker):
+        # Best-effort: this pipeline had no audio at all until now, so a
+        # muxing failure should degrade to the prior (silent) behavior
+        # rather than failing a generation that otherwise succeeded.
+        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
+        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"silent-video-bytes")
+        mocker.patch(
+            "app.media.voice.EdgeTTSProvider.synthesize",
+            return_value=mocker.Mock(asset_bytes=b"narration-bytes"),
+        )
+        mocker.patch("app.services.culturetoon_selfhosted_video._probe_audio_duration_seconds", return_value=None)
+        mocker.patch(
+            "app.services.culturetoon_selfhosted_video._mux_narration_onto_video",
+            side_effect=RuntimeError("ffmpeg exploded"),
+        )
+
+        script = _script(mocker, hook_line="hi", shots=[
+            {"action": "waves", "dialogue": "Hello there"},
+        ], total_duration_seconds=8)
+        variants = [_variant(mocker)]
+        result = generate_toon_video_selfhosted(script, variants, "endpoint-1")
+
+        assert result == b"silent-video-bytes"
 
 
 _SHOTS = [{"shot_number": 1, "duration_seconds": 4, "action": "waves", "expression": "Happy", "dialogue": None}]
