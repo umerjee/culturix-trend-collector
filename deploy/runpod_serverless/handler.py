@@ -41,7 +41,7 @@ logger = logging.getLogger("culturix.runpod_serverless_handler")
 
 _COMFYUI_URL = "http://127.0.0.1:8188"
 _STARTUP_TIMEOUT_SECONDS = int(os.getenv("COMFYUI_STARTUP_TIMEOUT_SECONDS", "120"))
-_JOB_TIMEOUT_SECONDS = int(os.getenv("COMFYUI_JOB_TIMEOUT_SECONDS", "600"))
+_JOB_TIMEOUT_SECONDS = int(os.getenv("COMFYUI_JOB_TIMEOUT_SECONDS", "1200"))
 _POLL_INTERVAL_SECONDS = 3
 
 

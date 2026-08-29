@@ -80,13 +80,27 @@ def _extract_output_bytes(output: dict) -> bytes:
     )
 
 
-def run_inference_job(endpoint_id: str, workflow_json: dict, timeout_seconds: int = 600,
+def run_inference_job(endpoint_id: str, workflow_json: dict, timeout_seconds: int = 1200,
                        poll_interval: int = _POLL_INTERVAL, reference_image_bytes: bytes = None,
                        narration_audio_bytes: bytes = None) -> bytes:
     """Submits a ComfyUI workflow to a RunPod Serverless endpoint and blocks
     until it completes. Returns the output video's raw bytes. Raises
     RunPodServerlessError on a FAILED job or an unrecognized output shape,
     TimeoutError if it never reaches a terminal status in time.
+
+    Default raised from 600s to 1200s — confirmed live 2026-08-29/30: three
+    separate real jobs, on three different (freshly-recycled) workers,
+    each failed with the worker's own internal "ComfyUI job did not
+    complete within 600s" error (deploy/runpod_serverless/handler.py's
+    _JOB_TIMEOUT_SECONDS, matching this client's own default), clustering
+    tightly around 530-607s of actual executionTime rather than the wildly
+    varying numbers a genuinely hung process would show — strong evidence
+    this was real (if slow) progress running out of headroom, not a stuck
+    worker, especially right after an image rebuild where a cold worker
+    also has to pull a fresh multi-GB image and reload the LTX-2 checkpoint
+    from the Network Volume before generation even starts. The worker's own
+    COMFYUI_JOB_TIMEOUT_SECONDS was raised to match via the RunPod
+    template's env vars.
 
     reference_image_bytes, when given, is base64-encoded and sent alongside
     the workflow — the worker's handler.py uploads it to ComfyUI's own
@@ -151,7 +165,7 @@ def cancel_job(endpoint_id: str, job_id: str) -> None:
         logger.warning("Failed to cancel orphaned Serverless job %s on endpoint %s: %s", job_id, endpoint_id, exc)
 
 
-def run_inference_job_with_allocation_retry(endpoint_id: str, workflow_json: dict, timeout_seconds: int = 600,
+def run_inference_job_with_allocation_retry(endpoint_id: str, workflow_json: dict, timeout_seconds: int = 1200,
                                              poll_interval: int = _POLL_INTERVAL,
                                              max_retries: int = None, backoff_seconds: float = None,
                                              reference_image_bytes: bytes = None,
