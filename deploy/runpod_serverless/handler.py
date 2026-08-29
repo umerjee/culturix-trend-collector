@@ -194,13 +194,49 @@ def _download_output_bytes(history_entry: dict, prompt_id: str) -> tuple:
     return _fetch_file_bytes(best_file_info, best_is_video)
 
 
+def _upload_reference_image(image_base64: str) -> str:
+    """Uploads a reference photo to ComfyUI's own /upload/image endpoint so
+    a LoadImage node in the workflow can reference it by filename —
+    LoadImage reads from ComfyUI's local input directory, not a URL or
+    inline bytes, so the image has to land there before the workflow is
+    submitted. Returns the filename ComfyUI actually stored it under."""
+    image_bytes = base64.b64decode(image_base64)
+    resp = httpx.post(
+        f"{_COMFYUI_URL}/upload/image",
+        files={"image": ("reference.png", image_bytes, "image/png")},
+        data={"overwrite": "true"},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    filename = data.get("name")
+    if not filename:
+        raise RuntimeError(f"ComfyUI /upload/image returned no filename: {data}")
+    return filename
+
+
 def handler(event: dict) -> dict:
-    workflow_json = (event.get("input") or {}).get("workflow")
+    input_data = event.get("input") or {}
+    workflow_json = input_data.get("workflow")
     if not workflow_json:
         return {"error": "input.workflow is required (ComfyUI API-format JSON)"}
 
     try:
         _wait_for_comfyui_ready()
+
+        reference_image_base64 = input_data.get("reference_image_base64")
+        if reference_image_base64:
+            uploaded_filename = _upload_reference_image(reference_image_base64)
+            load_image_nodes = [
+                node for node in workflow_json.values() if node.get("class_type") == "LoadImage"
+            ]
+            if not load_image_nodes:
+                raise RuntimeError(
+                    "reference_image_base64 was provided but the workflow has no LoadImage node to wire it into"
+                )
+            for node in load_image_nodes:
+                node["inputs"]["image"] = uploaded_filename
+
         prompt_id = _submit_workflow(workflow_json)
         logger.info("Submitted ComfyUI prompt %s", prompt_id)
         history_entry = _wait_for_completion(prompt_id)

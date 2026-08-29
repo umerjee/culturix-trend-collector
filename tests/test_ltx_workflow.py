@@ -108,6 +108,61 @@ class TestBuildWorkflow:
         assert result["2"]["inputs"]["text"] == "a character waves hello"
         assert result["3"]["inputs"]["text"] == "placeholder negative"
 
+    def test_reference_image_replaces_empty_latent_with_img_to_video(self):
+        # Confirmed live 2026-08-29/30: pure text-to-video + character LoRA
+        # (trained on stills, never motion) produced only 2-3 held poses,
+        # not continuous animation. Image-to-video anchors the first frame
+        # on a real photo instead, per LTX's own documented pattern.
+        workflow = build_workflow(
+            "a character waves hello", duration_seconds=5, reference_image_filename="hans_ref.png",
+        )
+
+        assert "4" not in workflow, "the empty-latent node should be replaced, not left dangling"
+        img2vid_nodes = [n for n, node in workflow.items() if node["class_type"] == "LTXVImgToVideo"]
+        assert len(img2vid_nodes) == 1
+        img2vid_id = img2vid_nodes[0]
+        img2vid = workflow[img2vid_id]["inputs"]
+        assert img2vid["positive"] == ["2", 0]
+        assert img2vid["negative"] == ["3", 0]
+        assert img2vid["vae"] == ["1", 2]
+        assert img2vid["width"] == 720
+        assert img2vid["height"] == 1280
+        assert img2vid["length"] == 120  # 5s * 24fps, same as the text-to-video path
+        assert 0 < img2vid["strength"] <= 1
+
+        load_image_nodes = [n for n, node in workflow.items() if node["class_type"] == "LoadImage"]
+        assert len(load_image_nodes) == 1
+        assert workflow[load_image_nodes[0]]["inputs"]["image"] == "hans_ref.png"
+        assert img2vid["image"] == [load_image_nodes[0], 0]
+
+        # KSampler must be rewired to the img2vid node's own outputs, not
+        # straight to the original CLIPTextEncode/empty-latent nodes —
+        # LTXVImgToVideo's positive/negative outputs carry the image
+        # conditioning merged in, which a direct wire would skip entirely.
+        assert workflow["6"]["inputs"]["positive"] == [img2vid_id, 0]
+        assert workflow["6"]["inputs"]["negative"] == [img2vid_id, 1]
+        assert workflow["6"]["inputs"]["latent_image"] == [img2vid_id, 2]
+
+    def test_no_reference_image_keeps_the_plain_text_to_video_path(self):
+        workflow = build_workflow("prompt", duration_seconds=5)
+
+        assert "4" in workflow
+        assert not [n for n, node in workflow.items() if node["class_type"] == "LTXVImgToVideo"]
+        assert not [n for n, node in workflow.items() if node["class_type"] == "LoadImage"]
+        assert workflow["6"]["inputs"]["latent_image"] == ["4", 0]
+
+    def test_reference_image_without_latent_video_node_raises(self, tmp_path, monkeypatch):
+        workflow = {
+            "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "ltx.safetensors"}},
+            "2": {"class_type": "CLIPTextEncode", "_meta": {"title": "Positive"}, "inputs": {"text": ""}},
+            "3": {"class_type": "CLIPTextEncode", "_meta": {"title": "Negative"}, "inputs": {"text": "bad"}},
+        }
+        path = tmp_path / "no_latent.json"
+        path.write_text(json.dumps(workflow))
+        monkeypatch.setenv("LTX_WORKFLOW_PATH", str(path))
+        with pytest.raises(LTXWorkflowError):
+            build_workflow("prompt", duration_seconds=5, reference_image_filename="ref.png")
+
     def test_injects_seed_into_random_noise_when_present(self, tmp_path, monkeypatch):
         workflow = {
             "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "ltx.safetensors"}},

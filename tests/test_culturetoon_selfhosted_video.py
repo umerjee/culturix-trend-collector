@@ -36,11 +36,13 @@ def _script(mocker, hook_line=None, shots=None, total_duration_seconds=None):
     return s
 
 
-def _variant(mocker, name="Kumar", lora_status="ready", lora_path="loras/kumar.safetensors"):
+def _variant(mocker, name="Kumar", lora_status="ready", lora_path="loras/kumar.safetensors",
+             image_url="https://example.com/kumar.png"):
     v = mocker.Mock()
     v.name = name
     v.lora_status = lora_status
     v.lora_path = lora_path
+    v.image_url = image_url
     return v
 
 
@@ -112,17 +114,23 @@ class TestGenerateToonVideoSelfhosted:
         mock_run.assert_not_called()
 
     def test_full_success_path(self, mocker):
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mock_build = mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
         mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-bytes")
+        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
 
         script = _script(mocker, hook_line="hi", shots=[], total_duration_seconds=8)
         variants = [_variant(mocker)]
         result = generate_toon_video_selfhosted(script, variants, "endpoint-1")
         assert result == b"video-bytes"
-        mock_run.assert_called_once_with("endpoint-1", {"1": {}})
+        # The primary cast member's own photo anchors the first frame —
+        # confirmed live 2026-08-29/30: text-to-video with only a LoRA for
+        # identity produced a handful of held poses, not real animation.
+        assert mock_build.call_args.kwargs["reference_image_filename"] == "reference.png"
+        mock_run.assert_called_once_with("endpoint-1", {"1": {}}, reference_image_bytes=b"ref-image-bytes")
 
     def test_use_allocation_retry_routes_through_the_retrying_client_call(self, mocker):
         mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
         mock_plain = mocker.patch("app.media.runpod_serverless_client.run_inference_job")
         mock_retry = mocker.patch(
             "app.media.runpod_serverless_client.run_inference_job_with_allocation_retry",
@@ -134,8 +142,23 @@ class TestGenerateToonVideoSelfhosted:
         result = generate_toon_video_selfhosted(script, variants, "endpoint-1", use_allocation_retry=True)
 
         assert result == b"video-bytes"
-        mock_retry.assert_called_once_with("endpoint-1", {"1": {}})
+        mock_retry.assert_called_once_with("endpoint-1", {"1": {}}, reference_image_bytes=b"ref-image-bytes")
         mock_plain.assert_not_called()
+
+    def test_reference_image_fetch_failure_falls_back_to_text_to_video(self, mocker):
+        # Best-effort: a variant whose photo can't be fetched shouldn't
+        # fail the whole generation over it.
+        mock_build = mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-bytes")
+        mocker.patch("httpx.get", side_effect=Exception("connection refused"))
+
+        script = _script(mocker, hook_line="hi", shots=[], total_duration_seconds=8)
+        variants = [_variant(mocker)]
+        result = generate_toon_video_selfhosted(script, variants, "endpoint-1")
+
+        assert result == b"video-bytes"
+        assert mock_build.call_args.kwargs["reference_image_filename"] is None
+        mock_run.assert_called_once_with("endpoint-1", {"1": {}}, reference_image_bytes=None)
 
 
 _SHOTS = [{"shot_number": 1, "duration_seconds": 4, "action": "waves", "expression": "Happy", "dialogue": None}]

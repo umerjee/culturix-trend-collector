@@ -140,6 +140,7 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
     plain call, since a cold Serverless endpoint failing to allocate a
     worker is a distinct failure mode from an individual clip's own
     generation failing."""
+    import httpx
     from app.media import ltx_workflow, runpod_serverless_client
 
     lora_path = resolve_ready_lora(variants)
@@ -165,12 +166,36 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
     # the worker's output-extraction logic for an edge case production
     # never actually wants (identical output on retry isn't desirable
     # here anyway).
+    # Confirmed live 2026-08-29/30: pure text-to-video with only a
+    # character LoRA for identity (the LoRA trained on static reference
+    # images, never on motion) produced a video that was really just 2-3
+    # held poses with abrupt transitions between them, not continuous
+    # animation — asking one LoRA to carry both identity AND not break the
+    # base model's motion generation turned out to be a harder ask than
+    # the ecosystem is actually built for. Anchoring the first frame on
+    # the primary cast member's own real photo via image-to-video (LTX's
+    # own documented, well-supported pattern) grounds identity from the
+    # photo instead, leaving the base model free to generate motion
+    # naturally from that anchor. Best-effort: if the photo can't be
+    # fetched for any reason, fall back to the old empty-latent path
+    # rather than failing the whole generation over a missing image.
+    reference_image_bytes = None
+    reference_image_url = variants[0].image_url if variants else None
+    if reference_image_url:
+        try:
+            reference_image_bytes = httpx.get(reference_image_url, timeout=30).content
+        except Exception:
+            logger.warning("Failed to fetch reference image %s — falling back to text-to-video", reference_image_url, exc_info=True)
+
     workflow = ltx_workflow.build_workflow(
         prompt_text, total_duration, lora_path=lora_path, seed=random.randint(1, 2**31 - 1),
+        reference_image_filename="reference.png" if reference_image_bytes else None,
     )
     if use_allocation_retry:
-        return runpod_serverless_client.run_inference_job_with_allocation_retry(endpoint_id, workflow)
-    return runpod_serverless_client.run_inference_job(endpoint_id, workflow)
+        return runpod_serverless_client.run_inference_job_with_allocation_retry(
+            endpoint_id, workflow, reference_image_bytes=reference_image_bytes,
+        )
+    return runpod_serverless_client.run_inference_job(endpoint_id, workflow, reference_image_bytes=reference_image_bytes)
 
 
 def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:

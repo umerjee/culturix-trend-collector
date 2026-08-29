@@ -81,15 +81,24 @@ def _extract_output_bytes(output: dict) -> bytes:
 
 
 def run_inference_job(endpoint_id: str, workflow_json: dict, timeout_seconds: int = 600,
-                       poll_interval: int = _POLL_INTERVAL) -> bytes:
+                       poll_interval: int = _POLL_INTERVAL, reference_image_bytes: bytes = None) -> bytes:
     """Submits a ComfyUI workflow to a RunPod Serverless endpoint and blocks
     until it completes. Returns the output video's raw bytes. Raises
     RunPodServerlessError on a FAILED job or an unrecognized output shape,
-    TimeoutError if it never reaches a terminal status in time."""
+    TimeoutError if it never reaches a terminal status in time.
+
+    reference_image_bytes, when given, is base64-encoded and sent alongside
+    the workflow — the worker's handler.py uploads it to ComfyUI's own
+    input directory and wires it into the workflow's LoadImage node (see
+    that file's _upload_reference_image), since LoadImage reads from a
+    local filename, not inline bytes or a URL."""
+    job_input = {"workflow": workflow_json}
+    if reference_image_bytes is not None:
+        job_input["reference_image_base64"] = base64.b64encode(reference_image_bytes).decode("ascii")
     submit_resp = httpx.post(
         f"{_API_BASE}/{endpoint_id}/run",
         headers=_headers(),
-        json={"input": {"workflow": workflow_json}},
+        json={"input": job_input},
         timeout=30,
     )
     submit_resp.raise_for_status()
@@ -132,7 +141,8 @@ def cancel_job(endpoint_id: str, job_id: str) -> None:
 
 def run_inference_job_with_allocation_retry(endpoint_id: str, workflow_json: dict, timeout_seconds: int = 600,
                                              poll_interval: int = _POLL_INTERVAL,
-                                             max_retries: int = None, backoff_seconds: float = None) -> bytes:
+                                             max_retries: int = None, backoff_seconds: float = None,
+                                             reference_image_bytes: bytes = None) -> bytes:
     """Wraps run_inference_job with a retry specifically around allocation
     failures — RunPod couldn't spin up a worker in time, surfaced here as
     either an explicit FAILED status (RunPodServerlessError) or the job
@@ -153,7 +163,10 @@ def run_inference_job_with_allocation_retry(endpoint_id: str, workflow_json: dic
     last_exc = None
     for attempt in range(max_retries + 1):
         try:
-            return run_inference_job(endpoint_id, workflow_json, timeout_seconds=timeout_seconds, poll_interval=poll_interval)
+            return run_inference_job(
+                endpoint_id, workflow_json, timeout_seconds=timeout_seconds, poll_interval=poll_interval,
+                reference_image_bytes=reference_image_bytes,
+            )
         except (RunPodServerlessError, TimeoutError) as exc:
             last_exc = exc
             # Confirmed live 2026-08-25: without cancelling here, a single

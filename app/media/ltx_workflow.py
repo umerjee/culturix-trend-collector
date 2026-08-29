@@ -54,7 +54,15 @@ _LORA_NODE_CLASS = "LoraLoaderModelOnly"
 # (class_type, seed input key) pairs to try, in order — see note above.
 _SEED_NODE_CANDIDATES = [("RandomNoise", "noise_seed"), ("KSampler", "seed")]
 _LATENT_VIDEO_NODE_CLASS = "EmptyLTXVLatentVideo"
+_CHECKPOINT_NODE_CLASS = "CheckpointLoaderSimple"
+_SAMPLER_NODE_CLASS = "KSampler"
+_LOAD_IMAGE_NODE_CLASS = "LoadImage"
+_IMG_TO_VIDEO_NODE_CLASS = "LTXVImgToVideo"
 _DEFAULT_FPS = 24
+# Community-documented starting point for LTX-2's image-to-video strength
+# (1.0 pins the first frame completely, 0.0 ignores the image entirely) —
+# not tuned against our own outputs yet, just the ecosystem's own default.
+_DEFAULT_IMG_STRENGTH = 0.8
 
 
 class LTXWorkflowError(Exception):
@@ -93,13 +101,33 @@ def _select_positive_prompt_nodes(workflow: dict, prompt_nodes: list) -> list:
     return [node_id for node_id in prompt_nodes if not (workflow[node_id].get("inputs") or {}).get("text", "")]
 
 
+def _next_node_id(workflow: dict) -> str:
+    existing = [int(k) for k in workflow.keys() if k.lstrip("-").isdigit()]
+    return str((max(existing) if existing else 0) + 1)
+
+
 def build_workflow(prompt_text: str, duration_seconds: float, lora_path: Optional[str] = None,
-                    seed: Optional[int] = None) -> dict:
+                    seed: Optional[int] = None, reference_image_filename: Optional[str] = None) -> dict:
     """Returns a deep copy of the loaded template with the prompt text (and
-    optionally a LoRA path / duration / seed) injected. Raises
-    LTXWorkflowError if the template doesn't contain the expected node
-    types — a clear failure at build time rather than a confusing rejection
-    from ComfyUI itself."""
+    optionally a LoRA path / duration / seed / reference image) injected.
+    Raises LTXWorkflowError if the template doesn't contain the expected
+    node types — a clear failure at build time rather than a confusing
+    rejection from ComfyUI itself.
+
+    reference_image_filename anchors the first frame on a real character
+    photo (already uploaded to the pod's ComfyUI input directory — see
+    deploy/runpod_serverless/handler.py's upload step, which is what
+    supplies this filename) via LTXVImgToVideo, instead of generating
+    purely from an empty/noise latent. Confirmed live 2026-08-29/30: pure
+    text-to-video with only a character LoRA for identity (the LoRA
+    trained on static reference images, never on motion) produced a video
+    that was really just 2-3 held poses with abrupt transitions between
+    them, not continuous animation — asking one LoRA to carry both
+    identity AND not break the base model's motion generation turned out
+    to be a harder ask than the ecosystem is actually built for.
+    Image-to-video is LTX's own documented, well-supported pattern for
+    grounding identity from a real photo while still letting the base
+    model generate motion naturally from that anchor."""
     workflow = copy.deepcopy(load_workflow_template())
 
     prompt_nodes = _nodes_of_class(workflow, _PROMPT_NODE_CLASS)
@@ -147,8 +175,58 @@ def build_workflow(prompt_text: str, duration_seconds: float, lora_path: Optiona
                 break
 
     latent_video_nodes = _nodes_of_class(workflow, _LATENT_VIDEO_NODE_CLASS)
-    if latent_video_nodes and duration_seconds:
-        frames = max(1, round(duration_seconds * _DEFAULT_FPS))
+    frames = max(1, round(duration_seconds * _DEFAULT_FPS)) if duration_seconds else None
+
+    if reference_image_filename:
+        if not latent_video_nodes:
+            raise LTXWorkflowError(
+                f"reference_image_filename given but no {_LATENT_VIDEO_NODE_CLASS} node found to replace"
+            )
+        checkpoint_nodes = _nodes_of_class(workflow, _CHECKPOINT_NODE_CLASS)
+        if not checkpoint_nodes:
+            raise LTXWorkflowError(f"No {_CHECKPOINT_NODE_CLASS} node found for the VAE input")
+        positive_nodes = _select_positive_prompt_nodes(workflow, prompt_nodes)
+        negative_nodes = [n for n in prompt_nodes if n not in positive_nodes]
+        if len(positive_nodes) != 1 or len(negative_nodes) != 1:
+            raise LTXWorkflowError(
+                "Image-to-video conditioning needs exactly one positive and one negative "
+                f"{_PROMPT_NODE_CLASS} node, found {len(positive_nodes)} positive / {len(negative_nodes)} negative"
+            )
+
+        base_node_id = latent_video_nodes[0]
+        base_inputs = workflow[base_node_id]["inputs"]
+
+        load_image_id = _next_node_id(workflow)
+        workflow[load_image_id] = {
+            "class_type": _LOAD_IMAGE_NODE_CLASS,
+            "_meta": {"title": "Character reference photo (injected by ltx_workflow.py)"},
+            "inputs": {"image": reference_image_filename},
+        }
+
+        img2vid_id = _next_node_id(workflow)
+        workflow[img2vid_id] = {
+            "class_type": _IMG_TO_VIDEO_NODE_CLASS,
+            "_meta": {"title": "Anchor first frame on character photo (injected by ltx_workflow.py)"},
+            "inputs": {
+                "positive": [positive_nodes[0], 0],
+                "negative": [negative_nodes[0], 0],
+                "vae": [checkpoint_nodes[0], 2],
+                "image": [load_image_id, 0],
+                "width": base_inputs.get("width", 720),
+                "height": base_inputs.get("height", 1280),
+                "length": frames or base_inputs.get("length", 97),
+                "batch_size": base_inputs.get("batch_size", 1),
+                "strength": _DEFAULT_IMG_STRENGTH,
+            },
+        }
+
+        for node_id in _nodes_of_class(workflow, _SAMPLER_NODE_CLASS):
+            workflow[node_id]["inputs"]["positive"] = [img2vid_id, 0]
+            workflow[node_id]["inputs"]["negative"] = [img2vid_id, 1]
+            workflow[node_id]["inputs"]["latent_image"] = [img2vid_id, 2]
+
+        del workflow[base_node_id]
+    elif latent_video_nodes and frames:
         for node_id in latent_video_nodes:
             workflow[node_id]["inputs"]["length"] = frames
     elif duration_seconds and not latent_video_nodes:

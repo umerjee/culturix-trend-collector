@@ -22,7 +22,7 @@
   "5": {
     "class_type": "LoraLoaderModelOnly",
     "_meta": { "title": "Character LoRA (lora_name injected by ltx_workflow.py, skipped if none)" },
-    "inputs": { "model": ["1", 0], "lora_name": "", "strength_model": 1.0 }
+    "inputs": { "model": ["1", 0], "lora_name": "", "strength_model": 0.6 }
   },
   "6": {
     "class_type": "KSampler",
