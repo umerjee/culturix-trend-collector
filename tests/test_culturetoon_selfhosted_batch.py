@@ -236,6 +236,53 @@ class TestRunSelfhostedVideoBatch:
 
         mock_generate.assert_not_called()
 
+    def test_no_elevenlabs_key_configured_passes_none(self, db, user_id, monkeypatch, mocker):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        variant_id = _make_variant(db, user_id, brand["id"])
+        _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
+        monkeypatch.setenv("SELFHOSTED_VIDEO_BRAND_IDS", brand["id"])
+        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-123")
+
+        mock_generate = mocker.patch(
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
+            return_value=b"video-bytes",
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://example.com/video.mp4")
+
+        run_selfhosted_video_batch()
+
+        assert mock_generate.call_args.kwargs["elevenlabs_api_key"] is None
+
+    def test_elevenlabs_key_configured_is_decrypted_and_passed_to_every_script(self, db, user_id, monkeypatch, mocker):
+        from app.social.crypto import encrypt
+
+        brand = culturetoons.create_brand({"user_id": user_id})
+        variant_id = _make_variant(db, user_id, brand["id"])
+        _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
+        _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
+        monkeypatch.setenv("SELFHOSTED_VIDEO_BRAND_IDS", brand["id"])
+        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-123")
+
+        session = db()
+        try:
+            brand_row = session.query(CharacterBrand).filter_by(id=uuid.UUID(brand["id"])).first()
+            brand_row.elevenlabs_api_key_encrypted = encrypt("sk-real-key")
+            session.commit()
+        finally:
+            session.close()
+
+        mock_generate = mocker.patch(
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
+            return_value=b"video-bytes",
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://example.com/video.mp4")
+
+        run_selfhosted_video_batch()
+
+        assert mock_generate.call_count == 2
+        for call in mock_generate.call_args_list:
+            assert call.kwargs["elevenlabs_api_key"] == "sk-real-key"
+
     def test_only_the_first_job_of_the_window_gets_allocation_retry(self, db, user_id, monkeypatch, mocker):
         brand = culturetoons.create_brand({"user_id": user_id})
         variant_id = _make_variant(db, user_id, brand["id"])

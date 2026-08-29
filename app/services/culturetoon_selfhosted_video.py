@@ -160,20 +160,86 @@ def _gather_dialogue(script) -> str:
     return " ... ".join(line for line in lines if line)
 
 
-def _synthesize_narration(script) -> Optional[bytes]:
-    """Returns MP3 bytes for the script's full dialogue via the same
-    free edge-tts provider already used by the trend engine's faceless
-    reels (app/media/voice.py) — None if the script has no dialogue at
-    all (a pure-action/silent script), since there'd be nothing to
-    narrate. Best-effort: this pipeline had NO audio at all before this
-    change, so a synthesis failure here should degrade to the prior
-    silent-video behavior, not fail a generation that would otherwise
-    succeed."""
+def _synthesize_narration_elevenlabs(script, api_key: str, voice_id: str) -> bytes:
+    """Per-shot ElevenLabs synthesis concatenated into one track — mirrors
+    app/services/culturetoon_video.py::_dub_dialogue exactly (the Kling
+    path's own ElevenLabs integration), reused here so self-hosted
+    narration quality matches what Kling-path users already get when a
+    brand has ElevenLabs configured. Confirmed live 2026-08-30: the
+    self-hosted path was instead always using edge-tts's single free
+    generic voice (en-US-AriaNeural, hardcoded, no per-character casting)
+    regardless of what voice_provider/elevenlabs_voice_id a variant had
+    set — a real, noticeable quality gap versus Kling's own native voice
+    or its ElevenLabs fallback."""
+    from app.media.elevenlabs_voice import ElevenLabsProvider, ElevenLabsError
+
+    if not voice_id:
+        raise ElevenLabsError("voice_provider is 'elevenlabs' but the character variant has no elevenlabs_voice_id set")
+
+    provider = ElevenLabsProvider(api_key)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        segment_paths = []
+        for i, shot in enumerate(script.shots or []):
+            dialogue = (shot.get("dialogue") or "").strip()
+            if not dialogue:
+                continue
+            audio_bytes = provider.synthesize(dialogue, voice_id)
+            seg_path = os.path.join(tmp_dir, f"seg_{i}.mp3")
+            with open(seg_path, "wb") as f:
+                f.write(audio_bytes)
+            segment_paths.append(seg_path)
+
+        if not segment_paths:
+            raise ElevenLabsError("No dialogue segments to synthesize")
+
+        list_path = os.path.join(tmp_dir, "concat_list.txt")
+        with open(list_path, "w", encoding="utf-8") as f:
+            for p in segment_paths:
+                f.write(f"file '{p}'\n")
+        audio_path = os.path.join(tmp_dir, "narration.mp3")
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", audio_path],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            raise ElevenLabsError(f"ffmpeg failed concatenating narration segments: {result.stderr[-1000:]}")
+        with open(audio_path, "rb") as f:
+            return f.read()
+
+
+def _synthesize_narration(script, variants: list, elevenlabs_api_key: Optional[str] = None) -> Optional[bytes]:
+    """Returns MP3 bytes for the script's full dialogue, or None if the
+    script has no dialogue at all (a pure-action/silent script) since
+    there'd be nothing to narrate.
+
+    Uses ElevenLabs (per-shot synthesis, same as the Kling path) when the
+    primary cast member opts into it (variant.voice_provider ==
+    "elevenlabs") AND the caller supplied a decrypted brand API key AND
+    the variant has an elevenlabs_voice_id set — otherwise falls back to
+    the free edge-tts provider already used by the trend engine's faceless
+    reels (app/media/voice.py), same fail-open philosophy as the Kling
+    path's own voice_provider handling in culturetoon_video.py. Best-
+    effort throughout: a synthesis failure degrades to a silent video
+    rather than failing a generation that would otherwise succeed."""
     from app.media.voice import EdgeTTSProvider
 
     dialogue = _gather_dialogue(script)
     if not dialogue:
         return None
+
+    primary_variant = variants[0] if variants else None
+    use_elevenlabs = (
+        primary_variant is not None
+        and getattr(primary_variant, "voice_provider", None) == "elevenlabs"
+        and elevenlabs_api_key
+        and getattr(primary_variant, "elevenlabs_voice_id", None)
+    )
+    if use_elevenlabs:
+        try:
+            return _synthesize_narration_elevenlabs(script, elevenlabs_api_key, primary_variant.elevenlabs_voice_id)
+        except Exception:
+            logger.warning("ElevenLabs narration failed — falling back to edge-tts", exc_info=True)
+
     try:
         result = EdgeTTSProvider().synthesize(dialogue)
         return result.asset_bytes
@@ -203,45 +269,11 @@ def _probe_audio_duration_seconds(audio_bytes: bytes) -> Optional[float]:
             pass
 
 
-def _mux_narration_onto_video(video_bytes: bytes, audio_bytes: bytes) -> bytes:
-    """Muxes narration audio onto the (silent) generated video — same
-    ffmpeg invocation shape as app/services/clip_render.py's own
-    audio+video mux, the trend engine's proven pattern for this exact
-    operation. -shortest trims to whichever of the two is shorter rather
-    than leaving a trailing silent/frozen tail, since the video's
-    requested duration is only an approximation of the synthesized
-    narration's real length (see generate_toon_video_selfhosted)."""
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        video_path = os.path.join(tmp_dir, "video.mp4")
-        audio_path = os.path.join(tmp_dir, "audio.mp3")
-        output_path = os.path.join(tmp_dir, "output.mp4")
-        with open(video_path, "wb") as f:
-            f.write(video_bytes)
-        with open(audio_path, "wb") as f:
-            f.write(audio_bytes)
-
-        result = subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-i", video_path, "-i", audio_path,
-                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                "-map", "0:v:0", "-map", "1:a:0",
-                "-shortest",
-                output_path,
-            ],
-            capture_output=True, text=True, timeout=120,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg failed muxing narration onto video (exit {result.returncode}): {result.stderr[-2000:]}")
-
-        with open(output_path, "rb") as f:
-            return f.read()
-
-
 def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
                                     duration_seconds: Optional[float] = None,
                                     use_allocation_retry: bool = False,
-                                    background=None) -> bytes:
+                                    background=None,
+                                    elevenlabs_api_key: Optional[str] = None) -> bytes:
     """Returns raw video bytes for the caller to persist via
     app.media.storage.upload(). Raises SelfHostedVideoGenerationError (cast
     not ready) or whatever app.media.runpod_serverless_client/ltx_workflow
@@ -258,7 +290,16 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
     build_prompt_from_script) — this function doesn't resolve it itself
     (no DB session assumption here, callers already have one), so a
     caller that wants Location context in the prompt must fetch and pass
-    it explicitly."""
+    it explicitly.
+
+    elevenlabs_api_key: the primary cast member's brand's own decrypted
+    ElevenLabs key, when voice_provider="elevenlabs" — this function
+    doesn't resolve or decrypt it itself (same no-DB-session reasoning as
+    background above), so a caller that wants ElevenLabs narration instead
+    of the edge-tts fallback must fetch and decrypt it explicitly (see
+    generate_video_for_toon_selfhosted and culturetoon_selfhosted_batch.py
+    for the two existing examples, both mirroring app/services/
+    culturetoon_video.py's identical decrypt-and-pass pattern)."""
     import httpx
     from app.media import ltx_workflow, runpod_serverless_client
 
@@ -283,7 +324,7 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
     # clip to stay under this GPU tier's VRAM ceiling) must win, or a
     # long-dialogue script would silently blow the override right back up
     # to its full narrated length.
-    narration_bytes = _synthesize_narration(script)
+    narration_bytes = _synthesize_narration(script, variants, elevenlabs_api_key=elevenlabs_api_key)
     if narration_bytes and duration_seconds is None:
         narration_duration = _probe_audio_duration_seconds(narration_bytes)
         if narration_duration:
@@ -328,18 +369,23 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
         prompt_text, total_duration, lora_path=lora_path, seed=random.randint(1, 2**31 - 1),
         reference_image_filename="reference.png" if reference_image_bytes else None,
     )
+    # narration_bytes, when present, is sent along with the job and muxed
+    # onto the video by the RunPod worker itself (deploy/runpod_serverless/
+    # handler.py::_mux_narration_audio) — encoding happens directly on
+    # RunPod instead of this function downloading a silent video and
+    # running a separate local ffmpeg pass, so what comes back here is
+    # already the final dubbed file (or the silent one, if muxing failed
+    # server-side — see that function's own best-effort fallback).
     if use_allocation_retry:
         video_bytes = runpod_serverless_client.run_inference_job_with_allocation_retry(
             endpoint_id, workflow, reference_image_bytes=reference_image_bytes,
+            narration_audio_bytes=narration_bytes,
         )
     else:
-        video_bytes = runpod_serverless_client.run_inference_job(endpoint_id, workflow, reference_image_bytes=reference_image_bytes)
-
-    if narration_bytes:
-        try:
-            return _mux_narration_onto_video(video_bytes, narration_bytes)
-        except Exception:
-            logger.warning("Failed to mux narration onto the generated video — delivering it silent", exc_info=True)
+        video_bytes = runpod_serverless_client.run_inference_job(
+            endpoint_id, workflow, reference_image_bytes=reference_image_bytes,
+            narration_audio_bytes=narration_bytes,
+        )
     return video_bytes
 
 
@@ -358,8 +404,10 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
     from app.models.toon_script import ToonScript
     from app.models.toon_background import ToonBackground
     from app.models.character_variant import CharacterVariant
+    from app.models.character_brand import CharacterBrand
     from app.media import storage, runpod_serverless_client
     from app.services.culturetoon_usage import record_usage, estimate_selfhosted_video_cost
+    from app.social.crypto import decrypt
     import os
 
     session = SessionLocal()
@@ -416,9 +464,23 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
         if background_id:
             background = session.query(ToonBackground).filter_by(id=background_id).first()
 
+        # Confirmed live 2026-08-30: this path always used edge-tts's one
+        # free generic voice, regardless of what voice_provider/
+        # elevenlabs_voice_id a variant had — a real quality gap versus
+        # what the Kling path already offers. Same resolve-and-decrypt
+        # pattern as app/services/culturetoon_video.py::generate_video_
+        # for_toon: the primary cast member drives voice_provider for the
+        # whole video, and a missing/absent brand key fails open to
+        # edge-tts rather than blocking generation.
+        elevenlabs_api_key = None
+        if variants and variants[0].voice_provider == "elevenlabs":
+            brand = session.query(CharacterBrand).filter_by(id=toon.brand_id).first()
+            if brand and brand.elevenlabs_api_key_encrypted:
+                elevenlabs_api_key = decrypt(brand.elevenlabs_api_key_encrypted)
+
         video_bytes = generate_toon_video_selfhosted(
             script, variants, endpoint_id, duration_seconds=duration, use_allocation_retry=True,
-            background=background,
+            background=background, elevenlabs_api_key=elevenlabs_api_key,
         )
 
         video_url = storage.upload(

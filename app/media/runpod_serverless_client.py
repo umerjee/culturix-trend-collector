@@ -81,7 +81,8 @@ def _extract_output_bytes(output: dict) -> bytes:
 
 
 def run_inference_job(endpoint_id: str, workflow_json: dict, timeout_seconds: int = 600,
-                       poll_interval: int = _POLL_INTERVAL, reference_image_bytes: bytes = None) -> bytes:
+                       poll_interval: int = _POLL_INTERVAL, reference_image_bytes: bytes = None,
+                       narration_audio_bytes: bytes = None) -> bytes:
     """Submits a ComfyUI workflow to a RunPod Serverless endpoint and blocks
     until it completes. Returns the output video's raw bytes. Raises
     RunPodServerlessError on a FAILED job or an unrecognized output shape,
@@ -91,10 +92,21 @@ def run_inference_job(endpoint_id: str, workflow_json: dict, timeout_seconds: in
     the workflow — the worker's handler.py uploads it to ComfyUI's own
     input directory and wires it into the workflow's LoadImage node (see
     that file's _upload_reference_image), since LoadImage reads from a
-    local filename, not inline bytes or a URL."""
+    local filename, not inline bytes or a URL.
+
+    narration_audio_bytes, when given, is base64-encoded and sent the same
+    way — the worker muxes it directly onto the finished video with ffmpeg
+    (already installed there for the faststart remux) before returning, so
+    the caller gets back one already-dubbed file instead of a silent video
+    that then needs a separate local mux pass. Moving this step onto the
+    worker (rather than app.services.culturetoon_selfhosted_video doing it
+    locally after downloading a silent video) is the whole point of
+    passing this through — "encode directly via RunPod"."""
     job_input = {"workflow": workflow_json}
     if reference_image_bytes is not None:
         job_input["reference_image_base64"] = base64.b64encode(reference_image_bytes).decode("ascii")
+    if narration_audio_bytes is not None:
+        job_input["narration_audio_base64"] = base64.b64encode(narration_audio_bytes).decode("ascii")
     submit_resp = httpx.post(
         f"{_API_BASE}/{endpoint_id}/run",
         headers=_headers(),
@@ -142,7 +154,8 @@ def cancel_job(endpoint_id: str, job_id: str) -> None:
 def run_inference_job_with_allocation_retry(endpoint_id: str, workflow_json: dict, timeout_seconds: int = 600,
                                              poll_interval: int = _POLL_INTERVAL,
                                              max_retries: int = None, backoff_seconds: float = None,
-                                             reference_image_bytes: bytes = None) -> bytes:
+                                             reference_image_bytes: bytes = None,
+                                             narration_audio_bytes: bytes = None) -> bytes:
     """Wraps run_inference_job with a retry specifically around allocation
     failures — RunPod couldn't spin up a worker in time, surfaced here as
     either an explicit FAILED status (RunPodServerlessError) or the job
@@ -165,7 +178,7 @@ def run_inference_job_with_allocation_retry(endpoint_id: str, workflow_json: dic
         try:
             return run_inference_job(
                 endpoint_id, workflow_json, timeout_seconds=timeout_seconds, poll_interval=poll_interval,
-                reference_image_bytes=reference_image_bytes,
+                reference_image_bytes=reference_image_bytes, narration_audio_bytes=narration_audio_bytes,
             )
         except (RunPodServerlessError, TimeoutError) as exc:
             last_exc = exc

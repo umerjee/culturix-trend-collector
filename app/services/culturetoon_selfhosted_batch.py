@@ -149,6 +149,19 @@ def _process_brand(session, brand, endpoint_id: str, deadline: float, job_tracke
     )
     from app.services.culturetoon_usage import record_usage, estimate_selfhosted_video_cost
 
+    # Same resolve-and-decrypt pattern as app/services/
+    # culturetoon_selfhosted_video.py::generate_video_for_toon_selfhosted /
+    # culturetoon_video.py::generate_video_for_toon — decrypted once per
+    # brand (not per script) since generate_toon_video_selfhosted itself
+    # only uses this when the SCRIPT's own primary cast member opts into
+    # voice_provider="elevenlabs"; passing it through unconditionally for
+    # every script in this brand's window is safe either way.
+    from app.social.crypto import decrypt
+
+    elevenlabs_api_key = None
+    if brand.elevenlabs_api_key_encrypted:
+        elevenlabs_api_key = decrypt(brand.elevenlabs_api_key_encrypted)
+
     generated = 0
     for script in find_approved_scripts_without_toon(session, brand.id):
         if time.time() > deadline:
@@ -175,7 +188,7 @@ def _process_brand(session, brand, endpoint_id: str, deadline: float, job_tracke
         try:
             video_bytes = generate_toon_video_selfhosted(
                 script, variants, endpoint_id, duration_seconds=duration,
-                use_allocation_retry=is_first_job,
+                use_allocation_retry=is_first_job, elevenlabs_api_key=elevenlabs_api_key,
             )
             video_url = storage.upload(
                 video_bytes,

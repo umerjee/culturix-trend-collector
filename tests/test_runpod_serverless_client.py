@@ -128,6 +128,37 @@ class TestRunInferenceJob:
         assert exc_info.value.job_id == "job-failed-1"
 
 
+class TestNarrationAudioPayload:
+    def test_narration_audio_bytes_is_base64_encoded_into_job_input(self, mocker):
+        submit_resp = _mock_response(mocker, 200, {"id": "job-1"})
+        status_resp = _mock_response(mocker, 200, {
+            "status": "COMPLETED", "output": {"video_base64": base64.b64encode(b"video-with-audio").decode()},
+        })
+        mock_post = mocker.patch("httpx.post", return_value=submit_resp)
+        mocker.patch("httpx.get", return_value=status_resp)
+        mocker.patch("time.sleep")
+
+        result = run_inference_job("endpoint-1", {"1": {}}, narration_audio_bytes=b"narration-bytes")
+
+        assert result == b"video-with-audio"
+        sent_input = mock_post.call_args.kwargs["json"]["input"]
+        assert base64.b64decode(sent_input["narration_audio_base64"]) == b"narration-bytes"
+
+    def test_no_narration_audio_omits_the_key_entirely(self, mocker):
+        submit_resp = _mock_response(mocker, 200, {"id": "job-1"})
+        status_resp = _mock_response(mocker, 200, {
+            "status": "COMPLETED", "output": {"video_base64": base64.b64encode(b"video").decode()},
+        })
+        mock_post = mocker.patch("httpx.post", return_value=submit_resp)
+        mocker.patch("httpx.get", return_value=status_resp)
+        mocker.patch("time.sleep")
+
+        run_inference_job("endpoint-1", {"1": {}})
+
+        sent_input = mock_post.call_args.kwargs["json"]["input"]
+        assert "narration_audio_base64" not in sent_input
+
+
 class TestCancelJob:
     def test_posts_to_the_documented_cancel_path(self, mocker):
         mock_post = mocker.patch("httpx.post", return_value=_mock_response(mocker, 200, {}))

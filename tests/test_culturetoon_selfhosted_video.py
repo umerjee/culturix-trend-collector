@@ -3,6 +3,9 @@ from a ToonScript's shots, the cast LoRA-readiness gate, and (TestGenerate
 VideoForToonSelfhosted below) the interactive-button orchestrator against
 an existing Toon, mirroring tests/test_culturetoon_video.py's in-memory
 SQLite/mocked-provider shape for the Kling counterpart."""
+import os
+os.environ.setdefault("TOKEN_ENCRYPTION_KEY", "zJZ2n2n0vXW5X8mYQKqVYV9YQe3F2Z8h0m3nQeF1nQ8=")
+
 import uuid
 
 import pytest
@@ -20,7 +23,7 @@ from app.models.generation_usage import GenerationUsage
 from app.services.culturetoon_selfhosted_video import (
     build_prompt_from_script, resolve_ready_lora, generate_toon_video_selfhosted,
     generate_video_for_toon_selfhosted, SelfHostedVideoGenerationError,
-    _resilient_commit, _gather_dialogue,
+    _resilient_commit, _gather_dialogue, _synthesize_narration,
 )
 
 
@@ -38,12 +41,14 @@ def _script(mocker, hook_line=None, shots=None, total_duration_seconds=None):
 
 
 def _variant(mocker, name="Kumar", lora_status="ready", lora_path="loras/kumar.safetensors",
-             image_url="https://example.com/kumar.png"):
+             image_url="https://example.com/kumar.png", voice_provider="kling", elevenlabs_voice_id=None):
     v = mocker.Mock()
     v.name = name
     v.lora_status = lora_status
     v.lora_path = lora_path
     v.image_url = image_url
+    v.voice_provider = voice_provider
+    v.elevenlabs_voice_id = elevenlabs_voice_id
     return v
 
 
@@ -141,6 +146,63 @@ class TestGatherDialogue:
         assert _gather_dialogue(script) == ""
 
 
+class TestSynthesizeNarration:
+    def test_no_dialogue_returns_none_without_calling_any_provider(self, mocker):
+        mock_edge = mocker.patch("app.media.voice.EdgeTTSProvider.synthesize")
+        script = _script(mocker, shots=[{"action": "waves", "dialogue": None}])
+        assert _synthesize_narration(script, [_variant(mocker)]) is None
+        mock_edge.assert_not_called()
+
+    def test_defaults_to_edge_tts_when_voice_provider_is_kling(self, mocker):
+        mock_edge = mocker.patch(
+            "app.media.voice.EdgeTTSProvider.synthesize", return_value=mocker.Mock(asset_bytes=b"edge-bytes"),
+        )
+        script = _script(mocker, shots=[{"action": "waves", "dialogue": "Hi"}])
+        variants = [_variant(mocker, voice_provider="kling")]
+        result = _synthesize_narration(script, variants, elevenlabs_api_key="a-real-key")
+        assert result == b"edge-bytes"
+        mock_edge.assert_called_once_with("Hi")
+
+    def test_defaults_to_edge_tts_when_no_api_key_supplied(self, mocker):
+        # voice_provider="elevenlabs" but no key was resolved (e.g. brand
+        # never configured one) — must fail open to edge-tts, not error.
+        mock_edge = mocker.patch(
+            "app.media.voice.EdgeTTSProvider.synthesize", return_value=mocker.Mock(asset_bytes=b"edge-bytes"),
+        )
+        script = _script(mocker, shots=[{"action": "waves", "dialogue": "Hi"}])
+        variants = [_variant(mocker, voice_provider="elevenlabs", elevenlabs_voice_id="voice-123")]
+        result = _synthesize_narration(script, variants, elevenlabs_api_key=None)
+        assert result == b"edge-bytes"
+        mock_edge.assert_called_once_with("Hi")
+
+    def test_uses_elevenlabs_per_shot_synthesis_when_fully_configured(self, mocker):
+        mock_edge = mocker.patch("app.media.voice.EdgeTTSProvider.synthesize")
+        mock_synth = mocker.patch(
+            "app.services.culturetoon_selfhosted_video._synthesize_narration_elevenlabs",
+            return_value=b"elevenlabs-bytes",
+        )
+        script = _script(mocker, shots=[{"action": "waves", "dialogue": "Hi"}])
+        variants = [_variant(mocker, voice_provider="elevenlabs", elevenlabs_voice_id="voice-123")]
+        result = _synthesize_narration(script, variants, elevenlabs_api_key="a-real-key")
+        assert result == b"elevenlabs-bytes"
+        mock_synth.assert_called_once_with(script, "a-real-key", "voice-123")
+        mock_edge.assert_not_called()
+
+    def test_elevenlabs_failure_falls_back_to_edge_tts(self, mocker):
+        mocker.patch(
+            "app.services.culturetoon_selfhosted_video._synthesize_narration_elevenlabs",
+            side_effect=RuntimeError("ElevenLabs API error"),
+        )
+        mock_edge = mocker.patch(
+            "app.media.voice.EdgeTTSProvider.synthesize", return_value=mocker.Mock(asset_bytes=b"edge-bytes"),
+        )
+        script = _script(mocker, shots=[{"action": "waves", "dialogue": "Hi"}])
+        variants = [_variant(mocker, voice_provider="elevenlabs", elevenlabs_voice_id="voice-123")]
+        result = _synthesize_narration(script, variants, elevenlabs_api_key="a-real-key")
+        assert result == b"edge-bytes"
+        mock_edge.assert_called_once_with("Hi")
+
+
 class TestResolveReadyLora:
     def test_returns_primary_variant_lora_path_when_all_ready(self, mocker):
         variants = [_variant(mocker, name="A"), _variant(mocker, name="B")]
@@ -179,7 +241,9 @@ class TestGenerateToonVideoSelfhosted:
         # confirmed live 2026-08-29/30: text-to-video with only a LoRA for
         # identity produced a handful of held poses, not real animation.
         assert mock_build.call_args.kwargs["reference_image_filename"] == "reference.png"
-        mock_run.assert_called_once_with("endpoint-1", {"1": {}}, reference_image_bytes=b"ref-image-bytes")
+        mock_run.assert_called_once_with(
+            "endpoint-1", {"1": {}}, reference_image_bytes=b"ref-image-bytes", narration_audio_bytes=None,
+        )
 
     def test_use_allocation_retry_routes_through_the_retrying_client_call(self, mocker):
         mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
@@ -195,7 +259,9 @@ class TestGenerateToonVideoSelfhosted:
         result = generate_toon_video_selfhosted(script, variants, "endpoint-1", use_allocation_retry=True)
 
         assert result == b"video-bytes"
-        mock_retry.assert_called_once_with("endpoint-1", {"1": {}}, reference_image_bytes=b"ref-image-bytes")
+        mock_retry.assert_called_once_with(
+            "endpoint-1", {"1": {}}, reference_image_bytes=b"ref-image-bytes", narration_audio_bytes=None,
+        )
         mock_plain.assert_not_called()
 
     def test_reference_image_fetch_failure_falls_back_to_text_to_video(self, mocker):
@@ -211,28 +277,27 @@ class TestGenerateToonVideoSelfhosted:
 
         assert result == b"video-bytes"
         assert mock_build.call_args.kwargs["reference_image_filename"] is None
-        mock_run.assert_called_once_with("endpoint-1", {"1": {}}, reference_image_bytes=None)
+        mock_run.assert_called_once_with(
+            "endpoint-1", {"1": {}}, reference_image_bytes=None, narration_audio_bytes=None,
+        )
 
-    def test_dialogue_present_synthesizes_and_muxes_narration(self, mocker):
+    def test_dialogue_present_synthesizes_and_ships_narration_to_runpod(self, mocker):
         # This pipeline generated silent video only before this — no
         # equivalent to Kling Omni's native audio. Confirms the full
-        # wire-up: dialogue gathered from shots -> narrated via the same
-        # free edge-tts provider the trend engine's faceless reels already
-        # use -> narration's real duration drives the requested video
-        # length -> narration muxed onto the finished video.
+        # wire-up: dialogue gathered from shots -> narrated via the free
+        # edge-tts provider (no ElevenLabs configured here) -> narration's
+        # real duration drives the requested video length -> narration
+        # bytes shipped to RunPod for the WORKER to mux server-side
+        # ("encode directly via RunPod"), not muxed locally.
         mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
         mock_build = mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"silent-video-bytes")
+        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-with-audio")
         mock_synthesize = mocker.patch(
             "app.media.voice.EdgeTTSProvider.synthesize",
             return_value=mocker.Mock(asset_bytes=b"narration-bytes"),
         )
         mocker.patch(
             "app.services.culturetoon_selfhosted_video._probe_audio_duration_seconds", return_value=6.5,
-        )
-        mock_mux = mocker.patch(
-            "app.services.culturetoon_selfhosted_video._mux_narration_onto_video",
-            return_value=b"video-with-audio",
         )
 
         script = _script(mocker, hook_line="hi", shots=[
@@ -246,27 +311,24 @@ class TestGenerateToonVideoSelfhosted:
         # The synthesized narration's real (probed) duration overrides the
         # script's own total_duration_seconds guess.
         assert mock_build.call_args.args[1] == 6.5
-        mock_mux.assert_called_once_with(b"silent-video-bytes", b"narration-bytes")
+        mock_run.assert_called_once_with(
+            "endpoint-1", {"1": {}}, reference_image_bytes=b"ref-image-bytes",
+            narration_audio_bytes=b"narration-bytes",
+        )
 
     def test_explicit_duration_override_wins_over_narration_length(self, mocker):
         # A caller-supplied duration_seconds (e.g. deliberately staying
         # under this GPU tier's VRAM ceiling) must not get silently
         # overridden back up to the full narrated length of a long-
-        # dialogue script — narration audio still gets muxed on, just
-        # trimmed to the shorter of the two (see _mux_narration_onto_video's
-        # own -shortest flag).
+        # dialogue script.
         mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
         mock_build = mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"silent-video-bytes")
+        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-with-audio")
         mocker.patch(
             "app.media.voice.EdgeTTSProvider.synthesize",
             return_value=mocker.Mock(asset_bytes=b"narration-bytes"),
         )
         mock_probe = mocker.patch("app.services.culturetoon_selfhosted_video._probe_audio_duration_seconds")
-        mocker.patch(
-            "app.services.culturetoon_selfhosted_video._mux_narration_onto_video",
-            return_value=b"video-with-audio",
-        )
 
         script = _script(mocker, hook_line="hi", shots=[
             {"action": "waves", "dialogue": "A very long line of dialogue that would narrate for way longer than ten seconds"},
@@ -281,9 +343,8 @@ class TestGenerateToonVideoSelfhosted:
     def test_no_dialogue_skips_narration_entirely(self, mocker):
         mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
         mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"silent-video-bytes")
+        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"silent-video-bytes")
         mock_synthesize = mocker.patch("app.media.voice.EdgeTTSProvider.synthesize")
-        mock_mux = mocker.patch("app.services.culturetoon_selfhosted_video._mux_narration_onto_video")
 
         script = _script(mocker, hook_line="hi", shots=[
             {"action": "waves", "dialogue": None},
@@ -293,23 +354,17 @@ class TestGenerateToonVideoSelfhosted:
 
         assert result == b"silent-video-bytes"
         mock_synthesize.assert_not_called()
-        mock_mux.assert_not_called()
+        assert mock_run.call_args.kwargs["narration_audio_bytes"] is None
 
-    def test_mux_failure_falls_back_to_silent_video(self, mocker):
+    def test_edge_tts_synthesis_failure_ships_no_narration_audio(self, mocker):
         # Best-effort: this pipeline had no audio at all until now, so a
-        # muxing failure should degrade to the prior (silent) behavior
-        # rather than failing a generation that otherwise succeeded.
+        # synthesis failure should degrade to a silent video rather than
+        # failing a generation that otherwise succeeded.
         mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
         mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"silent-video-bytes")
+        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"silent-video-bytes")
         mocker.patch(
-            "app.media.voice.EdgeTTSProvider.synthesize",
-            return_value=mocker.Mock(asset_bytes=b"narration-bytes"),
-        )
-        mocker.patch("app.services.culturetoon_selfhosted_video._probe_audio_duration_seconds", return_value=None)
-        mocker.patch(
-            "app.services.culturetoon_selfhosted_video._mux_narration_onto_video",
-            side_effect=RuntimeError("ffmpeg exploded"),
+            "app.media.voice.EdgeTTSProvider.synthesize", side_effect=RuntimeError("edge-tts unreachable"),
         )
 
         script = _script(mocker, hook_line="hi", shots=[
@@ -580,6 +635,74 @@ class TestGenerateVideoForToonSelfhosted:
         generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
 
         assert mock_build_prompt.call_args.kwargs["background"] is None
+
+    def test_no_elevenlabs_key_configured_falls_back_to_edge_tts(self, db, seeded, mocker):
+        session = db()
+        variant = session.query(CharacterVariant).filter_by(id=uuid.UUID(seeded["variant_id"])).first()
+        variant.voice_provider = "elevenlabs"
+        variant.elevenlabs_voice_id = "voice-1"
+        session.commit()
+        session.close()
+
+        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
+        mock_generate = mocker.patch(
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
+            return_value=b"video-bytes",
+        )
+
+        generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
+
+        # Brand has no elevenlabs_api_key_encrypted set -> voice_provider
+        # opt-in alone isn't enough, same fail-open philosophy as the
+        # Kling path's own ElevenLabs handling.
+        assert mock_generate.call_args.kwargs["elevenlabs_api_key"] is None
+
+    def test_elevenlabs_key_configured_is_decrypted_and_passed_through(self, db, seeded, mocker):
+        from app.social.crypto import encrypt
+
+        session = db()
+        brand = session.query(CharacterBrand).filter_by(id=uuid.UUID(seeded["brand_id"])).first()
+        brand.elevenlabs_api_key_encrypted = encrypt("sk-real-key")
+        variant = session.query(CharacterVariant).filter_by(id=uuid.UUID(seeded["variant_id"])).first()
+        variant.voice_provider = "elevenlabs"
+        variant.elevenlabs_voice_id = "voice-1"
+        session.commit()
+        session.close()
+
+        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
+        mock_generate = mocker.patch(
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
+            return_value=b"video-bytes",
+        )
+
+        generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
+
+        assert mock_generate.call_args.kwargs["elevenlabs_api_key"] == "sk-real-key"
+
+    def test_voice_provider_kling_never_resolves_an_elevenlabs_key(self, db, seeded, mocker):
+        # variant.voice_provider defaults to "kling" in the seeded fixture —
+        # confirms the brand's elevenlabs_api_key_encrypted column is never
+        # even queried/decrypted when the variant hasn't opted in.
+        from app.social.crypto import encrypt
+
+        session = db()
+        brand = session.query(CharacterBrand).filter_by(id=uuid.UUID(seeded["brand_id"])).first()
+        brand.elevenlabs_api_key_encrypted = encrypt("sk-real-key")
+        session.commit()
+        session.close()
+
+        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
+        mock_generate = mocker.patch(
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
+            return_value=b"video-bytes",
+        )
+
+        generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
+
+        assert mock_generate.call_args.kwargs["elevenlabs_api_key"] is None
 
     def test_resilient_commit_raises_after_exhausting_retries(self, mocker):
         session = mocker.Mock()

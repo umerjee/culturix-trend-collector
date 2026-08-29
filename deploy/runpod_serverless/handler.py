@@ -17,6 +17,14 @@ app/media/runpod_serverless_client.py::_extract_output_bytes()'s existing
 `video_base64` key exactly, since we control both ends of this contract
 (unlike the base image's handler, whose shape we don't control). No changes
 needed to runpod_serverless_client.py as a result.
+
+Optionally accepts `narration_audio_base64` alongside the workflow — when
+present, this worker muxes it onto the finished video with ffmpeg itself
+(_mux_narration_audio below) before returning, rather than the backend
+downloading a silent video and running its own local ffmpeg pass. This is
+the "encode directly via RunPod" path: narration quality (ElevenLabs vs.
+edge-tts) is decided by the caller (app/services/
+culturetoon_selfhosted_video.py), this worker only does the muxing.
 """
 import base64
 import logging
@@ -194,6 +202,54 @@ def _download_output_bytes(history_entry: dict, prompt_id: str) -> tuple:
     return _fetch_file_bytes(best_file_info, best_is_video)
 
 
+def _mux_narration_audio(video_bytes: bytes, audio_base64: str) -> tuple:
+    """Muxes narration audio (synthesized by our backend via ElevenLabs or
+    edge-tts — see app/services/culturetoon_selfhosted_video.py) directly
+    onto the finished video on the worker, instead of the backend
+    downloading a silent video and running its own local ffmpeg pass. The
+    Dockerfile already installs ffmpeg for the faststart remux above, so
+    this needs no new dependency.
+
+    Deliberately NOT -shortest — mirrors app/services/culturetoon_video.py
+    ::_dub_dialogue's own reasoning for the Kling/ElevenLabs path: the
+    requested video duration is only an estimate of the narration's real
+    length, so -shortest would silently truncate the video's tail whenever
+    narration runs a little longer than the video actually came back.
+
+    Returns (bytes, diagnostic) — best-effort like _ensure_faststart above:
+    a muxing failure degrades to the silent (but still real, animated)
+    video rather than failing a generation that otherwise succeeded."""
+    audio_bytes = base64.b64decode(audio_base64)
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vf:
+        vf.write(video_bytes)
+        video_path = vf.name
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as af:
+        af.write(audio_bytes)
+        audio_path = af.name
+    output_path = video_path + ".dubbed.mp4"
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", video_path, "-i", audio_path,
+             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+             "-map", "0:v:0", "-map", "1:a:0", output_path],
+            capture_output=True, timeout=120,
+        )
+        if result.returncode != 0:
+            stderr_tail = result.stderr.decode("utf-8", errors="replace")[-800:]
+            return video_bytes, f"ffmpeg exit {result.returncode}: {stderr_tail}"
+        with open(output_path, "rb") as f:
+            return f.read(), None
+    except Exception as exc:
+        logger.exception("Narration mux failed — returning the silent video")
+        return video_bytes, f"{type(exc).__name__}: {exc}"
+    finally:
+        for path in (video_path, audio_path, output_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 def _upload_reference_image(image_base64: str) -> str:
     """Uploads a reference photo to ComfyUI's own /upload/image endpoint so
     a LoadImage node in the workflow can reference it by filename —
@@ -241,6 +297,18 @@ def handler(event: dict) -> dict:
         logger.info("Submitted ComfyUI prompt %s", prompt_id)
         history_entry = _wait_for_completion(prompt_id)
         video_bytes, faststart_error = _download_output_bytes(history_entry, prompt_id)
+
+        narration_audio_base64 = input_data.get("narration_audio_base64")
+        narration_mux_error = None
+        if narration_audio_base64:
+            video_bytes, narration_mux_error = _mux_narration_audio(video_bytes, narration_audio_base64)
+            if narration_mux_error is None:
+                # Muxing wrote a brand-new container, so the faststart
+                # layout applied above no longer holds — re-apply it to
+                # the dubbed file rather than shipping back a video that
+                # regressed to moov-after-mdat.
+                video_bytes, faststart_error = _ensure_faststart(video_bytes)
+
         result = {"video_base64": base64.b64encode(video_bytes).decode("ascii")}
         if faststart_error:
             # Non-fatal — the caller still gets a valid (just non-faststart)
@@ -248,6 +316,8 @@ def handler(event: dict) -> dict:
             # prior version of this hid a real, still-unexplained remux
             # failure completely from the caller.
             result["faststart_error"] = faststart_error
+        if narration_mux_error:
+            result["narration_mux_error"] = narration_mux_error
         return result
     except Exception as exc:
         logger.exception("Job failed")
