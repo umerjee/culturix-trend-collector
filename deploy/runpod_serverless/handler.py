@@ -210,11 +210,23 @@ def _mux_narration_audio(video_bytes: bytes, audio_base64: str) -> tuple:
     Dockerfile already installs ffmpeg for the faststart remux above, so
     this needs no new dependency.
 
-    Deliberately NOT -shortest — mirrors app/services/culturetoon_video.py
-    ::_dub_dialogue's own reasoning for the Kling/ElevenLabs path: the
-    requested video duration is only an estimate of the narration's real
-    length, so -shortest would silently truncate the video's tail whenever
-    narration runs a little longer than the video actually came back.
+    Uses -shortest, UNLIKE app/services/culturetoon_video.py::_dub_dialogue
+    (the Kling path's equivalent) — confirmed live 2026-08-30 this needs
+    the opposite choice here: _dub_dialogue omits -shortest because Kling's
+    requested duration is only a loose guess at what Kling's API actually
+    returns, so trimming would risk cutting the VIDEO's tail short whenever
+    dialogue finished a little early. Self-hosted is different — the
+    video's length is the caller's own precise, deliberately-chosen
+    total_duration (see generate_toon_video_selfhosted; often an explicit
+    override well under the FULL script's narration length, specifically
+    to stay under this GPU tier's VRAM ceiling on a longer script), while
+    _gather_dialogue always synthesizes the ENTIRE script's dialogue
+    regardless of that override. Without -shortest, a 10s override on a
+    31s-of-dialogue script came back with 9.7s of video and 50s of audio
+    muxed onto it — confirmed live by inspecting the actual output file's
+    stream durations. -shortest trims the mismatched audio down to the
+    video's own length instead, same as the local mux this replaced used
+    to do.
 
     Returns (bytes, diagnostic) — best-effort like _ensure_faststart above:
     a muxing failure degrades to the silent (but still real, animated)
@@ -231,7 +243,7 @@ def _mux_narration_audio(video_bytes: bytes, audio_base64: str) -> tuple:
         result = subprocess.run(
             ["ffmpeg", "-y", "-i", video_path, "-i", audio_path,
              "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-             "-map", "0:v:0", "-map", "1:a:0", output_path],
+             "-map", "0:v:0", "-map", "1:a:0", "-shortest", output_path],
             capture_output=True, timeout=120,
         )
         if result.returncode != 0:
