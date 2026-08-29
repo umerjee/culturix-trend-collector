@@ -15,6 +15,7 @@ from app.models.character import Character
 from app.models.character_variant import CharacterVariant
 from app.models.toon_script import ToonScript
 from app.models.toon import Toon
+from app.models.toon_background import ToonBackground
 from app.models.generation_usage import GenerationUsage
 from app.services.culturetoon_selfhosted_video import (
     build_prompt_from_script, resolve_ready_lora, generate_toon_video_selfhosted,
@@ -86,6 +87,44 @@ class TestBuildPromptFromScript:
     def test_no_content_falls_back_to_generic_prompt(self, mocker):
         script = _script(mocker, hook_line=None, shots=[])
         assert build_prompt_from_script(script) == "A character reacts to their day."
+
+    def test_includes_expression_when_present(self, mocker):
+        # Confirmed live 2026-08-30 on a real script: every shot carries an
+        # expression field, but it was being silently dropped.
+        script = _script(mocker, hook_line="H", shots=[
+            {"action": "waves", "dialogue": None, "expression": "Confused"},
+        ])
+        prompt = build_prompt_from_script(script)
+        assert "with a confused expression" in prompt
+
+    def test_background_with_name_and_description_is_prepended(self, mocker):
+        # Mock(name=...) is reserved by unittest.mock for the mock's own
+        # repr name, not a settable `.name` attribute — must assign it
+        # after construction instead.
+        background = mocker.Mock(description="A cramped city apartment kitchen")
+        background.name = "Kitchen"
+        script = _script(mocker, hook_line="H", shots=[])
+        prompt = build_prompt_from_script(script, background=background)
+        assert prompt.startswith("Set in Kitchen: A cramped city apartment kitchen")
+
+    def test_background_with_name_only(self, mocker):
+        background = mocker.Mock(description=None)
+        background.name = "Kitchen"
+        script = _script(mocker, hook_line="H", shots=[])
+        prompt = build_prompt_from_script(script, background=background)
+        assert prompt.startswith("Set in Kitchen")
+
+    def test_background_with_description_only(self, mocker):
+        background = mocker.Mock(description="A cramped city apartment kitchen")
+        background.name = None
+        script = _script(mocker, hook_line="H", shots=[])
+        prompt = build_prompt_from_script(script, background=background)
+        assert prompt.startswith("A cramped city apartment kitchen")
+
+    def test_no_background_omits_set_in_prefix(self, mocker):
+        script = _script(mocker, hook_line="H", shots=[])
+        prompt = build_prompt_from_script(script, background=None)
+        assert "Set in" not in prompt
 
 
 class TestGatherDialogue:
@@ -291,6 +330,7 @@ def db(mocker):
     Base.metadata.create_all(bind=engine, tables=[
         CharacterBrand.__table__, Character.__table__, CharacterVariant.__table__,
         ToonScript.__table__, Toon.__table__, GenerationUsage.__table__,
+        ToonBackground.__table__,
     ])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)
@@ -456,6 +496,90 @@ class TestGenerateVideoForToonSelfhosted:
         toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
         assert toon.status == "failed"
         assert "worker allocation timed out" in toon.generation_error
+
+    def test_scripts_own_background_id_is_fetched_and_passed_through(self, db, seeded, mocker):
+        # Confirmed live 2026-08-30: neither Toon.background_id nor
+        # ToonScript.background_id was ever read by this path at all, so a
+        # selected Location never reached the video prompt. The script's
+        # own background_id wins over the toon's per that column's own
+        # docstring ("a script's setting drives its background").
+        session = db()
+        script_background = ToonBackground(brand_id=uuid.UUID(seeded["brand_id"]), name="Diner", description="A 1950s American diner")
+        toon_background = ToonBackground(brand_id=uuid.UUID(seeded["brand_id"]), name="Office", description="A cramped cubicle")
+        session.add_all([script_background, toon_background])
+        session.commit()
+        script = session.query(ToonScript).first()
+        script.background_id = script_background.id
+        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
+        toon.background_id = toon_background.id
+        session.commit()
+        session.close()
+
+        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
+        mocker.patch("app.media.runpod_serverless_client.run_inference_job_with_allocation_retry", return_value=b"video-bytes")
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
+        # The queried ToonBackground is bound to a session that
+        # generate_video_for_toon_selfhosted opens and closes internally —
+        # capture the field we care about at call time via side_effect,
+        # rather than inspecting the (by-then-detached) object afterward.
+        seen_names = []
+
+        def _capture(script, background=None):
+            seen_names.append(background.name if background is not None else None)
+            return "a prompt"
+
+        mocker.patch(
+            "app.services.culturetoon_selfhosted_video.build_prompt_from_script", side_effect=_capture,
+        )
+        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
+
+        generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
+
+        assert seen_names == ["Diner"]
+
+    def test_falls_back_to_toons_background_id_when_script_has_none(self, db, seeded, mocker):
+        session = db()
+        toon_background = ToonBackground(brand_id=uuid.UUID(seeded["brand_id"]), name="Office", description="A cramped cubicle")
+        session.add(toon_background)
+        session.commit()
+        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
+        toon.background_id = toon_background.id
+        session.commit()
+        session.close()
+
+        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
+        mocker.patch("app.media.runpod_serverless_client.run_inference_job_with_allocation_retry", return_value=b"video-bytes")
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
+        seen_names = []
+
+        def _capture(script, background=None):
+            seen_names.append(background.name if background is not None else None)
+            return "a prompt"
+
+        mocker.patch(
+            "app.services.culturetoon_selfhosted_video.build_prompt_from_script", side_effect=_capture,
+        )
+        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
+
+        generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
+
+        assert seen_names == ["Office"]
+
+    def test_neither_script_nor_toon_has_a_background_passes_none(self, db, seeded, mocker):
+        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
+        mocker.patch("app.media.runpod_serverless_client.run_inference_job_with_allocation_retry", return_value=b"video-bytes")
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
+        mock_build_prompt = mocker.patch(
+            "app.services.culturetoon_selfhosted_video.build_prompt_from_script", return_value="a prompt",
+        )
+        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
+        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
+
+        generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
+
+        assert mock_build_prompt.call_args.kwargs["background"] is None
 
     def test_resilient_commit_raises_after_exhausting_retries(self, mocker):
         session = mocker.Mock()

@@ -81,11 +81,25 @@ def _resilient_commit(session, mutate) -> None:
     raise last_exc
 
 
-def build_prompt_from_script(script) -> str:
+def build_prompt_from_script(script, background=None) -> str:
     """script: a ToonScript ORM object (shots/hook_line already populated).
-    Folds hook_line + each shot's visual/action/dialogue into one
-    descriptive prompt string for a single continuous LTX generation."""
+    Folds hook_line + each shot's visual/action/expression/dialogue into
+    one descriptive prompt string for a single continuous LTX generation.
+
+    background: an optional ToonBackground ORM object (or anything with
+    .name/.description attributes) — confirmed live 2026-08-30: this
+    pipeline never referenced Toon.background_id/ToonScript.background_id
+    at all, so a selected Location was silently dropped from the video
+    prompt entirely regardless of which one was chosen. Prepended once,
+    before the per-shot beats, rather than per-shot, since one location
+    covers a whole script here (this pipeline doesn't do per-shot location
+    changes)."""
     parts = []
+    if background is not None:
+        name = (getattr(background, "name", None) or "").strip()
+        description = (getattr(background, "description", None) or "").strip()
+        if name or description:
+            parts.append(f"Set in {name}" + (f": {description}" if description else "") if name else description)
     if script.hook_line:
         parts.append(script.hook_line.strip())
     for shot in script.shots or []:
@@ -102,12 +116,19 @@ def build_prompt_from_script(script) -> str:
             parts.append(f"{camera_movement.replace('_', ' ')} camera movement")
         visual = (shot.get("visual") or "").strip()
         action = (shot.get("action") or "").strip()
+        expression = (shot.get("expression") or "").strip()
         dialogue = (shot.get("dialogue") or "").strip()
         delivery = (shot.get("dialogue_delivery") or "").strip()
         if visual:
             parts.append(visual)
         if action:
             parts.append(action)
+        if expression:
+            # Confirmed live 2026-08-30: every shot in a real script
+            # carries its own expression field, but it was never being
+            # read here at all — dropped silently regardless of what the
+            # script actually called for.
+            parts.append(f"with a {expression.lower()} expression")
         if dialogue:
             parts.append(f'saying "{dialogue}"' + (f" ({delivery} delivery)" if delivery else ""))
     return ". ".join(p for p in parts if p) or "A character reacts to their day."
@@ -219,7 +240,8 @@ def _mux_narration_onto_video(video_bytes: bytes, audio_bytes: bytes) -> bytes:
 
 def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
                                     duration_seconds: Optional[float] = None,
-                                    use_allocation_retry: bool = False) -> bytes:
+                                    use_allocation_retry: bool = False,
+                                    background=None) -> bytes:
     """Returns raw video bytes for the caller to persist via
     app.media.storage.upload(). Raises SelfHostedVideoGenerationError (cast
     not ready) or whatever app.media.runpod_serverless_client/ltx_workflow
@@ -230,12 +252,18 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
     routes through run_inference_job_with_allocation_retry instead of the
     plain call, since a cold Serverless endpoint failing to allocate a
     worker is a distinct failure mode from an individual clip's own
-    generation failing."""
+    generation failing.
+
+    background: the resolved ToonBackground for this script (see
+    build_prompt_from_script) — this function doesn't resolve it itself
+    (no DB session assumption here, callers already have one), so a
+    caller that wants Location context in the prompt must fetch and pass
+    it explicitly."""
     import httpx
     from app.media import ltx_workflow, runpod_serverless_client
 
     lora_path = resolve_ready_lora(variants)
-    prompt_text = build_prompt_from_script(script)
+    prompt_text = build_prompt_from_script(script, background=background)
     total_duration = (
         duration_seconds
         or script.total_duration_seconds
@@ -328,6 +356,7 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
     from app.db import SessionLocal
     from app.models.toon import Toon
     from app.models.toon_script import ToonScript
+    from app.models.toon_background import ToonBackground
     from app.models.character_variant import CharacterVariant
     from app.media import storage, runpod_serverless_client
     from app.services.culturetoon_usage import record_usage, estimate_selfhosted_video_cost
@@ -376,8 +405,20 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
             or sum(s.get("duration_seconds", 0) for s in (script.shots or []))
             or 5
         )
+        # Confirmed live 2026-08-30: neither Toon.background_id nor
+        # ToonScript.background_id was ever read here at all, so a
+        # selected Location never reached the video prompt regardless of
+        # which one was chosen. script's own background_id wins (a
+        # script's setting drives its background per that column's own
+        # docstring), falling back to the Toon's.
+        background = None
+        background_id = script.background_id or toon.background_id
+        if background_id:
+            background = session.query(ToonBackground).filter_by(id=background_id).first()
+
         video_bytes = generate_toon_video_selfhosted(
             script, variants, endpoint_id, duration_seconds=duration, use_allocation_retry=True,
+            background=background,
         )
 
         video_url = storage.upload(
