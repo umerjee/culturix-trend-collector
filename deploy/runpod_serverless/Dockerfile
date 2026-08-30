@@ -88,7 +88,23 @@ COPY deploy/runpod_serverless/extra_model_paths.yaml /comfyui/extra_model_paths.
 # via the RunPod template's env vars to /runpod-volume/hf_cache so the
 # ~2GB download happens once and persists across worker restarts instead
 # of re-downloading on every fresh worker.
-RUN pip install chatterbox-tts
+#
+# Confirmed live 2026-08-30: a plain `pip install chatterbox-tts` broke
+# ComfyUI's own startup entirely (worker never came up — "ComfyUI did not
+# become ready within 120s: Connection refused" on every job, even after
+# recycling to a guaranteed-fresh worker) — chatterbox-tts's own dependency
+# resolution silently pulled in a different torch/torchvision/torchaudio
+# than the CUDA-matched build this base image ships, and pip doesn't warn
+# about that kind of "successfully installed something incompatible," it
+# only errors on truly unsatisfiable version constraints. Captures the
+# base image's exact torch/torchvision/torchaudio pins BEFORE installing
+# chatterbox-tts, then force-reinstalls exactly those versions back
+# afterward with --no-deps (so their own sub-dependencies aren't pulled
+# in again either) — standard mitigation for this exact class of conflict.
+RUN pip freeze | grep -i '^torch' > /tmp/pinned-torch.txt \
+    && cat /tmp/pinned-torch.txt \
+    && pip install chatterbox-tts \
+    && pip install --no-deps --force-reinstall -r /tmp/pinned-torch.txt
 
 # Replaces the base image's own /handler.py (image-only outputs) with ours
 # (video/gif-aware, matches app/media/runpod_serverless_client.py's
