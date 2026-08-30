@@ -24,6 +24,12 @@ app/media/ltx_workflow.py::build_workflow()'s output directly, unchanged.
 version of our handler switches to uploading to storage and returning a
 URL instead of inlining base64 (e.g. for very large files) — not currently
 emitted by deploy/runpod_serverless/handler.py.
+
+Also supports a multi-shot contract (`input: {"shot_workflows": [...]}`),
+added 2026-08-30 so each ToonScript shot gets its own LTX generation
+(real camera cuts + correct per-character identity) instead of one
+continuous clip — see run_inference_job's own docstring and
+app/services/culturetoon_selfhosted_video.py's module docstring for why.
 """
 import base64
 import logging
@@ -80,13 +86,29 @@ def _extract_output_bytes(output: dict) -> bytes:
     )
 
 
-def run_inference_job(endpoint_id: str, workflow_json: dict, timeout_seconds: int = 1200,
+def run_inference_job(endpoint_id: str, workflow_json: dict = None, timeout_seconds: int = 1200,
                        poll_interval: int = _POLL_INTERVAL, reference_image_bytes: bytes = None,
-                       narration_audio_bytes: bytes = None) -> bytes:
+                       narration_audio_bytes: bytes = None,
+                       shot_workflows: list = None, shot_reference_images: list = None,
+                       narration_text: str = None) -> bytes:
     """Submits a ComfyUI workflow to a RunPod Serverless endpoint and blocks
     until it completes. Returns the output video's raw bytes. Raises
     RunPodServerlessError on a FAILED job or an unrecognized output shape,
     TimeoutError if it never reaches a terminal status in time.
+
+    Two mutually exclusive generation shapes:
+    - workflow_json (+ optional reference_image_bytes): the original
+      single-clip contract.
+    - shot_workflows (+ optional parallel shot_reference_images, same
+      length/order): one LTX generation PER SHOT — see app/services/
+      culturetoon_selfhosted_video.py's module docstring for why. The
+      worker (deploy/runpod_serverless/handler.py) submits each shot's
+      workflow to ComfyUI in order (reusing the same already-warm model
+      across all of them, far cheaper than N separate cold-ish jobs from
+      this client) and concatenates the results before muxing/faststart.
+    shot_workflows takes precedence when both are given (shouldn't happen
+    in practice — app/services/culturetoon_selfhosted_video.py only ever
+    builds one shape or the other).
 
     Default raised from 600s to 1200s — confirmed live 2026-08-29/30: three
     separate real jobs, on three different (freshly-recycled) workers,
@@ -115,12 +137,30 @@ def run_inference_job(endpoint_id: str, workflow_json: dict, timeout_seconds: in
     that then needs a separate local mux pass. Moving this step onto the
     worker (rather than app.services.culturetoon_selfhosted_video doing it
     locally after downloading a silent video) is the whole point of
-    passing this through — "encode directly via RunPod"."""
-    job_input = {"workflow": workflow_json}
-    if reference_image_bytes is not None:
-        job_input["reference_image_base64"] = base64.b64encode(reference_image_bytes).decode("ascii")
+    passing this through — "encode directly via RunPod".
+
+    narration_text, when given INSTEAD of narration_audio_bytes, is sent
+    as plain text — the worker synthesizes it itself via Chatterbox
+    (Resemble AI, MIT-licensed, confirmed via research 2026-08-30 to beat
+    ElevenLabs in blind listening tests) running on its own GPU, at zero
+    marginal API cost, before muxing. narration_audio_bytes takes
+    precedence when both are given (the ElevenLabs opt-in path still
+    synthesizes on this backend, since it needs the caller's own decrypted
+    brand credential)."""
+    job_input = {}
+    if shot_workflows is not None:
+        job_input["shot_workflows"] = shot_workflows
+        job_input["shot_reference_images_base64"] = [
+            base64.b64encode(b).decode("ascii") if b else None for b in (shot_reference_images or [])
+        ]
+    else:
+        job_input["workflow"] = workflow_json
+        if reference_image_bytes is not None:
+            job_input["reference_image_base64"] = base64.b64encode(reference_image_bytes).decode("ascii")
     if narration_audio_bytes is not None:
         job_input["narration_audio_base64"] = base64.b64encode(narration_audio_bytes).decode("ascii")
+    elif narration_text:
+        job_input["narration_text"] = narration_text
     submit_resp = httpx.post(
         f"{_API_BASE}/{endpoint_id}/run",
         headers=_headers(),
@@ -165,11 +205,13 @@ def cancel_job(endpoint_id: str, job_id: str) -> None:
         logger.warning("Failed to cancel orphaned Serverless job %s on endpoint %s: %s", job_id, endpoint_id, exc)
 
 
-def run_inference_job_with_allocation_retry(endpoint_id: str, workflow_json: dict, timeout_seconds: int = 1200,
+def run_inference_job_with_allocation_retry(endpoint_id: str, workflow_json: dict = None, timeout_seconds: int = 1200,
                                              poll_interval: int = _POLL_INTERVAL,
                                              max_retries: int = None, backoff_seconds: float = None,
                                              reference_image_bytes: bytes = None,
-                                             narration_audio_bytes: bytes = None) -> bytes:
+                                             narration_audio_bytes: bytes = None,
+                                             shot_workflows: list = None, shot_reference_images: list = None,
+                                             narration_text: str = None) -> bytes:
     """Wraps run_inference_job with a retry specifically around allocation
     failures — RunPod couldn't spin up a worker in time, surfaced here as
     either an explicit FAILED status (RunPodServerlessError) or the job
@@ -193,6 +235,8 @@ def run_inference_job_with_allocation_retry(endpoint_id: str, workflow_json: dic
             return run_inference_job(
                 endpoint_id, workflow_json, timeout_seconds=timeout_seconds, poll_interval=poll_interval,
                 reference_image_bytes=reference_image_bytes, narration_audio_bytes=narration_audio_bytes,
+                shot_workflows=shot_workflows, shot_reference_images=shot_reference_images,
+                narration_text=narration_text,
             )
         except (RunPodServerlessError, TimeoutError) as exc:
             last_exc = exc

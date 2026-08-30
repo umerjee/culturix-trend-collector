@@ -16,17 +16,31 @@ Output contract: {"video_base64": "<base64 bytes>"} — chosen to match
 app/media/runpod_serverless_client.py::_extract_output_bytes()'s existing
 `video_base64` key exactly, since we control both ends of this contract
 (unlike the base image's handler, whose shape we don't control). No changes
-needed to runpod_serverless_client.py as a result.
+needed to runpod_serverless_client.py's output side as a result.
 
-Optionally accepts `narration_audio_base64` alongside the workflow — when
-present, this worker muxes it onto the finished video with ffmpeg itself
-(_mux_narration_audio below) before returning, rather than the backend
-downloading a silent video and running its own local ffmpeg pass. This is
-the "encode directly via RunPod" path: narration quality (ElevenLabs vs.
-edge-tts) is decided by the caller (app/services/
-culturetoon_selfhosted_video.py), this worker only does the muxing.
+Two input shapes, added 2026-08-30 — see app/services/
+culturetoon_selfhosted_video.py's module docstring for the full "why":
+- `{"workflow": <ComfyUI API-format JSON>}` — the original single-clip
+  contract, one LTX generation.
+- `{"shot_workflows": [<workflow>, ...], "shot_reference_images_base64":
+  [<base64-or-null>, ...]}` — one LTX generation PER SHOT, submitted to
+  this SAME already-warm ComfyUI instance in order (so the model stays
+  resident across all of them instead of N separate cold-ish jobs), then
+  concatenated with ffmpeg. Real camera cuts + correct per-character
+  identity instead of one continuous clip described by shared text.
+
+Also optionally accepts narration alongside either shape:
+- `narration_audio_base64` — pre-synthesized audio (the ElevenLabs opt-in
+  path; synthesized on our own backend, since it needs the caller's own
+  decrypted brand credential) — this worker just muxes it on with ffmpeg.
+- `narration_text` — raw dialogue text for THIS worker to synthesize
+  itself via Chatterbox (Resemble AI, MIT-licensed) on its own GPU before
+  muxing — the default (free) path, confirmed via research 2026-08-30 to
+  outperform ElevenLabs in blind listening tests at zero marginal API
+  cost. narration_audio_base64 takes precedence when both are given.
 """
 import base64
+import io
 import logging
 import os
 import subprocess
@@ -43,6 +57,8 @@ _COMFYUI_URL = "http://127.0.0.1:8188"
 _STARTUP_TIMEOUT_SECONDS = int(os.getenv("COMFYUI_STARTUP_TIMEOUT_SECONDS", "120"))
 _JOB_TIMEOUT_SECONDS = int(os.getenv("COMFYUI_JOB_TIMEOUT_SECONDS", "1200"))
 _POLL_INTERVAL_SECONDS = 3
+
+_chatterbox_model = None
 
 
 def _wait_for_comfyui_ready() -> None:
@@ -90,15 +106,14 @@ def _wait_for_completion(prompt_id: str) -> dict:
 
 
 def _first_output_file(outputs: dict):
-    """Returns (file_info, is_video) — is_video distinguishes the "videos"
-    key (needs the faststart remux below) from "gifs"/"images" (not mp4
-    containers, remuxing would be meaningless or break them)."""
+    """Returns the first video/gif/image file_info found in a history
+    entry's outputs, or None."""
     for node_output in outputs.values():
         for key in ("gifs", "videos", "images"):
             files = node_output.get(key)
             if files:
-                return files[0], key == "videos"
-    return None, False
+                return files[0]
+    return None
 
 
 def _ensure_faststart(video_bytes: bytes) -> tuple:
@@ -111,9 +126,11 @@ def _ensure_faststart(video_bytes: bytes) -> tuple:
     all, which is exactly what happened live — a delivered video "would
     not open" despite being a byte-valid MP4. `-movflags +faststart`
     remuxes losslessly (stream copy, no re-encode) to move moov to the
-    front. Applied here once, server-side, so every caller of this
-    endpoint gets a playable file rather than needing to know to remux it
-    themselves.
+    front. Applied here ONCE, on the final video (after any multi-shot
+    concat and narration mux — both of those also write fresh containers
+    that would otherwise regress to moov-after-mdat), so every caller of
+    this endpoint gets a playable file rather than needing to know to
+    remux it themselves.
 
     Returns (bytes, diagnostic) rather than swallowing failures silently —
     confirmed live 2026-08-29: even on a freshly-built image running on a
@@ -150,7 +167,7 @@ def _ensure_faststart(video_bytes: bytes) -> tuple:
                 pass
 
 
-def _fetch_file_bytes(file_info: dict, is_video: bool) -> tuple:
+def _fetch_file_bytes(file_info: dict) -> bytes:
     params = {
         "filename": file_info["filename"],
         "subfolder": file_info.get("subfolder", ""),
@@ -158,15 +175,16 @@ def _fetch_file_bytes(file_info: dict, is_video: bool) -> tuple:
     }
     resp = httpx.get(f"{_COMFYUI_URL}/view", params=params, timeout=120)
     resp.raise_for_status()
-    if is_video:
-        return _ensure_faststart(resp.content)
-    return resp.content, None
+    return resp.content
 
 
-def _download_output_bytes(history_entry: dict, prompt_id: str) -> tuple:
-    file_info, is_video = _first_output_file(history_entry.get("outputs") or {})
+def _download_output_bytes(history_entry: dict, prompt_id: str) -> bytes:
+    """Returns the raw (not yet faststart-remuxed) output bytes for one
+    shot's completed prompt — faststart is applied once, at the very end
+    of the whole job (see _ensure_faststart), not per-shot here."""
+    file_info = _first_output_file(history_entry.get("outputs") or {})
     if file_info:
-        return _fetch_file_bytes(file_info, is_video)
+        return _fetch_file_bytes(file_info)
 
     # Confirmed live 2026-08-28: a retried submission of an IDENTICAL
     # workflow (same seed/prompt/duration — e.g. run_inference_job_with_
@@ -190,7 +208,7 @@ def _download_output_bytes(history_entry: dict, prompt_id: str) -> tuple:
     candidates = [
         (entry.get("prompt", [0])[0], pid, entry)
         for pid, entry in entries.items()
-        if pid != prompt_id and _first_output_file(entry.get("outputs") or {})[0]
+        if pid != prompt_id and _first_output_file(entry.get("outputs") or {})
     ]
     if not candidates:
         raise RuntimeError(f"No file output found in ComfyUI history entry: {history_entry}")
@@ -198,44 +216,162 @@ def _download_output_bytes(history_entry: dict, prompt_id: str) -> tuple:
     # a reliable recency ordering independent of any timestamp field.
     candidates.sort(key=lambda c: c[0])
     _, _, best_entry = candidates[-1]
-    best_file_info, best_is_video = _first_output_file(best_entry["outputs"])
-    return _fetch_file_bytes(best_file_info, best_is_video)
+    best_file_info = _first_output_file(best_entry["outputs"])
+    return _fetch_file_bytes(best_file_info)
 
 
-def _mux_narration_audio(video_bytes: bytes, audio_base64: str) -> tuple:
-    """Muxes narration audio (synthesized by our backend via ElevenLabs or
-    edge-tts — see app/services/culturetoon_selfhosted_video.py) directly
-    onto the finished video on the worker, instead of the backend
-    downloading a silent video and running its own local ffmpeg pass. The
-    Dockerfile already installs ffmpeg for the faststart remux above, so
-    this needs no new dependency.
+def _upload_reference_image(image_base64: str) -> str:
+    """Uploads a reference photo to ComfyUI's own /upload/image endpoint so
+    a LoadImage node in the workflow can reference it by filename —
+    LoadImage reads from ComfyUI's local input directory, not a URL or
+    inline bytes, so the image has to land there before the workflow is
+    submitted. Returns the filename ComfyUI actually stored it under.
+
+    Always requests the same literal "reference.png" name (overwrite=true)
+    — safe even across a multi-shot job's sequential per-shot uploads,
+    since each shot's own upload+submit+wait happens strictly in order
+    before the next shot's upload ever runs (see _generate_single_shot /
+    the multi-shot loop in handler())."""
+    image_bytes = base64.b64decode(image_base64)
+    resp = httpx.post(
+        f"{_COMFYUI_URL}/upload/image",
+        files={"image": ("reference.png", image_bytes, "image/png")},
+        data={"overwrite": "true"},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    filename = data.get("name")
+    if not filename:
+        raise RuntimeError(f"ComfyUI /upload/image returned no filename: {data}")
+    return filename
+
+
+def _generate_single_shot(workflow_json: dict, reference_image_base64: str = None) -> bytes:
+    """Uploads the shot's own reference image (if given), submits its
+    workflow, waits for completion, and returns the raw (not yet
+    faststart-remuxed) video bytes. Shared by both the legacy single-clip
+    path and each iteration of the multi-shot loop in handler() below."""
+    if reference_image_base64:
+        uploaded_filename = _upload_reference_image(reference_image_base64)
+        load_image_nodes = [
+            node for node in workflow_json.values() if node.get("class_type") == "LoadImage"
+        ]
+        if not load_image_nodes:
+            raise RuntimeError(
+                "A reference image was provided but this shot's workflow has no LoadImage node to wire it into"
+            )
+        for node in load_image_nodes:
+            node["inputs"]["image"] = uploaded_filename
+
+    prompt_id = _submit_workflow(workflow_json)
+    logger.info("Submitted ComfyUI prompt %s", prompt_id)
+    history_entry = _wait_for_completion(prompt_id)
+    return _download_output_bytes(history_entry, prompt_id)
+
+
+def _concat_videos(video_byte_list: list) -> bytes:
+    """Concatenates N shot videos (in order) into one file via ffmpeg's
+    concat demuxer with -c copy (lossless, no re-encode). Every shot comes
+    from the same workflow template (same resolution/fps/codec), so a
+    straight stream-copy concat is safe without needing scale/pad
+    normalization (unlike stitching Kling-generated and self-hosted
+    segments together, which DOES need that — see app/services/
+    culturetoon_episode.py)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        segment_paths = []
+        for i, video_bytes in enumerate(video_byte_list):
+            seg_path = os.path.join(tmp_dir, f"shot_{i}.mp4")
+            with open(seg_path, "wb") as f:
+                f.write(video_bytes)
+            segment_paths.append(seg_path)
+        list_path = os.path.join(tmp_dir, "concat_list.txt")
+        with open(list_path, "w", encoding="utf-8") as f:
+            for p in segment_paths:
+                f.write(f"file '{p}'\n")
+        output_path = os.path.join(tmp_dir, "concatenated.mp4")
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output_path],
+            capture_output=True, timeout=120,
+        )
+        if result.returncode != 0:
+            stderr_tail = result.stderr.decode("utf-8", errors="replace")[-800:]
+            raise RuntimeError(f"ffmpeg failed concatenating shot videos (exit {result.returncode}): {stderr_tail}")
+        with open(output_path, "rb") as f:
+            return f.read()
+
+
+def _get_chatterbox_model():
+    """Lazily loads Chatterbox once per worker process and reuses it
+    across every job that process handles — model loading is the slow
+    part (same reasoning ComfyUI itself stays resident across jobs rather
+    than reloading per request)."""
+    global _chatterbox_model
+    if _chatterbox_model is None:
+        from chatterbox.tts import ChatterboxTTS
+        logger.info("Loading Chatterbox TTS model (first use this worker process)...")
+        _chatterbox_model = ChatterboxTTS.from_pretrained(device="cuda")
+    return _chatterbox_model
+
+
+def _synthesize_narration_chatterbox(text: str) -> tuple:
+    """Synthesizes narration directly on THIS worker's own GPU via
+    Chatterbox (Resemble AI, MIT-licensed, github.com/resemble-ai/
+    chatterbox) instead of any external TTS API — confirmed via real
+    research 2026-08-30 to outperform ElevenLabs in blind listening tests
+    (65.3%/24.5% preference for Chatterbox Turbo in Resemble AI's own
+    reported results), at zero marginal cost since it reuses the same GPU
+    already being paid for by this job's video generation. No reference-
+    voice cloning yet (would need a stored per-character voice sample —
+    not something any CharacterVariant has today), so every character
+    currently shares Chatterbox's own default voice; voice cloning is a
+    natural follow-up once character voice samples exist.
+
+    Returns (wav_bytes, diagnostic) — best-effort like every other
+    synthesis/mux step in this file: a failure here should degrade the
+    whole generation to silent video, not fail it outright."""
+    import torchaudio as ta
+
+    try:
+        model = _get_chatterbox_model()
+        wav = model.generate(text)
+        buf = io.BytesIO()
+        ta.save(buf, wav, model.sr, format="wav")
+        return buf.getvalue(), None
+    except Exception as exc:
+        logger.exception("Chatterbox narration synthesis failed")
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+def _mux_narration_audio(video_bytes: bytes, audio_bytes: bytes, audio_format: str = "mp3") -> tuple:
+    """Muxes narration audio (either pre-synthesized via ElevenLabs on our
+    backend, format="mp3", or synthesized right here via Chatterbox,
+    format="wav") directly onto the finished video on the worker, instead
+    of the backend downloading a silent video and running its own local
+    ffmpeg pass. The Dockerfile already installs ffmpeg for the faststart
+    remux above, so this needs no new dependency.
 
     Uses -shortest, UNLIKE app/services/culturetoon_video.py::_dub_dialogue
     (the Kling path's equivalent) — confirmed live 2026-08-30 this needs
     the opposite choice here: _dub_dialogue omits -shortest because Kling's
     requested duration is only a loose guess at what Kling's API actually
     returns, so trimming would risk cutting the VIDEO's tail short whenever
-    dialogue finished a little early. Self-hosted is different — the
-    video's length is the caller's own precise, deliberately-chosen
-    total_duration (see generate_toon_video_selfhosted; often an explicit
-    override well under the FULL script's narration length, specifically
-    to stay under this GPU tier's VRAM ceiling on a longer script), while
-    _gather_dialogue always synthesizes the ENTIRE script's dialogue
-    regardless of that override. Without -shortest, a 10s override on a
-    31s-of-dialogue script came back with 9.7s of video and 50s of audio
-    muxed onto it — confirmed live by inspecting the actual output file's
-    stream durations. -shortest trims the mismatched audio down to the
-    video's own length instead, same as the local mux this replaced used
-    to do.
+    dialogue finished a little early. Self-hosted is different — each
+    shot's video length is the caller's own precise, authored
+    duration_seconds (see app/services/culturetoon_selfhosted_video.py),
+    while narration is always synthesized for the FULL script's dialogue
+    regardless. Without -shortest, a short test override once came back
+    with 9.7s of video and 50s of audio muxed onto it — confirmed live by
+    inspecting the actual output file's stream durations. -shortest trims
+    the mismatched audio down to the video's own length instead.
 
     Returns (bytes, diagnostic) — best-effort like _ensure_faststart above:
     a muxing failure degrades to the silent (but still real, animated)
     video rather than failing a generation that otherwise succeeded."""
-    audio_bytes = base64.b64decode(audio_base64)
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vf:
         vf.write(video_bytes)
         video_path = vf.name
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as af:
+    with tempfile.NamedTemporaryFile(suffix=f".{audio_format}", delete=False) as af:
         af.write(audio_bytes)
         audio_path = af.name
     output_path = video_path + ".dubbed.mp4"
@@ -262,64 +398,45 @@ def _mux_narration_audio(video_bytes: bytes, audio_base64: str) -> tuple:
                 pass
 
 
-def _upload_reference_image(image_base64: str) -> str:
-    """Uploads a reference photo to ComfyUI's own /upload/image endpoint so
-    a LoadImage node in the workflow can reference it by filename —
-    LoadImage reads from ComfyUI's local input directory, not a URL or
-    inline bytes, so the image has to land there before the workflow is
-    submitted. Returns the filename ComfyUI actually stored it under."""
-    image_bytes = base64.b64decode(image_base64)
-    resp = httpx.post(
-        f"{_COMFYUI_URL}/upload/image",
-        files={"image": ("reference.png", image_bytes, "image/png")},
-        data={"overwrite": "true"},
-        timeout=60,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    filename = data.get("name")
-    if not filename:
-        raise RuntimeError(f"ComfyUI /upload/image returned no filename: {data}")
-    return filename
-
-
 def handler(event: dict) -> dict:
     input_data = event.get("input") or {}
+    shot_workflows = input_data.get("shot_workflows")
     workflow_json = input_data.get("workflow")
-    if not workflow_json:
-        return {"error": "input.workflow is required (ComfyUI API-format JSON)"}
+    if not shot_workflows and not workflow_json:
+        return {"error": "input.workflow or input.shot_workflows is required (ComfyUI API-format JSON)"}
 
     try:
         _wait_for_comfyui_ready()
 
-        reference_image_base64 = input_data.get("reference_image_base64")
-        if reference_image_base64:
-            uploaded_filename = _upload_reference_image(reference_image_base64)
-            load_image_nodes = [
-                node for node in workflow_json.values() if node.get("class_type") == "LoadImage"
-            ]
-            if not load_image_nodes:
-                raise RuntimeError(
-                    "reference_image_base64 was provided but the workflow has no LoadImage node to wire it into"
-                )
-            for node in load_image_nodes:
-                node["inputs"]["image"] = uploaded_filename
-
-        prompt_id = _submit_workflow(workflow_json)
-        logger.info("Submitted ComfyUI prompt %s", prompt_id)
-        history_entry = _wait_for_completion(prompt_id)
-        video_bytes, faststart_error = _download_output_bytes(history_entry, prompt_id)
+        if shot_workflows:
+            shot_reference_images_base64 = input_data.get("shot_reference_images_base64") or [None] * len(shot_workflows)
+            shot_videos = []
+            for i, (shot_workflow, ref_b64) in enumerate(zip(shot_workflows, shot_reference_images_base64)):
+                logger.info("Generating shot %d/%d", i + 1, len(shot_workflows))
+                shot_videos.append(_generate_single_shot(shot_workflow, ref_b64))
+            video_bytes = shot_videos[0] if len(shot_videos) == 1 else _concat_videos(shot_videos)
+        else:
+            video_bytes = _generate_single_shot(workflow_json, input_data.get("reference_image_base64"))
 
         narration_audio_base64 = input_data.get("narration_audio_base64")
+        narration_text = input_data.get("narration_text")
+        chatterbox_error = None
         narration_mux_error = None
+        narration_bytes = None
+        audio_format = "mp3"
         if narration_audio_base64:
-            video_bytes, narration_mux_error = _mux_narration_audio(video_bytes, narration_audio_base64)
-            if narration_mux_error is None:
-                # Muxing wrote a brand-new container, so the faststart
-                # layout applied above no longer holds — re-apply it to
-                # the dubbed file rather than shipping back a video that
-                # regressed to moov-after-mdat.
-                video_bytes, faststart_error = _ensure_faststart(video_bytes)
+            narration_bytes = base64.b64decode(narration_audio_base64)
+        elif narration_text:
+            audio_format = "wav"
+            narration_bytes, chatterbox_error = _synthesize_narration_chatterbox(narration_text)
+
+        if narration_bytes:
+            video_bytes, narration_mux_error = _mux_narration_audio(video_bytes, narration_bytes, audio_format)
+
+        # Applied ONCE here, on the final video — after any multi-shot
+        # concat and/or narration mux, both of which write fresh
+        # containers that would otherwise regress to moov-after-mdat.
+        video_bytes, faststart_error = _ensure_faststart(video_bytes)
 
         result = {"video_base64": base64.b64encode(video_bytes).decode("ascii")}
         if faststart_error:
@@ -330,6 +447,8 @@ def handler(event: dict) -> dict:
             result["faststart_error"] = faststart_error
         if narration_mux_error:
             result["narration_mux_error"] = narration_mux_error
+        if chatterbox_error:
+            result["chatterbox_error"] = chatterbox_error
         return result
     except Exception as exc:
         logger.exception("Job failed")

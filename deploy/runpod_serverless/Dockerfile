@@ -75,6 +75,21 @@ RUN pip install --upgrade comfy-kitchen
 # builds with the whole repo as context rather than just this directory.
 COPY deploy/runpod_serverless/extra_model_paths.yaml /comfyui/extra_model_paths.yaml
 
+# Chatterbox (Resemble AI, MIT-licensed, github.com/resemble-ai/chatterbox) —
+# generates narration audio directly on this worker's own GPU instead of
+# calling an external TTS API (edge-tts ran on our own backend; ElevenLabs
+# is a paid per-call API). Confirmed via real research 2026-08-30: in
+# Resemble AI's own blind listening tests Chatterbox Turbo was preferred
+# over ElevenLabs 65.3%/24.5%, and it's pip-installable with no separate
+# ComfyUI custom node needed — handler.py calls it directly as a plain
+# Python library, the same way it already shells out to ffmpeg. Model
+# weights are NOT baked into the image (same philosophy as the LTX-2
+# checkpoint living on the Network Volume, not the image) — HF_HOME is set
+# via the RunPod template's env vars to /runpod-volume/hf_cache so the
+# ~2GB download happens once and persists across worker restarts instead
+# of re-downloading on every fresh worker.
+RUN pip install chatterbox-tts
+
 # Replaces the base image's own /handler.py (image-only outputs) with ours
 # (video/gif-aware, matches app/media/runpod_serverless_client.py's
 # existing video_base64 contract).

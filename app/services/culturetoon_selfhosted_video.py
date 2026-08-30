@@ -1,18 +1,24 @@
 """Self-hosted (RunPod Serverless + ComfyUI + LTX-2) counterpart to
-app/services/culturetoon_video.py's Kling Omni path. Builds one LTX prompt
-from a ToonScript's shots and resolves the cast's trained LoRA, then
-submits the workflow to the RunPod Serverless inference endpoint
-(app/media/runpod_serverless_client.py) — no pod lifecycle to manage here,
-Serverless scales itself.
+app/services/culturetoon_video.py's Kling Omni path. Builds one LTX
+generation PER SHOT (each with its own camera_movement/shot_type prompt
+and its own speaker's identity/LoRA) and submits the whole list to the
+RunPod Serverless inference endpoint (app/media/runpod_serverless_client.py)
+as one job — the worker itself loops through shots sequentially (keeping
+the model resident in GPU memory across all of them) and concatenates the
+results, rather than this backend submitting N separate jobs. No pod
+lifecycle to manage here, Serverless scales itself.
 
-Known simplification vs. the Kling Omni path: there's no equivalent to
-Kling's multi-shot DSL (build_kling_prompt) here, so a script's shots are
-folded into one continuous prompt rather than driving per-shot cuts — v1
-produces one continuous clip. Also, ComfyUI's LoraLoader takes one LoRA per
-generation, so a multi-character script's video is only grounded in the
-PRIMARY (first-listed) cast member's trained identity; the rest are
-described in the prompt text only, not visually locked in the way Kling
-Omni's per-character Elements allow.
+Confirmed live 2026-08-30: earlier versions of this module folded every
+shot into ONE continuous prompt for a single LTX generation, so
+shot_type/camera_movement were only descriptive text within one
+unbroken take rather than producing real cuts — and a multi-character
+script was only ever visually grounded in the PRIMARY (first-listed)
+cast member, since one generation call takes one LoRA. Real per-shot
+generation fixes both: each shot in script.shots that carries its own
+`speaker_variant_id` (already present on every real multi-character
+script — see _resolve_shot_variant) now anchors on THAT character's own
+photo/LoRA, and shot_type/camera_movement drive an actual distinct camera
+setup per cut instead of shared descriptive text in one clip.
 
 Two callers, two different DB-write shapes: app/services/
 culturetoon_selfhosted_batch.py creates a brand-new Toon per approved
@@ -81,19 +87,62 @@ def _resilient_commit(session, mutate) -> None:
     raise last_exc
 
 
+def _build_shot_prompt(shot: dict, background=None) -> str:
+    """One shot's own prompt text — shot_type/camera_movement describe
+    THIS shot's distinct camera setup (each shot is now its own separate
+    LTX generation, see module docstring), not shared text folded into one
+    continuous clip. Returns "" (not a fallback phrase) for a shot with no
+    usable fields at all — callers decide their own fallback, since
+    build_prompt_from_script (whole-script text) and the per-shot
+    generation loop (needs a non-empty prompt for LTX) want different
+    defaults."""
+    parts = []
+    if background is not None:
+        name = (getattr(background, "name", None) or "").strip()
+        description = (getattr(background, "description", None) or "").strip()
+        if name or description:
+            parts.append(f"Set in {name}" + (f": {description}" if description else "") if name else description)
+    shot_type = shot.get("shot_type")
+    if shot_type:
+        parts.append(f"{shot_type.replace('_', ' ')} shot")
+    camera_movement = shot.get("camera_movement")
+    if camera_movement:
+        parts.append(f"{camera_movement.replace('_', ' ')} camera movement")
+    visual = (shot.get("visual") or "").strip()
+    action = (shot.get("action") or "").strip()
+    expression = (shot.get("expression") or "").strip()
+    dialogue = (shot.get("dialogue") or "").strip()
+    delivery = (shot.get("dialogue_delivery") or "").strip()
+    if visual:
+        parts.append(visual)
+    if action:
+        parts.append(action)
+    if expression:
+        # Confirmed live 2026-08-30: every shot in a real script carries
+        # its own expression field, but it was never being read here at
+        # all — dropped silently regardless of what the script called for.
+        parts.append(f"with a {expression.lower()} expression")
+    if dialogue:
+        parts.append(f'saying "{dialogue}"' + (f" ({delivery} delivery)" if delivery else ""))
+    return ". ".join(p for p in parts if p)
+
+
 def build_prompt_from_script(script, background=None) -> str:
     """script: a ToonScript ORM object (shots/hook_line already populated).
-    Folds hook_line + each shot's visual/action/expression/dialogue into
-    one descriptive prompt string for a single continuous LTX generation.
+    Folds hook_line + every shot's own prompt text into one descriptive
+    whole-script string — used for logging/preview, NOT for generation
+    itself anymore (generate_toon_video_selfhosted builds one prompt PER
+    SHOT via _build_shot_prompt so each drives its own distinct camera cut,
+    see module docstring).
 
     background: an optional ToonBackground ORM object (or anything with
     .name/.description attributes) — confirmed live 2026-08-30: this
     pipeline never referenced Toon.background_id/ToonScript.background_id
     at all, so a selected Location was silently dropped from the video
-    prompt entirely regardless of which one was chosen. Prepended once,
-    before the per-shot beats, rather than per-shot, since one location
-    covers a whole script here (this pipeline doesn't do per-shot location
-    changes)."""
+    prompt entirely regardless of which one was chosen. Prepended once
+    here (whole-script summary), though the actual per-shot generation
+    loop repeats it on every shot since each is now an independent
+    generation that needs its own scene-setting context."""
     parts = []
     if background is not None:
         name = (getattr(background, "name", None) or "").strip()
@@ -103,35 +152,26 @@ def build_prompt_from_script(script, background=None) -> str:
     if script.hook_line:
         parts.append(script.hook_line.strip())
     for shot in script.shots or []:
-        # shot_type/camera_movement don't produce discrete cuts here the
-        # way they do in Kling's multi-shot DSL (this whole loop still
-        # folds into ONE continuous clip, see module docstring) — but
-        # still useful descriptive signal for framing/movement within
-        # that one continuous generation.
-        shot_type = shot.get("shot_type")
-        if shot_type:
-            parts.append(f"{shot_type.replace('_', ' ')} shot")
-        camera_movement = shot.get("camera_movement")
-        if camera_movement:
-            parts.append(f"{camera_movement.replace('_', ' ')} camera movement")
-        visual = (shot.get("visual") or "").strip()
-        action = (shot.get("action") or "").strip()
-        expression = (shot.get("expression") or "").strip()
-        dialogue = (shot.get("dialogue") or "").strip()
-        delivery = (shot.get("dialogue_delivery") or "").strip()
-        if visual:
-            parts.append(visual)
-        if action:
-            parts.append(action)
-        if expression:
-            # Confirmed live 2026-08-30: every shot in a real script
-            # carries its own expression field, but it was never being
-            # read here at all — dropped silently regardless of what the
-            # script actually called for.
-            parts.append(f"with a {expression.lower()} expression")
-        if dialogue:
-            parts.append(f'saying "{dialogue}"' + (f" ({delivery} delivery)" if delivery else ""))
+        shot_prompt = _build_shot_prompt(shot)
+        if shot_prompt:
+            parts.append(shot_prompt)
     return ". ".join(p for p in parts if p) or "A character reacts to their day."
+
+
+def _resolve_shot_variant(shot: dict, variants: list):
+    """Which cast member's identity/LoRA anchors THIS shot's own
+    generation. Real multi-character scripts already carry a
+    speaker_variant_id per shot (confirmed live 2026-08-30 on a real
+    3-character script) — falls back to the primary (first-listed) cast
+    member for shots with no speaker (e.g. a wordless reaction shot with
+    multiple characters on screen) or an id that doesn't match any
+    resolved cast member."""
+    speaker_id = shot.get("speaker_variant_id")
+    if speaker_id:
+        for v in variants:
+            if str(v.id) == str(speaker_id):
+                return v
+    return variants[0] if variants else None
 
 
 def resolve_ready_lora(variants: list) -> str:
@@ -140,8 +180,9 @@ def resolve_ready_lora(variants: list) -> str:
     isn't "ready" — a script isn't generated with an inconsistent-looking
     character silently substituted in, same philosophy as
     generate_video_for_toon's own element_status check for Kling Omni.
-    Returns the primary (first-listed) cast member's lora_path — see this
-    module's docstring on the single-LoRA-per-generation limitation."""
+    Returns the primary (first-listed) cast member's lora_path — used only
+    as the DEFAULT shot anchor now (see _resolve_shot_variant); most shots
+    resolve their own speaker's LoRA independently."""
     not_ready = [v.name for v in variants if v.lora_status != "ready"]
     if not_ready:
         raise SelfHostedVideoGenerationError(
@@ -152,10 +193,14 @@ def resolve_ready_lora(variants: list) -> str:
 
 def _gather_dialogue(script) -> str:
     """Joins every shot's dialogue line, in order, into one narration
-    script — this pipeline generates one continuous clip (no per-shot
-    cuts, see module docstring), so audio is synthesized as one
-    continuous narration track rather than per-shot lines that would need
-    cut boundaries this pipeline doesn't have."""
+    script. Narration is still synthesized as ONE continuous track (not
+    per-shot lines cut to each shot's own boundary) even though video
+    generation itself is now per-shot (see module docstring) — the final
+    mux (deploy/runpod_serverless/handler.py) lays this one track over the
+    whole concatenated video with -shortest, same simplification
+    app/services/culturetoon_video.py::_dub_dialogue already accepts for
+    the Kling path (dialogue placed sequentially, not time-aligned to each
+    shot's exact boundary)."""
     lines = [(shot.get("dialogue") or "").strip() for shot in (script.shots or [])]
     return " ... ".join(line for line in lines if line)
 
@@ -207,25 +252,23 @@ def _synthesize_narration_elevenlabs(script, api_key: str, voice_id: str) -> byt
             return f.read()
 
 
-def _synthesize_narration(script, variants: list, elevenlabs_api_key: Optional[str] = None) -> Optional[bytes]:
-    """Returns MP3 bytes for the script's full dialogue, or None if the
-    script has no dialogue at all (a pure-action/silent script) since
-    there'd be nothing to narrate.
-
-    Uses ElevenLabs (per-shot synthesis, same as the Kling path) when the
-    primary cast member opts into it (variant.voice_provider ==
-    "elevenlabs") AND the caller supplied a decrypted brand API key AND
-    the variant has an elevenlabs_voice_id set — otherwise falls back to
-    the free edge-tts provider already used by the trend engine's faceless
-    reels (app/media/voice.py), same fail-open philosophy as the Kling
-    path's own voice_provider handling in culturetoon_video.py. Best-
-    effort throughout: a synthesis failure degrades to a silent video
-    rather than failing a generation that would otherwise succeed."""
-    from app.media.voice import EdgeTTSProvider
-
+def _resolve_narration(script, variants: list, elevenlabs_api_key: Optional[str] = None) -> tuple:
+    """Returns (narration_audio_bytes, narration_text) — exactly one is set
+    (or both None if the script has no dialogue at all, a pure-action/
+    silent script). ElevenLabs (per-shot synthesis, same as the Kling
+    path) is still synthesized HERE on the backend, since it's a paid
+    opt-in driven by the caller's own decrypted brand credential. The
+    default (free) path instead returns the raw gathered dialogue TEXT for
+    the RunPod worker's own GPU to synthesize via Chatterbox
+    (deploy/runpod_serverless/handler.py) — moved off edge-tts (which ran
+    on THIS backend, not RunPod, and was a noticeably worse single generic
+    voice) after real research confirmed 2026-08-30 that Chatterbox
+    (Resemble AI, MIT-licensed) beat ElevenLabs outright in blind listening
+    tests, at zero marginal cost since it reuses the same GPU already
+    being paid for by this job's video generation."""
     dialogue = _gather_dialogue(script)
     if not dialogue:
-        return None
+        return None, None
 
     primary_variant = variants[0] if variants else None
     use_elevenlabs = (
@@ -236,37 +279,25 @@ def _synthesize_narration(script, variants: list, elevenlabs_api_key: Optional[s
     )
     if use_elevenlabs:
         try:
-            return _synthesize_narration_elevenlabs(script, elevenlabs_api_key, primary_variant.elevenlabs_voice_id)
+            return _synthesize_narration_elevenlabs(script, elevenlabs_api_key, primary_variant.elevenlabs_voice_id), None
         except Exception:
-            logger.warning("ElevenLabs narration failed — falling back to edge-tts", exc_info=True)
+            logger.warning("ElevenLabs narration failed — falling back to on-worker Chatterbox synthesis", exc_info=True)
 
-    try:
-        result = EdgeTTSProvider().synthesize(dialogue)
-        return result.asset_bytes
-    except Exception:
-        logger.warning("Narration synthesis failed — video will be delivered silent", exc_info=True)
-        return None
+    return None, dialogue
 
 
-def _probe_audio_duration_seconds(audio_bytes: bytes) -> Optional[float]:
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-        f.write(audio_bytes)
-        path = f.name
-    try:
-        result = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
-            capture_output=True, text=True, timeout=20,
-        )
-        if result.returncode != 0:
-            return None
-        return float(result.stdout.strip())
-    except Exception:
-        return None
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+_DEFAULT_SHOT_DURATION_SECONDS = 3
+# Per-job client-side polling deadline for a multi-shot generation — scales
+# with shot count since the worker now runs N sequential LTX generations
+# (plus Chatterbox load/synthesis, concat, and mux) inside ONE job rather
+# than this backend submitting N separate jobs (see module docstring on
+# why: keeping the model resident across shots in one job is both faster
+# and more reliable than N independent cold-ish RunPod round trips). Not
+# yet tuned against real multi-shot timing — 400s/shot is a conservative
+# starting estimate, adjust once real per-shot generation time is observed
+# live on a multi-shot script.
+_MULTI_SHOT_TIMEOUT_FLOOR_SECONDS = 1200
+_MULTI_SHOT_TIMEOUT_PER_SHOT_SECONDS = 400
 
 
 def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
@@ -276,8 +307,17 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
                                     elevenlabs_api_key: Optional[str] = None) -> bytes:
     """Returns raw video bytes for the caller to persist via
     app.media.storage.upload(). Raises SelfHostedVideoGenerationError (cast
-    not ready) or whatever app.media.runpod_serverless_client/ltx_workflow
-    raise on a Serverless-side failure.
+    not ready, or a script with no shots at all) or whatever
+    app.media.runpod_serverless_client/ltx_workflow raise on a
+    Serverless-side failure.
+
+    Builds one LTX generation PER SHOT (see module docstring) — each shot
+    resolves its own speaker's identity/LoRA via _resolve_shot_variant and
+    gets its own prompt via _build_shot_prompt, so shot_type/camera_movement
+    drive a real distinct camera cut instead of shared descriptive text
+    within one continuous clip. The worker (deploy/runpod_serverless/
+    handler.py) receives the whole ordered list and does the actual
+    per-shot submission/concat/mux itself in one job.
 
     use_allocation_retry: set by the batch runner for only the first job of
     a scheduled window (app/services/culturetoon_selfhosted_batch.py) —
@@ -286,107 +326,120 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
     worker is a distinct failure mode from an individual clip's own
     generation failing.
 
+    duration_seconds: an optional CAP on total included runtime, NOT a
+    per-clip override anymore — each shot uses its own authored
+    duration_seconds field (falling back to _DEFAULT_SHOT_DURATION_SECONDS
+    when a shot is missing one). Shots are included in script order until
+    adding the next one would exceed this cap (always includes at least
+    the first shot); omit it to generate every shot in the script.
+    Existing callers compute this as the script's own total duration, so
+    in practice this almost always includes every shot — the cap mainly
+    exists for a caller that deliberately wants a shorter/quicker test
+    render, the same use this parameter served before per-shot generation.
+
     background: the resolved ToonBackground for this script (see
-    build_prompt_from_script) — this function doesn't resolve it itself
-    (no DB session assumption here, callers already have one), so a
-    caller that wants Location context in the prompt must fetch and pass
-    it explicitly.
+    _build_shot_prompt) — this function doesn't resolve it itself (no DB
+    session assumption here, callers already have one), so a caller that
+    wants Location context in the prompt must fetch and pass it
+    explicitly. Repeated on EVERY shot's own prompt now, since each shot
+    is an independent generation that needs its own scene-setting context
+    (previously prepended once for the single continuous clip).
 
     elevenlabs_api_key: the primary cast member's brand's own decrypted
     ElevenLabs key, when voice_provider="elevenlabs" — this function
     doesn't resolve or decrypt it itself (same no-DB-session reasoning as
     background above), so a caller that wants ElevenLabs narration instead
-    of the edge-tts fallback must fetch and decrypt it explicitly (see
-    generate_video_for_toon_selfhosted and culturetoon_selfhosted_batch.py
-    for the two existing examples, both mirroring app/services/
-    culturetoon_video.py's identical decrypt-and-pass pattern)."""
+    of the default on-worker Chatterbox synthesis must fetch and decrypt
+    it explicitly (see generate_video_for_toon_selfhosted and
+    culturetoon_selfhosted_batch.py for the two existing examples, both
+    mirroring app/services/culturetoon_video.py's identical
+    decrypt-and-pass pattern)."""
     import httpx
     from app.media import ltx_workflow, runpod_serverless_client
 
-    lora_path = resolve_ready_lora(variants)
-    prompt_text = build_prompt_from_script(script, background=background)
-    total_duration = (
-        duration_seconds
-        or script.total_duration_seconds
-        or sum(s.get("duration_seconds", 0) for s in (script.shots or []))
-        or 5
+    resolve_ready_lora(variants)  # fail fast if any cast member isn't LoRA-ready
+
+    shots = script.shots or []
+    if not shots:
+        raise SelfHostedVideoGenerationError("Script has no shot data — nothing to generate")
+
+    reference_image_cache: dict = {}
+
+    def _reference_bytes_for(variant) -> Optional[bytes]:
+        # Cached per variant id — real scripts reuse the same speaker
+        # across multiple shots (e.g. Hans in 6 of his own 9 shots), no
+        # need to re-fetch the same photo once per shot.
+        if variant is None:
+            return None
+        key = str(variant.id)
+        if key not in reference_image_cache:
+            image_url = getattr(variant, "image_url", None)
+            if not image_url:
+                reference_image_cache[key] = None
+            else:
+                try:
+                    reference_image_cache[key] = httpx.get(image_url, timeout=30).content
+                except Exception:
+                    logger.warning(
+                        "Failed to fetch reference image for %s — that shot falls back to text-to-video",
+                        getattr(variant, "name", key), exc_info=True,
+                    )
+                    reference_image_cache[key] = None
+        return reference_image_cache[key]
+
+    shot_workflows = []
+    shot_reference_images = []
+    cumulative_duration = 0.0
+    for shot in shots:
+        shot_duration = shot.get("duration_seconds") or _DEFAULT_SHOT_DURATION_SECONDS
+        if duration_seconds is not None and shot_workflows and cumulative_duration + shot_duration > duration_seconds:
+            break  # cap reached — always include at least the first shot
+
+        shot_variant = _resolve_shot_variant(shot, variants)
+        shot_prompt = _build_shot_prompt(shot, background=background) or "A character reacts to their day."
+        reference_bytes = _reference_bytes_for(shot_variant)
+
+        # Explicit random seed per shot — confirmed live 2026-08-28: with
+        # no seed passed, build_workflow() leaves the template's hardcoded
+        # seed=0 in place, so any two calls with identical prompt/duration/
+        # lora (e.g. retrying the same Toon) produce byte-identical
+        # ComfyUI inputs, which hits ComfyUI's own execution cache and
+        # returns an empty `outputs` dict despite status_str="success".
+        workflow = ltx_workflow.build_workflow(
+            shot_prompt, shot_duration,
+            lora_path=getattr(shot_variant, "lora_path", None),
+            seed=random.randint(1, 2**31 - 1),
+            # Confirmed live 2026-08-29/30: pure text-to-video with only a
+            # character LoRA for identity produced 2-3 held poses, not
+            # continuous animation — image-to-video, anchoring the first
+            # frame on the shot's own speaker's real photo, is LTX's own
+            # documented pattern for grounding identity while leaving the
+            # base model free to generate real motion. Best-effort: a
+            # shot whose photo can't be fetched falls back to text-to-video
+            # rather than failing the whole multi-shot generation.
+            reference_image_filename="reference.png" if reference_bytes else None,
+        )
+        shot_workflows.append(workflow)
+        shot_reference_images.append(reference_bytes)
+        cumulative_duration += shot_duration
+
+    narration_audio_bytes, narration_text = _resolve_narration(script, variants, elevenlabs_api_key=elevenlabs_api_key)
+
+    timeout_seconds = max(
+        _MULTI_SHOT_TIMEOUT_FLOOR_SECONDS,
+        300 + len(shot_workflows) * _MULTI_SHOT_TIMEOUT_PER_SHOT_SECONDS,
     )
 
-    # This pipeline generated silent video only until now — no equivalent
-    # to Kling Omni's native audio/lip-sync. Synthesizing narration BEFORE
-    # requesting the video (rather than after) lets the real synthesized
-    # length drive the requested video duration, so the two land close in
-    # total runtime instead of the video's length being a pure guess from
-    # script.total_duration_seconds while the narration runs whatever
-    # length the dialogue actually takes to speak. Only does this when the
-    # CALLER didn't already pass an explicit duration_seconds — an
-    # explicit override (e.g. a caller deliberately requesting a shorter
-    # clip to stay under this GPU tier's VRAM ceiling) must win, or a
-    # long-dialogue script would silently blow the override right back up
-    # to its full narrated length.
-    narration_bytes = _synthesize_narration(script, variants, elevenlabs_api_key=elevenlabs_api_key)
-    if narration_bytes and duration_seconds is None:
-        narration_duration = _probe_audio_duration_seconds(narration_bytes)
-        if narration_duration:
-            total_duration = narration_duration
-
-    # Explicit random seed — confirmed live 2026-08-28: with no seed
-    # passed, build_workflow() leaves the template's hardcoded seed=0 in
-    # place, so any two calls with identical prompt/duration/lora (e.g.
-    # retrying the same Toon, which is the normal shape of a failed-then-
-    # retried generation) produce byte-identical ComfyUI inputs. ComfyUI
-    # then serves a server-side CACHED result instead of re-executing —
-    # and its /history response for a fully-cached prompt leaves
-    # `outputs` empty even though status_str is "success", which
-    # handler.py's _download_output_bytes can't extract a file from
-    # ("No file output found in ComfyUI history entry"). A random seed
-    # per call sidesteps the whole cache-hit class rather than patching
-    # the worker's output-extraction logic for an edge case production
-    # never actually wants (identical output on retry isn't desirable
-    # here anyway).
-    # Confirmed live 2026-08-29/30: pure text-to-video with only a
-    # character LoRA for identity (the LoRA trained on static reference
-    # images, never on motion) produced a video that was really just 2-3
-    # held poses with abrupt transitions between them, not continuous
-    # animation — asking one LoRA to carry both identity AND not break the
-    # base model's motion generation turned out to be a harder ask than
-    # the ecosystem is actually built for. Anchoring the first frame on
-    # the primary cast member's own real photo via image-to-video (LTX's
-    # own documented, well-supported pattern) grounds identity from the
-    # photo instead, leaving the base model free to generate motion
-    # naturally from that anchor. Best-effort: if the photo can't be
-    # fetched for any reason, fall back to the old empty-latent path
-    # rather than failing the whole generation over a missing image.
-    reference_image_bytes = None
-    reference_image_url = variants[0].image_url if variants else None
-    if reference_image_url:
-        try:
-            reference_image_bytes = httpx.get(reference_image_url, timeout=30).content
-        except Exception:
-            logger.warning("Failed to fetch reference image %s — falling back to text-to-video", reference_image_url, exc_info=True)
-
-    workflow = ltx_workflow.build_workflow(
-        prompt_text, total_duration, lora_path=lora_path, seed=random.randint(1, 2**31 - 1),
-        reference_image_filename="reference.png" if reference_image_bytes else None,
+    call = (
+        runpod_serverless_client.run_inference_job_with_allocation_retry
+        if use_allocation_retry else runpod_serverless_client.run_inference_job
     )
-    # narration_bytes, when present, is sent along with the job and muxed
-    # onto the video by the RunPod worker itself (deploy/runpod_serverless/
-    # handler.py::_mux_narration_audio) — encoding happens directly on
-    # RunPod instead of this function downloading a silent video and
-    # running a separate local ffmpeg pass, so what comes back here is
-    # already the final dubbed file (or the silent one, if muxing failed
-    # server-side — see that function's own best-effort fallback).
-    if use_allocation_retry:
-        video_bytes = runpod_serverless_client.run_inference_job_with_allocation_retry(
-            endpoint_id, workflow, reference_image_bytes=reference_image_bytes,
-            narration_audio_bytes=narration_bytes,
-        )
-    else:
-        video_bytes = runpod_serverless_client.run_inference_job(
-            endpoint_id, workflow, reference_image_bytes=reference_image_bytes,
-            narration_audio_bytes=narration_bytes,
-        )
-    return video_bytes
+    return call(
+        endpoint_id,
+        shot_workflows=shot_workflows, shot_reference_images=shot_reference_images,
+        narration_audio_bytes=narration_audio_bytes, narration_text=narration_text,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
@@ -464,14 +517,12 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
         if background_id:
             background = session.query(ToonBackground).filter_by(id=background_id).first()
 
-        # Confirmed live 2026-08-30: this path always used edge-tts's one
-        # free generic voice, regardless of what voice_provider/
-        # elevenlabs_voice_id a variant had — a real quality gap versus
-        # what the Kling path already offers. Same resolve-and-decrypt
-        # pattern as app/services/culturetoon_video.py::generate_video_
-        # for_toon: the primary cast member drives voice_provider for the
-        # whole video, and a missing/absent brand key fails open to
-        # edge-tts rather than blocking generation.
+        # Same resolve-and-decrypt pattern as app/services/
+        # culturetoon_video.py::generate_video_for_toon: the primary cast
+        # member drives voice_provider for the whole video, and a missing/
+        # absent brand key fails open to the default on-worker Chatterbox
+        # synthesis (see _resolve_narration) rather than blocking
+        # generation.
         elevenlabs_api_key = None
         if variants and variants[0].voice_provider == "elevenlabs":
             brand = session.query(CharacterBrand).filter_by(id=toon.brand_id).first()
