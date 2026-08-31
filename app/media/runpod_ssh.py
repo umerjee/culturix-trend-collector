@@ -82,6 +82,23 @@ def run_remote_command(host: str, port: int, command: str, timeout_seconds: int 
         client.close()
 
 
+def upload_file(host: str, port: int, remote_path: str, data: bytes, timeout_seconds: int = 300) -> None:
+    """Writes `data` to `remote_path` on the pod via SFTP — the write-side
+    counterpart to download_file, same socket-timeout reasoning (a dead
+    connection should fail promptly, not hang the caller forever)."""
+    client = _connect(host, port)
+    try:
+        sftp = client.open_sftp()
+        try:
+            sftp.get_channel().settimeout(timeout_seconds)
+            with sftp.open(remote_path, "wb") as f:
+                f.write(data)
+        finally:
+            sftp.close()
+    finally:
+        client.close()
+
+
 def download_file(host: str, port: int, remote_path: str, timeout_seconds: int = 300) -> bytes:
     """Fetches a file from the pod via SFTP — used for retrieving trained
     LoRA files (can be tens-hundreds of MB), where piping through
