@@ -82,6 +82,21 @@ def upload_lora(data: bytes, key: str) -> None:
         raise RunPodS3Error(f"Failed to upload {key} to the Network Volume: {exc}") from exc
 
 
+def download_object(key: str) -> bytes:
+    """Plain GetObject — the read-side counterpart to upload_lora, used to
+    fetch an already-uploaded object's bytes back into this process (e.g.
+    to then push a copy onto a different Network Volume via
+    runpod_volume_relay.push_file, since that volume may not have its own
+    S3-compatible API — see culturetoon_lora.py's
+    _sync_lora_to_inference_volume)."""
+    client = _client()
+    try:
+        obj = client.get_object(Bucket=os.environ["RUNPOD_S3_BUCKET"], Key=key)
+        return obj["Body"].read()
+    except Exception as exc:
+        raise RunPodS3Error(f"Failed to download {key} from the Network Volume: {exc}") from exc
+
+
 def verify_exists(key: str) -> bool:
     """A HEAD-object check — confirms the upload actually landed rather
     than trusting put_object's success response alone, per the spec's own

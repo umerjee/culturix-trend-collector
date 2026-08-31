@@ -526,6 +526,62 @@ s3.upload_file({local_path!r}, {os.environ['RUNPOD_S3_BUCKET']!r}, {key!r})
     )
 
 
+def _sync_lora_to_inference_volume(volume_key: str) -> None:
+    """Copies a just-uploaded LoRA from the training/cache Network Volume
+    (RUNPOD_S3_BUCKET, reached via S3 — see _upload_to_volume_from_pod)
+    onto the SEPARATE Network Volume actually mounted to the live
+    Serverless inference endpoint (RUNPOD_INFERENCE_NETWORK_VOLUME_ID).
+
+    Confirmed live 2026-08-31: these have been two different volumes in
+    two different datacenters since the inference endpoint was recreated
+    in EU-NL-1 on 2026-08-28 — RUNPOD_NETWORK_VOLUME_ID/RUNPOD_S3_BUCKET
+    were never updated to follow it. Every LoRA trained since then
+    (4 variants) landed only on the old volume: lora_status read "ready"
+    in the DB, verify_exists() passed, but the inference worker — which
+    reads straight off its own mounted /runpod-volume filesystem, not S3 —
+    could never see the file. Root cause took roughly an hour of a stuck
+    "animating" toon to actually surface, since neither side raised: the
+    upload's own verify_exists checks the SAME (wrong) volume it just
+    wrote to, so it always passes regardless of which volume the
+    inference endpoint mounts.
+
+    This closes that gap going forward by requiring the file to also
+    land where inference actually reads from, immediately after training
+    — not as a manual migration step discovered days later. Raises rather
+    than warning-and-continuing: a LoRA that isn't on the inference volume
+    isn't actually "ready" for anything, so silently marking it ready
+    here would just reproduce the exact bug this function exists to close.
+    EU-NL-1 (the current inference volume) has no S3-compatible API of its
+    own (confirmed live 2026-08-31, a real EndpointConnectionError against
+    s3api-eu-nl-1.runpod.io) — reached via a short-lived carrier pod with
+    the volume mounted instead (app/media/runpod_volume_relay.py)."""
+    from app.media import runpod_s3, runpod_volume_relay
+
+    inference_volume_id = os.getenv("RUNPOD_INFERENCE_NETWORK_VOLUME_ID", "")
+    if not inference_volume_id:
+        raise LoraTrainingError(
+            "RUNPOD_INFERENCE_NETWORK_VOLUME_ID is not configured — cannot confirm the trained "
+            "LoRA reached the volume the inference endpoint actually mounts, only the training "
+            "cache volume (RUNPOD_S3_BUCKET)."
+        )
+
+    data = _resilient(runpod_s3.download_object, volume_key)
+    original_env = os.environ.get("RUNPOD_NETWORK_VOLUME_ID")
+    os.environ["RUNPOD_NETWORK_VOLUME_ID"] = inference_volume_id
+    try:
+        _resilient(runpod_volume_relay.push_file, data, volume_key)
+    finally:
+        if original_env is None:
+            os.environ.pop("RUNPOD_NETWORK_VOLUME_ID", None)
+        else:
+            os.environ["RUNPOD_NETWORK_VOLUME_ID"] = original_env
+
+    if not _resilient(runpod_volume_relay.verify_exists, volume_key):
+        raise LoraTrainingError(
+            f"Pushed {volume_key} to the inference Network Volume but a follow-up check couldn't confirm it landed"
+        )
+
+
 def train_character_lora(variant, session) -> None:
     """Synchronous end-to-end training run: curates the training set
     (curate_training_images() — Culturix's own already-generated Expression
@@ -836,6 +892,8 @@ snapshot_download(repo_id={_TEXT_ENCODER_REPO!r}, local_dir={text_encoder_dir!r}
             raise LoraTrainingError(
                 f"Uploaded {volume_key} to the Network Volume but a HEAD check couldn't confirm it landed"
             )
+
+        _sync_lora_to_inference_volume(volume_key)
 
         variant.lora_path = lora_filename
         variant.lora_status = "ready"

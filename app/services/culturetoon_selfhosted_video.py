@@ -299,6 +299,36 @@ _DEFAULT_SHOT_DURATION_SECONDS = 3
 _MULTI_SHOT_TIMEOUT_FLOOR_SECONDS = 1200
 _MULTI_SHOT_TIMEOUT_PER_SHOT_SECONDS = 400
 
+_REFERENCE_IMAGE_MAX_DIMENSION = 768
+_REFERENCE_IMAGE_JPEG_QUALITY = 88
+
+
+def _downscale_reference_image(raw: bytes) -> bytes:
+    """Re-encodes a character reference photo as a smaller JPEG before it
+    goes into the Serverless request body — see the docstring on
+    _reference_bytes_for's caller for why: this is only used to anchor
+    LTX's first frame, not shown to end users, so trading resolution for
+    request-body size is free. Falls back to the original bytes if
+    Pillow can't decode them (lets the existing "bad image, falls back to
+    text-to-video" path downstream handle it rather than failing here)."""
+    from io import BytesIO
+    from PIL import Image
+
+    try:
+        img = Image.open(BytesIO(raw))
+        img = img.convert("RGB")
+        w, h = img.size
+        longest = max(w, h)
+        if longest > _REFERENCE_IMAGE_MAX_DIMENSION:
+            scale = _REFERENCE_IMAGE_MAX_DIMENSION / longest
+            img = img.resize((max(1, round(w * scale)), max(1, round(h * scale))))
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=_REFERENCE_IMAGE_JPEG_QUALITY)
+        return out.getvalue()
+    except Exception:
+        logger.warning("Failed to downscale reference image — sending original bytes", exc_info=True)
+        return raw
+
 
 def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
                                     duration_seconds: Optional[float] = None,
@@ -368,7 +398,23 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
     def _reference_bytes_for(variant) -> Optional[bytes]:
         # Cached per variant id — real scripts reuse the same speaker
         # across multiple shots (e.g. Hans in 6 of his own 9 shots), no
-        # need to re-fetch the same photo once per shot.
+        # need to re-fetch the same photo once per shot. Each cast member's
+        # photo is still embedded once PER SHOT they speak in (the worker's
+        # shot_reference_images_base64 contract is positional, one entry
+        # per shot_workflows entry — see handler.py's _generate_single_shot
+        # loop), so a multi-shot script re-sends the same bytes multiple
+        # times. Confirmed live 2026-08-31: an unmodified 1024x1024 PNG
+        # (~1.3MB) repeated across a 9-shot/3-character script pushed the
+        # combined base64 payload past RunPod Serverless's 10MiB /run body
+        # cap ("exceeded max body size of 10MiB", no useful detail on the
+        # generic 400 until the response body itself was inspected). Since
+        # this is only ever used to anchor LTX's first frame (not shown to
+        # end users at full res), downscaling + re-encoding as JPEG here
+        # cuts each image from ~1.3MB to ~70KB — about 18x — with no
+        # worker-side change needed, since the worker just base64-decodes
+        # whatever bytes it's given and hands them to ComfyUI's
+        # content-sniffing upload endpoint regardless of the literal
+        # "reference.png" filename it's uploaded under.
         if variant is None:
             return None
         key = str(variant.id)
@@ -378,7 +424,8 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
                 reference_image_cache[key] = None
             else:
                 try:
-                    reference_image_cache[key] = httpx.get(image_url, timeout=30).content
+                    raw = httpx.get(image_url, timeout=30).content
+                    reference_image_cache[key] = _downscale_reference_image(raw)
                 except Exception:
                     logger.warning(
                         "Failed to fetch reference image for %s — that shot falls back to text-to-video",
