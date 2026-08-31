@@ -26,7 +26,8 @@ def tracker_db(mocker):
 def _mint_persona(session, **overrides):
     defaults = dict(
         name="Cottagecore", description="rural aesthetic", motivations="calm",
-        interests="baking", centroid_embedding=[1.0, 0.0, 0.0], status="pending",
+        interests="baking", centroid_embedding=[1.0, 0.0, 0.0],
+        relevance_embedding=[1.0, 0.0, 0.0], status="pending",
         occurrence_count=1, first_seen_at=datetime.utcnow(), last_seen_at=datetime.utcnow(),
     )
     defaults.update(overrides)
@@ -49,6 +50,7 @@ class TestMapPersonaTags:
             "app.pipeline.nodes.persona_tag_tracker._infer_persona_from_cluster",
             return_value={"name": "Cottagecore", "description": "rural aesthetic", "motivations": "calm", "interests": "baking"},
         )
+        mocker.patch("app.embeddings.embed_batch", return_value=[[0.2, 0.3, 0.4]])
         state = {"clusters": [{"name": "Farmhouse vibes", "description": "rustic living", "_embedding": [1.0, 0.0, 0.0]}]}
 
         map_persona_tags(state)
@@ -60,6 +62,7 @@ class TestMapPersonaTags:
             assert personas[0].name == "Cottagecore"
             assert personas[0].status == "pending"
             assert personas[0].occurrence_count == 1
+            assert personas[0].relevance_embedding == [0.2, 0.3, 0.4]
             assert session.query(PersonaOccurrence).filter_by(persona_id=personas[0].id).count() == 1
         finally:
             session.close()
@@ -82,6 +85,40 @@ class TestMapPersonaTags:
             updated = session.query(Persona).filter_by(id=persona_id).first()
             assert updated.occurrence_count == 2
             assert session.query(PersonaOccurrence).filter_by(persona_id=persona_id).count() == 1
+        finally:
+            session.close()
+
+    def test_matches_via_relevance_embedding_even_when_centroid_has_drifted_away(self, mocker, tracker_db):
+        """Regression test for the confirmed 2026-08-31 bug: matching used to
+        compare a cluster's vector against Persona.centroid_embedding, a
+        running average of past triggering clusters' text — which drifts
+        away from the archetype's own identity over many occurrences, so a
+        new cluster embodying the same archetype could fail to match and
+        mint an exact-duplicate persona instead of incrementing
+        occurrence_count. centroid_embedding is deliberately set far from
+        the new cluster's vector here, while relevance_embedding (the
+        persona's own stable name+description embedding) stays close to it —
+        matching must go through relevance_embedding, not centroid_embedding."""
+        session = tracker_db()
+        persona = _mint_persona(
+            session, occurrence_count=5,
+            centroid_embedding=[0.0, 1.0, 0.0],
+            relevance_embedding=[1.0, 0.0, 0.0],
+        )
+        persona_id = persona.id
+        session.close()
+
+        mock_infer = mocker.patch("app.pipeline.nodes.persona_tag_tracker._infer_persona_from_cluster")
+        state = {"clusters": [{"name": "Cottagecore aesthetic", "description": "rural life", "_embedding": [0.99, 0.01, 0.0]}]}
+
+        map_persona_tags(state)
+
+        mock_infer.assert_not_called()
+        session = tracker_db()
+        try:
+            assert session.query(Persona).count() == 1
+            updated = session.query(Persona).filter_by(id=persona_id).first()
+            assert updated.occurrence_count == 6
         finally:
             session.close()
 

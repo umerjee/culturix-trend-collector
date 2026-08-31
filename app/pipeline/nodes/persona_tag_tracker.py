@@ -48,6 +48,41 @@ def _cluster_text(cluster: dict) -> str:
     return f"{cluster.get('name', '')}. {cluster.get('description', '')}".strip()
 
 
+def _archetype_text(name: str, description: str) -> str:
+    return f"{name}. {description or ''}".strip()
+
+
+_MAX_NEW_ARCHETYPE_EMBEDDINGS_PER_RUN = 15
+
+
+def _backfill_archetype_embeddings(personas: list) -> None:
+    """Confirmed live 2026-08-31: matching was comparing a cluster's
+    triggering-event text against Persona.centroid_embedding, a running
+    average of past cluster vectors — two semantically-different specific
+    events representing the same archetype (e.g. two different "True Crime
+    Follower"-worthy news stories) score far below SIMILARITY_THRESHOLD
+    against each other, so the same archetype kept re-seeding as duplicate
+    rows instead of incrementing occurrence_count. Fix: match against
+    Persona.relevance_embedding instead — an embedding of the persona's OWN
+    stable name+description, already computed for CultureToons' trend-
+    relevance ranking (culturetoon_trend_relevance.py) and semantically
+    identical to what's needed here, just a second legitimate consumer of
+    the same cached value. Capped + fail-open, same convention as
+    culturetoon_trend_relevance.rank_by_relevance — backfills a few
+    personas per run rather than all at once."""
+    from app.embeddings import embed_batch
+
+    to_embed = [p for p in personas if not p.relevance_embedding][:_MAX_NEW_ARCHETYPE_EMBEDDINGS_PER_RUN]
+    if not to_embed:
+        return
+    try:
+        vectors = embed_batch([_archetype_text(p.name, p.description) for p in to_embed])
+        for p, v in zip(to_embed, vectors):
+            p.relevance_embedding = v
+    except Exception as e:
+        logger.warning("Backfilling %d persona archetype embeddings failed: %s", len(to_embed), e)
+
+
 def _infer_persona_from_cluster(cluster: dict) -> dict:
     """Mints a name/description/motivations/interests for a brand-new persona
     archetype, adapted from app/personas.py's ai_infer_persona_from_posts —
@@ -80,7 +115,9 @@ def _match_or_create_persona(session, personas: list, cluster: dict, vector: lis
 
     best_persona, best_score = None, 0.0
     for persona in personas:
-        score = cosine_similarity(persona.centroid_embedding or [], vector)
+        if not persona.relevance_embedding:
+            continue
+        score = cosine_similarity(persona.relevance_embedding, vector)
         if score > best_score:
             best_persona, best_score = persona, score
 
@@ -106,12 +143,19 @@ def _match_or_create_persona(session, personas: list, cluster: dict, vector: lis
         return persona
 
     persona_data = _infer_persona_from_cluster(cluster)
+    try:
+        from app.embeddings import embed_batch
+        archetype_embedding = embed_batch([_archetype_text(persona_data["name"], persona_data.get("description"))])[0]
+    except Exception as e:
+        logger.warning("Embedding new persona %r's archetype text failed: %s", persona_data.get("name"), e)
+        archetype_embedding = None
     persona = Persona(
         name=persona_data["name"],
         description=persona_data["description"],
         motivations=persona_data.get("motivations"),
         interests=persona_data.get("interests"),
         centroid_embedding=vector,
+        relevance_embedding=archetype_embedding,
         status="pending",
         occurrence_count=1,
         first_seen_at=datetime.utcnow(),
@@ -189,6 +233,7 @@ def map_persona_tags(state: PipelineState) -> PipelineState:
     session = SessionLocal()
     try:
         personas = session.query(Persona).filter(Persona.status.in_(("pending", "active"))).all()
+        _backfill_archetype_embeddings(personas)
 
         for cluster in clusters:
             try:
