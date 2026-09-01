@@ -2151,6 +2151,74 @@ class TestGenerateScriptBackground:
         assert "busy office" in sent_prompt
         assert "rooftop at sunset" in sent_prompt
 
+    def test_derived_setting_supplies_the_location_name_country_and_description(
+        self, db, user_id, brand_and_character, mocker,
+    ):
+        """The Location must describe a PLACE. Confirmed live 2026-09-01
+        that every real row instead had the script's comedic hook as its
+        name and a run-on list of character actions as its description
+        (country always NULL), which fed the video prompt as
+        "Set in <joke>: <actions>"."""
+        from app.media.base import MediaResult
+        brand, _character, variant = brand_and_character
+        script = culturetoons.create_script({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "hook_line": "Wikipedia searches for King Harald V go hilariously wrong.",
+            "scene_direction": "He frantically clicks through tabs. She shakes her head, laughing.",
+        })
+        mocker.patch(
+            "app.services.culturetoon_script.derive_scene_setting",
+            return_value={
+                "name": "Cramped train carriage",
+                "description": "A narrow commuter train interior, worn fabric seats, overcast light through smeared windows.",
+                "country": "Norway",
+            },
+        )
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/bg-gen.png")
+
+        result = culturetoons.generate_script_background(
+            script["id"], {"user_id": user_id, "brand_id": brand["id"]},
+        )
+
+        assert result["name"] == "Cramped train carriage"
+        assert result["country"] == "Norway"
+        assert "narrow commuter train interior" in result["description"]
+        # The comedic hook must NOT become the location's identity.
+        assert "hilariously wrong" not in result["name"]
+        assert "narrow commuter train interior" in mock_generate.call_args[0][0]
+
+    def test_falls_back_to_raw_scene_direction_when_derivation_fails(
+        self, db, user_id, brand_and_character, mocker,
+    ):
+        """Fail open: a usable background beats a hard 502 if the LLM is
+        down, matching this codebase's pipeline-node convention."""
+        from app.media.base import MediaResult
+        brand, _character, variant = brand_and_character
+        script = culturetoons.create_script({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "scene_direction": "A cluttered suburban kitchen at dinnertime.",
+        })
+        mocker.patch(
+            "app.services.culturetoon_script.derive_scene_setting",
+            side_effect=RuntimeError("LLM unavailable"),
+        )
+        mock_generate = mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/bg-gen.png")
+
+        result = culturetoons.generate_script_background(
+            script["id"], {"user_id": user_id, "brand_id": brand["id"]},
+        )
+
+        assert "cluttered suburban kitchen" in result["description"]
+        assert "cluttered suburban kitchen" in mock_generate.call_args[0][0]
+
     def test_extra_description_combines_with_scene(self, db, user_id, brand_and_character, mocker):
         from app.media.base import MediaResult
         brand, _character, variant = brand_and_character

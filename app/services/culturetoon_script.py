@@ -573,6 +573,65 @@ def _call_llm_json(prompt: str, temperature: float = 0.7, max_tokens: int = 900)
         raise ToonScriptGenerationError(str(exc)) from exc
 
 
+def derive_scene_setting(script) -> dict:
+    """Derives a real PHYSICAL SETTING for a script, for use as a
+    ToonBackground's name/description/country.
+
+    Why this exists: _script_scene_description() in the router falls back to
+    concatenating each shot's `action` line when a script has no
+    scene_direction (which is every AI-generated, shot-structured script).
+    Those lines describe what PEOPLE DO, not where they are — its own
+    comment already flagged this ("John looks around confused... Kumar
+    shakes his head... describe people's behavior, not the venue").
+    Confirmed live 2026-09-01 against real rows: every Location in the DB
+    had a comedic premise as its `name` ("Wikipedia searches for King
+    Harald V of Norway go hilariously wrong.") and a run-on list of
+    character actions as its `description`, with country always NULL. That
+    text then feeds the video prompt as "Set in <joke>: <list of actions>",
+    which is incoherent scene direction on every single generation.
+
+    Returns {"name", "description", "country"} — a short location name, a
+    visual description of the PLACE (no characters, no plot), and a country
+    when the script implies one (else None). Raises
+    ToonScriptGenerationError on LLM failure, same as every other call in
+    this module; callers decide whether to fall back."""
+    source_parts = []
+    if getattr(script, "hook_line", None):
+        source_parts.append(f"Hook: {script.hook_line}")
+    if getattr(script, "scene_direction", None):
+        source_parts.append(f"Scene direction: {script.scene_direction}")
+    for i, shot in enumerate(getattr(script, "shots", None) or [], start=1):
+        bits = [shot.get(k, "") for k in ("visual", "action", "dialogue")]
+        line = " / ".join(b.strip() for b in bits if b and b.strip())
+        if line:
+            source_parts.append(f"Shot {i}: {line}")
+    source = "\n".join(source_parts).strip()
+    if not source:
+        raise ToonScriptGenerationError("Script has no hook, scene direction or shots to derive a setting from")
+
+    prompt = (
+        "You are a production designer. Read the script below and identify the single physical "
+        "LOCATION the scene takes place in.\n\n"
+        f"{source}\n\n"
+        "Return JSON with exactly these keys:\n"
+        '  "name": a short location name, 2-5 words, e.g. "Cramped train carriage" or '
+        '"Indian home kitchen". This is a PLACE, never a joke, plot summary or episode title.\n'
+        '  "description": 1-2 sentences describing only what the place LOOKS like — architecture, '
+        "furniture, props, lighting, time of day, mood. Describe the empty set: no characters, no "
+        "people, no actions, no dialogue.\n"
+        '  "country": the country the location is in if the script clearly implies one, else null.\n\n'
+        "If the script never establishes a location, infer the most plausible ordinary one from context."
+    )
+    parsed = _call_llm_json(prompt, temperature=0.4, max_tokens=400)
+    name = (parsed.get("name") or "").strip()
+    description = (parsed.get("description") or "").strip()
+    if not name or not description:
+        raise ToonScriptGenerationError(f"Setting derivation returned no usable name/description: {parsed}")
+    country = parsed.get("country")
+    country = country.strip() if isinstance(country, str) and country.strip() else None
+    return {"name": name, "description": description, "country": country}
+
+
 def _call_llm_for_script(prompt: str, tone: str, variants: list) -> dict:
     parsed = _call_llm_json(prompt, temperature=0.7, max_tokens=900)
     shots = parsed.get("shots") or []

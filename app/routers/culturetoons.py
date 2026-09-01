@@ -3141,7 +3141,25 @@ def generate_script_background(script_id: str, body: dict):
     try:
         brand = _get_brand_owned(session, brand_id, user_id)
         script = _get_script_owned(session, script_id, brand_id, user_id)
-        scene = _script_scene_description(script)
+        # Derive a real physical setting (a PLACE) from the script rather
+        # than reusing its shots' character-action lines. Confirmed live
+        # 2026-09-01: every existing Location row had the script's comedic
+        # hook as its name and a run-on list of actions as its description,
+        # which then fed the video prompt as "Set in <joke>: <actions>" —
+        # incoherent scene direction on every generation. Fails OPEN to the
+        # old behavior: a background is still better than a hard 502 if the
+        # LLM is down, matching this codebase's pipeline-node convention.
+        derived = None
+        try:
+            from app.services.culturetoon_script import derive_scene_setting
+            derived = derive_scene_setting(script)
+        except Exception:
+            logger.warning(
+                "Could not derive a scene setting for script %s — falling back to its raw "
+                "scene direction / shot actions", script_id, exc_info=True,
+            )
+
+        scene = derived["description"] if derived else _script_scene_description(script)
         extra_description = (body.get("extra_description") or "").strip()
         # extra_description leads rather than trails: it's the user's own
         # deliberate correction, while `scene` is often just the shots'
@@ -3159,10 +3177,14 @@ def generate_script_background(script_id: str, body: dict):
                        "add one, or pass extra_description.",
             )
         art_style = body.get("art_style") or DEFAULT_ART_STYLE
-        default_name = (script.hook_line or description)[:120]
+        # Prefer the derived LOCATION name over script.hook_line — the hook
+        # is the episode's comedic premise ("Wikipedia searches for King
+        # Harald V go hilariously wrong"), never a place, and it was ending
+        # up as the Location's name on every row.
+        default_name = ((derived["name"] if derived else None) or script.hook_line or description)[:120]
         background, budget_warning = _generate_background_asset(
             session, brand, user_id, description, art_style, body.get("name"), default_name,
-            country=body.get("country"),
+            country=body.get("country") or (derived["country"] if derived else None),
         )
         script.background_id = background.id
         session.commit()
