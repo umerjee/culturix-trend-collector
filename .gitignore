@@ -42,6 +42,7 @@ print_*.py
 drop_trends.py
 test_trends.py
 *.docx
+/test_output.mp4
 
 # fasttext model (large binary — download separately)
 lid.176.bin

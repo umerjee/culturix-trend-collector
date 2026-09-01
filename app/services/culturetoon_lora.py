@@ -14,16 +14,28 @@ the same RunPod region (SXM-class cards live in separate NVLink/HGX
 chassis from standard PCIe racks, and even PCIe A100 stock doesn't
 reliably co-locate with 4090 stock), so there's no guarantee a training
 pod can be deployed anywhere the volume is mountable. Instead: ltx-trainer
-writes its output to the pod's own local container disk, this module
-SFTP-downloads the resulting file back to our backend
-(app/media/runpod_ssh.py::download_file), then pushes it to the Network
-Volume via its S3-compatible API (app/media/runpod_s3.py) — a network
-call, not a filesystem write, so it works regardless of region. Doing the
-push from our backend rather than the pod itself also means the S3
-credentials never touch the ephemeral, less-trusted remote machine.
-lora_path still ends up as a bare filename (not a URL) — see
-CharacterVariant.lora_path's docstring — since the file's *final* location
-is the volume, this SFTP hop is just how it gets there.
+writes its output to the pod's own local container disk, then
+credential-injected boto3 running ON the pod itself pushes it straight to
+the Network Volume's S3-compatible API (_upload_to_volume_from_pod, this
+module) — a network call, not a filesystem write, so it works regardless
+of region. This is a deliberate change from an earlier SFTP-then-backend-
+push design: confirmed live 2026-08-25, that extra SFTP hop's connection
+proved unreliable enough to leave a fully-successful training run stuck
+(see _upload_to_volume_from_pod's own docstring for the full story).
+
+That upload lands on the TRAINING/cache volume (RUNPOD_S3_BUCKET, EU-RO-1
+as of 2026-09-01) — a separate Network Volume from the one actually
+mounted to the live Serverless inference endpoint (EU-NL-1). Confirmed
+live 2026-08-31/09-01: those two silently drifting apart is exactly what
+let every trained LoRA report lora_status="ready" while being completely
+invisible to inference for 3 days (see [[project_runpod_volume_mismatch_incident]]
+in the memory system for the full incident writeup). _sync_lora_to_inference_volume
+(below) closes that gap — it runs right after the upload above succeeds
+and copies the same file onto RUNPOD_INFERENCE_NETWORK_VOLUME_ID via a
+carrier-pod SFTP relay (app/media/runpod_volume_relay.py), since EU-NL-1
+has no S3-compatible API of its own. lora_path still ends up as a bare
+filename (not a URL) — see CharacterVariant.lora_path's docstring — since
+the file's *final* location is a volume mount, not this backend.
 
 Manual-to-*start* (a human calls POST /variants/{id}/train-lora when they
 want a new character trained) but fully automated once started via SSH
