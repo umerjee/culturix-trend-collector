@@ -247,11 +247,38 @@ def _upload_reference_image(image_base64: str) -> str:
     return filename
 
 
+_LORA_LOAD_MAX_RETRIES = 2  # up to 3 total attempts per shot
+
+
+def _is_transient_lora_load_error(exc: Exception) -> bool:
+    """Confirmed live 2026-09-01: LoraLoaderModelOnly intermittently raises
+    `RuntimeError: shape '[...]' is invalid for input of size N` when
+    loading a LoRA off the Network Volume — NOT because the file is bad
+    (the same file, byte-verified via the official safetensors library and
+    hash-confirmed identical to a known-good copy, failed on a DIFFERENT
+    tensor on a different attempt, and succeeded outright on others). This
+    matches a network-filesystem mmap reliability issue (a partial/torn
+    read racing the buffer slice in comfy/utils.py's load_safetensors),
+    not file corruption — retrying the same load is the correct response,
+    not re-fetching or regenerating the LoRA. Narrowly matched (not a bare
+    `except RuntimeError`) so a genuinely different, deterministic
+    workflow error still fails fast instead of burning 3x the time on a
+    guaranteed-repeat failure."""
+    text = str(exc)
+    return "LoraLoaderModelOnly" in text and "is invalid for input of size" in text
+
+
 def _generate_single_shot(workflow_json: dict, reference_image_base64: str = None) -> bytes:
     """Uploads the shot's own reference image (if given), submits its
     workflow, waits for completion, and returns the raw (not yet
     faststart-remuxed) video bytes. Shared by both the legacy single-clip
-    path and each iteration of the multi-shot loop in handler() below."""
+    path and each iteration of the multi-shot loop in handler() below.
+
+    Retries the submit+wait step (not the reference-image upload, which
+    doesn't fail this way) on the transient LoRA-load error above — a
+    fresh prompt_id and a fresh read of the same file is enough to clear
+    it, confirmed live 2026-09-01 against a file that had already failed
+    twice on different tensors."""
     if reference_image_base64:
         uploaded_filename = _upload_reference_image(reference_image_base64)
         load_image_nodes = [
@@ -264,10 +291,22 @@ def _generate_single_shot(workflow_json: dict, reference_image_base64: str = Non
         for node in load_image_nodes:
             node["inputs"]["image"] = uploaded_filename
 
-    prompt_id = _submit_workflow(workflow_json)
-    logger.info("Submitted ComfyUI prompt %s", prompt_id)
-    history_entry = _wait_for_completion(prompt_id)
-    return _download_output_bytes(history_entry, prompt_id)
+    last_exc = None
+    for attempt in range(_LORA_LOAD_MAX_RETRIES + 1):
+        prompt_id = _submit_workflow(workflow_json)
+        logger.info("Submitted ComfyUI prompt %s (attempt %d/%d)", prompt_id, attempt + 1, _LORA_LOAD_MAX_RETRIES + 1)
+        try:
+            history_entry = _wait_for_completion(prompt_id)
+            return _download_output_bytes(history_entry, prompt_id)
+        except RuntimeError as exc:
+            if not _is_transient_lora_load_error(exc) or attempt == _LORA_LOAD_MAX_RETRIES:
+                raise
+            last_exc = exc
+            logger.warning(
+                "Transient LoRA-load error on prompt %s (attempt %d/%d) — retrying: %s",
+                prompt_id, attempt + 1, _LORA_LOAD_MAX_RETRIES + 1, exc,
+            )
+    raise last_exc  # unreachable, satisfies static analysis
 
 
 def _concat_videos(video_byte_list: list) -> bytes:
