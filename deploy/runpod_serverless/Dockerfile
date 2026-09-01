@@ -12,7 +12,15 @@
 # https://hub.docker.com/r/runpod/worker-comfyui/tags for the current
 # latest "-base" variant (clean ComfyUI install, no baked-in model weights,
 # since our models live on the Network Volume instead).
-FROM runpod/worker-comfyui:5.8.6-base
+# Bumped 5.8.6 -> 5.10.0 for LTX-2.5. Confirmed empirically against the
+# live endpoint (debug_object_info): 5.8.6 registers 31 of the 32 node
+# classes the official LTX-2.5 template uses -- including the whole native
+# audio path (LTXVConcatAVLatent / LTXVSeparateAVLatent /
+# LTXVAudioVAEDecode / LTXVEmptyLatentAudio) and LTXVMultiPromptProvider --
+# but NOT LTXVDualCFGGuider. Core DualCFGGuider and MultimodalGuider are
+# present, so this is a ComfyUI-core version gap rather than the base
+# lacking LTX-2.5 support wholesale.
+FROM runpod/worker-comfyui:5.10.0-base
 
 WORKDIR /comfyui
 
