@@ -8,6 +8,7 @@ import uuid
 
 import pytest
 
+from app.services import culturetoon_lora
 from app.services.culturetoon_lora import (
     add_training_images, caption_training_image, curate_training_images,
     train_character_lora, MIN_LORA_TRAINING_IMAGES, LoraTrainingError,
@@ -369,6 +370,47 @@ class TestTrainCharacterLora:
         # even though the file passes through this backend on its way
         # there via SFTP+S3.
         assert variant.lora_path == f"{_VARIANT_ID}.safetensors"
+
+    def test_unified_layout_config_omits_vae_paths(self, mocker):
+        """LTX-2.3's unified checkpoint bundles the VAEs, so naming them
+        would be wrong. ltx-trainer detects layout from checkpoint
+        metadata, but it can't invent paths we shouldn't be setting."""
+        _, mock_run = self._mock_success(mocker)
+        _train(mocker, self._training_variant(mocker))
+
+        config_writes = [c for c in mock_run.call_args_list if "cat > " in c.args[2] and "config" in c.args[2]]
+        written = config_writes[0].args[2]
+        assert "video_vae_path" not in written
+        assert "audio_vae_path" not in written
+
+    def test_split_layout_config_names_the_vae_paths(self, mocker, monkeypatch):
+        """LTX-2.5's split layout REQUIRES video_vae_path — ltx-trainer
+        stops with an error naming the missing field otherwise, so a
+        silently-omitted VAE path is a guaranteed failed training run."""
+        monkeypatch.setattr(culturetoon_lora, "_VIDEO_VAE_FILE", "vae/ltx-2.5-video-vae-bf16.safetensors")
+        monkeypatch.setattr(culturetoon_lora, "_AUDIO_VAE_FILE", "vae/ltx-2.5-audio-vae-bf16.safetensors")
+        _, mock_run = self._mock_success(mocker)
+        _train(mocker, self._training_variant(mocker))
+
+        config_writes = [c for c in mock_run.call_args_list if "cat > " in c.args[2] and "config" in c.args[2]]
+        written = config_writes[0].args[2]
+        assert "video_vae_path" in written
+        assert "ltx-2.5-video-vae-bf16.safetensors" in written
+        assert "audio_vae_path" in written
+        assert "ltx-2.5-audio-vae-bf16.safetensors" in written
+
+    def test_split_layout_without_audio_vae_omits_only_that_key(self, mocker, monkeypatch):
+        """audio_vae_path is only required for audio tasks; video_vae_path
+        is required regardless."""
+        monkeypatch.setattr(culturetoon_lora, "_VIDEO_VAE_FILE", "vae/ltx-2.5-video-vae-bf16.safetensors")
+        monkeypatch.setattr(culturetoon_lora, "_AUDIO_VAE_FILE", "")
+        _, mock_run = self._mock_success(mocker)
+        _train(mocker, self._training_variant(mocker))
+
+        config_writes = [c for c in mock_run.call_args_list if "cat > " in c.args[2] and "config" in c.args[2]]
+        written = config_writes[0].args[2]
+        assert "video_vae_path" in written
+        assert "audio_vae_path" not in written
 
     def test_uses_each_image_own_caption_in_the_dataset_manifest(self, mocker):
         _, mock_run = self._mock_success(mocker)

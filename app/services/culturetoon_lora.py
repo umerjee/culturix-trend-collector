@@ -147,6 +147,37 @@ _RESOLUTION_BUCKET = "704x1280x49"  # vertical ~9:16, ~2s at 24fps — nearest 3
 _CHECKPOINT_REPO = os.getenv("LTX_TRAINING_CHECKPOINT_REPO", "Lightricks/LTX-2.3")
 _CHECKPOINT_FILE = os.getenv("LTX_TRAINING_CHECKPOINT_FILE", "ltx-2.3-22b-dev.safetensors")
 _TEXT_ENCODER_REPO = os.getenv("LTX_TRAINING_TEXT_ENCODER_REPO", "google/gemma-3-12b-it")
+
+# LTX-2.5 uses a "split" checkpoint layout instead of 2.3's "unified" one —
+# confirmed 2026-09-01 against ltx-trainer's own configuration reference,
+# which supports LTX-2 / 2.3 / 2.5 in one trainer. The differences are not
+# cosmetic and training errors out if they're wrong:
+#
+#   unified (2.3): model_path = one .safetensors bundling transformer+VAEs
+#                  text_encoder_path = a DIRECTORY (full HF repo layout)
+#                  video/audio VAE paths unset
+#   split  (2.5): model_path = the transformer file ONLY
+#                  text_encoder_path = a packed .safetensors FILE
+#                  video_vae_path REQUIRED, audio_vae_path required for audio
+#
+# ltx-trainer detects the layout from checkpoint metadata (no version
+# field), but it cannot invent the VAE paths — "if you point model_path at
+# a split transformer and forget a VAE path, training stops with an error
+# naming the field to set". So these are set here rather than guessed.
+#
+# Left empty by default, which keeps the existing 2.3 unified behavior
+# untouched; setting them switches this module to emit a split-layout
+# config. Values are paths WITHIN the LTX-2.5 HF repo (see
+# scripts/download_ltx25_to_volume.sh for the same filenames).
+_VIDEO_VAE_FILE = os.getenv("LTX_TRAINING_VIDEO_VAE_FILE", "")
+_AUDIO_VAE_FILE = os.getenv("LTX_TRAINING_AUDIO_VAE_FILE", "")
+
+
+def _is_split_layout() -> bool:
+    """Split layout is in use when a video VAE is configured — that's the
+    field ltx-trainer treats as required for a split transformer, and the
+    one whose absence produces its explicit error."""
+    return bool(_VIDEO_VAE_FILE)
 # Network Volume cache keys for the above — see the caching logic in
 # train_character_lora for why (repeat runs re-downloading the same
 # ~30-40GB+ from HuggingFace on an expensive GPU-hour pod, for a phase
@@ -800,12 +831,21 @@ snapshot_download(repo_id={_TEXT_ENCODER_REPO!r}, local_dir={text_encoder_dir!r}
             f"--output-dir {q(precomputed_dir)}"
         )
         _run(runpod_ssh, host, port, preprocess_cmd, _TRAINING_TIMEOUT_SECONDS, "ltx-trainer dataset preprocessing failed")
+        # Split layout (LTX-2.5) needs the VAEs named explicitly and points
+        # text_encoder_path at a packed FILE; unified (2.3) points it at a
+        # directory and omits the VAEs entirely. See _is_split_layout.
+        vae_lines = ""
+        if _is_split_layout():
+            vae_lines = f"  video_vae_path: \"{models_dir}/vae/{os.path.basename(_VIDEO_VAE_FILE)}\"\n"
+            if _AUDIO_VAE_FILE:
+                vae_lines += f"  audio_vae_path: \"{models_dir}/vae/{os.path.basename(_AUDIO_VAE_FILE)}\"\n"
         config_yaml = (
             f"seed: 42\n"
             f"output_dir: \"{output_dir}\"\n"
             f"model:\n"
             f"  model_path: \"{checkpoint_path}\"\n"
             f"  text_encoder_path: \"{text_encoder_dir}\"\n"
+            f"{vae_lines}"
             f"  training_mode: \"lora\"\n"
             f"lora:\n"
             f"  rank: 32\n"
