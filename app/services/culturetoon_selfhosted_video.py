@@ -87,6 +87,14 @@ def _resilient_commit(session, mutate) -> None:
     raise last_exc
 
 
+_QUALITY_SUFFIX = (
+    "3D animated cartoon in a polished Pixar-style render. Smooth natural motion, "
+    "stable consistent facial features, expressive but clean character animation. "
+    "Soft cinematic lighting, shallow depth of field, sharp focus on the character's face. "
+    "High detail, crisp, film-quality render"
+)
+
+
 def _build_shot_prompt(shot: dict, background=None) -> str:
     """One shot's own prompt text — shot_type/camera_movement describe
     THIS shot's distinct camera setup (each shot is now its own separate
@@ -102,6 +110,23 @@ def _build_shot_prompt(shot: dict, background=None) -> str:
         description = (getattr(background, "description", None) or "").strip()
         if name or description:
             parts.append(f"Set in {name}" + (f": {description}" if description else "") if name else description)
+        # visual_style/country are real ToonBackground columns that were
+        # never read here — only name/description were, so a Location's
+        # own art direction and place never reached the prompt at all
+        # (same class of silent drop as the `expression` field, fixed
+        # 2026-08-30). Note the self-hosted path can't use the Location's
+        # image_url as a true visual reference the way the Kling path does
+        # (culturetoon_video.py sends it as a second `refer_image`) — LTX
+        # image-to-video takes exactly ONE first-frame anchor, and that
+        # slot is already the speaking character's own photo, which
+        # matters more for identity. Text is the only channel available
+        # for the setting here, so use all of it.
+        country = (getattr(background, "country", None) or "").strip()
+        if country:
+            parts.append(f"Located in {country}")
+        visual_style = (getattr(background, "visual_style", None) or "").strip()
+        if visual_style:
+            parts.append(visual_style)
     shot_type = shot.get("shot_type")
     if shot_type:
         parts.append(f"{shot_type.replace('_', ' ')} shot")
@@ -124,7 +149,20 @@ def _build_shot_prompt(shot: dict, background=None) -> str:
         parts.append(f"with a {expression.lower()} expression")
     if dialogue:
         parts.append(f'saying "{dialogue}"' + (f" ({delivery} delivery)" if delivery else ""))
-    return ". ".join(p for p in parts if p)
+    if not parts:
+        return ""
+    # Quality/style suffix. Confirmed live 2026-09-01 against real output:
+    # the terse fragment-joined prompt this used to return left LTX almost
+    # no guidance on RENDER quality (only on content), and the result showed
+    # exactly the failure modes an underspecified prompt invites — ghosting
+    # around a character's head, smeared facial features, an overall soft
+    # "melted" look. LTX's own prompting guidance is that it responds to
+    # descriptive, camera-and-lighting-aware language rather than terse
+    # keyword lists, so this appends a consistent cinematic framing to every
+    # shot instead of leaving render quality entirely unspecified. Paired
+    # with ltx_workflow.DEFAULT_NEGATIVE_PROMPT, which steers away from the
+    # same artifacts from the other direction.
+    return ". ".join(p for p in parts if p) + ". " + _QUALITY_SUFFIX
 
 
 def build_prompt_from_script(script, background=None) -> str:

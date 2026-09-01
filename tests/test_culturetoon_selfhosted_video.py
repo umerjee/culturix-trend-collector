@@ -168,10 +168,27 @@ class TestBuildShotPrompt:
         assert _build_shot_prompt({}) == ""
 
     def test_background_prepended_when_given(self, mocker):
-        background = mocker.Mock(description="A cramped kitchen")
+        # country/visual_style set explicitly to None: a bare mocker.Mock()
+        # auto-creates them as Mock objects, which are truthy and would be
+        # appended to the prompt as non-strings.
+        background = mocker.Mock(description="A cramped kitchen", country=None, visual_style=None)
         background.name = "Kitchen"
         prompt = _build_shot_prompt({"action": "waves"}, background=background)
         assert prompt.startswith("Set in Kitchen: A cramped kitchen")
+
+    def test_background_country_and_visual_style_reach_the_prompt(self, mocker):
+        """Both are real ToonBackground columns that _build_shot_prompt
+        previously ignored entirely — only name/description were read, so a
+        Location's own art direction never influenced generation at all."""
+        background = mocker.Mock(
+            description="A cramped kitchen",
+            country="Norway",
+            visual_style="warm muted palette, overcast light",
+        )
+        background.name = "Kitchen"
+        prompt = _build_shot_prompt({"action": "waves"}, background=background)
+        assert "Located in Norway" in prompt
+        assert "warm muted palette, overcast light" in prompt
 
 
 class TestResolveShotVariant:

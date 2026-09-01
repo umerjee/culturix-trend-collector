@@ -4,7 +4,12 @@ import os
 
 import pytest
 
-from app.media.ltx_workflow import build_workflow, load_workflow_template, LTXWorkflowError
+from app.media.ltx_workflow import (
+    DEFAULT_NEGATIVE_PROMPT,
+    build_workflow,
+    load_workflow_template,
+    LTXWorkflowError,
+)
 
 
 @pytest.fixture
@@ -39,11 +44,26 @@ class TestLoadWorkflowTemplate:
 
 
 class TestBuildWorkflow:
-    def test_injects_prompt_into_empty_text_encode_node_only(self):
+    def test_injects_positive_prompt_and_overwrites_the_negative_node(self):
         workflow = build_workflow("a character waves hello", duration_seconds=5)
         assert workflow["2"]["inputs"]["text"] == "a character waves hello"
-        # The negative prompt node (non-empty starting text) must be untouched.
-        assert workflow["3"]["inputs"]["text"] == "blurry, low quality"
+        # The negative node is now deliberately overwritten with our own
+        # default rather than left at the template's placeholder — before
+        # this, build_workflow never wrote to it at all, so the artifacts
+        # DEFAULT_NEGATIVE_PROMPT targets were never actually steered away
+        # from despite the node being wired into the sampler.
+        assert workflow["3"]["inputs"]["text"] == DEFAULT_NEGATIVE_PROMPT
+
+    def test_explicit_negative_prompt_overrides_the_default(self):
+        workflow = build_workflow("prompt", duration_seconds=5, negative_prompt="just this")
+        assert workflow["3"]["inputs"]["text"] == "just this"
+
+    def test_empty_string_negative_prompt_is_respected_not_replaced(self):
+        # "" is a deliberate "send no negative prompt", distinct from None
+        # (= use the default) — a plain falsy check here would silently
+        # substitute the default and make that impossible to express.
+        workflow = build_workflow("prompt", duration_seconds=5, negative_prompt="")
+        assert workflow["3"]["inputs"]["text"] == ""
 
     def test_injects_lora_path_when_given(self):
         workflow = build_workflow("prompt", duration_seconds=5, lora_path="my_character.safetensors")
@@ -106,7 +126,10 @@ class TestBuildWorkflow:
         result = build_workflow("a character waves hello", duration_seconds=5)
 
         assert result["2"]["inputs"]["text"] == "a character waves hello"
-        assert result["3"]["inputs"]["text"] == "placeholder negative"
+        # The point of this test is that the TITLED negative node is the one
+        # identified as negative (not the positive one) — it now receives our
+        # default negative text rather than keeping its placeholder.
+        assert result["3"]["inputs"]["text"] == DEFAULT_NEGATIVE_PROMPT
 
     def test_reference_image_replaces_empty_latent_with_img_to_video(self):
         # Confirmed live 2026-08-29/30: pure text-to-video + character LoRA

@@ -106,8 +106,25 @@ def _next_node_id(workflow: dict) -> str:
     return str((max(existing) if existing else 0) + 1)
 
 
+# Steers away from the specific failure modes seen in real output
+# 2026-09-01: ghosting/double-exposure around a character's head, smeared
+# or "melted" facial features, and the waxy plastic look LTX tends toward
+# on faces. The template's own negative CLIPTextEncode node was previously
+# left at whatever placeholder text it shipped with — build_workflow never
+# wrote to it at all, so nothing was ever actually being steered away from
+# despite the node existing and being wired into the sampler.
+DEFAULT_NEGATIVE_PROMPT = (
+    "blurry, out of focus, low quality, low resolution, compression artifacts, "
+    "ghosting, double exposure, motion smear, warped face, melted features, "
+    "distorted anatomy, deformed hands, extra limbs, extra fingers, "
+    "disfigured, waxy skin, plastic skin, uncanny, flickering, "
+    "watermark, text, caption, jpeg artifacts"
+)
+
+
 def build_workflow(prompt_text: str, duration_seconds: float, lora_path: Optional[str] = None,
-                    seed: Optional[int] = None, reference_image_filename: Optional[str] = None) -> dict:
+                    seed: Optional[int] = None, reference_image_filename: Optional[str] = None,
+                    negative_prompt: Optional[str] = None) -> dict:
     """Returns a deep copy of the loaded template with the prompt text (and
     optionally a LoRA path / duration / seed / reference image) injected.
     Raises LTXWorkflowError if the template doesn't contain the expected
@@ -133,8 +150,18 @@ def build_workflow(prompt_text: str, duration_seconds: float, lora_path: Optiona
     prompt_nodes = _nodes_of_class(workflow, _PROMPT_NODE_CLASS)
     if not prompt_nodes:
         raise LTXWorkflowError(f"No {_PROMPT_NODE_CLASS} node found in the workflow template")
-    for node_id in _select_positive_prompt_nodes(workflow, prompt_nodes):
+    positive_prompt_nodes = _select_positive_prompt_nodes(workflow, prompt_nodes)
+    for node_id in positive_prompt_nodes:
         workflow[node_id]["inputs"]["text"] = prompt_text
+
+    # Every prompt node that ISN'T positive is the negative one — same
+    # split the image-to-video branch below already relies on. Defaults to
+    # DEFAULT_NEGATIVE_PROMPT rather than leaving the template's shipped
+    # placeholder text in place; pass negative_prompt="" to deliberately
+    # send an empty negative instead.
+    negative_text = DEFAULT_NEGATIVE_PROMPT if negative_prompt is None else negative_prompt
+    for node_id in [n for n in prompt_nodes if n not in positive_prompt_nodes]:
+        workflow[node_id]["inputs"]["text"] = negative_text
 
     lora_nodes = _nodes_of_class(workflow, _LORA_NODE_CLASS)
     if lora_path:

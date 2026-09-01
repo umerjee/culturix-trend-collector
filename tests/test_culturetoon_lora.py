@@ -37,6 +37,21 @@ def _s3_env_vars(monkeypatch):
     monkeypatch.setenv("RUNPOD_S3_ENDPOINT_URL", "https://s3api-test.runpod.io")
     monkeypatch.setenv("RUNPOD_S3_REGION", "test-region")
     monkeypatch.setenv("RUNPOD_S3_BUCKET", "test-bucket")
+    # The inference volume is a SEPARATE Network Volume from the S3-backed
+    # training/cache one above (see _sync_lora_to_inference_volume) — a
+    # successful training run now requires the LoRA to land on BOTH, so
+    # every train_character_lora test needs this set too.
+    monkeypatch.setenv("RUNPOD_INFERENCE_NETWORK_VOLUME_ID", "test-inference-volume")
+
+
+@pytest.fixture(autouse=True)
+def _stub_inference_volume_sync(mocker):
+    """Stubs the carrier-pod sync onto the inference Network Volume for
+    every test in this module — it rents a real pod and does a real SFTP
+    transfer, the same reason runpod_client/runpod_ssh/runpod_s3 are mocked
+    at the boundary here. Tests that specifically exercise the sync's own
+    behavior override this with their own patch."""
+    return mocker.patch("app.services.culturetoon_lora._sync_lora_to_inference_volume")
 
 
 def _variant(mocker, name="Kumar", training_images=None, image_url=None):
@@ -395,6 +410,37 @@ class TestTrainCharacterLora:
         written = upload_script_writes[0].args[2]
         assert _FOUND_CHECKPOINT in written
         assert f"ComfyUI/models/loras/{_VARIANT_ID}.safetensors" in written
+
+    def test_syncs_the_lora_onto_the_inference_volume_after_upload(self, mocker, _stub_inference_volume_sync):
+        """The training upload lands on the S3-backed training/cache volume;
+        the inference endpoint mounts a DIFFERENT volume and reads off its
+        own filesystem, not S3. Confirmed live 2026-08-31: without this
+        second hop every LoRA reported lora_status="ready" while being
+        completely invisible to inference."""
+        self._mock_success(mocker)
+        variant = self._training_variant(mocker)
+
+        _train(mocker, variant)
+
+        _stub_inference_volume_sync.assert_called_once_with(
+            f"ComfyUI/models/loras/{_VARIANT_ID}.safetensors"
+        )
+        assert variant.lora_status == "ready"
+
+    def test_a_failed_inference_volume_sync_fails_the_run_rather_than_marking_it_ready(self, mocker, _stub_inference_volume_sync):
+        """Fail loud, don't warn-and-continue: a LoRA that isn't on the
+        inference volume was never actually usable, and silently marking it
+        "ready" is exactly what hid this bug for three days."""
+        from app.services.culturetoon_lora import LoraTrainingError
+
+        self._mock_success(mocker)
+        variant = self._training_variant(mocker)
+        _stub_inference_volume_sync.side_effect = LoraTrainingError("carrier pod could not be rented")
+
+        with pytest.raises(LoraTrainingError):
+            _train(mocker, variant)
+
+        assert variant.lora_status == "failed"
 
     def test_pod_created_and_terminated_on_success(self, mocker):
         mock_terminate, _ = self._mock_success(mocker)
