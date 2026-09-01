@@ -101,6 +101,7 @@ def run_inference_job(endpoint_id: str, workflow_json: dict = None, timeout_seco
                        poll_interval: int = _POLL_INTERVAL, reference_image_bytes: bytes = None,
                        narration_audio_bytes: bytes = None,
                        shot_workflows: list = None, shot_reference_images: list = None,
+                       shot_chain_from_previous: list = None,
                        narration_text: str = None) -> bytes:
     """Submits a ComfyUI workflow to a RunPod Serverless endpoint and blocks
     until it completes. Returns the output video's raw bytes. Raises
@@ -164,6 +165,13 @@ def run_inference_job(endpoint_id: str, workflow_json: dict = None, timeout_seco
         job_input["shot_reference_images_base64"] = [
             base64.b64encode(b).decode("ascii") if b else None for b in (shot_reference_images or [])
         ]
+        # Parallel to shot_workflows: True means the worker should anchor
+        # that shot on the PREVIOUS shot's last frame instead of the
+        # supplied portrait, so consecutive shots share a scene rather
+        # than reading as isolated clips. Omitted entirely when not given,
+        # so an older worker image just ignores it and behaves as before.
+        if shot_chain_from_previous is not None:
+            job_input["shot_chain_from_previous"] = list(shot_chain_from_previous)
     else:
         job_input["workflow"] = workflow_json
         if reference_image_bytes is not None:
@@ -222,6 +230,7 @@ def run_inference_job_with_allocation_retry(endpoint_id: str, workflow_json: dic
                                              reference_image_bytes: bytes = None,
                                              narration_audio_bytes: bytes = None,
                                              shot_workflows: list = None, shot_reference_images: list = None,
+                                             shot_chain_from_previous: list = None,
                                              narration_text: str = None) -> bytes:
     """Wraps run_inference_job with a retry specifically around allocation
     failures — RunPod couldn't spin up a worker in time, surfaced here as
@@ -247,6 +256,7 @@ def run_inference_job_with_allocation_retry(endpoint_id: str, workflow_json: dic
                 endpoint_id, workflow_json, timeout_seconds=timeout_seconds, poll_interval=poll_interval,
                 reference_image_bytes=reference_image_bytes, narration_audio_bytes=narration_audio_bytes,
                 shot_workflows=shot_workflows, shot_reference_images=shot_reference_images,
+                shot_chain_from_previous=shot_chain_from_previous,
                 narration_text=narration_text,
             )
         except (RunPodServerlessError, TimeoutError) as exc:

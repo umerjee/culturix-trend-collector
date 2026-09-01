@@ -342,6 +342,55 @@ class TestGenerateToonVideoSelfhosted:
         assert sent_shot_workflows[0]["reference_image_filename"] == "reference.png"
         assert mock_run.call_args.kwargs["shot_reference_images"] == [b"ref-image-bytes", b"ref-image-bytes"]
 
+    def test_shots_chain_off_the_previous_frame_for_scene_continuity(self, mocker):
+        """Without chaining every shot is an independent generation anchored
+        on a solo portrait, so nothing carries across a cut and only one
+        character can ever be in frame — the "individual scenes glued
+        together" problem. The first shot has nothing to chain from."""
+        mocker.patch("app.media.ltx_workflow.build_workflow", side_effect=lambda p, d, **kw: {"p": p})
+        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"v")
+        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref"))
+
+        script = _script(mocker, hook_line="hi", shots=[{"action": f"a{i}"} for i in range(3)])
+        generate_toon_video_selfhosted(script, [_variant(mocker)], "endpoint-1")
+
+        assert mock_run.call_args.kwargs["shot_chain_from_previous"] == [False, True, True]
+
+    def test_chain_resets_at_a_scene_change(self, mocker):
+        mocker.patch("app.media.ltx_workflow.build_workflow", side_effect=lambda p, d, **kw: {"p": p})
+        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"v")
+        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref"))
+
+        script = _script(mocker, hook_line="hi", shots=[
+            {"action": "a0"},
+            {"action": "a1"},
+            {"action": "a2", "scene_change": True},
+        ])
+        generate_toon_video_selfhosted(script, [_variant(mocker)], "endpoint-1")
+
+        # A new scene must re-anchor on a real portrait, not inherit the
+        # previous scene's final frame.
+        assert mock_run.call_args.kwargs["shot_chain_from_previous"] == [False, True, False]
+
+    def test_chain_is_capped_to_bound_drift(self, mocker):
+        """Each chained shot generates from the previous shot's output, so
+        drift and artifacts compound; re-anchoring periodically resets
+        against a known-good photo."""
+        from app.services.culturetoon_selfhosted_video import _MAX_CHAINED_SHOTS
+
+        mocker.patch("app.media.ltx_workflow.build_workflow", side_effect=lambda p, d, **kw: {"p": p})
+        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"v")
+        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref"))
+
+        script = _script(mocker, hook_line="hi", shots=[{"action": f"a{i}"} for i in range(_MAX_CHAINED_SHOTS + 3)])
+        generate_toon_video_selfhosted(script, [_variant(mocker)], "endpoint-1")
+
+        flags = mock_run.call_args.kwargs["shot_chain_from_previous"]
+        assert flags[0] is False
+        assert all(flags[1:_MAX_CHAINED_SHOTS + 1])
+        # The shot right after a full run of chained shots re-anchors.
+        assert flags[_MAX_CHAINED_SHOTS + 1] is False
+
     def test_each_shot_anchors_on_its_own_speakers_lora_and_photo(self, mocker):
         # Confirmed live 2026-08-30 on a real 3-character script: every
         # shot already carries its own speaker_variant_id — a multi-

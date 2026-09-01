@@ -340,6 +340,38 @@ def _concat_videos(video_byte_list: list) -> bytes:
             return f.read()
 
 
+def _extract_last_frame_png(video_bytes: bytes) -> bytes:
+    """Returns the final frame of a shot as PNG bytes, for use as the NEXT
+    shot's image-to-video anchor (see the chaining logic in handler()).
+
+    Why: every shot used to be an independent generation anchored on the
+    speaking character's solo portrait, so nothing carried across a cut —
+    no shared scene, lighting or character positions, and only ever one
+    character in frame. Carrying the previous shot's last frame forward is
+    LTX's own documented first/last-frame pattern and is what makes
+    consecutive shots read as one continuous scene with characters
+    actually present together.
+
+    `-sseof -1` seeks to one second before the end and `-update 1` keeps
+    overwriting a single output image, so whatever lands last IS the final
+    frame — more reliable than computing a timestamp from the duration,
+    which needs an exact frame count we don't have here."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        src = os.path.join(tmp_dir, "shot.mp4")
+        dst = os.path.join(tmp_dir, "last.png")
+        with open(src, "wb") as f:
+            f.write(video_bytes)
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-sseof", "-1", "-i", src, "-update", "1", "-q:v", "2", dst],
+            capture_output=True, timeout=60,
+        )
+        if result.returncode != 0 or not os.path.exists(dst):
+            stderr_tail = result.stderr.decode("utf-8", errors="replace")[-500:]
+            raise RuntimeError(f"ffmpeg could not extract the last frame (exit {result.returncode}): {stderr_tail}")
+        with open(dst, "rb") as f:
+            return f.read()
+
+
 def _get_chatterbox_model():
     """Lazily loads Chatterbox once per worker process and reuses it
     across every job that process handles — model loading is the slow
@@ -488,10 +520,35 @@ def handler(event: dict) -> dict:
 
         if shot_workflows:
             shot_reference_images_base64 = input_data.get("shot_reference_images_base64") or [None] * len(shot_workflows)
+            # Parallel to shot_workflows: True means "anchor this shot on the
+            # PREVIOUS shot's last frame instead of this speaker's solo
+            # portrait", which is what makes consecutive shots read as one
+            # continuous scene with characters present together rather than
+            # isolated clips glued end to end. Absent/short (older backend)
+            # => all False => previous per-shot-portrait behavior, so this
+            # stays backward compatible with a client that doesn't send it.
+            chain_flags = input_data.get("shot_chain_from_previous") or []
+            chain_flags = list(chain_flags) + [False] * (len(shot_workflows) - len(chain_flags))
+
             shot_videos = []
+            previous_frame_b64 = None
             for i, (shot_workflow, ref_b64) in enumerate(zip(shot_workflows, shot_reference_images_base64)):
-                logger.info("Generating shot %d/%d", i + 1, len(shot_workflows))
-                shot_videos.append(_generate_single_shot(shot_workflow, ref_b64))
+                anchor_b64, anchor_kind = ref_b64, "portrait"
+                if i > 0 and chain_flags[i] and previous_frame_b64:
+                    anchor_b64, anchor_kind = previous_frame_b64, "previous frame"
+                logger.info("Generating shot %d/%d (anchor: %s)", i + 1, len(shot_workflows), anchor_kind)
+                shot_bytes = _generate_single_shot(shot_workflow, anchor_b64)
+                shot_videos.append(shot_bytes)
+
+                # Best-effort: a failure to extract the carry-forward frame
+                # degrades the NEXT shot to its own portrait anchor (i.e.
+                # the old behavior) rather than failing a generation that
+                # has already produced real video.
+                try:
+                    previous_frame_b64 = base64.b64encode(_extract_last_frame_png(shot_bytes)).decode("ascii")
+                except Exception:
+                    logger.exception("Could not extract shot %d's last frame — next shot falls back to its portrait", i + 1)
+                    previous_frame_b64 = None
             video_bytes = shot_videos[0] if len(shot_videos) == 1 else _concat_videos(shot_videos)
         else:
             video_bytes = _generate_single_shot(workflow_json, input_data.get("reference_image_base64"))

@@ -363,6 +363,14 @@ _DEFAULT_SHOT_DURATION_SECONDS = 3
 _MULTI_SHOT_TIMEOUT_FLOOR_SECONDS = 1200
 _MULTI_SHOT_TIMEOUT_PER_SHOT_SECONDS = 400
 
+# How many shots may chain off each other before forcing a re-anchor on a
+# real character portrait. Each chained shot generates from the previous
+# shot's final frame, so quality drift and any artifact compound with every
+# hop; re-anchoring periodically resets that against a known-good photo.
+# Untuned starting value — the tradeoff is continuity (higher) vs identity
+# fidelity and drift (lower), and only real output can settle it.
+_MAX_CHAINED_SHOTS = 3
+
 _REFERENCE_IMAGE_MAX_DIMENSION = 768
 _REFERENCE_IMAGE_JPEG_QUALITY = 88
 
@@ -500,6 +508,8 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
 
     shot_workflows = []
     shot_reference_images = []
+    shot_chain_from_previous = []
+    chained_run = 0
     cumulative_duration = 0.0
     for shot in shots:
         shot_duration = shot.get("duration_seconds") or _DEFAULT_SHOT_DURATION_SECONDS
@@ -532,6 +542,21 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
         )
         shot_workflows.append(workflow)
         shot_reference_images.append(reference_bytes)
+        # Continuity: chain this shot off the PREVIOUS shot's last frame
+        # (worker-side, see handler.py) instead of re-anchoring on the
+        # speaker's solo portrait, so consecutive shots share a scene,
+        # lighting and character positions — and can show more than one
+        # character at once, which a solo portrait anchor structurally
+        # cannot. Re-anchors on the portrait when:
+        #   - it's the first shot (nothing to chain from), or
+        #   - the shot marks a scene change, or
+        #   - _MAX_CHAINED_SHOTS have already been chained in a row, which
+        #     bounds the drift/artifact propagation an unbroken chain
+        #     accumulates (each hop generates from the last one's output).
+        is_scene_change = bool(shot.get("scene_change") or shot.get("is_scene_change"))
+        chain = bool(shot_workflows[:-1]) and not is_scene_change and chained_run < _MAX_CHAINED_SHOTS
+        shot_chain_from_previous.append(chain)
+        chained_run = chained_run + 1 if chain else 0
         cumulative_duration += shot_duration
 
     narration_audio_bytes, narration_text = _resolve_narration(script, variants, elevenlabs_api_key=elevenlabs_api_key)
@@ -548,6 +573,7 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
     return call(
         endpoint_id,
         shot_workflows=shot_workflows, shot_reference_images=shot_reference_images,
+        shot_chain_from_previous=shot_chain_from_previous,
         narration_audio_bytes=narration_audio_bytes, narration_text=narration_text,
         timeout_seconds=timeout_seconds,
     )
