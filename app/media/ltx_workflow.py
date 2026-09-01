@@ -58,6 +58,7 @@ _CHECKPOINT_NODE_CLASS = "CheckpointLoaderSimple"
 _SAMPLER_NODE_CLASS = "KSampler"
 _LOAD_IMAGE_NODE_CLASS = "LoadImage"
 _IMG_TO_VIDEO_NODE_CLASS = "LTXVImgToVideo"
+_CONDITIONING_NODE_CLASS = "LTXVConditioning"
 _DEFAULT_FPS = 24
 # Community-documented starting point for LTX-2's image-to-video strength
 # (1.0 pins the first frame completely, 0.0 ignores the image entirely) —
@@ -263,4 +264,61 @@ def build_workflow(prompt_text: str, duration_seconds: float, lora_path: Optiona
             _LATENT_VIDEO_NODE_CLASS, duration_seconds,
         )
 
+    _ensure_ltxv_conditioning(workflow)
     return workflow
+
+
+def _ensure_ltxv_conditioning(workflow: dict) -> None:
+    """Inserts an LTXVConditioning node between whatever currently feeds the
+    sampler's conditioning and the sampler itself.
+
+    Confirmed live 2026-09-01: real generations came back as a series of
+    near-static held poses — "a collection of images", not animation — and
+    this workflow template had NO LTXVConditioning node at all. Per
+    ComfyUI's own node docs it "adds frame rate information to both
+    positive and negative conditioning inputs", so that timing and motion
+    are interpreted consistently; without it the model is given no
+    frame-rate signal whatsoever, which is a documented cause of flat/low
+    motion output. The template was hand-built (see this module's header)
+    rather than exported from an official LTX graph, which is how the node
+    came to be missing.
+
+    Runs for BOTH the image-to-video and text-to-video paths, taking the
+    sampler's current positive/negative sources — so it correctly chains
+    after LTXVImgToVideo when that branch injected one, and straight off
+    the CLIPTextEncode nodes otherwise. Placement is inferred from the
+    node's signature (it consumes and returns conditioning, so it belongs
+    between the conditioning source and the sampler); ComfyUI's docs page
+    doesn't state graph position explicitly.
+
+    frame_rate is set to _DEFAULT_FPS so it matches the CreateVideo node's
+    own fps and the frame count derived from duration_seconds — a
+    mismatch here would make generated motion play at the wrong speed.
+    """
+    sampler_nodes = _nodes_of_class(workflow, _SAMPLER_NODE_CLASS)
+    if not sampler_nodes:
+        logger.warning(
+            "No %s node found — skipping %s injection",
+            _SAMPLER_NODE_CLASS, _CONDITIONING_NODE_CLASS,
+        )
+        return
+    if _nodes_of_class(workflow, _CONDITIONING_NODE_CLASS):
+        return  # template already supplies one — don't double up
+
+    for sampler_id in sampler_nodes:
+        inputs = workflow[sampler_id].get("inputs") or {}
+        positive_src, negative_src = inputs.get("positive"), inputs.get("negative")
+        if not positive_src or not negative_src:
+            continue
+        cond_id = _next_node_id(workflow)
+        workflow[cond_id] = {
+            "class_type": _CONDITIONING_NODE_CLASS,
+            "_meta": {"title": "Frame-rate conditioning (injected by ltx_workflow.py)"},
+            "inputs": {
+                "positive": positive_src,
+                "negative": negative_src,
+                "frame_rate": float(_DEFAULT_FPS),
+            },
+        }
+        workflow[sampler_id]["inputs"]["positive"] = [cond_id, 0]
+        workflow[sampler_id]["inputs"]["negative"] = [cond_id, 1]

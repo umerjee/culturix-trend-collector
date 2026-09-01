@@ -65,6 +65,51 @@ class TestBuildWorkflow:
         workflow = build_workflow("prompt", duration_seconds=5, negative_prompt="")
         assert workflow["3"]["inputs"]["text"] == ""
 
+    def test_injects_ltxv_conditioning_with_frame_rate_for_text_to_video(self):
+        """Confirmed live 2026-09-01: without LTXVConditioning the model
+        gets no frame-rate signal at all and real output came back as
+        near-static held poses rather than animation."""
+        workflow = build_workflow("prompt", duration_seconds=5)
+        cond = [n for n in workflow.values() if n["class_type"] == "LTXVConditioning"]
+        assert len(cond) == 1
+        assert cond[0]["inputs"]["frame_rate"] == 24.0
+        sampler = next(n for n in workflow.values() if n["class_type"] == "KSampler")
+        cond_id = next(i for i, n in workflow.items() if n["class_type"] == "LTXVConditioning")
+        assert sampler["inputs"]["positive"] == [cond_id, 0]
+        assert sampler["inputs"]["negative"] == [cond_id, 1]
+
+    def test_ltxv_conditioning_chains_after_img_to_video(self):
+        """On the image-to-video path the conditioning must come FROM
+        LTXVImgToVideo's own outputs, not straight off the text encoders —
+        otherwise the first-frame anchoring is bypassed."""
+        workflow = build_workflow("prompt", duration_seconds=5, reference_image_filename="reference.png")
+        img2vid_id = next(i for i, n in workflow.items() if n["class_type"] == "LTXVImgToVideo")
+        cond_id = next(i for i, n in workflow.items() if n["class_type"] == "LTXVConditioning")
+        cond = workflow[cond_id]["inputs"]
+        assert cond["positive"] == [img2vid_id, 0]
+        assert cond["negative"] == [img2vid_id, 1]
+        sampler = next(n for n in workflow.values() if n["class_type"] == "KSampler")
+        assert sampler["inputs"]["positive"] == [cond_id, 0]
+        # latent still comes from the img2video node, not the conditioning
+        assert sampler["inputs"]["latent_image"] == [img2vid_id, 2]
+
+    def test_does_not_double_up_when_template_already_has_conditioning(self, tmp_path, monkeypatch):
+        workflow = {
+            "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "ltx.safetensors"}},
+            "2": {"class_type": "CLIPTextEncode", "_meta": {"title": "Positive"}, "inputs": {"text": ""}},
+            "3": {"class_type": "CLIPTextEncode", "_meta": {"title": "Negative"}, "inputs": {"text": "bad"}},
+            "4": {"class_type": "LTXVConditioning", "inputs": {"positive": ["2", 0], "negative": ["3", 0], "frame_rate": 30.0}},
+            "5": {"class_type": "KSampler", "inputs": {"positive": ["4", 0], "negative": ["4", 1], "seed": 0}},
+        }
+        path = tmp_path / "with_cond.json"
+        path.write_text(json.dumps(workflow))
+        monkeypatch.setenv("LTX_WORKFLOW_PATH", str(path))
+
+        result = build_workflow("prompt", duration_seconds=5)
+
+        assert len([n for n in result.values() if n["class_type"] == "LTXVConditioning"]) == 1
+        assert result["4"]["inputs"]["frame_rate"] == 30.0  # template's own value preserved
+
     def test_injects_lora_path_when_given(self):
         workflow = build_workflow("prompt", duration_seconds=5, lora_path="my_character.safetensors")
         assert workflow["5"]["inputs"]["lora_name"] == "my_character.safetensors"
@@ -158,12 +203,18 @@ class TestBuildWorkflow:
         assert workflow[load_image_nodes[0]]["inputs"]["image"] == "hans_ref.png"
         assert img2vid["image"] == [load_image_nodes[0], 0]
 
-        # KSampler must be rewired to the img2vid node's own outputs, not
-        # straight to the original CLIPTextEncode/empty-latent nodes —
+        # KSampler's conditioning must originate from the img2vid node's own
+        # outputs, not straight from the original CLIPTextEncode nodes —
         # LTXVImgToVideo's positive/negative outputs carry the image
         # conditioning merged in, which a direct wire would skip entirely.
-        assert workflow["6"]["inputs"]["positive"] == [img2vid_id, 0]
-        assert workflow["6"]["inputs"]["negative"] == [img2vid_id, 1]
+        # It now reaches the sampler via LTXVConditioning (which adds the
+        # frame rate), so assert the whole chain rather than a direct wire.
+        cond_id = next(i for i, n in workflow.items() if n["class_type"] == "LTXVConditioning")
+        assert workflow[cond_id]["inputs"]["positive"] == [img2vid_id, 0]
+        assert workflow[cond_id]["inputs"]["negative"] == [img2vid_id, 1]
+        assert workflow["6"]["inputs"]["positive"] == [cond_id, 0]
+        assert workflow["6"]["inputs"]["negative"] == [cond_id, 1]
+        # The latent bypasses conditioning and comes straight from img2vid.
         assert workflow["6"]["inputs"]["latent_image"] == [img2vid_id, 2]
 
     def test_no_reference_image_keeps_the_plain_text_to_video_path(self):
