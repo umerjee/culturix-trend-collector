@@ -508,8 +508,47 @@ def _mux_narration_audio(video_bytes: bytes, audio_bytes: bytes, audio_format: s
                 pass
 
 
+def _object_info_response(input_data: dict) -> dict:
+    """Diagnostic branch: returns ComfyUI's own node schemas.
+
+    Exists because this is a SERVERLESS image — its CMD is /start.sh, so
+    unlike runpod/base it ships no SSH daemon, and renting a pod from it
+    just to `curl 127.0.0.1:8188/object_info` doesn't work (confirmed live
+    2026-09-01: no SSH port ever exposed). The endpoint itself is the only
+    way in.
+
+    Needed to convert official ComfyUI workflow templates from UI format
+    to the API format this handler consumes: UI format stores widget values
+    positionally with no names, and only /object_info knows the real input
+    names. Guessing them is how the LTX-2.3 graph silently lost its
+    LTXVConditioning node.
+
+    `classes` (optional) returns full schemas for just those node classes —
+    the full /object_info is several MB and risks the response size limit,
+    so the default returns only the class-name list."""
+    resp = httpx.get(f"{_COMFYUI_URL}/object_info", timeout=180)
+    resp.raise_for_status()
+    info = resp.json()
+    wanted = input_data.get("classes")
+    if wanted:
+        return {
+            "object_info": {c: info[c] for c in wanted if c in info},
+            "missing": [c for c in wanted if c not in info],
+            "total_classes": len(info),
+        }
+    return {"class_names": sorted(info.keys()), "total_classes": len(info)}
+
+
 def handler(event: dict) -> dict:
     input_data = event.get("input") or {}
+    if input_data.get("debug_object_info"):
+        try:
+            _wait_for_comfyui_ready()
+            return _object_info_response(input_data)
+        except Exception as exc:
+            logger.exception("object_info diagnostic failed")
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
     shot_workflows = input_data.get("shot_workflows")
     workflow_json = input_data.get("workflow")
     if not shot_workflows and not workflow_json:
