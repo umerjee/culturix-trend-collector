@@ -190,6 +190,34 @@ class TestBuildShotPrompt:
         assert "Located in Norway" in prompt
         assert "warm muted palette, overcast light" in prompt
 
+    def test_visual_style_slug_is_expanded_not_passed_through_raw(self, mocker):
+        """visual_style stores a SLUG the UI dropdown writes
+        ("cinematic_cultural"), not prose — every real Location row holds
+        the bare key. Passing it through raw would put that literal token
+        into the prompt as noise instead of art direction."""
+        background = mocker.Mock(description="A kitchen", country=None, visual_style="cinematic_cultural")
+        background.name = "Kitchen"
+        prompt = _build_shot_prompt({"action": "waves"}, background=background)
+        assert "cinematic_cultural" not in prompt
+        assert "painterly" in prompt
+
+    def test_unknown_visual_style_falls_back_to_readable_text(self, mocker):
+        background = mocker.Mock(description="A kitchen", country=None, visual_style="my_custom_look")
+        background.name = "Kitchen"
+        prompt = _build_shot_prompt({"action": "waves"}, background=background)
+        assert "my custom look" in prompt
+
+    def test_quality_suffix_does_not_hardcode_a_conflicting_art_style(self, mocker):
+        """The suffix must assert render QUALITY only — the art style comes
+        from the Location's visual_style and the character LoRA. A suffix
+        hardcoding "Pixar-style 3D" directly contradicted the painterly
+        "(not photoreal)" style text in the same prompt."""
+        background = mocker.Mock(description="A kitchen", country=None, visual_style="cinematic_cultural")
+        background.name = "Kitchen"
+        prompt = _build_shot_prompt({"action": "waves"}, background=background)
+        assert "Pixar" not in prompt
+        assert "3D animated cartoon" not in prompt
+
 
 class TestResolveShotVariant:
     def test_matches_speaker_variant_id(self, mocker):

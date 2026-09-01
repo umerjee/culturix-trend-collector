@@ -87,11 +87,37 @@ def _resilient_commit(session, mutate) -> None:
     raise last_exc
 
 
+def _expand_visual_style(visual_style: str) -> str:
+    """ToonBackground.visual_style stores a SLUG ("cinematic_cultural"),
+    not prose — the UI's own dropdown (culturix-web's BackgroundGallery /
+    ScriptManager, DEFAULT_BACKGROUND_STYLE) writes the key, and
+    app/routers/culturetoons.py's ART_STYLES maps it to the real
+    descriptive prompt text. Confirmed live 2026-09-01 that every existing
+    Location row stores the bare slug, so passing it straight through would
+    put the literal token "cinematic_cultural" into an LTX prompt, which is
+    noise rather than art direction. Falls back to a readability-cleaned
+    version of the raw value for any slug not in ART_STYLES (e.g. a
+    hand-written style string), rather than dropping it."""
+    from app.routers.culturetoons import ART_STYLES
+
+    style = ART_STYLES.get(visual_style)
+    if style and style.get("prompt"):
+        return style["prompt"]
+    return visual_style.replace("_", " ")
+
+
+# Deliberately style-NEUTRAL: asserts render quality only, never an art
+# style. The art style comes from the Location's own visual_style (see
+# _expand_visual_style) and from the character LoRA. An earlier version of
+# this suffix hardcoded "3D animated cartoon in a polished Pixar-style
+# render", which directly contradicted the "semi-realistic painterly ...
+# (not photoreal)" text that the cinematic_cultural style expands to —
+# two opposing art directions in one prompt is exactly the kind of
+# conflicting instruction that produces incoherent output.
 _QUALITY_SUFFIX = (
-    "3D animated cartoon in a polished Pixar-style render. Smooth natural motion, "
-    "stable consistent facial features, expressive but clean character animation. "
-    "Soft cinematic lighting, shallow depth of field, sharp focus on the character's face. "
-    "High detail, crisp, film-quality render"
+    "Smooth natural motion, stable consistent facial features throughout, "
+    "clean expressive character animation. Sharp focus on the character's face, "
+    "consistent lighting, high detail, crisp film-quality render"
 )
 
 
@@ -126,7 +152,7 @@ def _build_shot_prompt(shot: dict, background=None) -> str:
             parts.append(f"Located in {country}")
         visual_style = (getattr(background, "visual_style", None) or "").strip()
         if visual_style:
-            parts.append(visual_style)
+            parts.append(_expand_visual_style(visual_style))
     shot_type = shot.get("shot_type")
     if shot_type:
         parts.append(f"{shot_type.replace('_', ' ')} shot")
