@@ -369,17 +369,56 @@ def _synthesize_narration_chatterbox(text: str) -> tuple:
     Returns (wav_bytes, diagnostic) — best-effort like every other
     synthesis/mux step in this file: a failure here should degrade the
     whole generation to silent video, not fail it outright."""
-    import torchaudio as ta
-
     try:
         model = _get_chatterbox_model()
         wav = model.generate(text)
-        buf = io.BytesIO()
-        ta.save(buf, wav, model.sr, format="wav")
-        return buf.getvalue(), None
+        return _tensor_to_wav_bytes(wav, model.sr), None
     except Exception as exc:
         logger.exception("Chatterbox narration synthesis failed")
         return None, f"{type(exc).__name__}: {exc}"
+
+
+def _tensor_to_wav_bytes(wav, sample_rate: int) -> bytes:
+    """Encodes Chatterbox's output tensor as WAV using only the Python
+    stdlib `wave` module.
+
+    Deliberately NOT torchaudio.save(): confirmed live 2026-09-01 that it
+    raised `ImportError: TorchCodec is required for save_with_torchcodec`
+    on the deployed image — newer torchaudio routes save() through
+    torchcodec, which isn't installed. Every generated video came back
+    silent because of it, and the failure was invisible until the client
+    stopped discarding this handler's chatterbox_error field.
+
+    Installing torchcodec would be the obvious fix, but it resolves against
+    the same torch/CUDA dependency graph that a chatterbox-tts install
+    already silently broke once (see the Dockerfile's NCCL note — every
+    worker crash-looped on `undefined symbol: ncclCommResume` until the
+    pin/restore was widened). Writing a WAV header needs no ML library at
+    all, so this sidesteps that whole risk class rather than adding another
+    package to it."""
+    import wave
+
+    import numpy as np
+
+    samples = wav.detach().to("cpu").numpy() if hasattr(wav, "detach") else np.asarray(wav)
+    samples = np.atleast_2d(samples)          # (channels, frames)
+    channels = samples.shape[0]
+    # float32 in [-1, 1] -> int16 PCM. Clipped first: Chatterbox output can
+    # exceed unity slightly, which would wrap around into loud noise rather
+    # than simply saturating.
+    if np.issubdtype(samples.dtype, np.floating):
+        samples = np.clip(samples, -1.0, 1.0)
+        samples = (samples * 32767.0).astype(np.int16)
+    else:
+        samples = samples.astype(np.int16)
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as f:
+        f.setnchannels(channels)
+        f.setsampwidth(2)                      # int16
+        f.setframerate(int(sample_rate))
+        f.writeframes(samples.T.tobytes())     # interleave to (frames, channels)
+    return buf.getvalue()
 
 
 def _mux_narration_audio(video_bytes: bytes, audio_bytes: bytes, audio_format: str = "mp3") -> tuple:
