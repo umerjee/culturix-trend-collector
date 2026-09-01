@@ -101,10 +101,31 @@ COPY deploy/runpod_serverless/extra_model_paths.yaml /comfyui/extra_model_paths.
 # chatterbox-tts, then force-reinstalls exactly those versions back
 # afterward with --no-deps (so their own sub-dependencies aren't pulled
 # in again either) — standard mitigation for this exact class of conflict.
-RUN pip freeze | grep -i '^torch' > /tmp/pinned-torch.txt \
+#
+# Confirmed live 2026-09-01: the 2026-08-30 fix above was INCOMPLETE — it
+# only checked that ComfyUI's HTTP server started, not that the GPU
+# actually initialized. Every worker was exiting (code 1) on EVERY job
+# with `libtorch_cuda.so: undefined symbol: ncclCommResume` — torch's
+# compiled extension expecting an NCCL ABI that the installed NCCL package
+# didn't provide. Root cause: the original grep only matched lines
+# starting with "torch" (torch/torchvision/torchaudio), so it never
+# captured or restored the separate `nvidia-nccl-cu12`/`nvidia-cublas-cu12`/
+# `nvidia-cudnn-cu12`/etc. CUDA runtime packages torch's wheel depends on —
+# chatterbox-tts's own dependency resolution silently changed one of those,
+# and --no-deps meant the "restore" step never put it back. Widened the
+# pattern to capture the whole CUDA/torch stack, not just torch itself.
+RUN pip freeze | grep -iE '^(torch|nvidia-|triton)' > /tmp/pinned-torch.txt \
     && cat /tmp/pinned-torch.txt \
     && pip install chatterbox-tts \
-    && pip install --no-deps --force-reinstall -r /tmp/pinned-torch.txt
+    && pip install --no-deps --force-reinstall -r /tmp/pinned-torch.txt \
+    && python -c "import torch; print('torch import OK:', torch.__version__, torch.version.cuda)"
+# The above `import torch` is a build-time guard, not a GPU check (no GPU
+# is present during a normal Docker build, so torch.cuda.is_available()
+# can't be tested here) — but it's enough to catch this exact bug: the
+# 2026-09-01 failure was an ImportError raised by `from torch._C import *`
+# itself (a plain import, before any .cuda() call), so a broken CUDA/NCCL
+# ABI mismatch fails the build immediately instead of only surfacing an
+# hour into a real RunPod job.
 
 # Replaces the base image's own /handler.py (image-only outputs) with ours
 # (video/gif-aware, matches app/media/runpod_serverless_client.py's
