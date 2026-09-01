@@ -73,6 +73,17 @@ def _headers() -> dict:
 def _extract_output_bytes(output: dict) -> bytes:
     if not output:
         raise RunPodServerlessError("Serverless job completed with no output")
+    # handler.py reports narration/mux problems as non-fatal fields on a
+    # still-"successful" job (video_base64 present) rather than failing the
+    # whole job over an audio-only problem — confirmed live 2026-09-01: this
+    # function only ever read video_base64, so a real chatterbox_error/
+    # narration_mux_error was silently discarded every time, producing a
+    # "successful" video with no audio and no visible explanation why. Log
+    # loudly rather than restructuring the return type here (every caller
+    # currently expects raw bytes back).
+    for warning_key in ("chatterbox_error", "narration_mux_error", "faststart_error"):
+        if output.get(warning_key):
+            logger.warning("RunPod Serverless job succeeded but reported %s: %s", warning_key, output[warning_key])
     if "video_base64" in output:
         return base64.b64decode(output["video_base64"])
     if "video_url" in output:
