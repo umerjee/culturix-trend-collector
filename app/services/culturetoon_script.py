@@ -619,7 +619,13 @@ def derive_scene_setting(script) -> dict:
         '  "description": 1-2 sentences describing only what the place LOOKS like — architecture, '
         "furniture, props, lighting, time of day, mood. Describe the empty set: no characters, no "
         "people, no actions, no dialogue.\n"
-        '  "country": the country the location is in if the script clearly implies one, else null.\n\n'
+        '  "country": the country the location is in if the script implies one, else null. Infer it '
+        "from cultural cues (names, food, language, landmarks, subject matter), not just from an "
+        "explicit statement.\n\n"
+        "IMPORTANT — preserve cultural specificity. This is a culturally-grounded comedy product: if "
+        "the script implies a particular culture or region, the location must reflect it concretely "
+        "(architecture, furnishings, textiles, cookware, signage, streetscape). Never flatten a "
+        'culturally specific setting into a generic or "modern/futuristic" one.\n'
         "If the script never establishes a location, infer the most plausible ordinary one from context."
     )
     parsed = _call_llm_json(prompt, temperature=0.4, max_tokens=400)
