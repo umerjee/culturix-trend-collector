@@ -186,10 +186,21 @@ def _process_brand(session, brand, endpoint_id: str, deadline: float, job_tracke
         job_tracker["attempted"] = True
 
         try:
-            video_bytes = generate_toon_video_selfhosted(
-                script, variants, endpoint_id, duration_seconds=duration,
-                use_allocation_retry=is_first_job, elevenlabs_api_key=elevenlabs_api_key,
-            )
+            # Same renderer switch as the interactive button — otherwise the
+            # scheduled batch would silently keep rendering on LTX-2.3 after
+            # production had been moved to 2.5, producing visibly different
+            # (and audio-less) output from the same scripts.
+            from app.services.culturetoon_selfhosted_video import generate_toon_video_ltx25, use_ltx25
+
+            if use_ltx25():
+                video_bytes = generate_toon_video_ltx25(
+                    script, variants, endpoint_id, duration_seconds=duration,
+                )
+            else:
+                video_bytes = generate_toon_video_selfhosted(
+                    script, variants, endpoint_id, duration_seconds=duration,
+                    use_allocation_retry=is_first_job, elevenlabs_api_key=elevenlabs_api_key,
+                )
             video_url = storage.upload(
                 video_bytes,
                 f"culturetoons/{brand.id}/toons/{toon.id}/raw-{_uuid.uuid4().hex[:8]}.mp4",
