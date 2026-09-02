@@ -546,6 +546,13 @@ def start():
     # digest dispatch above. Script drafts only, never video — see
     # run_culturetoon_trend_dispatch's own docstring.
     scheduler.add_job(run_culturetoon_trend_dispatch, CronTrigger(minute="*/15"), id="culturetoon_trend_dispatch")
+    # Stuck-generation reaper — every 30 min. A toon is moved out of
+    # "animating" by the same in-process task that put it there, so a
+    # container restart (i.e. every deploy) orphans anything mid-render and
+    # leaves a spinner the UI can never resolve. Cheap query, and the only
+    # thing that ever cleans those up.
+    from app.services.culturetoon_reaper import run_toon_reaper
+    scheduler.add_job(run_toon_reaper, CronTrigger(minute="*/30"), id="toon_reaper")
     # Integration health check — once daily, 12:00 UTC (after the other morning jobs)
     scheduler.add_job(run_integration_health_check, CronTrigger(hour=12, minute=0), id="integration_health_check")
     # Self-hosted (RunPod+ComfyUI+LTX-2) video batch — dormant unless
