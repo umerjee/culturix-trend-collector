@@ -709,7 +709,7 @@ def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
 
 def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
                               duration_seconds: Optional[int] = None,
-                              background=None) -> bytes:
+                              background=None, stats: Optional[dict] = None) -> bytes:
     """Renders a whole script as ONE LTX-2.5 generation.
 
     No per-shot loop, no LoRA, no narration mux and no last-frame chaining:
@@ -751,6 +751,7 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
     return runpod_serverless_client.run_inference_job(
         endpoint_id, workflow, reference_image_bytes=anchor,
         timeout_seconds=max(_MULTI_SHOT_TIMEOUT_FLOOR_SECONDS, 300 + len(shots) * 120),
+        stats=stats,
     )
 
 def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
@@ -770,13 +771,20 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
     from app.models.character_variant import CharacterVariant
     from app.models.character_brand import CharacterBrand
     from app.media import storage, runpod_serverless_client
-    from app.services.culturetoon_usage import record_usage, estimate_selfhosted_video_cost
+    from app.services.culturetoon_usage import (
+        record_usage, estimate_selfhosted_video_cost, measured_selfhosted_video_cost,
+    )
     from app.social.crypto import decrypt
     import os
 
     session = SessionLocal()
     toon = None
     duration = 0
+    # Populated by the LTX-2.5 path with RunPod's reported executionTime, so
+    # usage records a MEASURED cost rather than one derived from the video's
+    # duration — RunPod bills compute time, and the two differ by more than
+    # an order of magnitude (a 12s video costs ~226s of GPU).
+    run_stats: dict = {}
     try:
         toon = session.query(Toon).filter_by(id=_uuid.UUID(str(toon_id))).first()
         if not toon:
@@ -847,6 +855,7 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
         if use_ltx25():
             video_bytes = generate_toon_video_ltx25(
                 script, variants, endpoint_id, duration_seconds=duration, background=background,
+                stats=run_stats,
             )
         else:
             video_bytes = generate_toon_video_selfhosted(
@@ -908,7 +917,12 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
                 record_usage(
                     session, user_id=user_id, brand_id=toon.brand_id, toon_id=toon.id,
                     provider="runpod_ltx", generation_type="toon_video_selfhosted",
-                    output_units=int(duration), cost_usd=estimate_selfhosted_video_cost(duration),
+                    output_units=int(duration),
+                    cost_usd=(
+                        measured_selfhosted_video_cost(run_stats["execution_seconds"])
+                        if run_stats.get("execution_seconds") is not None
+                        else estimate_selfhosted_video_cost(duration)
+                    ),
                 )
 
             _resilient_commit(session, _apply_usage)

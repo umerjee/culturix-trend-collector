@@ -102,7 +102,8 @@ def run_inference_job(endpoint_id: str, workflow_json: dict = None, timeout_seco
                        narration_audio_bytes: bytes = None,
                        shot_workflows: list = None, shot_reference_images: list = None,
                        shot_chain_from_previous: list = None,
-                       narration_text: str = None) -> bytes:
+                       narration_text: str = None,
+                       stats: dict = None) -> bytes:
     """Submits a ComfyUI workflow to a RunPod Serverless endpoint and blocks
     until it completes. Returns the output video's raw bytes. Raises
     RunPodServerlessError on a FAILED job or an unrecognized output shape,
@@ -198,6 +199,21 @@ def run_inference_job(endpoint_id: str, workflow_json: dict = None, timeout_seco
         data = status_resp.json()
         status = data.get("status")
         if status == "COMPLETED":
+            # RunPod bills actual compute, and executionTime (ms) is the only
+            # real measure of it. Cost was previously estimated from the
+            # VIDEO's duration, which is not what is charged — a 12s video
+            # takes ~226s of GPU, so that estimate was out by an order of
+            # magnitude. Surfaced via an optional out-param so callers can
+            # record a measured cost without changing this function's
+            # return type.
+            if stats is not None:
+                execution_ms = data.get("executionTime")
+                if isinstance(execution_ms, (int, float)):
+                    stats["execution_seconds"] = execution_ms / 1000.0
+                delay_ms = data.get("delayTime")
+                if isinstance(delay_ms, (int, float)):
+                    stats["delay_seconds"] = delay_ms / 1000.0
+                stats["worker_id"] = data.get("workerId")
             return _extract_output_bytes(data.get("output"))
         if status == "FAILED":
             raise RunPodServerlessError(f"Serverless job {job_id} failed: {data.get('error') or data}", job_id=job_id)

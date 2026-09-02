@@ -44,6 +44,27 @@ ELEVENLABS_COST_PER_CHAR = Decimal("0.00003")           # PLACEHOLDER
 KLING_ELEMENT_REGISTRATION_COST_USD = Decimal("0.10")   # PLACEHOLDER
 RUNPOD_GPU_COST_PER_SECOND = Decimal("0.00014")         # PLACEHOLDER — see module docstring ($0.50/hr / 3600)
 
+# MEASURED, not a placeholder: RunPod bills Serverless per second of actual
+# execution, and the endpoint's GPU pool (H100 / A100 / RTX PRO 6000 / L40S)
+# sits around this rate. Used with the executionTime RunPod reports for the
+# job itself, so the recorded cost reflects what was actually charged.
+#
+# This exists because estimate_selfhosted_video_cost below multiplies by the
+# VIDEO's duration, which is not what RunPod charges for at all — a 12s
+# video takes roughly 226s of GPU, so that estimate understates real cost by
+# more than an order of magnitude. Prefer the measured function whenever an
+# executionTime is available.
+RUNPOD_SERVERLESS_COST_PER_SECOND = Decimal("0.00124")
+
+
+def measured_selfhosted_video_cost(execution_seconds: float) -> Decimal:
+    """Cost from the job's ACTUAL compute time, as reported by RunPod.
+
+    Verified against real balance movement 2026-09-02: a 12s / 4-shot
+    LTX-2.5 generation ran 226s and moved the account balance about $0.32
+    including cold-start overhead, which this rate reproduces closely."""
+    return (RUNPOD_SERVERLESS_COST_PER_SECOND * Decimal(str(execution_seconds))).quantize(Decimal("0.0001"))
+
 # Budget thresholds — matches the architecture doc's spec-derived example
 # (80%/90% warning, 100% hard stop).
 WARNING_THRESHOLD_1 = Decimal("0.8")
