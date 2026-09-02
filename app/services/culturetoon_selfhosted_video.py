@@ -162,10 +162,24 @@ def _build_shot_prompt(shot: dict, background=None) -> str:
     visual = (shot.get("visual") or "").strip()
     action = (shot.get("action") or "").strip()
     expression = (shot.get("expression") or "").strip()
+    # lighting/blocking are newer shot fields (see culturetoon_script.py's
+    # schema). Reading them here matters as much as generating them — the
+    # `expression` field was generated but silently dropped for weeks, and
+    # the same would happen to these. Lighting with a stated DIRECTION is
+    # what makes separate shots read as one continuous scene rather than
+    # unrelated clips; blocking + held props keep characters distinguishable
+    # when faces are small or moving, which matters more now that identity
+    # is carried by a first-frame anchor rather than a per-character LoRA.
+    lighting = (shot.get("lighting") or "").strip()
+    blocking = (shot.get("blocking") or "").strip()
     dialogue = (shot.get("dialogue") or "").strip()
     delivery = (shot.get("dialogue_delivery") or "").strip()
     if visual:
         parts.append(visual)
+    if blocking:
+        parts.append(blocking)
+    if lighting:
+        parts.append(lighting)
     if action:
         parts.append(action)
     if expression:

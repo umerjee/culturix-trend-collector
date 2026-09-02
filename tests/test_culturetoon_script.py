@@ -160,7 +160,13 @@ class TestGenerateToonScript:
         assert "commit" in sent_prompt
         assert '"visual"' in sent_prompt
         assert '"dialogue_delivery"' in sent_prompt
-        assert "visual (string), action (string)" in sent_prompt
+        # lighting/blocking sit between visual and action in the schema — they
+        # carry scene continuity (light with a stated direction) and character
+        # legibility (positions + held props), which matter more now that
+        # identity rides on a first-frame anchor rather than a per-character LoRA.
+        assert "visual (string), lighting (string), blocking (string), action (string)" in sent_prompt
+        assert '"lighting"' in sent_prompt
+        assert '"blocking"' in sent_prompt
 
     def test_multiple_variants_maps_speaker_name_to_speaker_variant_id(self, mocker):
         from app.models.cluster import Cluster

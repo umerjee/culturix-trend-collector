@@ -477,8 +477,17 @@ Requirements:
 - Each shot's duration_seconds is a whole number >= 1. The SUM of all shots'
   duration_seconds must be between {MIN_TOTAL_SECONDS} and {MAX_TOTAL_SECONDS} (hard limits).
 - "visual" describes the staging: props, environment, positioning, what's physically in frame
-  (max ~20 words) — e.g. "holding a massive drum, confetti mid-air, a family tree scroll unrolled
-  across the floor," not a vague scene description.
+  (max ~35 words). Name specific OBJECTS and MATERIALS, not categories — "a chipped enamel
+  teapot on scratched oak, a half-eaten plate of jalebi, coats piled on the chair back" rather
+  than "kitchen items". Concrete props are what make a shot read as a real place on screen.
+- "lighting" describes the light in this shot with a DIRECTION and a quality (max ~15 words) —
+  e.g. "warm lamp from frame left, cold blue window light from the right" or "single overhead
+  fluorescent, hard shadows". Keep it consistent between shots in the same location unless the
+  story changes it; consistent light is what makes separate shots feel like one continuous scene
+  rather than unrelated clips.
+- "blocking" says WHERE each character is in the frame and what they physically hold (max ~20
+  words) — e.g. "Hans left with the laptop, Kumar centre holding a mug, Wen right with a book".
+  Positions and held props keep characters distinguishable even when faces are small or moving.
 - "action" describes the character's specific physical performance/movement in that shot (max
   ~15 words) — a concrete, exaggerated physical beat (e.g. "sweating, dancing manically" or
   "aggressively taps a stopwatch"), not a generic verb like "gestures" or "reacts."
@@ -495,7 +504,8 @@ Requirements:
 Return ONLY valid JSON with exactly these keys:
 - hook_line: string
 - shots: array of objects, each with exactly: shot_number (int), duration_seconds (int),
-  visual (string), action (string), expression (string or null), dialogue (string or null),
+  visual (string), lighting (string), blocking (string), action (string),
+  expression (string or null), dialogue (string or null),
   dialogue_delivery (string or null), shot_type (string), camera_movement (string or null){speaker_key}
 
 Return ONLY the JSON object, no other text."""

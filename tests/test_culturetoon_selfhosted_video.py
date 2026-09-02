@@ -190,6 +190,28 @@ class TestBuildShotPrompt:
         assert "Located in Norway" in prompt
         assert "warm muted palette, overcast light" in prompt
 
+    def test_lighting_and_blocking_reach_the_prompt(self, mocker):
+        """Both are newer shot fields. Generating them is only half the job —
+        `expression` was generated but silently dropped for weeks, and these
+        would go the same way. Lighting with a stated direction is what makes
+        separate shots read as one scene; blocking keeps characters
+        distinguishable now that identity rides on a first-frame anchor."""
+        shot = {
+            "visual": "a chipped enamel teapot on scratched oak",
+            "lighting": "warm lamp from frame left, cold window light right",
+            "blocking": "Hans left with the laptop, Wen right with a book",
+            "action": "he squints at the screen",
+        }
+        prompt = _build_shot_prompt(shot)
+        assert "warm lamp from frame left" in prompt
+        assert "Hans left with the laptop" in prompt
+        assert "chipped enamel teapot" in prompt
+
+    def test_missing_lighting_and_blocking_are_simply_omitted(self, mocker):
+        prompt = _build_shot_prompt({"action": "waves"})
+        assert "None" not in prompt
+        assert prompt.startswith("waves")
+
     def test_visual_style_slug_is_expanded_not_passed_through_raw(self, mocker):
         """visual_style stores a SLUG the UI dropdown writes
         ("cinematic_cultural"), not prose — every real Location row holds
