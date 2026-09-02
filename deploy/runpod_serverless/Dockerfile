@@ -12,15 +12,7 @@
 # https://hub.docker.com/r/runpod/worker-comfyui/tags for the current
 # latest "-base" variant (clean ComfyUI install, no baked-in model weights,
 # since our models live on the Network Volume instead).
-# Bumped 5.8.6 -> 5.10.0 for LTX-2.5. Confirmed empirically against the
-# live endpoint (debug_object_info): 5.8.6 registers 31 of the 32 node
-# classes the official LTX-2.5 template uses -- including the whole native
-# audio path (LTXVConcatAVLatent / LTXVSeparateAVLatent /
-# LTXVAudioVAEDecode / LTXVEmptyLatentAudio) and LTXVMultiPromptProvider --
-# but NOT LTXVDualCFGGuider. Core DualCFGGuider and MultimodalGuider are
-# present, so this is a ComfyUI-core version gap rather than the base
-# lacking LTX-2.5 support wholesale.
-FROM runpod/worker-comfyui:5.10.0-base
+FROM runpod/worker-comfyui:5.8.6-base
 
 WORKDIR /comfyui
 
@@ -122,28 +114,11 @@ COPY deploy/runpod_serverless/extra_model_paths.yaml /comfyui/extra_model_paths.
 # chatterbox-tts's own dependency resolution silently changed one of those,
 # and --no-deps meant the "restore" step never put it back. Widened the
 # pattern to capture the whole CUDA/torch stack, not just torch itself.
-# Build-time guard for the CUDA/NCCL ABI break below. Deliberately fails
-# the build ONLY on an "undefined symbol" ImportError — the exact signature
-# of the mismatched-NCCL bug that crash-looped every worker. A plain
-# CUDA-libs-unavailable failure is expected on a GPU-less CI runner (and
-# 5.10.0-base drops /usr/local/nvidia/lib64 from LD_LIBRARY_PATH, unlike
-# 5.8.6), so that case warns instead of failing the build.
-RUN printf '%s\n' \
-    'import sys' \
-    'try:' \
-    '    import torch' \
-    '    print("torch import OK:", torch.__version__, torch.version.cuda)' \
-    'except Exception as exc:' \
-    '    msg = str(exc)' \
-    '    print("torch import failed:", type(exc).__name__, msg)' \
-    '    sys.exit(1 if "undefined symbol" in msg else 0)' \
-    > /tmp/check_torch.py
-
 RUN pip freeze | grep -iE '^(torch|nvidia-|triton)' > /tmp/pinned-torch.txt \
     && cat /tmp/pinned-torch.txt \
     && pip install chatterbox-tts \
     && pip install --no-deps --force-reinstall -r /tmp/pinned-torch.txt \
-    && python /tmp/check_torch.py
+    && python -c "import torch; print('torch import OK:', torch.__version__, torch.version.cuda)"
 # The above `import torch` is a build-time guard, not a GPU check (no GPU
 # is present during a normal Docker build, so torch.cuda.is_available()
 # can't be tested here) — but it's enough to catch this exact bug: the
