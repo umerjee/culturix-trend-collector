@@ -79,6 +79,47 @@ def dialogue_word_budget(duration_seconds) -> int:
     return max(3, int(seconds * SPEECH_WORDS_PER_SECOND))
 
 
+def fit_shot_durations(shots: list, max_total: Optional[int] = None) -> list:
+    """Extends any shot whose line cannot be said in its own duration.
+
+    The writer prompt states the word budget per shot with worked arithmetic,
+    and the model still overruns it — measured on two consecutive drafts of
+    the same script, 7/7 then 6/7 shots over, even with an explicit
+    correction naming the exact limits. LLMs do not count reliably, so this
+    stops asking and computes it: a line is never rewritten, the shot is
+    simply given the seconds it needs.
+
+    Growth is bounded by max_total (MAX_TOTAL_SECONDS by default) because
+    duration is what a render costs. Shots that cannot be extended inside
+    that budget keep their original duration and stay visible through
+    overlong_shots(), rather than silently pushing the video over its ceiling.
+    """
+    import math
+
+    limit = MAX_TOTAL_SECONDS if max_total is None else max_total
+    fitted = [dict(shot or {}) for shot in shots or []]
+    total = sum(s.get("duration_seconds") or 0 for s in fitted)
+
+    for shot in fitted:
+        words = len((shot.get("dialogue") or "").split())
+        if not words:
+            continue
+        current = shot.get("duration_seconds") or 0
+        needed = max(1, math.ceil(words / SPEECH_WORDS_PER_SECOND))
+        extra = needed - current
+        if extra <= 0:
+            continue
+        if total + extra > limit:
+            logger.warning(
+                "Shot %s needs %ds for %d words but the script is at %ds/%ds — left rushed",
+                shot.get("shot_number"), needed, words, total, limit,
+            )
+            continue
+        shot["duration_seconds"] = needed
+        total += extra
+    return fitted
+
+
 def overlong_shots(shots: list) -> list:
     """Shots whose dialogue cannot be delivered in their own duration.
     Advisory — surfaced to the user, never silently rewritten."""
@@ -855,7 +896,9 @@ def derive_scene_setting(script) -> dict:
 
 def _call_llm_for_script(prompt: str, tone: str, variants: list) -> dict:
     parsed = _call_llm_json(prompt, temperature=0.7, max_tokens=900)
-    shots = parsed.get("shots") or []
+    # Pace before anything else reads the shots, so the stored duration is
+    # always one the line actually fits into — see fit_shot_durations.
+    shots = fit_shot_durations(parsed.get("shots") or [])
     total = sum(s.get("duration_seconds", 0) for s in shots) if shots else 0
     return {
         "hook_line": parsed.get("hook_line"),
@@ -867,7 +910,10 @@ def _call_llm_for_script(prompt: str, tone: str, variants: list) -> dict:
         "setting": parsed.get("setting"),
         "tone": tone,
         "shots": _assign_speakers(shots, variants),
-        "total_duration_seconds": parsed.get("total_duration_seconds") or total,
+        # The SUM of the paced shots, not the model's own figure — after
+        # fit_shot_durations the two disagree, and the shots are the truth.
+        # The stale figure is what a render would have been billed for.
+        "total_duration_seconds": total or parsed.get("total_duration_seconds"),
     }
 
 

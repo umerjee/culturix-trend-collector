@@ -858,3 +858,54 @@ class TestNarrationOverPerformance:
             prompt = self._prompt(mocker, tone)
             assert "SHOW IT AT REAL SCALE" in prompt
             assert "Never substitute a desk model" in prompt
+
+
+class TestFitShotDurations:
+    """Measured on two consecutive drafts of the same script — 7/7 then 6/7
+    shots over budget even after an explicit correction naming the exact
+    limits. The model cannot count words, so the duration is computed."""
+
+    def test_extends_a_shot_to_fit_its_line(self):
+        from app.services.culturetoon_script import fit_shot_durations
+        # 19 words needs 8s at 2.5 w/s; the draft gave it 4.
+        fitted = fit_shot_durations([
+            {"shot_number": 1, "duration_seconds": 4, "dialogue": " ".join(["w"] * 19)},
+        ])
+        assert fitted[0]["duration_seconds"] == 8
+
+    def test_never_shortens_a_shot(self):
+        from app.services.culturetoon_script import fit_shot_durations
+        fitted = fit_shot_durations([
+            {"shot_number": 1, "duration_seconds": 6, "dialogue": "three words here"},
+        ])
+        assert fitted[0]["duration_seconds"] == 6
+
+    def test_never_rewrites_the_line(self):
+        from app.services.culturetoon_script import fit_shot_durations
+        line = " ".join(["w"] * 30)
+        fitted = fit_shot_durations([{"shot_number": 1, "duration_seconds": 2, "dialogue": line}])
+        assert fitted[0]["dialogue"] == line
+
+    def test_silent_shots_are_untouched(self):
+        from app.services.culturetoon_script import fit_shot_durations
+        fitted = fit_shot_durations([
+            {"shot_number": 1, "duration_seconds": 2, "dialogue": None},
+        ])
+        assert fitted[0]["duration_seconds"] == 2
+
+    def test_growth_is_capped_so_a_render_cannot_balloon(self):
+        from app.services.culturetoon_script import fit_shot_durations, overlong_shots
+        shots = [{"shot_number": i, "duration_seconds": 2, "dialogue": " ".join(["w"] * 40)}
+                 for i in range(1, 6)]
+        fitted = fit_shot_durations(shots, max_total=20)
+        assert sum(s["duration_seconds"] for s in fitted) <= 20
+        # What could not be fixed stays visible rather than silently rushed.
+        assert overlong_shots(fitted)
+
+    def test_fitted_shots_are_no_longer_flagged(self):
+        from app.services.culturetoon_script import fit_shot_durations, overlong_shots
+        fitted = fit_shot_durations([
+            {"shot_number": 1, "duration_seconds": 3, "dialogue": " ".join(["w"] * 19)},
+            {"shot_number": 2, "duration_seconds": 3, "dialogue": " ".join(["w"] * 14)},
+        ])
+        assert overlong_shots(fitted) == []
