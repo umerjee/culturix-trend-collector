@@ -1046,3 +1046,60 @@ class TestLTX25ScenePrompt:
         prompt = build_ltx25_scene_prompt(script, self._cast(mocker)[:1], background=background)
         assert "Setting: Kitchen" in prompt
         assert "Minecraft" not in prompt
+
+
+class TestLTX25SilentAndUnattributedShots:
+    """2.5 denoises audio JOINTLY with video, so a shot with no line still
+    gets a voice unless the prompt asks for silence. Confirmed live
+    2026-09-02: the Minecraft video's silent closing shot had Zara speaking
+    a line the script never contained."""
+
+    def _cast(self, mocker):
+        def variant(vid, name, description):
+            v = mocker.Mock(id=vid, image_url="u")
+            v.name = name
+            v.character = mocker.Mock(description=description)
+            return v
+        return [
+            variant("z", "Zara", "A young explorer."),
+            variant("n", "Captain Nova", "The captain."),
+        ]
+
+    def _script(self, mocker, last_shot):
+        script = mocker.Mock(hook_line="H")
+        script.shots = [
+            {"shot_number": 1, "speaker_variant_id": "z", "action": "leans in", "dialogue": "Seen this?"},
+            last_shot,
+        ]
+        return script
+
+    def test_a_silent_shot_is_explicitly_marked_silent(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(
+            self._script(mocker, {"shot_number": 2, "action": "they all hug", "dialogue": ""}),
+            self._cast(mocker),
+        )
+        assert "No one speaks in this shot" in prompt
+
+    def test_an_unattributed_shot_names_no_focus_character(self, mocker):
+        """The old fallback picked the FIRST cast member for a shot with no
+        speaker_variant_id, so a silent ensemble shot read as 'Zara is the
+        focus' and 2.5 duly gave Zara the line."""
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(
+            self._script(mocker, {"shot_number": 2, "action": "they all hug", "dialogue": ""}),
+            self._cast(mocker),
+        )
+        shot_two = prompt.split("CUT TO SHOT 2")[1]
+        assert "is the focus" not in shot_two
+
+    def test_a_shot_with_a_line_still_names_its_speaker_and_is_not_silenced(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(
+            self._script(mocker, {"shot_number": 2, "speaker_variant_id": "n",
+                                  "action": "points", "dialogue": "Full speed ahead!"}),
+            self._cast(mocker),
+        )
+        shot_two = prompt.split("CUT TO SHOT 2")[1]
+        assert "Captain Nova" in shot_two and "is the one speaking" in shot_two
+        assert "No one speaks" not in shot_two

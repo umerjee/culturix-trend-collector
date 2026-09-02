@@ -68,6 +68,16 @@ DEFAULT_NEGATIVE_PROMPT = (
 # Output geometry of the converted template. The reference anchor is
 # pre-sized to this by the caller (see build_composite_anchor) because the
 # graph's own resize node is removed below.
+# Resolution the background matte is computed at — see _matte_background.
+_MATTE_RESOLUTION = 256
+# Flood-fill tolerance. PIL compares against the SEED pixel using the SUM of
+# the per-channel differences, not a per-channel margin — so this number is
+# roughly three times what it looks like. At 40 the fill could not cross a
+# studio sweep shading from 235 to 253 (a sum-diff of ~50) and Blix came
+# through on a white rectangle. Measured across the live cast, coverage is
+# flat from 80 upward, so 100 sits on the plateau rather than at its edge.
+_MATTE_TOLERANCE = 100
+
 TARGET_WIDTH = 1280
 TARGET_HEIGHT = 704
 
@@ -175,7 +185,51 @@ def build_workflow(prompt_text: str, duration_seconds: int,
     return workflow
 
 
-def build_composite_anchor(image_bytes_list: list) -> bytes:
+def _matte_background(image, tolerance: int = _MATTE_TOLERANCE):
+    """Returns a mask of the portrait's own studio backdrop.
+
+    Character portraits are generated on a near-white studio background
+    (confirmed 2026-09-02: all three of a live cast measured ~235-249 in
+    every corner, RGB with no alpha). The composite anchor IS the video's
+    first frame, so pasting those portraits unchanged opened the video on a
+    white sheet no matter what the prompt said the setting was.
+
+    Flood-filled from the four corners rather than thresholding on
+    brightness, so a white collar, a highlight or a pale face is kept — only
+    background CONNECTED to the frame edge is removed. Returns a mask where
+    255 marks the character.
+    """
+    from PIL import Image, ImageDraw
+
+    # ImageDraw.floodfill is pure Python, so it is filled on a thumbnail and
+    # the mask scaled back up — at full 1024x1024 a single portrait took
+    # minutes. Bilinear upscaling also feathers the edge, which composites
+    # more naturally than a hard cut.
+    sentinel = (255, 0, 255)
+    probe = image.convert("RGB").copy()
+    probe.thumbnail((_MATTE_RESOLUTION, _MATTE_RESOLUTION))
+    width, height = probe.size
+    for corner in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
+        ImageDraw.floodfill(probe, corner, sentinel, thresh=tolerance)
+
+    # Anything the fill did NOT reach is the subject.
+    mask = Image.new("L", probe.size, 255)
+    mask.putdata([0 if px == sentinel else 255 for px in probe.getdata()])
+
+    # Only catches a matte that removed essentially EVERYTHING — cutting the
+    # character out entirely is worse than leaving their backdrop in. The
+    # bar was 10% and wrongly rejected a good matte: a character framed small
+    # in a large studio sweep legitimately keeps only a few percent of the
+    # portrait, and Blix came through on a white rectangle because of it.
+    kept = sum(mask.getdata()) / (255 * width * height)
+    if kept < 0.02:
+        logger.warning("Matte kept only %.0f%% of the portrait — leaving it unmatted", kept * 100)
+        return Image.new("L", image.size, 255)
+
+    return mask.resize(image.size, Image.BILINEAR)
+
+
+def build_composite_anchor(image_bytes_list: list, backdrop_bytes: Optional[bytes] = None) -> bytes:
     """Composites every cast member's portrait into ONE first frame.
 
     Image conditioning propagates whatever the first frame contains, so
@@ -193,17 +247,35 @@ def build_composite_anchor(image_bytes_list: list) -> bytes:
     if not usable:
         raise LTX25WorkflowError("No character images available to build a composite anchor")
 
+    # The backdrop is what the viewer sees behind the cast in frame 1. With
+    # none supplied this stays a dark neutral rather than the portraits' own
+    # white studio, which read on screen as a deliberate white cyclorama.
     canvas = Image.new("RGB", (TARGET_WIDTH, TARGET_HEIGHT), (28, 24, 22))
+    if backdrop_bytes:
+        backdrop = Image.open(BytesIO(backdrop_bytes)).convert("RGB")
+        scale = max(TARGET_WIDTH / backdrop.width, TARGET_HEIGHT / backdrop.height)
+        backdrop = backdrop.resize(
+            (max(1, round(backdrop.width * scale)), max(1, round(backdrop.height * scale)))
+        )
+        left = (backdrop.width - TARGET_WIDTH) // 2
+        top = (backdrop.height - TARGET_HEIGHT) // 2
+        canvas.paste(backdrop.crop((left, top, left + TARGET_WIDTH, top + TARGET_HEIGHT)), (0, 0))
+
     slot_width = TARGET_WIDTH // len(usable)
     for index, raw in enumerate(usable):
         image = Image.open(BytesIO(raw)).convert("RGB")
+        mask = _matte_background(image)
         # Cover-fit into the slot, cropping rather than stretching so faces
-        # keep their proportions.
+        # keep their proportions. The mask is transformed identically, or the
+        # cut-out would drift off the character.
         scale = max(slot_width / image.width, TARGET_HEIGHT / image.height)
-        image = image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))))
+        size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+        image = image.resize(size)
+        mask = mask.resize(size)
         left = (image.width - slot_width) // 2
         top = (image.height - TARGET_HEIGHT) // 2
-        canvas.paste(image.crop((left, top, left + slot_width, top + TARGET_HEIGHT)), (index * slot_width, 0))
+        box = (left, top, left + slot_width, top + TARGET_HEIGHT)
+        canvas.paste(image.crop(box), (index * slot_width, 0), mask.crop(box))
 
     buffer = BytesIO()
     canvas.save(buffer, format="PNG")

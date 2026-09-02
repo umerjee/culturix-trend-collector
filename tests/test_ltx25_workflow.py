@@ -128,3 +128,63 @@ class TestCompositeAnchor:
     def test_no_usable_images_raises(self):
         with pytest.raises(LTX25WorkflowError):
             build_composite_anchor([None, None])
+
+
+class TestCompositeAnchorMatte:
+    """The composite anchor IS the video's first frame, so whatever backdrop
+    the portraits carry is what the video opens on. Confirmed live
+    2026-09-02: the cast's portraits were near-white studio shots and the
+    Minecraft video opened on a white sheet."""
+
+    @staticmethod
+    def _portrait(background=(242, 244, 246), subject=(20, 40, 90)):
+        from io import BytesIO
+        from PIL import Image, ImageDraw
+        im = Image.new("RGB", (256, 256), background)
+        # A gradient sweep like a real studio backdrop — this is what a
+        # too-tight flood-fill tolerance failed to cross.
+        for y in range(256):
+            for x in range(0, 256, 8):
+                im.putpixel((x, y), (min(255, background[0] + y // 20),
+                                     min(255, background[1] + y // 20),
+                                     min(255, background[2] + y // 20)))
+        ImageDraw.Draw(im).ellipse((80, 80, 176, 176), fill=subject)
+        buf = BytesIO(); im.save(buf, format="PNG")
+        return buf.getvalue()
+
+    def test_matte_removes_the_studio_background_and_keeps_the_subject(self):
+        from io import BytesIO
+        from PIL import Image
+        from app.media.ltx25_workflow import _matte_background
+        mask = _matte_background(Image.open(BytesIO(self._portrait())))
+        assert mask.getpixel((2, 2)) == 0, "border background should be cut out"
+        assert mask.getpixel((128, 128)) == 255, "the subject must survive"
+
+    def test_anchor_does_not_open_on_the_portraits_white_background(self):
+        from io import BytesIO
+        from PIL import Image
+        from app.media.ltx25_workflow import build_composite_anchor
+        anchor = Image.open(BytesIO(build_composite_anchor([self._portrait()]))).convert("RGB")
+        assert min(anchor.getpixel((3, 3))) < 100, "top-left should be canvas, not white"
+
+    def test_backdrop_shows_through_behind_the_cast(self):
+        from io import BytesIO
+        from PIL import Image
+        from app.media.ltx25_workflow import build_composite_anchor, TARGET_WIDTH
+        backdrop = Image.new("RGB", (640, 360), (10, 200, 30))
+        buf = BytesIO(); backdrop.save(buf, format="PNG")
+        anchor = Image.open(BytesIO(
+            build_composite_anchor([self._portrait()], backdrop_bytes=buf.getvalue())
+        )).convert("RGB")
+        r, g, b = anchor.getpixel((3, 3))
+        assert g > r and g > b, "the backdrop should fill where the portrait was cut away"
+
+    def test_a_matte_that_erases_everything_is_discarded(self, mocker):
+        from io import BytesIO
+        from PIL import Image
+        from app.media.ltx25_workflow import _matte_background
+        # A completely uniform image floods entirely; cutting the character
+        # out is worse than keeping their backdrop.
+        flat = Image.new("RGB", (128, 128), (240, 240, 240))
+        mask = _matte_background(flat)
+        assert mask.getpixel((64, 64)) == 255

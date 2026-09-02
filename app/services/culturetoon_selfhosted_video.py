@@ -688,17 +688,34 @@ def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
         # talking. Confirmed live 2026-09-02: on a three-hander, the shot
         # belonging to the third character was rendered as a DUPLICATE of
         # the second one instead, speaking her line.
-        speaker = _resolve_shot_variant(shot, variants)
+        # Only an EXPLICIT speaker names a focus. _resolve_shot_variant falls
+        # back to the first-listed cast member for a shot with no
+        # speaker_variant_id, which is right for choosing a LoRA on the 2.3
+        # path but wrong here: it made a silent ensemble closing shot read as
+        # "Zara is the focus", and 2.5 then gave Zara a line. Confirmed live
+        # 2026-09-02 — the closing shot belonged to no one and Zara spoke in
+        # it. An unattributed shot gets no focus claim at all.
+        speaker = _resolve_shot_variant(shot, variants) if shot.get("speaker_variant_id") else None
         speaker_id = str(getattr(speaker, "id", "")) if speaker is not None else ""
         name, position = position_of.get(speaker_id, ("", ""))
+        # Audio is denoised JOINTLY with video on 2.5, so silence is something
+        # to ask for, not the default. With no line in the prompt and nothing
+        # saying the shot is silent, the model invents dialogue and hands it
+        # to whoever it thinks the focus is.
+        silent = not (shot.get("dialogue") or "").strip()
+        silence_note = (
+            " No one speaks in this shot — no dialogue, no voice-over, mouths closed, "
+            "ambient sound only."
+            if silent else ""
+        )
         if name:
             who = f"{name} ({position})" if position else name
             focus = f"{who} is the focus of this shot"
-            if shot.get("dialogue"):
+            if not silent:
                 focus += f" and is the one speaking — the line is {name}'s, not another character's"
-            parts.append(f"{lead} — {focus}. {shot_text}")
+            parts.append(f"{lead} — {focus}. {shot_text}{silence_note}")
         else:
-            parts.append(f"{lead} — {shot_text}")
+            parts.append(f"{lead} — {shot_text}{silence_note}")
 
     parts.append(
         "Consistent character appearance throughout, faces matching the opening frame exactly. "
@@ -741,7 +758,19 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
                 "Could not fetch %s's portrait for the composite anchor — that identity will "
                 "not be anchored", getattr(variant, "name", "?"), exc_info=True,
             )
-    anchor = ltx25_workflow.build_composite_anchor(anchor_images)
+    # The Location's own art, behind the cast, in the video's first frame.
+    # Without it the anchor's backdrop is a flat neutral — better than the
+    # portraits' white studio, but a real backdrop puts the opening shot in
+    # the scene instead of leaving the model to establish it after frame 1.
+    backdrop = None
+    backdrop_url = getattr(background, "image_url", None) if background is not None else None
+    if backdrop_url:
+        try:
+            backdrop = httpx.get(backdrop_url, timeout=30).content
+        except Exception:
+            logger.warning("Could not fetch the location backdrop for the anchor", exc_info=True)
+
+    anchor = ltx25_workflow.build_composite_anchor(anchor_images, backdrop_bytes=backdrop)
 
     prompt = build_ltx25_scene_prompt(script, variants, background=background)
     workflow = ltx25_workflow.build_workflow(prompt, total_duration)
