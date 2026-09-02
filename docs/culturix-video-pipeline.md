@@ -299,6 +299,19 @@ a portrait, Step 2 shows an explicit ready/not-ready card, and the Kling +
 Expressions + LoRA controls are collapsed behind an "Advanced" disclosure
 (kept, because they remain correct and required for the Kling Omni path).
 
+### Frontend deploys separately from the backend
+`culturix-web` deploys to **Vercel** (`culturix-web/vercel.json`); Railway
+runs only the FastAPI backend. A push that changes both lands in two places
+at different times, so a backend change can be live while the UI still shows
+old behaviour.
+
+**There is no catch-all API proxy.** Every backend endpoint needs its own
+`culturix-web/src/app/api/.../route.ts`, going through `internalApiHeaders()`
+(the backend 403s unauthenticated calls). Adding a backend route and a
+component that calls it is only two thirds of the job — omitting the proxy
+route is what made `/api/culturetoons/config` 404 and silently revert the
+whole 2.5 UX for three deploys.
+
 > ⚠️ **Latent trap:** all three components fall back to the **pre-2.5 layout**
 > when that config fetch fails. The endpoint returns **403 when called
 > directly** — it only succeeds through the authenticated frontend proxy — so
