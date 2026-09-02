@@ -122,11 +122,28 @@ COPY deploy/runpod_serverless/extra_model_paths.yaml /comfyui/extra_model_paths.
 # chatterbox-tts's own dependency resolution silently changed one of those,
 # and --no-deps meant the "restore" step never put it back. Widened the
 # pattern to capture the whole CUDA/torch stack, not just torch itself.
+# Build-time guard for the CUDA/NCCL ABI break below. Deliberately fails
+# the build ONLY on an "undefined symbol" ImportError — the exact signature
+# of the mismatched-NCCL bug that crash-looped every worker. A plain
+# CUDA-libs-unavailable failure is expected on a GPU-less CI runner (and
+# 5.10.0-base drops /usr/local/nvidia/lib64 from LD_LIBRARY_PATH, unlike
+# 5.8.6), so that case warns instead of failing the build.
+RUN printf '%s\n' \
+    'import sys' \
+    'try:' \
+    '    import torch' \
+    '    print("torch import OK:", torch.__version__, torch.version.cuda)' \
+    'except Exception as exc:' \
+    '    msg = str(exc)' \
+    '    print("torch import failed:", type(exc).__name__, msg)' \
+    '    sys.exit(1 if "undefined symbol" in msg else 0)' \
+    > /tmp/check_torch.py
+
 RUN pip freeze | grep -iE '^(torch|nvidia-|triton)' > /tmp/pinned-torch.txt \
     && cat /tmp/pinned-torch.txt \
     && pip install chatterbox-tts \
     && pip install --no-deps --force-reinstall -r /tmp/pinned-torch.txt \
-    && python -c "import torch; print('torch import OK:', torch.__version__, torch.version.cuda)"
+    && python /tmp/check_torch.py
 # The above `import torch` is a build-time guard, not a GPU check (no GPU
 # is present during a normal Docker build, so torch.cuda.is_available()
 # can't be tested here) — but it's enough to catch this exact bug: the
