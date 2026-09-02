@@ -9,7 +9,7 @@
     "class_type": "SaveVideo",
     "inputs": {
       "video": [
-        "398",
+        "370",
         0
       ],
       "filename_prefix": "video/LTX-2.5_i2v"
@@ -26,10 +26,7 @@
   "393": {
     "class_type": "CLIPLoader",
     "inputs": {
-      "clip_name": [
-        "-10",
-        13
-      ],
+      "clip_name": "gemma4_e2b_it_int8_convrot.safetensors",
       "type": "ltxv",
       "device": "default"
     }
@@ -57,10 +54,7 @@
   "383": {
     "class_type": "PrimitiveBoolean",
     "inputs": {
-      "value": [
-        "-10",
-        2
-      ]
+      "value": false
     }
   },
   "364": {
@@ -79,10 +73,7 @@
   "376": {
     "class_type": "PrimitiveStringMultiline",
     "inputs": {
-      "value": [
-        "-10",
-        1
-      ]
+      "value": "Use the provided start image as the first frame. The cybernetic figure slowly turns his head to the right, his glowing blue eyes scanning the horizon, mechanical joints in his neck whirring faintly. The camera follows his gaze, panning across the rooftop to reveal the city beyond: a river of light winding between dark towers, a flying vehicle gliding past between the buildings, its lights streaking. He watches it pass, then his eyes narrow slightly. The camera settles on his profile against the city glow, distant hover traffic humming, wind gusting across the rooftop. No text, no black frames."
     }
   },
   "382": {
@@ -105,20 +96,14 @@
   "384": {
     "class_type": "UNETLoader",
     "inputs": {
-      "unet_name": [
-        "-10",
-        8
-      ],
+      "unet_name": "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
       "weight_dtype": "default"
     }
   },
   "362": {
     "class_type": "PrimitiveInt",
     "inputs": {
-      "value": [
-        "-10",
-        3
-      ]
+      "value": 5
     }
   },
   "363": {
@@ -147,27 +132,21 @@
   "385": {
     "class_type": "VAELoader",
     "inputs": {
-      "vae_name": [
-        "-10",
-        9
-      ]
+      "vae_name": "ltx-2.5-video-vae-bf16.safetensors"
     }
   },
   "386": {
     "class_type": "VAELoader",
     "inputs": {
-      "vae_name": [
-        "-10",
-        10
-      ]
+      "vae_name": "ltx-2.5-audio-vae-bf16.safetensors"
     }
   },
   "372": {
     "class_type": "PrimitiveInt",
     "inputs": {
       "value": [
-        "-10",
-        4
+        "403",
+        0
       ]
     }
   },
@@ -184,10 +163,7 @@
   "387": {
     "class_type": "CLIPLoader",
     "inputs": {
-      "clip_name": [
-        "-10",
-        11
-      ],
+      "clip_name": "gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
       "type": "ltxv",
       "device": "default"
     }
@@ -196,8 +172,8 @@
     "class_type": "PrimitiveInt",
     "inputs": {
       "value": [
-        "-10",
-        5
+        "403",
+        1
       ]
     }
   },
@@ -210,10 +186,7 @@
   "339": {
     "class_type": "RandomNoise",
     "inputs": {
-      "noise_seed": [
-        "-10",
-        6
-      ]
+      "noise_seed": 875362541677469
     }
   },
   "397": {
@@ -225,19 +198,13 @@
   "361": {
     "class_type": "PrimitiveInt",
     "inputs": {
-      "value": [
-        "-10",
-        7
-      ]
+      "value": 24
     }
   },
   "371": {
     "class_type": "LatentUpscaleModelLoader",
     "inputs": {
-      "model_name": [
-        "-10",
-        12
-      ]
+      "model_name": "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
     }
   },
   "388": {
@@ -350,7 +317,7 @@
     "class_type": "ResizeImageMaskNode",
     "inputs": {
       "input": [
-        "-10",
+        "395",
         0
       ],
       "scale_method": "scale longer dimension"

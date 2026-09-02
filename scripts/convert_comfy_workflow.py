@@ -87,6 +87,10 @@ def _ordered_input_names(class_schema: dict) -> list:
     return names
 
 
+_BOUNDARY_ORIGIN = -10  # ComfyUI's marker for "comes from the subgraph's own input"
+_BOUNDARY_OUTPUT = -20  # ...and for "goes to the subgraph's own output"
+
+
 def _collect_nodes(workflow: dict) -> tuple:
     """Returns (nodes, links). Flattens a single top-level subgraph when the
     template wraps its real graph in one (the LTX-2.5 templates do)."""
@@ -99,17 +103,138 @@ def _collect_nodes(workflow: dict) -> tuple:
     return nodes, links
 
 
+def _boundary_values(workflow: dict) -> dict:
+    """Resolves each subgraph input slot to a concrete value or upstream link.
+
+    The LTX-2.5 templates put the real graph inside a subgraph and drive it
+    from a wrapper node in the outer graph. Inside the subgraph, links from
+    the boundary carry `origin_id: -10` and an `origin_slot` indexing the
+    subgraph's declared `inputs` (first_frame, prompt, duration, width,
+    height, ...). Without resolving these, every driveable input — the
+    prompt and the reference image included — is a dangling reference to a
+    node that doesn't exist in the flattened output.
+
+    Each wrapper input either carries a `link` (wired in the outer graph,
+    e.g. first_frame <- LoadImage) or a `widget` (a literal in the wrapper's
+    own widgets_values). Widget entries consume widgets_values positionally,
+    so only they advance that counter.
+
+    Returns {slot_index: ("link", [node_id, slot]) | ("value", literal)}.
+    """
+    subgraphs = ((workflow.get("definitions") or {}).get("subgraphs")) or []
+    if not subgraphs:
+        return {}
+    subgraph_ids = {s.get("id") for s in subgraphs}
+
+    outer_links = {}
+    for link in workflow.get("links") or []:
+        if isinstance(link, dict):
+            outer_links[link.get("id")] = [str(link.get("origin_id")), link.get("origin_slot", 0)]
+        elif isinstance(link, (list, tuple)) and len(link) >= 3:
+            outer_links[link[0]] = [str(link[1]), link[2]]
+
+    by_id = {s.get("id"): s for s in subgraphs}
+
+    resolved = {}
+    for node in workflow.get("nodes") or []:
+        sub = by_id.get(node.get("type"))
+        if sub is None:
+            continue
+        widget_values = node.get("widgets_values") or []
+        # Index by the SUBGRAPH's declared inputs, not the wrapper node's
+        # own `inputs` array. Links inside the subgraph use origin_slot to
+        # index the former, and the two differ: the i2v template declares
+        # 14 subgraph inputs but the wrapper lists only 11 (widget-only
+        # ones like noise_seed/unet_name/clip_name have no wrapper entry).
+        # Walking the wrapper shifted every model filename by several slots
+        # — ComfyUI rejected the graph with the transformer filename in
+        # vae_name and a seed integer in unet_name.
+        wrapper_links = {}
+        for slot in node.get("inputs") or []:
+            label = slot.get("label") or slot.get("name")
+            if label and slot.get("link") is not None:
+                wrapper_links[label] = slot["link"]
+
+        widget_i = 0
+        for slot_i, decl in enumerate(sub.get("inputs") or []):
+            label = decl.get("label") or decl.get("name")
+            type_spec = decl.get("type") or ""
+            is_widget = type_spec == "COMBO" or any(
+                part.strip() in _PRIMITIVE_TYPES for part in str(type_spec).split(",")
+            )
+            link_id = wrapper_links.get(label)
+            if link_id is not None and link_id in outer_links:
+                # Explicitly wired in the outer graph (e.g. width/height from
+                # ResolutionSelector) — the link wins over the stale widget
+                # value, but the widget slot is still consumed.
+                resolved[slot_i] = ("link", outer_links[link_id])
+            elif is_widget and widget_i < len(widget_values):
+                resolved[slot_i] = ("value", widget_values[widget_i])
+            if is_widget:
+                widget_i += 1
+    return resolved
+
+
+def _boundary_outputs(workflow: dict) -> dict:
+    """Maps each subgraph OUTPUT slot to the internal node that produces it.
+
+    Inside the subgraph, a link to the boundary carries `target_id: -20`
+    and a `target_slot` indexing the subgraph's declared `outputs`. The
+    outer graph consumes those via the wrapper node (e.g. SaveVideo <-
+    subgraph VIDEO). Since the wrapper itself is dropped when flattening,
+    those consumers must be redirected to the real producer or they dangle.
+
+    Returns {output_slot: [node_id, slot]}.
+    """
+    resolved = {}
+    for sub in ((workflow.get("definitions") or {}).get("subgraphs")) or []:
+        for link in sub.get("links") or []:
+            if not isinstance(link, dict):
+                continue
+            if link.get("target_id") == _BOUNDARY_OUTPUT:
+                resolved[link.get("target_slot", 0)] = [
+                    str(link.get("origin_id")), link.get("origin_slot", 0)
+                ]
+    return resolved
+
+
 def convert(workflow: dict, object_info: dict) -> dict:
     nodes, links = _collect_nodes(workflow)
 
     # link id -> (origin_node_id, origin_slot). UI links are
     # [link_id, origin_node, origin_slot, target_node, target_slot, type].
-    link_sources: dict[Any, list] = {}
+    boundary = _boundary_values(workflow)
+    boundary_outputs = _boundary_outputs(workflow)
+    subgraph_instance_ids = {
+        str(n.get('id')) for n in (workflow.get('nodes') or [])
+        if n.get('type') in {s.get('id') for s in ((workflow.get('definitions') or {}).get('subgraphs')) or []}
+    }
+
+    # link id -> ("link", [origin_node_id, origin_slot]) | ("value", literal)
+    link_sources: dict[Any, tuple] = {}
     for link in links:
         if isinstance(link, dict):
-            link_sources[link.get("id")] = [str(link.get("origin_id")), link.get("origin_slot", 0)]
+            lid, origin, slot = link.get("id"), link.get("origin_id"), link.get("origin_slot", 0)
         elif isinstance(link, (list, tuple)) and len(link) >= 3:
-            link_sources[link[0]] = [str(link[1]), link[2]]
+            lid, origin, slot = link[0], link[1], link[2]
+        else:
+            continue
+        if str(origin) in subgraph_instance_ids:
+            # An outer-graph node consuming the SUBGRAPH's output (e.g.
+            # SaveVideo <- the subgraph's VIDEO). Redirect it to the
+            # internal node that actually produces that output, otherwise
+            # it dangles at the dropped wrapper node.
+            if slot in boundary_outputs:
+                link_sources[lid] = ("link", boundary_outputs[slot])
+            continue
+        if origin == _BOUNDARY_ORIGIN:
+            # Comes from the subgraph's own input — substitute whatever the
+            # wrapper node supplies for that slot, else drop it so the
+            # dangling reference doesn't reach the graph.
+            if slot in boundary:
+                link_sources[lid] = boundary[slot]
+            continue
+        link_sources[lid] = ("link", [str(origin), slot])
 
     api: dict[str, dict] = {}
     skipped: list[str] = []
@@ -130,7 +255,10 @@ def convert(workflow: dict, object_info: dict) -> dict:
         for slot in node.get("inputs") or []:
             name, link_id = slot.get("name"), slot.get("link")
             if name and link_id is not None and link_id in link_sources:
-                inputs[name] = link_sources[link_id]
+                kind, payload = link_sources[link_id]
+                # A boundary-resolved literal becomes a plain input value;
+                # a real link stays a [node_id, slot] reference.
+                inputs[name] = payload
 
         # 2) widget values, positionally against the schema's widget inputs.
         #
