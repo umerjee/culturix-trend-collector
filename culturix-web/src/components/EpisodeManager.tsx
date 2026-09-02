@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Plus, Loader2, ExternalLink, Clapperboard, ArrowUp, ArrowDown, X, Scissors, Sparkles, Film, RefreshCw, Trash2, Clapperboard as StoryboardIcon, ChevronDown, ChevronUp } from "lucide-react";
 import type { Toon, ToonEpisode, ToonScene, ToonShot, CharacterVariant, ToonScript, ToonBackground } from "@/lib/types";
+import { TONE_OPTIONS } from "@/lib/types";
 
 interface Props {
   brandId: string;
@@ -860,7 +861,7 @@ export default function EpisodeManager({ brandId, initialEpisodes, toons, setToo
                                   onChange={(e) => setStoryboardTone((prev) => ({ ...prev, [scene.id]: e.target.value }))}
                                   className="rounded-lg border border-gray-200 px-2 py-1 text-[11px]"
                                 >
-                                  {["funny", "dramatic", "satiric", "sad", "wholesome", "chaotic", "deadpan"].map((t) => (
+                                  {TONE_OPTIONS.map((t) => (
                                     <option key={t} value={t}>{t}</option>
                                   ))}
                                 </select>

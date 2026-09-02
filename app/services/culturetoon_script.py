@@ -40,7 +40,24 @@ EXPRESSION_NAMES = [
     "Side-eye", "Crying", "Annoyed", "Smiling", "Deadpan",
 ]
 
-TONE_OPTIONS = ["funny", "dramatic", "satiric", "sad", "wholesome", "chaotic", "deadpan"]
+TONE_OPTIONS = [
+    "funny", "dramatic", "satiric", "sad", "wholesome", "chaotic", "deadpan",
+    # Informative registers, for brands whose content teaches rather than
+    # jokes (explainers, tutorials, analysis). See INFORMATIVE_TONES.
+    "educational", "explainer", "informative", "inspirational",
+]
+
+# Tones whose job is to make the viewer UNDERSTAND something, not to land a
+# joke. Everything downstream that assumes comedy has to branch on this: the
+# writer's craft directives, its worked example, and the judge's rubric.
+# Adding an "educational" option without this would produce comedy skits
+# wearing an educational label, then have a comedy critic fail them for not
+# being funny — the option would look supported while being unusable.
+INFORMATIVE_TONES = {"educational", "explainer", "informative", "inspirational"}
+
+
+def is_informative_tone(tone: Optional[str]) -> bool:
+    return (tone or "").strip().lower() in INFORMATIVE_TONES
 
 # Public (no leading underscore) — app/routers/culturetoons.py validates
 # user-supplied num_shots/target_duration_seconds against these before
@@ -403,20 +420,72 @@ Output the REVISED version of this exact script, addressing only what the critic
     )
     speaker_key = ", speaker_name (string or null)" if len(variants) > 1 else ""
 
-    return f"""You are a scriptwriter for short character-based comedy skits for
-social video, grounded in the {source_type} below. The tone must be: {tone}.
+    # An informative tone rewrites the writer's whole job: the goal is that
+    # the viewer understands something afterwards, so "escalate the absurdity"
+    # is actively wrong direction. Only the craft guidance and the worked
+    # example swap — the cast, culture, camera and schema rules are the same
+    # either way, and duplicating them would let the two drift apart.
+    informative = is_informative_tone(tone)
+    if informative:
+        role_line = (
+            "You are a scriptwriter for short character-based EXPLAINER videos for social "
+            "video, grounded in the {source} below. The tone must be: {tone}.\n\n"
+            "Your goal is that the viewer UNDERSTANDS the subject by the end. The characters "
+            "are the teachers — their personalities make it engaging, but the explanation is "
+            "the point, not the jokes."
+        ).format(source=source_type, tone=tone)
+        length_clause = "if it better serves the explanation"
+        craft_block = f"""Teaching craft — what separates a real explainer from vague content that sounds
+informative but teaches nothing:
+- ONE clear takeaway. Decide the single thing the viewer should be able to repeat afterwards,
+  and build every shot toward it. An explainer that covers five things teaches none of them.
+- CONCRETE over abstract. Never write the vague version ("AI is changing everything") — write
+  the specific, checkable version with real numbers, names and mechanisms ("this model reads
+  your last 50 messages, so it answers in your own phrasing").
+- BUILD, don't list. Each shot should depend on the one before it: state the problem, then the
+  mechanism, then the consequence. A sequence of unconnected facts is a list, not an explainer.
+- ANALOGY for the hard part. The one genuinely difficult idea gets a physical, visual
+  comparison the viewer already understands — that is what makes it stick.
+- Use the cast to carry the structure: one character can hold the naive question the viewer is
+  actually thinking, another the answer. Their personalities and cultures stay intact — a
+  character who is blunt explains bluntly.
+- Accuracy is a hard requirement. Do not invent statistics, studies or quotes. If you don't
+  know a real number, describe the mechanism instead of fabricating a figure.
 
-{context}
-{cast_line}
-{relationship_line}
-{memory_line}
-{culture_line}
-{performance_line}
-{critique_line}
-Aim for around {num_shots} shots totaling about {target_duration_seconds} seconds, though you
-may adjust within the hard limits below if it better serves the joke.
+Concrete example of the gap between a WEAK draft and what you should actually write —
+same premise (explaining why AI models hallucinate), same length:
 
-Comedy craft — the single biggest thing separating a flat skit from a genuinely funny one:
+WEAK (reject this level — abstract, unconnected, teaches nothing):
+  Shot 1, Zara: "AI is really powerful these days, but it has problems."
+  Shot 2, Blix: "Yes, sometimes it gives wrong answers. That's called hallucination."
+  Shot 3, Zara: "Interesting! So we should always check what it says."
+  Shot 4: They nod thoughtfully.
+
+STRONG (this is the bar):
+  Shot 1, Zara (visual: holding a phone showing a confident, completely fake book citation;
+  delivery: Baffled): "It just invented a book. Title, author, page number — the whole thing.
+  Why does it LIE so confidently?"
+  Shot 2, Blix (visual: at a whiteboard, drawing a sentence with the last word missing;
+  delivery: Calm & Precise): "It isn't lying. It was never storing facts — it only ever learned
+  to predict the next most likely word."
+  Shot 3, Blix (visual: fills the blank with a plausible but wrong word, circles it;
+  delivery: Building): "A fake citation LOOKS exactly like a real one. Same shape, same
+  rhythm. So the most likely next word is a citation that doesn't exist."
+  Shot 4, Zara (visual: lowers the phone, the realisation landing; delivery: Dawning): "So it's
+  not recalling. It's autocompleting — and a confident wrong answer scores the same as a right
+  one."
+
+The difference: the strong version names ONE mechanism (next-word prediction), gives it a
+visual the viewer can hold (the fill-in-the-blank on the whiteboard), and each shot depends on
+the shot before it. The viewer can repeat the explanation afterwards. Match THIS level of
+concreteness and structure on every shot."""
+    else:
+        role_line = (
+            "You are a scriptwriter for short character-based comedy skits for "
+            f"social video, grounded in the {source_type} below. The tone must be: {tone}."
+        )
+        length_clause = "if it better serves the joke"
+        craft_block = """Comedy craft — the single biggest thing separating a flat skit from a genuinely funny one:
 - SPECIFICITY over generality. Never write a generic statement a real person might mildly
   say ("we celebrate with a big feast") — write the hyper-specific, concrete version instead
   (named props, exact numbers, absurd particulars: "a 500-person feast, 4 days of Bollywood
@@ -462,7 +531,21 @@ The difference isn't just wording — the strong version has real numbers (500-p
 each beat is bigger/weirder than the last, and Hans's bureaucratic deadpan is pushed to a
 genuinely absurd extreme instead of a throwaway "we sleep" aside. Match THIS level of
 specificity and commitment, not the weak version, on every shot you write — regardless of
-premise.
+premise."""
+
+    return f"""{role_line}
+
+{context}
+{cast_line}
+{relationship_line}
+{memory_line}
+{culture_line}
+{performance_line}
+{critique_line}
+Aim for around {num_shots} shots totaling about {target_duration_seconds} seconds, though you
+may adjust within the hard limits below {length_clause}.
+
+{craft_block}
 
 Camera — the writer also directs the shot, don't leave this to chance: vary shot_type
 meaningfully across the sequence rather than defaulting to the same medium/talking-head shot
@@ -743,6 +826,34 @@ def _format_script_for_prompt(script_result: dict) -> str:
 
 def _build_judge_prompt(script_result: dict) -> str:
     script_text = _format_script_for_prompt(script_result)
+
+    # An explainer judged by a comedy critic fails for not being funny, which
+    # is both wrong and unactionable — the writer was never asked for jokes.
+    # The rubric has to follow the tone the script was actually written to.
+    if is_informative_tone(script_result.get("tone")):
+        return f"""You are a blunt, strict editor reviewing a short explainer script before it
+gets turned into video. Score it honestly — most first drafts sound informative while teaching
+nothing, and should NOT pass. A passing score is reserved for scripts a viewer could actually
+repeat the explanation from afterwards.
+
+{script_text}
+
+Score against these specific criteria (the exact bar the writer was given):
+- CLARITY: one clear takeaway the viewer can repeat, not five half-covered points.
+- CONCRETENESS: real mechanisms, numbers and names, not abstract claims like "AI is changing
+  everything".
+- STRUCTURE: each shot builds on the one before it (problem, mechanism, consequence) rather
+  than listing unconnected facts.
+- ACCURACY: nothing invented. Penalise fabricated-sounding statistics, studies or quotes
+  heavily, and say so in the feedback.
+
+Return ONLY valid JSON with exactly these keys:
+- comedy_score: integer 0-100 (here it scores the EXPLANATION's quality, not humour)
+- passes_bar: boolean (true only if it genuinely teaches something specific)
+- feedback: string, 1-3 sentences of SPECIFIC actionable critique — name the exact line that's
+  too vague or unsupported and say what to replace it with, don't just say "be clearer"
+
+Return ONLY the JSON object, no other text."""
 
     return f"""You are a blunt, strict comedy critic reviewing a short skit script before it
 gets turned into video. Score it honestly — most first drafts are too safe and should NOT

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check, Target, Pencil, Trash2, Film, AlertTriangle, CheckCircle2, Camera, MessageSquarePlus } from "lucide-react";
 import type { ToonScript, ToonScriptShot, CharacterVariant, ToonBackground } from "@/lib/types";
-import { TONE_OPTIONS, MAX_CHARACTERS_PER_VIDEO, ART_STYLES, EXPRESSION_NAMES, SHOT_TYPES, CAMERA_MOVEMENTS } from "@/lib/types";
+import { TONE_OPTIONS, INFORMATIVE_TONES, MAX_CHARACTERS_PER_VIDEO, ART_STYLES, EXPRESSION_NAMES, SHOT_TYPES, CAMERA_MOVEMENTS } from "@/lib/types";
 
 // Backgrounds pick their own rendering style independently of the
 // character's art_style — a background is composited separately at
@@ -219,6 +219,32 @@ function SceneEnvironment({
       {error && <p className="text-[10px] text-red-500 mt-1">{error}</p>}
     </div>
   );
+}
+
+/** Comedy tones and explainer tones are different KINDS of thing, not points
+ *  on one scale — the first picks a mood, the second changes what the writer
+ *  and the script judge are even trying to do. Grouping says so, instead of
+ *  leaving "Educational" reading as a mood between Deadpan and Inspirational. */
+function ToneOptions() {
+  const informative = TONE_OPTIONS.filter((t) => INFORMATIVE_TONES.includes(t));
+  const comedic = TONE_OPTIONS.filter((t) => !INFORMATIVE_TONES.includes(t));
+  return (
+    <>
+      <optgroup label="Skit — character comedy">
+        {comedic.map((t) => <option key={t} value={t} className="capitalize">{t}</option>)}
+      </optgroup>
+      <optgroup label="Explainer — teaches the viewer">
+        {informative.map((t) => <option key={t} value={t} className="capitalize">{t}</option>)}
+      </optgroup>
+    </>
+  );
+}
+
+/** The judgment column is named comedy_* in the DB for history, but an
+ *  explainer is scored on clarity and accuracy — calling that a "comedy
+ *  check" would read as the wrong rubric having been applied. */
+function judgmentLabel(s: ToonScript): string {
+  return INFORMATIVE_TONES.includes(s.tone ?? "") ? "Explainer check" : "Comedy check";
 }
 
 function scriptHasScene(s: ToonScript): boolean {
@@ -814,9 +840,7 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
               onChange={(e) => setIdeaTone(e.target.value as (typeof TONE_OPTIONS)[number])}
               className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs capitalize"
             >
-              {TONE_OPTIONS.map((t) => (
-                <option key={t} value={t} className="capitalize">{t}</option>
-              ))}
+              <ToneOptions />
             </select>
             <select
               value={ideaLengthKey}
@@ -926,9 +950,7 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
             onChange={(e) => setTone(e.target.value as (typeof TONE_OPTIONS)[number])}
             className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs capitalize"
           >
-            {TONE_OPTIONS.map((t) => (
-              <option key={t} value={t} className="capitalize">{t}</option>
-            ))}
+            <ToneOptions />
           </select>
           <select
             value={lengthKey}
@@ -1145,7 +1167,7 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                   <AlertTriangle className="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" />
                   <div className="flex-1">
                     <p className="text-xs text-amber-700">
-                      Comedy check: {s.comedy_judgment.comedy_score}/100 — {s.comedy_judgment.feedback}
+                      {judgmentLabel(s)}: {s.comedy_judgment.comedy_score}/100 — {s.comedy_judgment.feedback}
                     </p>
                     <button
                       onClick={() => regenerateScript(s.id)}
@@ -1159,7 +1181,7 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
               )}
               {s.comedy_judgment && !s.comedy_judgment.judge_failed && s.comedy_judgment.passes_bar === true && (
                 <p className="flex items-center gap-1 text-[11px] text-emerald-600 mb-2">
-                  <CheckCircle2 className="h-3 w-3" /> Comedy check: {s.comedy_judgment.comedy_score}/100 — passes the bar
+                  <CheckCircle2 className="h-3 w-3" /> {judgmentLabel(s)}: {s.comedy_judgment.comedy_score}/100 — passes the bar
                 </p>
               )}
               {s.generation_source === "ai_auto" && s.status === "draft" && (

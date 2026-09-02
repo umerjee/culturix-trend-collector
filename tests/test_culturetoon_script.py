@@ -755,3 +755,67 @@ class TestEnvironmentService:
                               shots=[{"shot_number": 1, "lighting": "L", "blocking": "B"},
                                      {"shot_number": 2, "lighting": "L"}])
         assert needs_environment(script) is True
+
+
+class TestInformativeTones:
+    """Adding an explainer tone is only real if the writer and the judge both
+    stop assuming comedy — otherwise it produces comedy skits that a comedy
+    critic then fails for not being funny."""
+
+    def test_educational_switches_the_writer_to_teaching_craft(self, mocker):
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="How LLMs work", summary="Y")
+        v = mocker.Mock(); v.name = "Blix"; v.description = "precise"; v.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(cluster, variants=[v], tone="educational")
+
+        prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "EXPLAINER" in prompt
+        assert "Teaching craft" in prompt
+        assert "Do not invent statistics" in prompt
+        # The comedy directives must be GONE, not merely accompanied.
+        assert "Comedy craft" not in prompt
+        assert "ESCALATE, don't parallel" not in prompt
+        assert "COMMIT to the bit" not in prompt
+
+    def test_funny_still_gets_comedy_craft(self, mocker):
+        from app.models.cluster import Cluster
+        cluster = Cluster(label=1, theme="X", summary="Y")
+        v = mocker.Mock(); v.name = "Kumar"; v.description = "loud"; v.culture_tag = None
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(cluster, variants=[v], tone="funny")
+
+        prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "Comedy craft" in prompt
+        assert "Teaching craft" not in prompt
+
+    def test_judge_scores_explainers_on_clarity_not_humour(self, mocker):
+        from app.services.culturetoon_script import _build_judge_prompt
+        prompt = _build_judge_prompt({"hook_line": "H", "tone": "educational", "shots": _VALID_SHOTS})
+        assert "explainer script" in prompt
+        assert "CLARITY" in prompt
+        assert "ACCURACY" in prompt
+        assert "comedy critic" not in prompt
+
+    def test_judge_still_uses_the_comedy_rubric_for_skits(self, mocker):
+        from app.services.culturetoon_script import _build_judge_prompt
+        prompt = _build_judge_prompt({"hook_line": "H", "tone": "funny", "shots": _VALID_SHOTS})
+        assert "comedy critic" in prompt
+        assert "ESCALATION" in prompt
+
+    def test_missing_tone_defaults_to_the_comedy_rubric(self):
+        from app.services.culturetoon_script import _build_judge_prompt
+        assert "comedy critic" in _build_judge_prompt({"hook_line": "H", "shots": []})
+
+    def test_is_informative_tone_is_case_insensitive(self):
+        from app.services.culturetoon_script import is_informative_tone
+        assert is_informative_tone("Educational") is True
+        assert is_informative_tone("funny") is False
+        assert is_informative_tone(None) is False
+
+    def test_new_tones_are_accepted_by_the_router_validation_list(self):
+        from app.services.culturetoon_script import TONE_OPTIONS
+        for t in ("educational", "explainer", "informative", "inspirational"):
+            assert t in TONE_OPTIONS

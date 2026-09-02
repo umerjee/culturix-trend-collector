@@ -702,7 +702,21 @@ export interface ToonBackground {
   updated_at: string | null;
 }
 
-export const TONE_OPTIONS = ["funny", "dramatic", "satiric", "sad", "wholesome", "chaotic", "deadpan"] as const;
+// Mirrors TONE_OPTIONS in app/services/culturetoon_script.py. The last four
+// are informative registers (INFORMATIVE_TONES there): they switch the writer
+// from comedy craft to teaching craft, and switch the judge from a comedy
+// critic to an editor scoring clarity and accuracy. Adding a tone here that
+// the backend does not know about would be rejected as invalid.
+export const TONE_OPTIONS = [
+  "funny", "dramatic", "satiric", "sad", "wholesome", "chaotic", "deadpan",
+  "educational", "explainer", "informative", "inspirational",
+] as const;
+
+// Tones that produce explainers rather than skits — used to label the picker
+// so the two groups are not presented as interchangeable moods.
+export const INFORMATIVE_TONES: readonly string[] = [
+  "educational", "explainer", "informative", "inspirational",
+];
 
 export interface ToonScriptShot {
   shot_number: number;
