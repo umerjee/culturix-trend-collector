@@ -12,7 +12,15 @@
 # https://hub.docker.com/r/runpod/worker-comfyui/tags for the current
 # latest "-base" variant (clean ComfyUI install, no baked-in model weights,
 # since our models live on the Network Volume instead).
-FROM runpod/worker-comfyui:5.8.6-base
+# Bumped 5.8.6 -> 5.10.0 for LTX-2.5. Confirmed empirically against the
+# live endpoint (debug_object_info): 5.8.6 registers 31 of the 32 node
+# classes the official LTX-2.5 template uses -- including the whole native
+# audio path (LTXVConcatAVLatent / LTXVSeparateAVLatent /
+# LTXVAudioVAEDecode / LTXVEmptyLatentAudio) and LTXVMultiPromptProvider --
+# but NOT LTXVDualCFGGuider. Core DualCFGGuider and MultimodalGuider are
+# present, so this is a ComfyUI-core version gap rather than the base
+# lacking LTX-2.5 support wholesale.
+FROM runpod/worker-comfyui:5.10.0-base
 
 WORKDIR /comfyui
 
@@ -114,11 +122,52 @@ COPY deploy/runpod_serverless/extra_model_paths.yaml /comfyui/extra_model_paths.
 # chatterbox-tts's own dependency resolution silently changed one of those,
 # and --no-deps meant the "restore" step never put it back. Widened the
 # pattern to capture the whole CUDA/torch stack, not just torch itself.
+# Build-time guard for the CUDA/NCCL ABI break below. Deliberately fails
+# the build ONLY on an "undefined symbol" ImportError — the exact signature
+# of the mismatched-NCCL bug that crash-looped every worker. A plain
+# CUDA-libs-unavailable failure is expected on a GPU-less CI runner (and
+# 5.10.0-base drops /usr/local/nvidia/lib64 from LD_LIBRARY_PATH, unlike
+# 5.8.6), so that case warns instead of failing the build.
+RUN printf '%s\n' \
+    'import sys' \
+    'try:' \
+    '    import torch' \
+    '    print("torch import OK:", torch.__version__, torch.version.cuda)' \
+    'except Exception as exc:' \
+    '    msg = str(exc)' \
+    '    print("torch import failed:", type(exc).__name__, msg)' \
+    '    sys.exit(1 if "undefined symbol" in msg else 0)' \
+    > /tmp/check_torch.py
+
+# Confirmed from the real CI log 2026-09-02: on 5.10.0-base this step
+# failed with
+#   ERROR: Could not find a version that satisfies the requirement
+#   torch==2.11.0+cu128 (from versions: ..., 2.11.0, ...)
+# 5.10.0-base installs torch from PyTorch's own CUDA wheel index, so its
+# version carries a LOCAL VERSION IDENTIFIER (`+cu128`). pip freeze
+# captures that exact string, but the restore below resolves against
+# PyPI, which publishes 2.11.0 and no +cu128 variant. (5.8.6-base's torch
+# had no +cuXXX suffix, which is why this only broke on the bump.)
+#
+# Deliberately NOT "just strip the +cuXXX suffix": PyPI's plain torch is
+# the CPU build, so stripping would silently install a CPU torch over a
+# CUDA one — the same class of silent CUDA breakage this whole block
+# exists to prevent. Instead derive the CUDA tag from the pinned version
+# and restore from the matching PyTorch index, falling back to plain pip
+# when there's no suffix to derive.
 RUN pip freeze | grep -iE '^(torch|nvidia-|triton)' > /tmp/pinned-torch.txt \
     && cat /tmp/pinned-torch.txt \
     && pip install chatterbox-tts \
-    && pip install --no-deps --force-reinstall -r /tmp/pinned-torch.txt \
-    && python -c "import torch; print('torch import OK:', torch.__version__, torch.version.cuda)"
+    && CU_TAG="$(sed -n 's/^torch==.*+\(cu[0-9]\+\).*$/\1/p' /tmp/pinned-torch.txt | head -n1)" \
+    && if [ -n "$CU_TAG" ]; then \
+         echo "restoring torch stack from the PyTorch $CU_TAG index"; \
+         pip install --no-deps --force-reinstall -r /tmp/pinned-torch.txt \
+           --extra-index-url "https://download.pytorch.org/whl/$CU_TAG"; \
+       else \
+         echo "no +cuXXX local version found; restoring from the default index"; \
+         pip install --no-deps --force-reinstall -r /tmp/pinned-torch.txt; \
+       fi \
+    && python /tmp/check_torch.py
 # The above `import torch` is a build-time guard, not a GPU check (no GPU
 # is present during a normal Docker build, so torch.cuda.is_available()
 # can't be tested here) — but it's enough to catch this exact bug: the
