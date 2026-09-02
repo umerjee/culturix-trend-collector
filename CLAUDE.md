@@ -4,6 +4,28 @@
 
 This file replaces `IMPLEMENTATION.md` and `CONTENT_ENGINE_PLAN.md` as the source of truth — those two describe an earlier/aspirational design that has since diverged from what's actually built. Keep this file, not those.
 
+> ## ⚠️ VIDEO GENERATION: read `docs/culturix-video-pipeline.md` first
+>
+> The self-hosted video path moved to **LTX-2.5** on 2026-09-02 (behind
+> `LTX_MODEL_VERSION=2.5`). It generates **synchronized audio natively** and
+> needs **no character LoRAs** — identity comes from a composite first-frame
+> anchor built from the cast's portraits.
+>
+> `docs/culturix-video-pipeline.md` is **hand-maintained and must not be
+> deleted or overwritten by this file's scheduled regeneration.** It holds
+> the operational runbook, the environment variables, and — most importantly
+> — a *Recurring failure patterns* section covering bugs that have already
+> cost multiple days and recurred because nobody wrote them down:
+> generated-but-never-read fields, prompts inventing data the DB already has,
+> `verify_exists()` checking the same volume it just wrote to, running
+> workers not pulling rebuilt images, and the two RunPod Network Volumes
+> (`RUNPOD_NETWORK_VOLUME_ID` ≠ `RUNPOD_INFERENCE_NETWORK_VOLUME_ID`) that
+> silently diverged for three days.
+>
+> Anything in the section below describing per-shot LTX generation, Chatterbox
+> narration muxing, or LoRA-gated self-hosted video describes the **LTX-2.3**
+> path, which is now the fallback.
+
 ## 1. What Culturix actually is (verified against code, not docs)
 
 A content-intelligence platform: collects social trends, clusters them, generates personalized content ideas per user, lets Pro users generate voiceover/music/video for those ideas, and audits older ideas daily for staleness.
