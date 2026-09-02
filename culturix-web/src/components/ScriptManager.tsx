@@ -85,6 +85,63 @@ const ENRICH_SUGGESTIONS = [
   "Make the punchline land harder and cut the setup shorter.",
 ];
 
+/** The world the video renders in — always rendered, including when it is
+ *  empty.
+ *
+ *  Showing these fields only when populated meant a script with no setting
+ *  looked identical to one that simply didn't support settings, so there was
+ *  no way to tell a missing environment from a feature that didn't exist.
+ *  An absent environment is exactly the state worth surfacing: it is what
+ *  produces a bland, model-invented background.
+ *
+ *  It also names which source actually wins. A Location overrides the
+ *  script's setting in the video prompt (see culturetoon_selfhosted_video's
+ *  `if scene_setting and background is None`), so a script carrying a
+ *  carefully written setting AND a Location silently renders the Location. */
+function SceneEnvironment({ script, background }: { script: ToonScript; background?: ToonBackground | null }) {
+  const setting = (script.scene_direction ?? "").trim();
+  const shots = script.shots ?? [];
+  const withLighting = shots.filter((sh) => (sh.lighting ?? "").trim()).length;
+  const withBlocking = shots.filter((sh) => (sh.blocking ?? "").trim()).length;
+
+  return (
+    <div className="mt-2 rounded-lg border border-gray-100 bg-gray-50/70 px-2.5 py-2">
+      <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">Environment</p>
+
+      {background ? (
+        <>
+          <p className="text-xs text-gray-700">
+            <span className="text-gray-400">Location:</span> {background.name}
+          </p>
+          {setting && (
+            <p className="text-[10px] text-amber-600 mt-1">
+              The Location wins — this script&apos;s setting below is <strong>not</strong> sent to the
+              video. Remove the Location to use it instead.
+            </p>
+          )}
+          {setting && <p className="text-[11px] text-gray-400 mt-0.5 line-through">{setting}</p>}
+        </>
+      ) : setting ? (
+        <p className="text-xs text-gray-700">
+          <span className="text-gray-400">Setting:</span> {setting}
+        </p>
+      ) : (
+        <p className="text-xs text-amber-700">
+          No setting on this script — the video will invent its own background, which is what
+          makes it look bland. Enrich the script, or add one with ✏️.
+        </p>
+      )}
+
+      {shots.length > 0 && (
+        <p className="text-[10px] text-gray-400 mt-1.5">
+          Lighting on {withLighting}/{shots.length} shots · Blocking on {withBlocking}/{shots.length}
+          {withLighting === 0 && withBlocking === 0 && " — enrich to add cinematic detail"}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function scriptHasScene(s: ToonScript): boolean {
   if (s.scene_direction && s.scene_direction.trim()) return true;
   return !!s.shots?.some((shot) => shot.action?.trim());
@@ -1111,15 +1168,7 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                 <>
                   {s.hook_line && <p className="text-sm font-medium text-gray-900">&quot;{s.hook_line}&quot;</p>}
                   {s.dialogue && <p className="text-sm text-gray-600 mt-1">{s.dialogue}</p>}
-                  {/* Labelled rather than anonymous grey italic: this text is
-                      what the video renders the world from, so it needs to be
-                      recognisable as an editable lever, not decoration. */}
-                  {s.scene_direction && (
-                    <p className="text-xs text-gray-500 mt-1.5 rounded-md bg-gray-50 border border-gray-100 px-2 py-1.5">
-                      <span className="text-gray-400 uppercase tracking-wide text-[10px]">Setting</span>{" "}
-                      {s.scene_direction}
-                    </p>
-                  )}
+                  <SceneEnvironment script={s} background={bg} />
                   {s.shots && s.shots.length > 0 && (
                     <ol className="mt-2 space-y-2">
                       {s.shots.map((shot) => (
