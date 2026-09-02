@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Loader2, CheckCircle2, XCircle, Sparkles, ChevronDown, ChevronRight, Pencil, Trash2, Star } from "lucide-react";
+import { Plus, Loader2, CheckCircle2, XCircle, Sparkles, ChevronDown, ChevronRight, Pencil, Trash2, Star, AlertTriangle } from "lucide-react";
 import type { Character, CharacterVariant, VoiceProvider, CharacterPersonality } from "@/lib/types";
 import { buildPersonalitySummary } from "@/lib/personalitySummary";
 import CharacterImageBuilder from "@/components/CharacterImageBuilder";
@@ -270,6 +270,28 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
       setTraining(false);
     }
   }
+
+  // What this deployment's renderer actually requires. Under LTX-2.5 a
+  // character needs only a portrait — identity comes from a composite
+  // first-frame anchor — so Kling registration, the Expression catalogue
+  // (which existed as LoRA training data) and LoRA training are all
+  // unnecessary. Showing them as required steps sends users to do work that
+  // no longer affects anything.
+  const [videoConfig, setVideoConfig] = useState<{
+    video_model: string;
+    self_hosted_requires_lora: boolean;
+    native_audio: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/culturetoons/config")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setVideoConfig(d))
+      // Null config keeps the pre-2.5 layout, which is the safe fallback.
+      .catch(() => undefined);
+  }, []);
+
+  const legacySetup = videoConfig?.self_hosted_requires_lora ?? true;
 
   async function generateAllExpressions() {
     if (!selectedVariant) return;
@@ -713,17 +735,59 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
       {selectedCharacter && (
         <div className="rounded-2xl bg-white border border-gray-100 p-4">
           <h3 className="text-sm font-semibold text-gray-900 mb-1 flex items-center gap-1.5">
-            Step 2 · Expressions &amp; video readiness
-            {selectedVariant && <ElementStatusIcon status={selectedVariant.element_status} />}
+            {legacySetup ? "Step 2 · Expressions & video readiness" : "Step 2 · Video readiness"}
+            {legacySetup && selectedVariant && <ElementStatusIcon status={selectedVariant.element_status} />}
           </h3>
           <p className="text-xs text-gray-400 mb-3">
             {selectedVariant && selectedVariant.name !== selectedCharacter.name
               ? `Editing the "${selectedVariant.name}" variant instead of ${selectedCharacter.name}'s own identity — switch back in Step 3 below.`
-              : `${selectedCharacter.name}'s own expression catalogue and video registration — most characters only ever need this.`}
+              : legacySetup
+                ? `${selectedCharacter.name}'s own expression catalogue and video registration — most characters only ever need this.`
+                : `${selectedCharacter.name} only needs a portrait — that single image carries their identity into every video.`}
           </p>
+
+          {/* Under LTX-2.5 the portrait IS the readiness condition. Say so
+              plainly instead of leaving users to infer it from the absence
+              of the old registration/training controls. */}
+          {!legacySetup && selectedVariant && (
+            selectedVariant.image_url ? (
+              <div className="flex items-start gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2.5 mb-3">
+                <CheckCircle2 className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-xs font-medium text-emerald-800">
+                    {selectedVariant.name} is ready for video.
+                  </p>
+                  <p className="text-[11px] text-emerald-700 mt-0.5">
+                    Their portrait anchors their appearance, and their description drives how they
+                    sound — voice is generated with the video, so keep that description accurate.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-start gap-2 rounded-xl border border-amber-100 bg-amber-50 px-3 py-2.5 mb-3">
+                <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+                <p className="text-xs text-amber-700">
+                  {selectedVariant.name} has no portrait yet — generate or upload one in Step 1 above.
+                  That is the only thing needed before generating video.
+                </p>
+              </div>
+            )
+          )}
 
           {selectedVariant ? (
             <div className="space-y-4">
+              {/* Kling registration, the Expression catalogue and LoRA
+                  training are all pre-LTX-2.5 machinery. They still work and
+                  are still required for the Kling path, so they are kept —
+                  but collapsed and labelled optional rather than presented
+                  as blocking setup, which is what made users train models
+                  they did not need. */}
+              <details open={legacySetup} className="group">
+                <summary className={legacySetup ? "hidden" : "cursor-pointer list-none text-xs font-medium text-gray-500 hover:text-gray-700 flex items-center gap-1"}>
+                  <ChevronRight className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
+                  Advanced — Kling registration, expressions &amp; visual-identity training (not needed for {videoConfig?.video_model ?? "this renderer"})
+                </summary>
+                <div className="space-y-4 pt-3">
               <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs font-semibold text-gray-700">Kling character registration</span>
@@ -867,6 +931,9 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
                   </div>
                 )}
               </div>
+
+                </div>
+              </details>
 
               <MemoryManager key={`memory-${selectedVariant.id}`} brandId={brandId} variantId={selectedVariant.id} />
             </div>

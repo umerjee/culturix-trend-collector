@@ -58,6 +58,18 @@ export default function GettingStartedChecklist({ brandId, onNavigate }: Props) 
     setLoaded(true);
   }
 
+  // Whether this deployment still needs the pre-LTX-2.5 per-character
+  // setup. Under 2.5 a portrait is the only prerequisite, so telling users
+  // to register with Kling sends them to do work that changes nothing.
+  const [legacySetup, setLegacySetup] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/culturetoons/config")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setLegacySetup(!!d.self_hosted_requires_lora))
+      .catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     setLoaded(false);
     load();
@@ -70,11 +82,17 @@ export default function GettingStartedChecklist({ brandId, onNavigate }: Props) 
       hint: "A name and a generated portrait is enough to start.",
       done: characters.length > 0,
     },
-    {
-      label: "Register it for video", action: "characters",
-      hint: "One-time Kling registration per variant — required before any video can generate.",
-      done: variants.some((v) => v.element_status === "ready"),
-    },
+    legacySetup
+      ? {
+          label: "Register it for video", action: "characters" as Tab,
+          hint: "One-time Kling registration per variant — required before any video can generate.",
+          done: variants.some((v) => v.element_status === "ready"),
+        }
+      : {
+          label: "Give it a portrait", action: "characters" as Tab,
+          hint: "That single image carries the character's identity into every video — no registration or training needed.",
+          done: variants.some((v) => !!v.image_url),
+        },
     {
       label: "Create a script", action: "scripts",
       hint: "AI-suggest one from a trend/idea, or write one manually.",
