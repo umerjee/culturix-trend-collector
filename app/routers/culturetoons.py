@@ -563,6 +563,35 @@ def create_brand(body: dict):
         session.close()
 
 
+@router.get("/config")
+def get_video_config():
+    """What the frontend needs to know about the active video backend.
+
+    Exists because readiness is server-side policy, not something the UI can
+    infer from a variant's columns. Under LTX-2.5 a character needs only a
+    PORTRAIT — identity comes from a composite first-frame anchor — so
+    gating the Generate button on lora_status/element_status (as the UI did)
+    blocks generations the API would happily accept, and tells users to do
+    setup work that no longer applies.
+
+    Deliberately unauthenticated and brand-independent: it exposes no user
+    data, only which renderer this deployment is running.
+    """
+    from app.services.culturetoon_selfhosted_video import use_ltx25
+
+    ltx25 = use_ltx25()
+    return {
+        "video_model": "ltx-2.5" if ltx25 else "ltx-2.3",
+        # Under 2.5 neither a trained LoRA nor a Kling element is required to
+        # use the self-hosted path.
+        "self_hosted_requires_lora": not ltx25,
+        "self_hosted_requires_portrait": True,
+        # 2.5 generates synchronized audio in the same pass as the video, so
+        # there is no separate voice/TTS selection to make.
+        "native_audio": ltx25,
+    }
+
+
 @router.get("/brands")
 def list_brands(user_id: str, active_only: bool = True):
     from app.db import SessionLocal

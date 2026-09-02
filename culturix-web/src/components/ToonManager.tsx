@@ -56,6 +56,25 @@ export default function ToonManager({ brandId, brandName, toons, setToons, scrip
   const [createError, setCreateError] = useState<string | null>(null);
   const [toonErrors, setToonErrors] = useState<Record<string, string>>({});
   const [generatingId, setGeneratingId] = useState<string | null>(null);
+  // Readiness is server-side policy, not something inferable from a
+  // variant's columns: under LTX-2.5 a character needs only a portrait,
+  // because identity comes from a composite first-frame anchor rather than
+  // a trained LoRA or a registered Kling element. Gating on those columns
+  // blocked generations the API would have accepted.
+  const [videoConfig, setVideoConfig] = useState<{
+    video_model: string;
+    self_hosted_requires_lora: boolean;
+    native_audio: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/culturetoons/config")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setVideoConfig(d))
+      // Null config falls back to the stricter pre-2.5 gate below, which is
+      // the safe direction: it never enables a button the API would reject.
+      .catch(() => undefined);
+  }, []);
 
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccount[]>([]);
   const [postsByToon, setPostsByToon] = useState<Record<string, ToonPost[]>>({});
@@ -361,13 +380,19 @@ export default function ToonManager({ brandId, brandName, toons, setToons, scrip
         {toons.map((t) => {
           const script = scriptFor(t.script_id);
           const variant = variantFor(t.character_variant_id);
-          // Matches the backend's own auto-pick in POST .../generate-video:
-          // self-hosted wins when its LoRA is ready, else falls back to
-          // Kling if that's registered instead. Either one is enough to
-          // generate — see CharacterVariantManager.tsx for where each
-          // readiness state actually gets set.
-          const readyProvider: "self_hosted" | "kling_omni" | null =
-            variant?.lora_status === "ready" ? "self_hosted" : variant?.element_status === "ready" ? "kling_omni" : null;
+          // Mirrors the backend's own auto-pick in POST .../generate-video.
+          // Under LTX-2.5 (self_hosted_requires_lora === false) a portrait is
+          // the only prerequisite — no LoRA training, no Kling registration.
+          // Otherwise fall back to the pre-2.5 rule: a ready LoRA, else a
+          // registered Kling element.
+          const requiresLora = videoConfig?.self_hosted_requires_lora ?? true;
+          const readyProvider: "self_hosted" | "kling_omni" | null = !requiresLora
+            ? (variant?.image_url ? "self_hosted" : variant?.element_status === "ready" ? "kling_omni" : null)
+            : variant?.lora_status === "ready"
+              ? "self_hosted"
+              : variant?.element_status === "ready"
+                ? "kling_omni"
+                : null;
           const canGenerate = !!script?.shots?.length && !!readyProvider;
           const generating = generatingId === t.id || t.status === "animating";
           const advancedOpen = advancedOpenId === t.id;
@@ -430,9 +455,19 @@ export default function ToonManager({ brandId, brandName, toons, setToons, scrip
                     ) : (
                       <div className="flex-1">
                         <p className="text-xs text-amber-700">
-                          {variantName(t.character_variant_id)} isn&apos;t ready for either video path yet — register
-                          it as a Kling character or train its self-hosted visual identity (both in the Characters
-                          tab) before generating.
+                          {!requiresLora ? (
+                            <>
+                              {variantName(t.character_variant_id)} has no portrait image yet — generate or upload
+                              one in the Characters tab. That single image is all this character needs; no Kling
+                              registration and no visual-identity training.
+                            </>
+                          ) : (
+                            <>
+                              {variantName(t.character_variant_id)} isn&apos;t ready for either video path yet — register
+                              it as a Kling character or train its self-hosted visual identity (both in the Characters
+                              tab) before generating.
+                            </>
+                          )}
                         </p>
                         <button
                           onClick={() => onJumpToVariant(t.character_variant_id)}
