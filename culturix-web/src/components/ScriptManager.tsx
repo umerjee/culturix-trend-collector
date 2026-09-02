@@ -98,7 +98,17 @@ const ENRICH_SUGGESTIONS = [
  *  script's setting in the video prompt (see culturetoon_selfhosted_video's
  *  `if scene_setting and background is None`), so a script carrying a
  *  carefully written setting AND a Location silently renders the Location. */
-function SceneEnvironment({ script, background }: { script: ToonScript; background?: ToonBackground | null }) {
+function SceneEnvironment({
+  script, background, editing, draft, setDraft, onStartEdit, onCancelEdit, onSave,
+  promptOpen, promptDraft, setPromptDraft, onTogglePrompt, onRegenerate, busy, error,
+}: {
+  script: ToonScript; background?: ToonBackground | null;
+  editing: boolean; draft: string; setDraft: (v: string) => void;
+  onStartEdit: () => void; onCancelEdit: () => void; onSave: () => void;
+  promptOpen: boolean; promptDraft: string; setPromptDraft: (v: string) => void;
+  onTogglePrompt: () => void; onRegenerate: () => void;
+  busy: boolean; error?: string;
+}) {
   const setting = (script.scene_direction ?? "").trim();
   const shots = script.shots ?? [];
   const withLighting = shots.filter((sh) => (sh.lighting ?? "").trim()).length;
@@ -106,9 +116,77 @@ function SceneEnvironment({ script, background }: { script: ToonScript; backgrou
 
   return (
     <div className="mt-2 rounded-lg border border-gray-100 bg-gray-50/70 px-2.5 py-2">
-      <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">Environment</p>
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-[10px] uppercase tracking-wide text-gray-400">Environment</p>
+        {/* Both controls act on the environment ALONE. The AI one is a
+            different endpoint from the script regenerate above precisely so
+            that wanting a new background never risks the writing. */}
+        <span className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={onTogglePrompt}
+            disabled={busy || editing || shots.length === 0}
+            title="Regenerate the environment with AI — describe the world you want"
+            className="text-[10px] text-blue-600 hover:text-blue-800 disabled:opacity-40"
+          >
+            {busy && !editing ? "Working…" : "✨ AI"}
+          </button>
+          <button
+            onClick={editing ? onCancelEdit : onStartEdit}
+            disabled={busy}
+            title={editing ? "Cancel" : "Write the setting yourself"}
+            className="text-[10px] text-gray-500 hover:text-gray-800 disabled:opacity-40"
+          >
+            {editing ? "Cancel" : "✏️ Edit"}
+          </button>
+        </span>
+      </div>
 
-      {background ? (
+      {editing ? (
+        <div>
+          <textarea
+            autoFocus
+            rows={3}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="Describe the place, with no characters in it — e.g. Inside a Minecraft world: blocky cubic terrain, torch-lit cave mouth, pixel-art sky"
+            className="w-full text-xs bg-white border border-gray-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-300"
+          />
+          <div className="flex items-center justify-end gap-2 mt-1.5">
+            <button onClick={onCancelEdit} className="text-[11px] text-gray-400 hover:text-gray-600">Cancel</button>
+            <button
+              onClick={onSave}
+              disabled={busy}
+              className="text-[11px] font-medium text-blue-700 hover:text-blue-900 disabled:opacity-40"
+            >
+              {busy ? "Saving…" : "Save setting"}
+            </button>
+          </div>
+        </div>
+      ) : promptOpen ? (
+        <div>
+          <textarea
+            autoFocus
+            rows={2}
+            value={promptDraft}
+            onChange={(e) => setPromptDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) onRegenerate();
+            }}
+            placeholder="Any idea to steer it? e.g. 'make it night-time in a lava biome' — or leave blank and let it choose."
+            className="w-full text-xs bg-white border border-blue-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-300"
+          />
+          <div className="flex items-center justify-between mt-1.5">
+            <span className="text-[10px] text-gray-400">Replaces the setting, lighting and blocking. Never touches the dialogue.</span>
+            <button
+              onClick={onRegenerate}
+              disabled={busy}
+              className="text-[11px] font-medium text-blue-700 hover:text-blue-900 disabled:opacity-40 shrink-0"
+            >
+              {busy ? "Generating…" : "Generate →"}
+            </button>
+          </div>
+        </div>
+      ) : background ? (
         <>
           <p className="text-xs text-gray-700">
             <span className="text-gray-400">Location:</span> {background.name}
@@ -132,12 +210,13 @@ function SceneEnvironment({ script, background }: { script: ToonScript; backgrou
         </p>
       )}
 
-      {shots.length > 0 && (
+      {shots.length > 0 && !editing && !promptOpen && (
         <p className="text-[10px] text-gray-400 mt-1.5">
           Lighting on {withLighting}/{shots.length} shots · Blocking on {withBlocking}/{shots.length}
-          {withLighting === 0 && withBlocking === 0 && " — enrich to add cinematic detail"}
+          {withLighting === 0 && withBlocking === 0 && " — use ✨ AI to add cinematic detail"}
         </p>
       )}
+      {error && <p className="text-[10px] text-red-500 mt-1">{error}</p>}
     </div>
   );
 }
@@ -178,6 +257,12 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
   // Re-run AI generation for an existing script, in place.
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
   const [regenerateErrors, setRegenerateErrors] = useState<Record<string, string>>({});
+  const [envEditingId, setEnvEditingId] = useState<string | null>(null);
+  const [envDraft, setEnvDraft] = useState("");
+  const [envPromptOpenId, setEnvPromptOpenId] = useState<string | null>(null);
+  const [envPromptDrafts, setEnvPromptDrafts] = useState<Record<string, string>>({});
+  const [envBusyId, setEnvBusyId] = useState<string | null>(null);
+  const [envErrors, setEnvErrors] = useState<Record<string, string>>({});
   const [regenerateNoteOpenId, setRegenerateNoteOpenId] = useState<string | null>(null);
   const [regenerateNoteDrafts, setRegenerateNoteDrafts] = useState<Record<string, string>>({});
 
@@ -512,6 +597,57 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
       const shots = prev.shots.map((sh, i) => (i === index ? { ...sh, [field]: value } : sh));
       return { ...prev, shots };
     });
+  }
+
+  /** Saves a hand-written setting on its own, without entering full-script
+   *  edit mode — the environment drives the rendered background, so it needs
+   *  to be changeable without putting the writing into an editable state. */
+  async function saveSetting(scriptId: string, setting: string) {
+    setEnvBusyId(scriptId);
+    setEnvErrors((prev) => ({ ...prev, [scriptId]: "" }));
+    try {
+      const res = await fetch(`/api/culturetoons/scripts/${scriptId}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, scene_direction: setting.trim() || null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEnvErrors((prev) => ({ ...prev, [scriptId]: typeof data.detail === "string" ? data.detail : `Couldn't save (${res.status})` }));
+        return;
+      }
+      setScripts((prev) => prev.map((s) => (s.id === scriptId ? data : s)));
+      setEnvEditingId(null);
+    } catch {
+      setEnvErrors((prev) => ({ ...prev, [scriptId]: "Couldn't save — check your connection." }));
+    } finally {
+      setEnvBusyId(null);
+    }
+  }
+
+  /** Regenerates ONLY setting/lighting/blocking, optionally steered by the
+   *  user's idea. Distinct from regenerateScript: it never touches the
+   *  writing, so it is safe on an approved script. */
+  async function regenerateEnvironment(scriptId: string, note?: string) {
+    setEnvBusyId(scriptId);
+    setEnvErrors((prev) => ({ ...prev, [scriptId]: "" }));
+    try {
+      const res = await fetch(`/api/culturetoons/scripts/${scriptId}/environment`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, note: note || undefined }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEnvErrors((prev) => ({ ...prev, [scriptId]: typeof data.detail === "string" ? data.detail : `Couldn't regenerate (${res.status})` }));
+        return;
+      }
+      setScripts((prev) => prev.map((s) => (s.id === scriptId ? data : s)));
+      setEnvPromptOpenId(null);
+      setEnvPromptDrafts((prev) => ({ ...prev, [scriptId]: "" }));
+    } catch {
+      setEnvErrors((prev) => ({ ...prev, [scriptId]: "Couldn't regenerate — check your connection." }));
+    } finally {
+      setEnvBusyId(null);
+    }
   }
 
   async function saveEdit(scriptId: string) {
@@ -1168,7 +1304,23 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                 <>
                   {s.hook_line && <p className="text-sm font-medium text-gray-900">&quot;{s.hook_line}&quot;</p>}
                   {s.dialogue && <p className="text-sm text-gray-600 mt-1">{s.dialogue}</p>}
-                  <SceneEnvironment script={s} background={bg} />
+                  <SceneEnvironment
+                    script={s}
+                    background={bg}
+                    editing={envEditingId === s.id}
+                    draft={envDraft}
+                    setDraft={setEnvDraft}
+                    onStartEdit={() => { setEnvPromptOpenId(null); setEnvDraft(s.scene_direction ?? ""); setEnvEditingId(s.id); }}
+                    onCancelEdit={() => setEnvEditingId(null)}
+                    onSave={() => saveSetting(s.id, envDraft)}
+                    promptOpen={envPromptOpenId === s.id}
+                    promptDraft={envPromptDrafts[s.id] ?? ""}
+                    setPromptDraft={(v) => setEnvPromptDrafts((prev) => ({ ...prev, [s.id]: v }))}
+                    onTogglePrompt={() => { setEnvEditingId(null); setEnvPromptOpenId((prev) => (prev === s.id ? null : s.id)); }}
+                    onRegenerate={() => regenerateEnvironment(s.id, (envPromptDrafts[s.id] ?? "").trim())}
+                    busy={envBusyId === s.id}
+                    error={envErrors[s.id]}
+                  />
                   {s.shots && s.shots.length > 0 && (
                     <ol className="mt-2 space-y-2">
                       {s.shots.map((shot) => (

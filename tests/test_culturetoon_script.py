@@ -684,3 +684,74 @@ class TestJudgeScriptComedy:
 
         result = judge_script_comedy({"hook_line": "H", "shots": _VALID_SHOTS})
         assert result["judge_failed"] is True
+
+
+class TestEnvironmentService:
+    """The environment path must never touch the writing — that is the whole
+    reason it exists separately from regeneration."""
+
+    def _script(self, mocker, setting=None, shots=None):
+        s = mocker.Mock()
+        s.scene_direction = setting
+        s.hook_line = "H"
+        s.shots = shots if shots is not None else [
+            {"shot_number": 1, "action": "waves", "dialogue": "hi"},
+        ]
+        return s
+
+    def test_apply_fills_empty_fields(self, mocker):
+        from app.services.culturetoon_environment import apply_environment
+        script = self._script(mocker)
+        changes = apply_environment(script, {
+            "setting": "Inside a Minecraft world",
+            "shots": [{"shot_number": 1, "lighting": "torch left", "blocking": "Zara centre"}],
+        })
+        assert script.scene_direction == "Inside a Minecraft world"
+        assert script.shots[0]["lighting"] == "torch left"
+        assert changes
+
+    def test_apply_never_touches_the_writing(self, mocker):
+        from app.services.culturetoon_environment import apply_environment
+        script = self._script(mocker)
+        apply_environment(script, {
+            "setting": "X",
+            "shots": [{"shot_number": 1, "lighting": "L", "blocking": "B",
+                       "dialogue": "REWRITTEN", "action": "REWRITTEN"}],
+        })
+        assert script.shots[0]["dialogue"] == "hi"
+        assert script.shots[0]["action"] == "waves"
+
+    def test_backfill_mode_does_not_clobber_existing(self, mocker):
+        from app.services.culturetoon_environment import apply_environment
+        script = self._script(mocker, setting="Hand written",
+                              shots=[{"shot_number": 1, "lighting": "mine", "action": "waves"}])
+        apply_environment(script, {"setting": "AI", "shots": [{"shot_number": 1, "lighting": "AI"}]},
+                          overwrite=False)
+        assert script.scene_direction == "Hand written"
+        assert script.shots[0]["lighting"] == "mine"
+
+    def test_overwrite_mode_replaces(self, mocker):
+        from app.services.culturetoon_environment import apply_environment
+        script = self._script(mocker, setting="Old",
+                              shots=[{"shot_number": 1, "lighting": "old", "action": "waves"}])
+        apply_environment(script, {"setting": "New", "shots": [{"shot_number": 1, "lighting": "new"}]},
+                          overwrite=True)
+        assert script.scene_direction == "New"
+        assert script.shots[0]["lighting"] == "new"
+
+    def test_apply_reports_no_changes_on_empty_result(self, mocker):
+        from app.services.culturetoon_environment import apply_environment
+        assert apply_environment(self._script(mocker), {}) == []
+
+    def test_user_note_is_included_and_marked_as_overriding(self, mocker):
+        from app.services.culturetoon_environment import build_environment_prompt
+        prompt = build_environment_prompt(self._script(mocker), [], note="make it night, lava biome")
+        assert "make it night, lava biome" in prompt
+        assert "OVERRIDES" in prompt
+
+    def test_needs_environment_detects_partial_coverage(self, mocker):
+        from app.services.culturetoon_environment import needs_environment
+        script = self._script(mocker, setting="X",
+                              shots=[{"shot_number": 1, "lighting": "L", "blocking": "B"},
+                                     {"shot_number": 2, "lighting": "L"}])
+        assert needs_environment(script) is True

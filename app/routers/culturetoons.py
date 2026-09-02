@@ -3037,6 +3037,67 @@ def delete_script(script_id: str, user_id: str, brand_id: str):
         session.close()
 
 
+@router.post("/scripts/{script_id}/environment")
+def regenerate_script_environment(script_id: str, body: dict):
+    """Regenerates ONLY the environment — setting, per-shot lighting and
+    blocking — leaving the writing completely alone.
+
+    Separate from /regenerate on purpose. Regenerating rewrites the hook,
+    the shots and the dialogue, and resets the script to draft; a user who
+    wants a different background should not have to gamble their approved
+    comedy to get one. This touches no field the writer produced and leaves
+    status and approval untouched, so it is safe on an approved script.
+
+    An optional "note" carries the user's own idea ("make it night, lava
+    biome") and overrides the default guidance where they conflict.
+    """
+    from app.db import SessionLocal
+    from app.models.character_variant import CharacterVariant
+    from app.models.toon_script import ToonScript
+    from app.services.culturetoon_environment import (
+        apply_environment, generate_environment, EnvironmentGenerationError,
+    )
+
+    session = SessionLocal()
+    try:
+        script = session.query(ToonScript).filter(ToonScript.id == script_id).first()
+        if not script:
+            raise HTTPException(status_code=404, detail="Script not found")
+        if not script.shots:
+            raise HTTPException(
+                status_code=400,
+                detail="This script has no shots yet — generate or write the shots first.",
+            )
+
+        variant_ids = {
+            str(shot.get("speaker_variant_id"))
+            for shot in script.shots or []
+            if (shot or {}).get("speaker_variant_id")
+        }
+        variants = (
+            session.query(CharacterVariant).filter(CharacterVariant.id.in_(variant_ids)).all()
+            if variant_ids else []
+        )
+
+        try:
+            result = generate_environment(script, variants, note=(body or {}).get("note"))
+        except EnvironmentGenerationError as exc:
+            raise HTTPException(status_code=502, detail=f"Couldn't generate the environment: {exc}")
+
+        # overwrite=True: the user pressed the button, so a new environment is
+        # the point — unlike the backfill, which only fills what is empty.
+        if not apply_environment(script, result, overwrite=True):
+            raise HTTPException(
+                status_code=502,
+                detail="The model returned no usable environment — try again, or describe it yourself.",
+            )
+        session.commit()
+        session.refresh(script)
+        return _serialize_script(script)
+    finally:
+        session.close()
+
+
 @router.post("/scripts/{script_id}/regenerate")
 def regenerate_script(script_id: str, body: dict):
     """Re-runs AI generation for an existing script and updates it IN
