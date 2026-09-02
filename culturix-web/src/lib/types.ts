@@ -714,6 +714,12 @@ export const TONE_OPTIONS = [
 
 // Tones that produce explainers rather than skits — used to label the picker
 // so the two groups are not presented as interchangeable moods.
+// Natural conversational pace. Mirrors SPEECH_WORDS_PER_SECOND in
+// app/services/culturetoon_script.py — LTX fits a line into its shot's
+// duration by speeding the voice up, so an over-budget line is not cut off,
+// it is rushed.
+export const SPEECH_WORDS_PER_SECOND = 2.5;
+
 export const INFORMATIVE_TONES: readonly string[] = [
   "educational", "explainer", "informative", "inspirational",
 ];
@@ -730,6 +736,17 @@ export interface ToonScriptShot {
   // cold window light right"). Consistent directional light is what makes
   // separate shots read as one continuous scene rather than unrelated clips.
   lighting?: string | null;
+  // What the CAMERA is on. Absent/"character" is a talking head; "subject"
+  // puts the camera on the thing being discussed with NOBODY in frame, and
+  // "both" frames the character with it. Before this existed the schema
+  // could only describe a character performing, which is why every video
+  // came out as a talking head in front of a background.
+  shot_focus?: "character" | "subject" | "both" | null;
+  // What fills the frame on a subject/both shot.
+  subject_visual?: string | null;
+  // The line is heard while the speaker is off screen — how you open on the
+  // subject and still have someone narrating it.
+  voiceover?: boolean | null;
   // Where each character sits in frame and what they hold. Positions and
   // held props keep characters distinguishable when faces are small or
   // moving — which matters more under LTX-2.5, where identity rides on a

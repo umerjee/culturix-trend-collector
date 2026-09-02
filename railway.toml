@@ -12,7 +12,18 @@ healthcheckPath = "/health"
 # confirmed by running the exact lifespan() the container runs against the
 # real database directly and timing it. 300s leaves real margin above the
 # measured figure rather than just clearing it exactly.
-healthcheckTimeout = 300
+# Raised from 300 after a deploy failed its health check on 2026-09-02,
+# exhausting the window with "service unavailable" on all 11 attempts. The
+# 133s figure above is a MEASUREMENT, not a bound: those 118 DDL statements
+# each cost a round trip plus a commit, so startup scales directly with
+# whatever latency the Supabase-hosted Postgres happens to have that day.
+# 300s left under 2.2x headroom over a number that already moves.
+#
+# This is a floor, not a fix. The real fix is to stop issuing 118 DDL
+# statements on every single boot — read information_schema once and run
+# only the statements that are actually missing, which would make a steady-
+# state start near-instant. See the note in app/main.py's lifespan().
+healthcheckTimeout = 600
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
 

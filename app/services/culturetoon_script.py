@@ -55,6 +55,46 @@ TONE_OPTIONS = [
 # being funny — the option would look supported while being unusable.
 INFORMATIVE_TONES = {"educational", "explainer", "informative", "inspirational"}
 
+# Natural conversational delivery, in words per second. LTX-2.5 fits whatever
+# line it is given into the shot's duration, so an over-long line is not
+# truncated — it is rushed. Measured on live scripts before this existed:
+# shots ran at 3-7 w/s, one at 7.3, which is what "talking too fast" was.
+SPEECH_WORDS_PER_SECOND = 2.5
+
+# What the CAMERA is on in a shot. Before this, every shot was implicitly
+# "character": the schema described blocking, action and expression and
+# nothing else, so a script could not express a shot of the SUBJECT — the
+# black hole, the game world, the product — and every video came out as a
+# talking head in front of a background.
+SHOT_FOCUS_TYPES = ["character", "subject", "both"]
+
+
+def dialogue_word_budget(duration_seconds) -> int:
+    """Words that fit in a shot at natural pace. Floor of 3 so a very short
+    shot still allows a real line rather than a single word."""
+    try:
+        seconds = float(duration_seconds or 0)
+    except (TypeError, ValueError):
+        seconds = 0
+    return max(3, int(seconds * SPEECH_WORDS_PER_SECOND))
+
+
+def overlong_shots(shots: list) -> list:
+    """Shots whose dialogue cannot be delivered in their own duration.
+    Advisory — surfaced to the user, never silently rewritten."""
+    flagged = []
+    for shot in shots or []:
+        words = len((shot.get("dialogue") or "").split())
+        budget = dialogue_word_budget(shot.get("duration_seconds"))
+        if words > budget:
+            flagged.append({
+                "shot_number": shot.get("shot_number"),
+                "words": words,
+                "budget": budget,
+                "seconds": shot.get("duration_seconds"),
+            })
+    return flagged
+
 
 def is_informative_tone(tone: Optional[str]) -> bool:
     return (tone or "").strip().lower() in INFORMATIVE_TONES
@@ -574,10 +614,33 @@ Requirements:
 - "action" describes the character's specific physical performance/movement in that shot (max
   ~15 words) — a concrete, exaggerated physical beat (e.g. "sweating, dancing manically" or
   "aggressively taps a stopwatch"), not a generic verb like "gestures" or "reacts."
+- "shot_focus" is WHAT THE CAMERA IS ON, one of exactly: {SHOT_FOCUS_TYPES}.
+    "character" — the character performs on camera. A talking head.
+    "subject"   — the camera is on the THING being talked about, and NO character is visible
+                  in frame at all. The black hole itself, the game world, the object.
+    "both"      — the character is in frame WITH the subject (e.g. dwarfed by it, pointing
+                  at it, reaching into it).
+  Do NOT make every shot "character". A sequence of talking heads in front of a background
+  is the single most common failure of this format. Open on the subject wherever the premise
+  has one, cut to the character to react or explain, and return to the subject to close.
+  At least one shot in every script of 3+ shots must be "subject" or "both".
+- "subject_visual" describes what fills the frame when shot_focus is "subject" or "both"
+  (max ~30 words) — the thing itself, cinematically, with scale and motion: "a supermassive
+  black hole filling frame, orange accretion disk churning, starlight bending around the
+  event horizon". Null only when shot_focus is "character".
+- "voiceover" is true when the character's dialogue is HEARD OVER the shot while they are not
+  on screen — the standard way to open on the subject and still have someone narrating it.
+  Only meaningful when shot_focus is "subject"; false otherwise.
 - "expression" is one of exactly these values, or null if not relevant: {EXPRESSION_NAMES}.
+  Null for a "subject" shot, where no face is on screen.
 - "dialogue" is what the character says out loud in that shot, or null for a
   silent/reaction-only beat. Give it real voice — specific, escalating, in-character, not a
   generic informative sentence.
+  HARD PACING LIMIT: a line must be sayable, unrushed, inside its own shot. Budget
+  {SPEECH_WORDS_PER_SECOND} words per second of duration_seconds — a 3-second shot takes about
+  7 words, a 4-second shot about 10. Count the words. Going over does NOT extend the shot: the
+  voice is sped up to fit and the delivery sounds rushed and unnatural. If a line needs more
+  words, give the shot more seconds or split it across two shots.
 - "dialogue_delivery" is a short (2-4 word) delivery-style tag for how the line is performed
   (e.g. "Loud & Hyped", "Deadpan / Robotic", "Whispered, intense") — null when dialogue is null.
 - "shot_type" must be one of exactly these values: {SHOT_TYPES}.
@@ -601,6 +664,7 @@ Return ONLY valid JSON with exactly these keys:
 - setting: string
 - shots: array of objects, each with exactly: shot_number (int), duration_seconds (int),
   visual (string), lighting (string), blocking (string), action (string),
+  shot_focus (string), subject_visual (string or null), voiceover (boolean),
   expression (string or null), dialogue (string or null),
   dialogue_delivery (string or null), shot_type (string), camera_movement (string or null){speaker_key}
 

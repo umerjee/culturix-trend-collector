@@ -1103,3 +1103,101 @@ class TestLTX25SilentAndUnattributedShots:
         shot_two = prompt.split("CUT TO SHOT 2")[1]
         assert "Captain Nova" in shot_two and "is the one speaking" in shot_two
         assert "No one speaks" not in shot_two
+
+
+class TestLTX25SubjectShots:
+    """Every field in the shot schema used to describe a character
+    performing, so a script could not express a shot OF the thing being
+    discussed — which is why every video came out as a talking head in front
+    of a background."""
+
+    def _cast(self, mocker):
+        v = mocker.Mock(id="z", image_url="u")
+        v.name = "Zara"
+        v.character = mocker.Mock(description="A young explorer.")
+        return [v]
+
+    def _script(self, mocker, shots):
+        script = mocker.Mock(hook_line="What happens at the edge?")
+        script.scene_direction = "Deep space, a black hole"
+        script.shots = shots
+        return script
+
+    def test_subject_shot_puts_nobody_in_frame(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "shot_focus": "subject", "speaker_variant_id": "z",
+             "subject_visual": "a supermassive black hole filling frame", "dialogue": None},
+        ]), self._cast(mocker))
+        assert "a supermassive black hole filling frame" in prompt
+        assert "No people in frame at all" in prompt
+        # Naming a focus character would put them back on screen.
+        assert "is the focus" not in prompt
+
+    def test_voiceover_keeps_the_speaker_off_screen(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "shot_focus": "subject", "voiceover": True, "speaker_variant_id": "z",
+             "subject_visual": "the black hole", "dialogue": "Nothing escapes."},
+        ]), self._cast(mocker))
+        assert "a voice is heard over this shot" in prompt
+        assert "the speaker is off screen and not visible" in prompt
+
+    def test_silent_subject_shot_asks_for_silence(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "shot_focus": "subject", "subject_visual": "the black hole",
+             "dialogue": None},
+        ]), self._cast(mocker))
+        assert "No one speaks in this shot" in prompt
+
+    def test_subject_shot_does_not_ask_for_focus_on_a_face(self, mocker):
+        """The character quality suffix contradicts an empty frame."""
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "shot_focus": "subject", "subject_visual": "the black hole",
+             "dialogue": None},
+        ]), self._cast(mocker))
+        assert "Sharp focus on the character's face" not in prompt
+        assert "cinematic scale and depth" in prompt
+
+    def test_character_shots_are_unchanged(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "speaker_variant_id": "z", "action": "leans in",
+             "dialogue": "Seen this?"},
+        ]), self._cast(mocker))
+        assert "Zara (LEFT) is the focus" in prompt
+        assert "No people in frame" not in prompt
+
+    def test_cast_is_declared_as_single_individuals(self, mocker):
+        """A second Zara appeared in the background — the anchor shows each
+        face at a fixed position and the model left a copy behind."""
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "speaker_variant_id": "z", "action": "leans in", "dialogue": "Hi"},
+        ]), self._cast(mocker))
+        assert "exactly ONE of each" in prompt
+        assert "not a fixed seating arrangement" in prompt
+
+
+class TestSpeechPacing:
+    def test_budget_scales_with_duration(self):
+        from app.services.culturetoon_script import dialogue_word_budget
+        assert dialogue_word_budget(4) == 10
+        assert dialogue_word_budget(3) == 7
+        assert dialogue_word_budget(0) == 3
+
+    def test_overlong_shots_flags_the_rushed_line(self):
+        from app.services.culturetoon_script import overlong_shots
+        # The real measured case: 22 words in a 3-second shot, 7.3 w/s.
+        flagged = overlong_shots([
+            {"shot_number": 1, "duration_seconds": 3, "dialogue": " ".join(["word"] * 22)},
+            {"shot_number": 2, "duration_seconds": 4, "dialogue": "short enough line"},
+        ])
+        assert [f["shot_number"] for f in flagged] == [1]
+        assert flagged[0]["words"] == 22 and flagged[0]["budget"] == 7
+
+    def test_no_dialogue_is_never_flagged(self):
+        from app.services.culturetoon_script import overlong_shots
+        assert overlong_shots([{"shot_number": 1, "duration_seconds": 1, "dialogue": None}]) == []

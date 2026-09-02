@@ -120,6 +120,14 @@ _QUALITY_SUFFIX = (
     "consistent lighting, high detail, crisp film-quality render"
 )
 
+# The character-quality suffix actively contradicts a subject shot: asking for
+# "sharp focus on the character's face" in a frame that must contain no people
+# invites the model to put one back in.
+_SUBJECT_QUALITY_SUFFIX = (
+    "Smooth natural camera motion, cinematic scale and depth, "
+    "consistent lighting, high detail, crisp film-quality render"
+)
+
 
 def _build_shot_prompt(shot: dict, background=None) -> str:
     """One shot's own prompt text — shot_type/camera_movement describe
@@ -174,6 +182,37 @@ def _build_shot_prompt(shot: dict, background=None) -> str:
     blocking = (shot.get("blocking") or "").strip()
     dialogue = (shot.get("dialogue") or "").strip()
     delivery = (shot.get("dialogue_delivery") or "").strip()
+    # A "subject" shot is ON the thing being discussed, with nobody in frame.
+    # Without this the schema could only ever describe a character performing,
+    # which is why every video came out as a talking head in front of a
+    # background — the black hole was never actually shown.
+    focus = (shot.get("shot_focus") or "character").strip().lower()
+    subject_visual = (shot.get("subject_visual") or "").strip()
+    if focus == "subject" and subject_visual:
+        parts.append(subject_visual)
+        parts.append(
+            "No people in frame at all — this shot is entirely on the subject, "
+            "no character visible, no face, no body"
+        )
+        if lighting:
+            parts.append(lighting)
+        if dialogue:
+            # Voice over a subject shot: the line is heard, the speaker isn't seen.
+            parts.append(
+                f'a voice is heard over this shot saying "{dialogue}"'
+                + (f" ({delivery} delivery)" if delivery else "")
+                + ", the speaker is off screen and not visible"
+            )
+        else:
+            # Same joint-audio trap as a silent character shot: with no line
+            # and nothing asking for silence, the model invents narration.
+            parts.append(
+                "No one speaks in this shot — no dialogue, no voice-over, ambient sound only"
+            )
+        return ". ".join(p for p in parts if p) + ". " + _SUBJECT_QUALITY_SUFFIX
+
+    if focus == "both" and subject_visual:
+        parts.append(subject_visual)
     if visual:
         parts.append(visual)
     if blocking:
@@ -698,6 +737,14 @@ def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
         speaker = _resolve_shot_variant(shot, variants) if shot.get("speaker_variant_id") else None
         speaker_id = str(getattr(speaker, "id", "")) if speaker is not None else ""
         name, position = position_of.get(speaker_id, ("", ""))
+
+        # A subject shot has nobody in it, so naming a focus character would
+        # put them back on screen — _build_shot_prompt already says the frame
+        # is empty of people, and the voice-over line is attributed there.
+        focus_type = (shot.get("shot_focus") or "character").strip().lower()
+        if focus_type == "subject":
+            parts.append(f"{lead} — {shot_text}")
+            continue
         # Audio is denoised JOINTLY with video on 2.5, so silence is something
         # to ask for, not the default. With no line in the prompt and nothing
         # saying the shot is silent, the model invents dialogue and hands it
@@ -721,6 +768,20 @@ def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
         "Consistent character appearance throughout, faces matching the opening frame exactly. "
         "Natural facial performance and lip movement synced to the dialogue."
     )
+    # The opening frame is a composite showing every cast member side by side,
+    # so the model has seen each face at a fixed position. When a later shot
+    # moves one of them elsewhere in frame, it can leave a COPY behind at the
+    # anchor position — confirmed live 2026-09-02, a second Zara sitting in
+    # the background. Stating the cast is a closed set of single individuals
+    # is the prompt-side counterpart to the negative prompt's duplicate terms.
+    cast_names = [n for n, _ in position_of.values() if n]
+    if cast_names:
+        parts.append(
+            f"The complete cast is exactly {len(cast_names)} individuals: {', '.join(cast_names)}. "
+            "There is exactly ONE of each of them on screen at any time — never two of the same "
+            "character in the same frame, never a copy or double of anyone in the background. "
+            "The opening frame is a reference of who they are, not a fixed seating arrangement."
+        )
     return " ".join(p for p in parts if p)
 
 

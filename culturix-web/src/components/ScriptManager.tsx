@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Wand2, Plus, Loader2, Sparkles, ImageIcon, Check, Target, Pencil, Trash2, Film, AlertTriangle, CheckCircle2, Camera, MessageSquarePlus } from "lucide-react";
 import type { ToonScript, ToonScriptShot, CharacterVariant, ToonBackground } from "@/lib/types";
-import { TONE_OPTIONS, INFORMATIVE_TONES, MAX_CHARACTERS_PER_VIDEO, ART_STYLES, EXPRESSION_NAMES, SHOT_TYPES, CAMERA_MOVEMENTS } from "@/lib/types";
+import { TONE_OPTIONS, INFORMATIVE_TONES, SPEECH_WORDS_PER_SECOND, MAX_CHARACTERS_PER_VIDEO, ART_STYLES, EXPRESSION_NAMES, SHOT_TYPES, CAMERA_MOVEMENTS } from "@/lib/types";
 
 // Backgrounds pick their own rendering style independently of the
 // character's art_style — a background is composited separately at
@@ -245,6 +245,23 @@ function ToneOptions() {
  *  check" would read as the wrong rubric having been applied. */
 function judgmentLabel(s: ToonScript): string {
   return INFORMATIVE_TONES.includes(s.tone ?? "") ? "Explainer check" : "Comedy check";
+}
+
+/** Pacing. LTX fits a line into its shot's duration by speeding the voice
+ *  up — it never extends the shot — so an over-budget line is not truncated,
+ *  it is rushed. Measured on live scripts before this was surfaced: shots ran
+ *  at 3-7 words/sec against a natural 2.5, which is what "talking too fast"
+ *  was. Advisory only: the user decides whether to lengthen or split. */
+function countWords(text?: string | null): number {
+  return (text ?? "").trim().split(/\s+/).filter(Boolean).length;
+}
+
+function wordBudget(seconds?: number | null): number {
+  return Math.max(3, Math.floor((seconds ?? 0) * SPEECH_WORDS_PER_SECOND));
+}
+
+function overBudget(shot: ToonScriptShot): boolean {
+  return countWords(shot.dialogue) > wordBudget(shot.duration_seconds);
 }
 
 function scriptHasScene(s: ToonScript): boolean {
@@ -1363,6 +1380,17 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                           {shot.visual && (
                             <p className="mt-0.5"><span className="text-gray-400">Visual:</span> {shot.visual}</p>
                           )}
+                          {shot.shot_focus && shot.shot_focus !== "character" && (
+                            <p className="mt-0.5">
+                              <span className="inline-flex items-center rounded-full bg-purple-50 text-purple-700 px-1.5 py-0.5 text-[10px] font-medium">
+                                {shot.shot_focus === "subject" ? "On the subject — no characters" : "Character + subject"}
+                                {shot.voiceover ? " · voice-over" : ""}
+                              </span>
+                            </p>
+                          )}
+                          {shot.subject_visual && (
+                            <p className="mt-0.5"><span className="text-gray-400">Subject:</span> {shot.subject_visual}</p>
+                          )}
                           {shot.lighting && (
                             <p className="mt-0.5"><span className="text-gray-400">Lighting:</span> {shot.lighting}</p>
                           )}
@@ -1379,6 +1407,14 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                                 Dialogue{shot.dialogue_delivery ? ` (${shot.dialogue_delivery})` : ""}:
                               </span>{" "}
                               &quot;{shot.dialogue}&quot;
+                            </p>
+                          )}
+                          {overBudget(shot) && (
+                            <p className="mt-0.5 text-[10px] text-amber-600">
+                              {countWords(shot.dialogue)} words in {shot.duration_seconds}s — about{" "}
+                              {wordBudget(shot.duration_seconds)} fit at a natural pace. The voice is sped
+                              up to fit, so this line will sound rushed. Give the shot more seconds, or
+                              split it.
                             </p>
                           )}
                         </li>
