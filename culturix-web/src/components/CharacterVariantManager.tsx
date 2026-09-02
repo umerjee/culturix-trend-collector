@@ -803,7 +803,10 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
                 </div>
                 <p className="text-[11px] text-gray-500 mb-2">
                   Registers this variant&apos;s image as a reusable Kling character so it stays visually
-                  consistent across every video generated for it. Required before generating any video.
+                  consistent across every video generated for it.{" "}
+                  {legacySetup
+                    ? "Required before generating any video."
+                    : "Only needed if you generate via Kling Omni — the current renderer carries identity from the portrait instead."}
                 </p>
                 {selectedVariant.element_error && (
                   <p className="text-[11px] text-red-500 mb-2">{selectedVariant.element_error}</p>
@@ -864,10 +867,21 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
                   )}
                 </div>
                 <p className="text-[11px] text-gray-500 mb-2">
-                  Trains this variant&apos;s own visual identity for self-hosted (RunPod/LTX-2) video
-                  generation — separate from Kling registration above, and required before self-hosted
-                  video can use this character. Uses the Expression set above as training images
-                  automatically, so finishing that set is usually all that&apos;s needed here.
+                  {legacySetup ? (
+                    <>
+                      Trains this variant&apos;s own visual identity for self-hosted (RunPod/LTX-2) video
+                      generation — separate from Kling registration above, and required before self-hosted
+                      video can use this character. Uses the Expression set above as training images
+                      automatically, so finishing that set is usually all that&apos;s needed here.
+                    </>
+                  ) : (
+                    <>
+                      Legacy: trained a per-character model for the older LTX-2.3 renderer. The current
+                      renderer does not read it — identity comes from the portrait — and a trained model
+                      is locked to the version it was trained on, so this would need redoing on every
+                      model upgrade. Left here only for the older path.
+                    </>
+                  )}
                 </p>
                 {selectedVariant.lora_error && (
                   <p className="text-[11px] text-red-500 mb-2">{selectedVariant.lora_error}</p>

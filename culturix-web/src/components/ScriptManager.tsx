@@ -30,9 +30,12 @@ interface TrendSource {
 // separately at generate-time). Only "Quick" fits within that Kling
 // ceiling — Standard/Extended need self-hosted generation.
 const DURATION_PRESETS = [
+  // "not via Kling" rather than "self-hosted only": self-hosted is now the
+  // default renderer, so framing the longer options as a restriction on it
+  // read backwards — the limit belongs to Kling Omni (6 shots / 15s).
   { key: "quick", label: "Quick (~15s)", numShots: 5, duration: 15 },
-  { key: "standard", label: "Standard (~30s) — self-hosted only", numShots: 9, duration: 30 },
-  { key: "extended", label: "Extended (~60s) — self-hosted only", numShots: 14, duration: 60 },
+  { key: "standard", label: "Standard (~30s) — not via Kling", numShots: 9, duration: 30 },
+  { key: "extended", label: "Extended (~60s) — not via Kling", numShots: 14, duration: 60 },
 ] as const;
 
 interface Props {
