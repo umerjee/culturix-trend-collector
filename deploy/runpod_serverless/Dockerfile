@@ -139,10 +139,34 @@ RUN printf '%s\n' \
     '    sys.exit(1 if "undefined symbol" in msg else 0)' \
     > /tmp/check_torch.py
 
+# Confirmed from the real CI log 2026-09-02: on 5.10.0-base this step
+# failed with
+#   ERROR: Could not find a version that satisfies the requirement
+#   torch==2.11.0+cu128 (from versions: ..., 2.11.0, ...)
+# 5.10.0-base installs torch from PyTorch's own CUDA wheel index, so its
+# version carries a LOCAL VERSION IDENTIFIER (`+cu128`). pip freeze
+# captures that exact string, but the restore below resolves against
+# PyPI, which publishes 2.11.0 and no +cu128 variant. (5.8.6-base's torch
+# had no +cuXXX suffix, which is why this only broke on the bump.)
+#
+# Deliberately NOT "just strip the +cuXXX suffix": PyPI's plain torch is
+# the CPU build, so stripping would silently install a CPU torch over a
+# CUDA one — the same class of silent CUDA breakage this whole block
+# exists to prevent. Instead derive the CUDA tag from the pinned version
+# and restore from the matching PyTorch index, falling back to plain pip
+# when there's no suffix to derive.
 RUN pip freeze | grep -iE '^(torch|nvidia-|triton)' > /tmp/pinned-torch.txt \
     && cat /tmp/pinned-torch.txt \
     && pip install chatterbox-tts \
-    && pip install --no-deps --force-reinstall -r /tmp/pinned-torch.txt \
+    && CU_TAG="$(sed -n 's/^torch==.*+\(cu[0-9]\+\).*$/\1/p' /tmp/pinned-torch.txt | head -n1)" \
+    && if [ -n "$CU_TAG" ]; then \
+         echo "restoring torch stack from the PyTorch $CU_TAG index"; \
+         pip install --no-deps --force-reinstall -r /tmp/pinned-torch.txt \
+           --extra-index-url "https://download.pytorch.org/whl/$CU_TAG"; \
+       else \
+         echo "no +cuXXX local version found; restoring from the default index"; \
+         pip install --no-deps --force-reinstall -r /tmp/pinned-torch.txt; \
+       fi \
     && python /tmp/check_torch.py
 # The above `import torch` is a build-time guard, not a GPU check (no GPU
 # is present during a normal Docker build, so torch.cuda.is_available()
