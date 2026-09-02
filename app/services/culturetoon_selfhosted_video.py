@@ -785,6 +785,29 @@ def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
     return " ".join(p for p in parts if p)
 
 
+# How long to wait on a 2.5 render, from the thing that actually drives it.
+#
+# The previous formula was max(1200, 300 + shots * 120) — shot COUNT, a
+# leftover from the 2.3 path where every shot was its own generation. Under
+# 2.5 the whole scene is ONE generation whose length scales with DURATION, so
+# a 37s five-shot video was given 1200s for what needs ~680s of generation
+# plus a cold start. Confirmed live 2026-09-02: it timed out at exactly
+# 1200s, and because this argument was passed explicitly, raising the
+# client's default had no effect on this path at all.
+_COLD_START_ALLOWANCE_SECONDS = 900   # image pull + LTX checkpoint load from the volume
+_RENDER_VARIANCE = 1.4                # measured 18.2-18.8x, plus headroom for a busy GPU
+_MAX_TIMEOUT_SECONDS = 5400
+
+
+def ltx25_timeout_seconds(duration_seconds) -> int:
+    """Wall-clock budget for a whole-scene 2.5 render, including the wait for
+    a cold worker — this clock starts at submission, not at generation."""
+    from app.services.culturetoon_usage import RENDER_GPU_SECONDS_PER_OUTPUT_SECOND
+
+    generation = float(RENDER_GPU_SECONDS_PER_OUTPUT_SECOND) * (duration_seconds or 0) * _RENDER_VARIANCE
+    return int(min(_MAX_TIMEOUT_SECONDS, _COLD_START_ALLOWANCE_SECONDS + generation))
+
+
 def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
                               duration_seconds: Optional[int] = None,
                               background=None, stats: Optional[dict] = None) -> bytes:
@@ -840,7 +863,7 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
 
     return runpod_serverless_client.run_inference_job(
         endpoint_id, workflow, reference_image_bytes=anchor,
-        timeout_seconds=max(_MULTI_SHOT_TIMEOUT_FLOOR_SECONDS, 300 + len(shots) * 120),
+        timeout_seconds=ltx25_timeout_seconds(total_duration),
         stats=stats,
     )
 

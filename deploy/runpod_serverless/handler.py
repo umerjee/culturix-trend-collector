@@ -63,7 +63,7 @@ _STARTUP_TIMEOUT_SECONDS = int(os.getenv("COMFYUI_STARTUP_TIMEOUT_SECONDS", "120
 # NOTE: the RunPod template's COMFYUI_JOB_TIMEOUT_SECONDS env var OVERRIDES
 # this default, and already-running workers keep whatever value they
 # started with — so raising it here alone does nothing to a live endpoint.
-_JOB_TIMEOUT_SECONDS = int(os.getenv("COMFYUI_JOB_TIMEOUT_SECONDS", "3600"))
+_JOB_TIMEOUT_SECONDS = int(os.getenv("COMFYUI_JOB_TIMEOUT_SECONDS", "5400"))
 _POLL_INTERVAL_SECONDS = 3
 
 _chatterbox_model = None

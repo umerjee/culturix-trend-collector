@@ -1224,3 +1224,56 @@ class TestUsageRecordingNeverMasksTheResult:
         except Exception as exc:  # pragma: no cover - the point is this never runs
             raise AssertionError(f"usage recording escaped: {exc}")
         assert logged.called
+
+
+class TestLTX25TimeoutBudget:
+    """A 37s five-shot render failed at exactly 1200s. The budget was
+    max(1200, 300 + shots*120) — shot COUNT, left over from the 2.3 path
+    where each shot was its own generation. Under 2.5 the whole scene is one
+    generation whose length scales with DURATION, and because the argument
+    was passed explicitly, raising the client default had no effect here."""
+
+    def test_budget_scales_with_duration_not_shot_count(self):
+        from app.services.culturetoon_selfhosted_video import ltx25_timeout_seconds
+        assert ltx25_timeout_seconds(120) > ltx25_timeout_seconds(30)
+
+    def test_covers_the_render_that_actually_timed_out(self):
+        """37s needs ~680s of generation; it was given 1200s including cold
+        start and missed."""
+        from app.services.culturetoon_selfhosted_video import ltx25_timeout_seconds
+        assert ltx25_timeout_seconds(37) > 1200
+
+    def test_allows_for_a_cold_worker(self):
+        """The clock starts at submission, so image pull and checkpoint load
+        come out of the same budget as generation."""
+        from app.services.culturetoon_selfhosted_video import (
+            ltx25_timeout_seconds, _COLD_START_ALLOWANCE_SECONDS)
+        assert ltx25_timeout_seconds(1) >= _COLD_START_ALLOWANCE_SECONDS
+
+    def test_budget_never_exceeds_what_the_client_will_wait(self):
+        import inspect
+        from app.media.runpod_serverless_client import run_inference_job
+        from app.services.culturetoon_selfhosted_video import ltx25_timeout_seconds
+        from app.services.culturetoon_script import MAX_TOTAL_SECONDS
+
+        default = inspect.signature(run_inference_job).parameters["timeout_seconds"].default
+        assert ltx25_timeout_seconds(MAX_TOTAL_SECONDS) <= default
+
+    def test_allocation_retry_wrapper_waits_as_long_as_the_job_can_take(self):
+        """The interactive path goes through the retry wrapper, which kept
+        its own 1200s default when run_inference_job's was raised."""
+        import inspect
+        from app.media.runpod_serverless_client import (
+            run_inference_job, run_inference_job_with_allocation_retry)
+        assert (inspect.signature(run_inference_job_with_allocation_retry)
+                .parameters["timeout_seconds"].default
+                >= inspect.signature(run_inference_job).parameters["timeout_seconds"].default)
+
+    def test_worker_ceiling_covers_the_longest_generation(self):
+        import re, pathlib
+        from app.services.culturetoon_script import MAX_TOTAL_SECONDS
+        from app.services.culturetoon_usage import RENDER_GPU_SECONDS_PER_OUTPUT_SECOND
+
+        handler = pathlib.Path("deploy/runpod_serverless/handler.py").read_text(encoding="utf-8")
+        worker = int(re.search(r'COMFYUI_JOB_TIMEOUT_SECONDS", "(\d+)"', handler).group(1))
+        assert worker >= float(RENDER_GPU_SECONDS_PER_OUTPUT_SECOND) * MAX_TOTAL_SECONDS
