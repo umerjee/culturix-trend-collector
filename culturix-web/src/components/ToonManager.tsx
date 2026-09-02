@@ -431,7 +431,13 @@ export default function ToonManager({ brandId, brandName, toons, setToons, scrip
                     <span className="text-xs font-semibold text-gray-700">AI video generation</span>
                     {canGenerate && (
                       <span className="ml-1.5 text-[10px] text-gray-400">
-                        via {readyProvider === "self_hosted" ? "self-hosted" : "Kling Omni"}
+                        {/* Name the renderer and whether it produces sound.
+                            Under LTX-2.5 audio is generated with the video,
+                            which users have no way to anticipate from a
+                            button labelled only "Generate video". */}
+                        via {readyProvider === "self_hosted"
+                          ? `${videoConfig?.video_model?.toUpperCase() ?? "self-hosted"}${videoConfig?.native_audio ? " · with voices" : ""}`
+                          : "Kling Omni"}
                       </span>
                     )}
                   </div>
@@ -444,6 +450,12 @@ export default function ToonManager({ brandId, brandName, toons, setToons, scrip
                     {t.raw_video_url ? "Regenerate" : "Generate video"}
                   </button>
                 </div>
+                {canGenerate && !generating && !t.background_id && (
+                  <p className="text-[11px] text-gray-400 mt-1">
+                    No location set — picking one above gives the scene a described set and
+                    consistent lighting, which is most of what makes a shot feel like a real place.
+                  </p>
+                )}
                 {!canGenerate && !generating && (
                   <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-100 px-2.5 py-2 mt-1">
                     <AlertTriangle className="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" />

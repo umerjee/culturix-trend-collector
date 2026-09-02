@@ -290,7 +290,20 @@ do unnecessary work:
 | `GettingStartedChecklist.tsx` | Marks a setup step done only when `element_status === "ready"`, so it pushes users toward Kling registration they don't need. |
 
 What a character actually needs under 2.5 is **a portrait**
-(`CharacterVariant.image_url`) — which is what the API now enforces. Whether
-to hide these panels or make them conditional on the provider is a product
-decision, not a purely technical one: they remain correct and required if
-Kling Omni is kept as an option.
+(`CharacterVariant.image_url`) — which is what the API now enforces.
+
+**Resolved 2026-09-02.** `GET /api/culturetoons/config` reports the active
+renderer and what it requires; `ToonManager`, `CharacterVariantManager` and
+`GettingStartedChecklist` all read it. Under 2.5 the Generate button gates on
+a portrait, Step 2 shows an explicit ready/not-ready card, and the Kling +
+Expressions + LoRA controls are collapsed behind an "Advanced" disclosure
+(kept, because they remain correct and required for the Kling Omni path).
+
+> ⚠️ **Latent trap:** all three components fall back to the **pre-2.5 layout**
+> when that config fetch fails. The endpoint returns **403 when called
+> directly** — it only succeeds through the authenticated frontend proxy — so
+> if that proxying ever changes, the whole 2.5 UX silently reverts to
+> demanding Kling registration and LoRA training, with no error shown. The
+> fallback direction is deliberate (it never hides genuinely-required setup),
+> but if the UI unexpectedly shows the old "isn't ready for either video path"
+> message, **check this endpoint first**.
