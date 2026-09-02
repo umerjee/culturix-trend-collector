@@ -57,6 +57,11 @@ DEFAULT_NEGATIVE_PROMPT = (
     "blurry, out of focus, low quality, compression artifacts, ghosting, double exposure, "
     "motion smear, warped face, melted features, changing faces, inconsistent identity, "
     "distorted anatomy, deformed hands, extra limbs, extra fingers, disfigured, "
+    # Confirmed live 2026-09-02 on a three-hander: instead of cutting to the
+    # third character for her line, the model rendered a DUPLICATE of the
+    # second one speaking it. Naming the speaker per shot is the primary fix
+    # (build_ltx25_scene_prompt); this discourages the duplication itself.
+    "duplicate character, cloned character, twin, repeated face, same person twice, "
     "waxy skin, plastic skin, uncanny, flickering, watermark, text, caption, subtitles"
 )
 

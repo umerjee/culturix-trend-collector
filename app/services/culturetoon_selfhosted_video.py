@@ -638,13 +638,18 @@ def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
             parts.append(_expand_visual_style(visual_style))
 
     described = []
+    position_of = {}
     for index, variant in enumerate(variants):
+        position = positions[index] if index < len(positions) else f"POSITION {index + 1}"
+        # Recorded for every cast member, even one with no description, so
+        # per-shot speaker attribution below can still place them.
+        position_of[str(getattr(variant, "id", ""))] = (getattr(variant, "name", "") or "", position)
         character = getattr(variant, "character", None)
         text = (getattr(character, "description", None) or "").strip()
         if not text:
             continue
-        position = positions[index] if index < len(positions) else f"POSITION {index + 1}"
-        described.append(f"{position}: {text}")
+        name = (getattr(variant, "name", "") or "").strip()
+        described.append(f"{position} is {name}: {text}" if name else f"{position}: {text}")
     if described:
         parts.append(f"{len(described)} characters share the scene.")
         parts.extend(described)
@@ -658,7 +663,28 @@ def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
         if not shot_text:
             continue
         lead = "SHOT 1" if index == 1 else f"CUT TO SHOT {index}"
-        parts.append(f"{lead} — {shot_text}")
+
+        # Name WHO speaks, and where they are in frame.
+        #
+        # _build_shot_prompt emits `saying "..."` with no speaker, which was
+        # fine on the 2.3 path: each shot was its own generation anchored on
+        # that speaker's photo, so identity was implicit. In this
+        # whole-scene prompt there is no per-shot anchoring, so unattributed
+        # dialogue leaves the model to guess which of several characters is
+        # talking. Confirmed live 2026-09-02: on a three-hander, the shot
+        # belonging to the third character was rendered as a DUPLICATE of
+        # the second one instead, speaking her line.
+        speaker = _resolve_shot_variant(shot, variants)
+        speaker_id = str(getattr(speaker, "id", "")) if speaker is not None else ""
+        name, position = position_of.get(speaker_id, ("", ""))
+        if name:
+            who = f"{name} ({position})" if position else name
+            focus = f"{who} is the focus of this shot"
+            if shot.get("dialogue"):
+                focus += f" and is the one speaking — the line is {name}'s, not another character's"
+            parts.append(f"{lead} — {focus}. {shot_text}")
+        else:
+            parts.append(f"{lead} — {shot_text}")
 
     parts.append(
         "Consistent character appearance throughout, faces matching the opening frame exactly. "

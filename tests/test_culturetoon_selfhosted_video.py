@@ -960,3 +960,61 @@ class TestGenerateVideoForToonSelfhosted:
         # mutate must be re-run on every attempt, not just the first — a
         # rollback expires/discards whatever it set the first time.
         assert mutate.call_count == session.commit.call_count
+
+
+class TestLTX25ScenePrompt:
+    """LTX-2.5 renders the whole scene in ONE generation, so unlike the 2.3
+    path there is no per-shot anchor to imply who is on screen — everything
+    the model needs must be in the text."""
+
+    def _cast(self, mocker):
+        def variant(vid, name, description):
+            v = mocker.Mock(id=vid, image_url="u")
+            v.name = name
+            v.character = mocker.Mock(description=description)
+            return v
+        return [
+            variant("z", "Zara", "A young curious space explorer. She wears a jumpsuit."),
+            variant("b", "Blix", "An alien buddy, round and blue. He is wise and patient."),
+            variant("n", "Captain Nova", "The captain, eccentric. She has wild hair."),
+        ]
+
+    def _script(self, mocker):
+        script = mocker.Mock(hook_line="They react to a trend.")
+        script.shots = [
+            {"shot_number": 1, "speaker_variant_id": "z", "action": "leans in", "dialogue": "Seen this?"},
+            {"shot_number": 2, "speaker_variant_id": "b", "action": "blinks", "dialogue": "Illogical."},
+            {"shot_number": 3, "speaker_variant_id": "n", "action": "throws hands up", "dialogue": "Set course!"},
+        ]
+        return script
+
+    def test_every_shot_names_its_speaker(self, mocker):
+        """Confirmed live 2026-09-02: with unattributed dialogue the third
+        character was rendered but her line was given to a DUPLICATE of the
+        second character."""
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+
+        prompt = build_ltx25_scene_prompt(self._script(mocker), self._cast(mocker))
+        assert "Zara (LEFT) is the focus" in prompt
+        assert "Blix (CENTRE) is the focus" in prompt
+        assert "Captain Nova (RIGHT) is the focus" in prompt
+        assert "the line is Captain Nova's" in prompt
+
+    def test_cast_positions_match_the_composite_anchor_order(self, mocker):
+        """The anchor pastes portraits left-to-right in cast order, so the
+        prompt's positions must agree or the model ties a line to the wrong
+        face."""
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+
+        prompt = build_ltx25_scene_prompt(self._script(mocker), self._cast(mocker))
+        assert prompt.index("LEFT is Zara") < prompt.index("CENTRE is Blix")
+        assert prompt.index("CENTRE is Blix") < prompt.index("RIGHT is Captain Nova")
+
+    def test_silent_shot_still_names_the_focus_but_claims_no_line(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+
+        script = mocker.Mock(hook_line="h")
+        script.shots = [{"shot_number": 1, "speaker_variant_id": "b", "action": "stares"}]
+        prompt = build_ltx25_scene_prompt(script, self._cast(mocker))
+        assert "Blix (CENTRE) is the focus" in prompt
+        assert "is the one speaking" not in prompt
