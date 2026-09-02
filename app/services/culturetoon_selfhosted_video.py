@@ -593,6 +593,126 @@ def generate_toon_video_selfhosted(script, variants: list, endpoint_id: str,
     )
 
 
+
+# ── LTX-2.5 ────────────────────────────────────────────────────────────────
+
+def use_ltx25() -> bool:
+    """Whether the self-hosted path should render via LTX-2.5.
+
+    Opt-in by env var rather than a hard switch: the 2.3 path below is the
+    one that has been running in production, and flipping the default
+    silently would swap the renderer for every brand at once. Set
+    LTX_MODEL_VERSION=2.5 to enable.
+    """
+    return (os.getenv("LTX_MODEL_VERSION", "") or "").strip() == "2.5"
+
+
+def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
+    """One prompt describing the WHOLE scene, cast included.
+
+    2.5 renders a multi-shot scene in a single generation (native
+    multishot), so unlike the 2.3 path this does not produce one prompt per
+    shot — cuts are expressed inside the text instead.
+
+    Character descriptions come from the parent Character row, never
+    invented. Confirmed the hard way 2026-09-02: a hand-written prompt
+    called Wen a woman when characters.description says "A Chinese man",
+    and because 2.5 denoises audio jointly with video that produced a
+    female VOICE too. On 2.3 that was impossible, since narration came from
+    a separately chosen TTS voice — so getting this from the database is no
+    longer cosmetic.
+    """
+    positions = ["LEFT", "CENTRE", "RIGHT", "FAR RIGHT", "BACKGROUND"]
+    parts = []
+
+    if background is not None:
+        name = (getattr(background, "name", None) or "").strip()
+        description = (getattr(background, "description", None) or "").strip()
+        country = (getattr(background, "country", None) or "").strip()
+        if name:
+            parts.append(f"Setting: {name}" + (f", in {country}" if country else "") + ".")
+        if description:
+            parts.append(description)
+        visual_style = (getattr(background, "visual_style", None) or "").strip()
+        if visual_style:
+            parts.append(_expand_visual_style(visual_style))
+
+    described = []
+    for index, variant in enumerate(variants):
+        character = getattr(variant, "character", None)
+        text = (getattr(character, "description", None) or "").strip()
+        if not text:
+            continue
+        position = positions[index] if index < len(positions) else f"POSITION {index + 1}"
+        described.append(f"{position}: {text}")
+    if described:
+        parts.append(f"{len(described)} characters share the scene.")
+        parts.extend(described)
+
+    hook = (getattr(script, "hook_line", None) or "").strip()
+    if hook:
+        parts.append(f"Premise: {hook}")
+
+    for index, shot in enumerate(getattr(script, "shots", None) or [], start=1):
+        shot_text = _build_shot_prompt(shot, background=None)
+        if not shot_text:
+            continue
+        lead = "SHOT 1" if index == 1 else f"CUT TO SHOT {index}"
+        parts.append(f"{lead} — {shot_text}")
+
+    parts.append(
+        "Consistent character appearance throughout, faces matching the opening frame exactly. "
+        "Natural facial performance and lip movement synced to the dialogue."
+    )
+    return " ".join(p for p in parts if p)
+
+
+def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
+                              duration_seconds: Optional[int] = None,
+                              background=None) -> bytes:
+    """Renders a whole script as ONE LTX-2.5 generation.
+
+    No per-shot loop, no LoRA, no narration mux and no last-frame chaining:
+    2.5 handles multishot and synchronized audio natively, and identity
+    comes from a composite first-frame anchor built from the cast's real
+    portraits. Every one of those workarounds existed to approximate
+    something 2.5 does itself.
+    """
+    import httpx
+    from app.media import ltx25_workflow, runpod_serverless_client
+
+    shots = getattr(script, "shots", None) or []
+    if not shots:
+        raise SelfHostedVideoGenerationError("Script has no shot data — nothing to generate")
+
+    total_duration = duration_seconds or getattr(script, "total_duration_seconds", None) or sum(
+        s.get("duration_seconds", 0) for s in shots
+    ) or 8
+
+    anchor_images = []
+    for variant in variants:
+        image_url = getattr(variant, "image_url", None)
+        if not image_url:
+            continue
+        try:
+            anchor_images.append(httpx.get(image_url, timeout=30).content)
+        except Exception:
+            logger.warning(
+                "Could not fetch %s's portrait for the composite anchor — that identity will "
+                "not be anchored", getattr(variant, "name", "?"), exc_info=True,
+            )
+    anchor = ltx25_workflow.build_composite_anchor(anchor_images)
+
+    prompt = build_ltx25_scene_prompt(script, variants, background=background)
+    workflow = ltx25_workflow.build_workflow(prompt, total_duration)
+    logger.info("LTX-2.5 generation: %ds, %d shots, %d anchored characters",
+                total_duration, len(shots), len(anchor_images))
+
+    return runpod_serverless_client.run_inference_job(
+        endpoint_id, workflow, reference_image_bytes=anchor,
+        timeout_seconds=max(_MULTI_SHOT_TIMEOUT_FLOOR_SECONDS, 300 + len(shots) * 120),
+    )
+
 def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
     """Interactive-button counterpart to culturetoon_video.py's
     generate_video_for_toon, called the same way (backgrounded from
@@ -680,10 +800,19 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
             if brand and brand.elevenlabs_api_key_encrypted:
                 elevenlabs_api_key = decrypt(brand.elevenlabs_api_key_encrypted)
 
-        video_bytes = generate_toon_video_selfhosted(
-            script, variants, endpoint_id, duration_seconds=duration, use_allocation_retry=True,
-            background=background, elevenlabs_api_key=elevenlabs_api_key,
-        )
+        # LTX-2.5 renders the whole scene in one generation with native
+        # synchronized audio and no LoRA, so it skips the per-shot loop,
+        # the Chatterbox/ElevenLabs narration path and last-frame chaining
+        # entirely — those exist to approximate what 2.5 does itself.
+        if use_ltx25():
+            video_bytes = generate_toon_video_ltx25(
+                script, variants, endpoint_id, duration_seconds=duration, background=background,
+            )
+        else:
+            video_bytes = generate_toon_video_selfhosted(
+                script, variants, endpoint_id, duration_seconds=duration, use_allocation_retry=True,
+                background=background, elevenlabs_api_key=elevenlabs_api_key,
+            )
 
         video_url = storage.upload(
             video_bytes, f"culturetoons/{toon.brand_id}/toons/{toon.id}/raw-{_uuid.uuid4().hex[:8]}.mp4", "video/mp4",
