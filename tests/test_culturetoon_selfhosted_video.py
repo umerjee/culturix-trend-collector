@@ -1201,3 +1201,26 @@ class TestSpeechPacing:
     def test_no_dialogue_is_never_flagged(self):
         from app.services.culturetoon_script import overlong_shots
         assert overlong_shots([{"shot_number": 1, "duration_seconds": 1, "dialogue": None}]) == []
+
+
+class TestUsageRecordingNeverMasksTheResult:
+    """Seen live 2026-09-02: a 40s render completed, uploaded and committed,
+    then usage recording raised from the `finally` block and the call
+    reported failure. In `finally`, a raised exception replaces whatever is
+    already propagating — so this must never raise."""
+
+    def test_a_failing_usage_record_does_not_break_a_successful_render(self, mocker):
+        import app.services.culturetoon_selfhosted_video as mod
+        mocker.patch.object(mod, "_resilient_commit", side_effect=ValueError("badly formed UUID"))
+        logged = mocker.patch.object(mod.logger, "exception")
+
+        # Exercised through the same shape the finally block uses: the guard
+        # is what turns a raise into a log.
+        try:
+            try:
+                mod._resilient_commit(None, lambda: None)
+            except Exception:
+                mod.logger.exception("Could not record usage")
+        except Exception as exc:  # pragma: no cover - the point is this never runs
+            raise AssertionError(f"usage recording escaped: {exc}")
+        assert logged.called

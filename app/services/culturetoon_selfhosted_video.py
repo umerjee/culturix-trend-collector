@@ -1015,5 +1015,18 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
                     ),
                 )
 
-            _resilient_commit(session, _apply_usage)
+            # Best-effort, and deliberately so. This runs in `finally`, where
+            # a raised exception REPLACES whatever is already propagating —
+            # so a failure here both masks the real generation outcome and
+            # turns an already-uploaded, already-committed video into a
+            # raised error. Seen live 2026-09-02: a render completed and
+            # saved, then this raised and the call reported failure.
+            # Cost tracking is worth a loud log, never the result.
+            try:
+                _resilient_commit(session, _apply_usage)
+            except Exception:
+                logger.exception(
+                    "Could not record usage for toon %s — the generation result itself is "
+                    "unaffected, but this render is missing from cost tracking", toon_id,
+                )
         session.close()
