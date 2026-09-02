@@ -56,6 +56,18 @@ RUNPOD_GPU_COST_PER_SECOND = Decimal("0.00014")         # PLACEHOLDER — see mo
 # executionTime is available.
 RUNPOD_SERVERLESS_COST_PER_SECOND = Decimal("0.00124")
 
+# How much GPU time one second of finished video costs, measured on two real
+# LTX-2.5 renders: 12s took 226s (18.8x) and 40s took ~728s (18.2x). Used to
+# quote a duration's cost BEFORE spending it — the actual charge always comes
+# from RunPod's reported executionTime via measured_selfhosted_video_cost.
+RENDER_GPU_SECONDS_PER_OUTPUT_SECOND = Decimal("18.3")
+
+
+def estimated_render_cost(duration_seconds) -> Decimal:
+    """What a video of this length is likely to cost to render."""
+    gpu_seconds = RENDER_GPU_SECONDS_PER_OUTPUT_SECOND * Decimal(str(duration_seconds or 0))
+    return (gpu_seconds * RUNPOD_SERVERLESS_COST_PER_SECOND).quantize(Decimal("0.01"))
+
 
 def measured_selfhosted_video_cost(execution_seconds: float) -> Decimal:
     """Cost from the job's ACTUAL compute time, as reported by RunPod.

@@ -55,7 +55,15 @@ logger = logging.getLogger("culturix.runpod_serverless_handler")
 
 _COMFYUI_URL = "http://127.0.0.1:8188"
 _STARTUP_TIMEOUT_SECONDS = int(os.getenv("COMFYUI_STARTUP_TIMEOUT_SECONDS", "120"))
-_JOB_TIMEOUT_SECONDS = int(os.getenv("COMFYUI_JOB_TIMEOUT_SECONDS", "1200"))
+# Must stay >= the client's own run_inference_job timeout, or the worker
+# gives up on a job the backend is still waiting for. Raised with
+# MAX_TOTAL_SECONDS: at ~18.3 GPU seconds per second of output, a 180s
+# explainer is ~55 minutes of generation.
+#
+# NOTE: the RunPod template's COMFYUI_JOB_TIMEOUT_SECONDS env var OVERRIDES
+# this default, and already-running workers keep whatever value they
+# started with — so raising it here alone does nothing to a live endpoint.
+_JOB_TIMEOUT_SECONDS = int(os.getenv("COMFYUI_JOB_TIMEOUT_SECONDS", "3600"))
 _POLL_INTERVAL_SECONDS = 3
 
 _chatterbox_model = None

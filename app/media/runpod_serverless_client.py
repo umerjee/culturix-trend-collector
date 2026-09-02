@@ -97,7 +97,7 @@ def _extract_output_bytes(output: dict) -> bytes:
     )
 
 
-def run_inference_job(endpoint_id: str, workflow_json: dict = None, timeout_seconds: int = 1200,
+def run_inference_job(endpoint_id: str, workflow_json: dict = None, timeout_seconds: int = 3600,
                        poll_interval: int = _POLL_INTERVAL, reference_image_bytes: bytes = None,
                        narration_audio_bytes: bytes = None,
                        shot_workflows: list = None, shot_reference_images: list = None,

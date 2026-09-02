@@ -155,9 +155,20 @@ def is_informative_tone(tone: Optional[str]) -> bool:
 # below — a script written for a 60s self-hosted clip still can't be
 # rendered via Kling, enforced separately at generate-time.
 MIN_SHOTS = 2
-MAX_SHOTS = 15
+# Raised for explainers 2026-09-02. A skit lands in 15-30s, but an
+# explainer needs room to state a problem, give the mechanism and land the
+# consequence — and now that fit_shot_durations paces lines properly,
+# duration is set by how much there is to SAY rather than trimmed to fit an
+# arbitrary ceiling.
+#
+# The binding constraint is render time, not the script. Measured on real
+# renders: 12s took 226s of GPU and 40s took ~728s, so roughly 18.3 GPU
+# seconds per second of output. 180s of video is therefore ~55 minutes of
+# GPU and about $4 — which is why the client and worker job timeouts had to
+# move with this number. See RENDER_GPU_SECONDS_PER_OUTPUT_SECOND.
+MAX_SHOTS = 30
 MIN_TOTAL_SECONDS = 3
-MAX_TOTAL_SECONDS = 60
+MAX_TOTAL_SECONDS = 180
 # Kling Omni's real (unverified-but-assumed, see this module's own history)
 # per-call ceiling — used by build_kling_prompt below and by the router's
 # provider-specific check in generate_toon_video. Unchanged from the

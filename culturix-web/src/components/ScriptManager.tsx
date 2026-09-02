@@ -33,9 +33,19 @@ const DURATION_PRESETS = [
   // "not via Kling" rather than "self-hosted only": self-hosted is now the
   // default renderer, so framing the longer options as a restriction on it
   // read backwards — the limit belongs to Kling Omni (6 shots / 15s).
-  { key: "quick", label: "Quick (~15s)", numShots: 5, duration: 15 },
-  { key: "standard", label: "Standard (~30s) — not via Kling", numShots: 9, duration: 30 },
-  { key: "extended", label: "Extended (~60s) — not via Kling", numShots: 14, duration: 60 },
+  // Cost is quoted in the label because it is the thing that actually varies
+  // here: render time scales with duration at ~18.3 GPU seconds per second of
+  // output (measured — 12s took 226s, 40s took ~728s), so a 3-minute explainer
+  // is ~55 minutes of GPU and roughly twelve times the price of a 15s skit.
+  // Mirrors estimated_render_cost() in app/services/culturetoon_usage.py.
+  { key: "quick", label: "Quick (~15s) — ~$0.35", numShots: 5, duration: 15 },
+  { key: "standard", label: "Standard (~30s) — ~$0.70, not via Kling", numShots: 9, duration: 30 },
+  { key: "extended", label: "Extended (~60s) — ~$1.40, not via Kling", numShots: 14, duration: 60 },
+  // Explainer lengths. Worth their cost only when there is genuinely that
+  // much to say — fit_shot_durations sizes shots from the script's own words,
+  // so a thin script padded to 3 minutes just renders slow silence.
+  { key: "deep", label: "In depth (~2 min) — ~$2.70, explainers", numShots: 20, duration: 120 },
+  { key: "full", label: "Full explainer (~3 min) — ~$4.10", numShots: 28, duration: 180 },
 ] as const;
 
 interface Props {

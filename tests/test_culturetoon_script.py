@@ -909,3 +909,57 @@ class TestFitShotDurations:
             {"shot_number": 2, "duration_seconds": 3, "dialogue": " ".join(["w"] * 14)},
         ])
         assert overlong_shots(fitted) == []
+
+
+class TestLongerExplainerLimits:
+    """Raising MAX_TOTAL_SECONDS alone would let the backend accept a script
+    that the render pipeline then times out on, wasting the whole GPU spend.
+    The timeouts have to stay above the longest renderable script."""
+
+    def test_script_ceiling_allows_a_three_minute_explainer(self):
+        from app.services.culturetoon_script import MAX_TOTAL_SECONDS, MAX_SHOTS
+        assert MAX_TOTAL_SECONDS >= 180
+        assert MAX_SHOTS >= 28
+
+    def test_kling_ceiling_is_untouched(self):
+        """Kling Omni's real per-call limit is unrelated to the self-hosted
+        one and must not drift up with it."""
+        from app.services.culturetoon_script import KLING_MAX_SHOTS, KLING_MAX_TOTAL_SECONDS
+        assert KLING_MAX_SHOTS == 6
+        assert KLING_MAX_TOTAL_SECONDS == 15
+
+    def test_client_timeout_covers_the_longest_script(self):
+        import inspect
+        from app.media.runpod_serverless_client import run_inference_job
+        from app.services.culturetoon_script import MAX_TOTAL_SECONDS
+        from app.services.culturetoon_usage import RENDER_GPU_SECONDS_PER_OUTPUT_SECOND
+
+        default = inspect.signature(run_inference_job).parameters["timeout_seconds"].default
+        needed = float(RENDER_GPU_SECONDS_PER_OUTPUT_SECOND) * MAX_TOTAL_SECONDS
+        assert default >= needed, (
+            f"a {MAX_TOTAL_SECONDS}s script needs ~{needed:.0f}s of render time "
+            f"but the client gives up at {default}s"
+        )
+
+    def test_worker_timeout_is_not_below_the_client_timeout(self):
+        """The worker abandoning a job the backend still waits on is the
+        worst case: full GPU spend, no video, and a confusing error."""
+        import inspect, re, pathlib
+        from app.media.runpod_serverless_client import run_inference_job
+
+        client_default = inspect.signature(run_inference_job).parameters["timeout_seconds"].default
+        handler = pathlib.Path("deploy/runpod_serverless/handler.py").read_text(encoding="utf-8")
+        worker_default = int(re.search(
+            r'COMFYUI_JOB_TIMEOUT_SECONDS", "(\d+)"', handler).group(1))
+        assert worker_default >= client_default
+
+
+class TestRenderCostEstimate:
+    def test_cost_scales_with_duration(self):
+        from app.services.culturetoon_usage import estimated_render_cost
+        assert estimated_render_cost(60) > estimated_render_cost(30)
+
+    def test_matches_the_measured_render(self):
+        """The real 40s render cost $0.90; the estimate must land near it."""
+        from app.services.culturetoon_usage import estimated_render_cost
+        assert 0.80 <= float(estimated_render_cost(40)) <= 1.00
