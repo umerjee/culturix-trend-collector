@@ -442,7 +442,20 @@ app.include_router(culturetoons_router, dependencies=[Depends(require_internal_s
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """Also reports WHICH commit is serving, because "is my change actually
+    live?" has been a recurring, expensive question here — a push can restart
+    the container without rebuilding, and a failed health check can leave an
+    older build serving while the deploy log looks finished. Everything under
+    /api is behind the internal-secret guard, so this unauthenticated endpoint
+    was the only thing observable from outside, and it said nothing about the
+    code it was running.
+
+    RAILWAY_GIT_COMMIT_SHA is injected by Railway itself; "unknown" locally.
+    """
+    return {
+        "status": "ok",
+        "commit": (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "unknown")[:7],
+    }
 
 
 # ── Collectors ────────────────────────────────────────────────────────────────
