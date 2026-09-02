@@ -39,20 +39,49 @@ def _fetch_object_info(base_url: str) -> dict:
     return resp.json()
 
 
+_PRIMITIVE_TYPES = {"INT", "FLOAT", "STRING", "BOOLEAN"}
+
+
 def _ordered_input_names(class_schema: dict) -> list:
     """Widget values appear in the order ComfyUI declares required-then-
     optional inputs, skipping link-only (node-connection) inputs. Only
-    inputs whose type is a list (a combo/dropdown) or a primitive
-    (INT/FLOAT/STRING/BOOLEAN) consume a widget slot."""
+    inputs that occupy a widget slot are returned.
+
+    A widget input is either a combo — expressed EITHER as a list of
+    choices, or as the literal string "COMBO" when the choices are supplied
+    dynamically (e.g. LatentUpscaleModelLoader.model_name) — or a primitive.
+    Missing the string form silently dropped such inputs entirely, leaving
+    e.g. VAELoader/LatentUpscaleModelLoader with no filename at all.
+
+    Ordering comes from the schema's own `input_order`, NOT from iterating
+    the `input` dict: /object_info serialises that dict ALPHABETICALLY, so
+    iterating it silently scrambles the positional mapping. Confirmed
+    against EmptyLTXVLatentVideo, whose widgets are [768, 512, 97, 1]
+    (width, height, length, batch_size) while the dict iterates as
+    batch_size, height, length, width — mapping width's 768 onto
+    batch_size. `input_order` gives the real declaration order.
+    """
     names = []
     spec = class_schema.get("input", {}) or {}
+    order = class_schema.get("input_order") or {}
     for section in ("required", "optional"):
-        for name, definition in (spec.get(section) or {}).items():
+        section_spec = spec.get(section) or {}
+        # Fall back to dict order only if input_order is absent (older
+        # ComfyUI); it is the best available signal then, not a correct one.
+        ordered_names = order.get(section) or list(section_spec.keys())
+        for name in ordered_names:
+            definition = section_spec.get(name)
             if not isinstance(definition, (list, tuple)) or not definition:
                 continue
             type_spec = definition[0]
-            is_combo = isinstance(type_spec, list)
-            is_primitive = type_spec in ("INT", "FLOAT", "STRING", "BOOLEAN")
+            is_combo = isinstance(type_spec, list) or type_spec == "COMBO"
+            # Types can be a UNION expressed as a comma-separated string —
+            # LTXVEmptyLatentAudio.frame_rate is "FLOAT,INT". An exact-match
+            # check drops those, which shifts every later widget by one
+            # position (it put frame_rate's 25 into batch_size).
+            is_primitive = isinstance(type_spec, str) and any(
+                part.strip() in _PRIMITIVE_TYPES for part in type_spec.split(",")
+            )
             if is_combo or is_primitive:
                 names.append(name)
     return names
@@ -103,14 +132,25 @@ def convert(workflow: dict, object_info: dict) -> dict:
             if name and link_id is not None and link_id in link_sources:
                 inputs[name] = link_sources[link_id]
 
-        # 2) widget values, positionally against the schema's widget inputs,
-        #    skipping any name already satisfied by a link
+        # 2) widget values, positionally against the schema's widget inputs.
+        #
+        # A widget input that is ALSO linked still occupies its slot in
+        # widgets_values (ComfyUI keeps the last widget value there, and the
+        # node's own `inputs` entry carries both `widget` and a non-null
+        # `link`). So the positional walk must cover EVERY widget name and
+        # skip the linked ones in place — compacting the name list first
+        # shifts every later value by one, which silently put the
+        # transformer filename into UNETLoader.weight_dtype instead of
+        # unet_name.
         widget_values = node.get("widgets_values")
         if isinstance(widget_values, dict):
-            inputs.update(widget_values)
+            for name, value in widget_values.items():
+                if name not in inputs:
+                    inputs[name] = value
         elif isinstance(widget_values, list):
-            widget_names = [n for n in _ordered_input_names(schema) if n not in inputs]
-            for name, value in zip(widget_names, widget_values):
+            for name, value in zip(_ordered_input_names(schema), widget_values):
+                if name in inputs:
+                    continue  # satisfied by a link; its slot is still consumed
                 inputs[name] = value
 
         api[node_id] = {"class_type": class_type, "inputs": inputs}
