@@ -3438,15 +3438,41 @@ def generate_toon_video(toon_id: str, body: dict, background_tasks: BackgroundTa
         if not variant:
             raise HTTPException(status_code=400, detail="Character variant not found")
 
-        provider = body.get("provider") or ("self_hosted" if variant.lora_status == "ready" else "kling_omni")
+        from app.services.culturetoon_selfhosted_video import use_ltx25
+        ltx25 = use_ltx25()
+
+        # LTX-2.5 carries character identity with a composite first-frame
+        # anchor built from the cast's real portraits, so a trained LoRA is
+        # not required — or even used. Gating on lora_status under 2.5 would
+        # permanently route every character without one to Kling, which is
+        # the opposite of the intent. What it actually needs is a portrait
+        # per character.
+        if ltx25:
+            provider = body.get("provider") or ("self_hosted" if variant.image_url else "kling_omni")
+        else:
+            provider = body.get("provider") or ("self_hosted" if variant.lora_status == "ready" else "kling_omni")
+
         if provider == "self_hosted":
             cast = _resolve_script_cast(session, script, toon)
-            not_ready = [v.name for v in cast if v.lora_status != "ready"]
-            if not cast or not_ready:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Character(s) not ready for self-hosted generation (no trained LoRA): {', '.join(not_ready) or 'unknown'}",
-                )
+            if not cast:
+                raise HTTPException(status_code=400, detail="Script has no resolvable cast to generate for")
+            if ltx25:
+                missing_portraits = [v.name for v in cast if not v.image_url]
+                if missing_portraits:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Character(s) have no portrait image to anchor identity on: "
+                            f"{', '.join(missing_portraits)}. Generate or upload one first."
+                        ),
+                    )
+            else:
+                not_ready = [v.name for v in cast if v.lora_status != "ready"]
+                if not_ready:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Character(s) not ready for self-hosted generation (no trained LoRA): {', '.join(not_ready)}",
+                    )
         else:
             if variant.element_status != "ready":
                 raise HTTPException(status_code=400, detail="Character variant is not a ready Kling element — register it first")

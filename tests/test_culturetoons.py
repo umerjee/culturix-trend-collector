@@ -2381,6 +2381,63 @@ class TestToons:
             )
         assert exc_info.value.status_code == 400
 
+    def _ready_toon(self, db, user_id, brand, variant):
+        script = culturetoons.create_script({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+        })
+        session = db()
+        row = session.query(ToonScript).filter_by(id=uuid.UUID(script["id"])).first()
+        row.shots = [{"shot_number": 1, "duration_seconds": 4, "action": "waves",
+                      "expression": "Happy", "dialogue": None}]
+        session.commit()
+        session.close()
+        return culturetoons.create_toon({
+            "user_id": user_id, "brand_id": brand["id"],
+            "character_variant_id": variant["id"], "script_id": script["id"],
+        })
+
+    def test_ltx25_routes_to_selfhosted_on_a_portrait_with_no_lora(
+        self, db, user_id, brand_and_character, mocker, monkeypatch,
+    ):
+        """Under LTX-2.5 identity comes from a composite first-frame anchor,
+        not a LoRA. Gating on lora_status would permanently route every
+        character without one to Kling — the opposite of the intent."""
+        monkeypatch.setenv("LTX_MODEL_VERSION", "2.5")
+        brand, _character, variant = brand_and_character
+        session = db()
+        row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        row.lora_status = "none"          # deliberately NOT trained
+        row.image_url = "https://supabase/portrait.png"
+        session.commit()
+        session.close()
+
+        toon = self._ready_toon(db, user_id, brand, variant)
+        mocker.patch("app.services.culturetoon_selfhosted_video.generate_video_for_toon_selfhosted")
+        result = culturetoons.generate_toon_video(
+            toon["id"], {"user_id": user_id, "brand_id": brand["id"]}, BackgroundTasks(),
+        )
+        assert result["provider"] == "self_hosted"
+
+    def test_ltx25_rejects_a_character_with_no_portrait_to_anchor_on(
+        self, db, user_id, brand_and_character, mocker, monkeypatch,
+    ):
+        monkeypatch.setenv("LTX_MODEL_VERSION", "2.5")
+        brand, _character, variant = brand_and_character
+        session = db()
+        row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
+        row.lora_status = "none"
+        row.image_url = None
+        session.commit()
+        session.close()
+
+        toon = self._ready_toon(db, user_id, brand, variant)
+        with pytest.raises(HTTPException) as exc:
+            culturetoons.generate_toon_video(
+                toon["id"], {"user_id": user_id, "brand_id": brand["id"], "provider": "self_hosted"},
+                BackgroundTasks(),
+            )
+        assert "portrait" in str(exc.value.detail).lower()
+
     def test_generate_video_auto_picks_selfhosted_when_lora_ready(self, db, user_id, brand_and_character, mocker):
         brand, _character, variant = brand_and_character
         session = db()
