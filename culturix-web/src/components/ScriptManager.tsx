@@ -113,6 +113,12 @@ function SceneEnvironment({
   const shots = script.shots ?? [];
   const withLighting = shots.filter((sh) => (sh.lighting ?? "").trim()).length;
   const withBlocking = shots.filter((sh) => (sh.blocking ?? "").trim()).length;
+  // How much of the video is actually ON the subject. A script where every
+  // shot is the presenter is the failure mode this makes visible: the words
+  // can be perfect while the viewer never sees the thing being described.
+  const onSubject = shots.filter(
+    (sh) => sh.shot_focus === "subject" || sh.shot_focus === "both"
+  ).length;
 
   return (
     <div className="mt-2 rounded-lg border border-gray-100 bg-gray-50/70 px-2.5 py-2">
@@ -214,6 +220,12 @@ function SceneEnvironment({
         <p className="text-[10px] text-gray-400 mt-1.5">
           Lighting on {withLighting}/{shots.length} shots · Blocking on {withBlocking}/{shots.length}
           {withLighting === 0 && withBlocking === 0 && " — use ✨ AI to add cinematic detail"}
+        </p>
+      )}
+      {shots.length > 0 && !editing && !promptOpen && (
+        <p className={`text-[10px] mt-0.5 ${onSubject === 0 ? "text-amber-600" : "text-gray-400"}`}>
+          {onSubject}/{shots.length} shots show the subject
+          {onSubject === 0 && " — every shot is a character talking. Regenerate to cut away to what they're describing."}
         </p>
       )}
       {error && <p className="text-[10px] text-red-500 mt-1">{error}</p>}

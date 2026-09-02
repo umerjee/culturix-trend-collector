@@ -819,3 +819,42 @@ class TestInformativeTones:
         from app.services.culturetoon_script import TONE_OPTIONS
         for t in ("educational", "explainer", "informative", "inspirational"):
             assert t in TONE_OPTIONS
+
+
+class TestNarrationOverPerformance:
+    """A live explainer put a black hole on a classroom TABLE as a glowing
+    desk model and gave every shot to the presenter tripping over books. Two
+    separate causes: the action field demanded an "exaggerated physical
+    beat", and nothing said to show the phenomenon at real scale."""
+
+    def _prompt(self, mocker, tone):
+        from app.models.cluster import Cluster
+        v = mocker.Mock(); v.name = "Zara"; v.description = "explorer"; v.culture_tag = None
+        fake = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_toon_script(Cluster(label=1, theme="Black holes", summary="x"),
+                             variants=[v], tone=tone)
+        return fake.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+
+    def test_explainers_put_the_subject_on_screen_not_the_presenter(self, mocker):
+        prompt = self._prompt(mocker, "educational")
+        assert "SHOW THE PHENOMENON, not the presenter" in prompt
+        assert "MAJORITY of shots must be shot_focus" in prompt
+        assert "NARRATOR here, not the subject" in prompt
+
+    def test_explainers_forbid_slapstick(self, mocker):
+        prompt = self._prompt(mocker, "educational")
+        assert "they do not trip, drop things, flail or do slapstick" in prompt
+        assert "exaggerated physical beat" not in prompt
+
+    def test_skits_keep_their_physical_comedy(self, mocker):
+        prompt = self._prompt(mocker, "funny")
+        assert "exaggerated physical beat" in prompt
+        assert "do not trip, drop things" not in prompt
+
+    def test_both_tones_forbid_a_miniature_standing_in_for_the_subject(self, mocker):
+        """A desk model of a black hole is the same failure as staging a
+        Minecraft trend in a living room — it applies to comedy too."""
+        for tone in ("educational", "funny"):
+            prompt = self._prompt(mocker, tone)
+            assert "SHOW IT AT REAL SCALE" in prompt
+            assert "Never substitute a desk model" in prompt

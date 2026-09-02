@@ -475,6 +475,13 @@ Output the REVISED version of this exact script, addressing only what the critic
             "the point, not the jokes."
         ).format(source=source_type, tone=tone)
         length_clause = "if it better serves the explanation"
+        # Restrained on purpose: the comedy rule below demands an "exaggerated
+        # physical beat", which in a science explainer produced the presenter
+        # tripping over and dropping books between facts.
+        action_rule = """describes what the character is physically doing, kept RESTRAINED (max ~12
+  words) — they are narrating a phenomenon, not performing. A presenter gestures toward what
+  they are explaining; they do not trip, drop things, flail or do slapstick. No physical
+  comedy. Null on a "subject" shot."""
         craft_block = f"""Teaching craft — what separates a real explainer from vague content that sounds
 informative but teaches nothing:
 - ONE clear takeaway. Decide the single thing the viewer should be able to repeat afterwards,
@@ -491,6 +498,15 @@ informative but teaches nothing:
   character who is blunt explains bluntly.
 - Accuracy is a hard requirement. Do not invent statistics, studies or quotes. If you don't
   know a real number, describe the mechanism instead of fabricating a figure.
+- SHOW THE PHENOMENON, not the presenter. The viewer came for the black hole, not for the
+  person describing it. The MAJORITY of shots must be shot_focus "subject" — the thing
+  itself, at real scale, filling the frame — with the character's voice carried over them as
+  voiceover. Cut to the character only where seeing a face genuinely adds something: a
+  reaction to a startling fact, or a moment of direct address. A script where every shot is
+  the presenter holding a prop has failed, however good the words are.
+- The character is the NARRATOR here, not the subject. Their personality lives in HOW they
+  say things — word choice, delivery, what amazes them — not in physical business invented to
+  give them something to do on camera.
 
 Concrete example of the gap between a WEAK draft and what you should actually write —
 same premise (explaining why AI models hallucinate), same length:
@@ -525,6 +541,10 @@ concreteness and structure on every shot."""
             f"social video, grounded in the {source_type} below. The tone must be: {tone}."
         )
         length_clause = "if it better serves the joke"
+        action_rule = """describes the character's specific physical performance/movement in that
+  shot (max ~15 words) — a concrete, exaggerated physical beat (e.g. "sweating, dancing
+  manically" or "aggressively taps a stopwatch"), not a generic verb like "gestures" or
+  "reacts." """
         craft_block = """Comedy craft — the single biggest thing separating a flat skit from a genuinely funny one:
 - SPECIFICITY over generality. Never write a generic statement a real person might mildly
   say ("we celebrate with a big feast") — write the hyper-specific, concrete version instead
@@ -611,9 +631,7 @@ Requirements:
 - "blocking" says WHERE each character is in the frame and what they physically hold (max ~20
   words) — e.g. "Hans left with the laptop, Kumar centre holding a mug, Wen right with a book".
   Positions and held props keep characters distinguishable even when faces are small or moving.
-- "action" describes the character's specific physical performance/movement in that shot (max
-  ~15 words) — a concrete, exaggerated physical beat (e.g. "sweating, dancing manically" or
-  "aggressively taps a stopwatch"), not a generic verb like "gestures" or "reacts."
+- "action" {action_rule}
 - "shot_focus" is WHAT THE CAMERA IS ON, one of exactly: {SHOT_FOCUS_TYPES}.
     "character" — the character performs on camera. A talking head.
     "subject"   — the camera is on the THING being talked about, and NO character is visible
@@ -628,6 +646,10 @@ Requirements:
   (max ~30 words) — the thing itself, cinematically, with scale and motion: "a supermassive
   black hole filling frame, orange accretion disk churning, starlight bending around the
   event horizon". Null only when shot_focus is "character".
+  SHOW IT AT REAL SCALE. Never substitute a desk model, a toy, a poster, a diagram, a
+  projector or a screen for the phenomenon itself — a black hole is the actual black hole
+  in space, filling the frame, not a glowing prop on a classroom table. A miniature on a
+  table is the same failure as staging a Minecraft trend in a living room.
 - "voiceover" is true when the character's dialogue is HEARD OVER the shot while they are not
   on screen — the standard way to open on the subject and still have someone narrating it.
   Only meaningful when shot_focus is "subject"; false otherwise.
