@@ -73,6 +73,18 @@ function CastChip({ label, selected, disabled, onClick }: { label: string; selec
   );
 }
 
+// Phrased as instructions to the writer, because that is exactly how they
+// are sent — appended into the same note the free-text box feeds. Each one
+// targets a field the video prompt actually reads (setting, lighting,
+// blocking, per-shot camera), so they change the render, not just the page.
+const ENRICH_SUGGESTIONS = [
+  "Put the scene inside the world it's talking about, described physically — not a room where people discuss it.",
+  "Give every shot directional lighting with a named source and colour.",
+  "Add blocking: where each character is in frame and what they hold.",
+  "Vary the camera — no two consecutive shots with the same shot type.",
+  "Make the punchline land harder and cut the setup shorter.",
+];
+
 function scriptHasScene(s: ToonScript): boolean {
   if (s.scene_direction && s.scene_direction.trim()) return true;
   return !!s.shots?.some((shot) => shot.action?.trim());
@@ -856,7 +868,7 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                     <button
                       onClick={() => setRegenerateNoteOpenId((prev) => (prev === s.id ? null : s.id))}
                       disabled={regeneratingId === s.id || editingScriptId === s.id}
-                      title="Regenerate with your own note (e.g. 'make the ending bigger')"
+                      title="Enrich this script with AI — tell it what to deepen"
                       className="text-gray-300 hover:text-blue-500 transition-colors disabled:opacity-40"
                     >
                       <MessageSquarePlus className="h-3.5 w-3.5" />
@@ -880,27 +892,59 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
               </div>
               {regenerateErrors[s.id] && <p className="text-[11px] text-red-500 mb-2">{regenerateErrors[s.id]}</p>}
               {regenerateNoteOpenId === s.id && (
-                <div className="flex items-center gap-2 rounded-lg bg-blue-50 border border-blue-100 px-2.5 py-2 mb-2">
-                  <input
-                    type="text"
+                <div className="rounded-lg bg-blue-50 border border-blue-100 px-2.5 py-2 mb-2">
+                  <p className="text-[11px] text-blue-900 font-medium mb-1.5">
+                    Enrich this script with AI
+                  </p>
+                  <p className="text-[10px] text-blue-700/70 mb-1.5">
+                    It revises the draft you already have — same characters and
+                    beats — so ask for what to deepen, not for a new story.
+                  </p>
+                  {/* One tap for the asks that actually move video quality.
+                      Appended rather than replacing, so several can stack. */}
+                  <div className="flex flex-wrap gap-1 mb-1.5">
+                    {ENRICH_SUGGESTIONS.map((suggestion) => (
+                      <button
+                        key={suggestion}
+                        type="button"
+                        onClick={() =>
+                          setRegenerateNoteDrafts((prev) => {
+                            const current = (prev[s.id] ?? "").trim();
+                            return { ...prev, [s.id]: current ? `${current} ${suggestion}` : suggestion };
+                          })
+                        }
+                        disabled={regeneratingId === s.id}
+                        className="text-[10px] rounded-full bg-white border border-blue-200 text-blue-700 px-2 py-0.5 hover:bg-blue-100 disabled:opacity-40"
+                      >
+                        + {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                  <textarea
                     autoFocus
+                    rows={3}
                     value={regenerateNoteDrafts[s.id] ?? ""}
                     onChange={(e) => setRegenerateNoteDrafts((prev) => ({ ...prev, [s.id]: e.target.value }))}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter" && (regenerateNoteDrafts[s.id] ?? "").trim()) {
+                      // Enter makes newlines in a textarea, so submit moves to
+                      // the usual modifier chord.
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && (regenerateNoteDrafts[s.id] ?? "").trim()) {
                         regenerateScript(s.id, (regenerateNoteDrafts[s.id] ?? "").trim());
                       }
                     }}
-                    placeholder="What should change? e.g. 'make the ending bigger'"
-                    className="flex-1 text-xs bg-white border border-blue-200 rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-300"
+                    placeholder="e.g. Set this inside a Minecraft world — blocky cubic terrain, pixelated textures, torch-lit caves — and give every shot directional lighting."
+                    className="w-full text-xs bg-white border border-blue-200 rounded-md px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-300"
                   />
-                  <button
-                    onClick={() => regenerateScript(s.id, (regenerateNoteDrafts[s.id] ?? "").trim())}
-                    disabled={regeneratingId === s.id || !(regenerateNoteDrafts[s.id] ?? "").trim()}
-                    className="text-[11px] font-medium text-blue-700 hover:text-blue-900 disabled:opacity-40 shrink-0"
-                  >
-                    {regeneratingId === s.id ? "Regenerating…" : "Regenerate →"}
-                  </button>
+                  <div className="flex items-center justify-between mt-1.5">
+                    <span className="text-[10px] text-blue-700/60">⌘/Ctrl + Enter</span>
+                    <button
+                      onClick={() => regenerateScript(s.id, (regenerateNoteDrafts[s.id] ?? "").trim())}
+                      disabled={regeneratingId === s.id || !(regenerateNoteDrafts[s.id] ?? "").trim()}
+                      className="text-[11px] font-medium text-blue-700 hover:text-blue-900 disabled:opacity-40 shrink-0"
+                    >
+                      {regeneratingId === s.id ? "Enriching…" : "Enrich script →"}
+                    </button>
+                  </div>
                 </div>
               )}
               {s.comedy_judgment && !s.comedy_judgment.judge_failed && s.comedy_judgment.passes_bar === false && (
@@ -1013,6 +1057,18 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                             className="w-full rounded-md border border-gray-200 px-1.5 py-1 text-[11px]"
                           />
                           <input
+                            type="text" value={shot.lighting ?? ""}
+                            onChange={(e) => updateEditShotField(i, "lighting", e.target.value)}
+                            placeholder="Lighting — give it a direction, e.g. warm lamp from frame left, cold window light right"
+                            className="w-full rounded-md border border-gray-200 px-1.5 py-1 text-[11px]"
+                          />
+                          <input
+                            type="text" value={shot.blocking ?? ""}
+                            onChange={(e) => updateEditShotField(i, "blocking", e.target.value)}
+                            placeholder="Blocking — who is where, and what they hold"
+                            className="w-full rounded-md border border-gray-200 px-1.5 py-1 text-[11px]"
+                          />
+                          <input
                             type="text" value={shot.action}
                             onChange={(e) => updateEditShotField(i, "action", e.target.value)}
                             placeholder="Action — physical performance"
@@ -1055,7 +1111,15 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                 <>
                   {s.hook_line && <p className="text-sm font-medium text-gray-900">&quot;{s.hook_line}&quot;</p>}
                   {s.dialogue && <p className="text-sm text-gray-600 mt-1">{s.dialogue}</p>}
-                  {s.scene_direction && <p className="text-xs text-gray-400 mt-1 italic">{s.scene_direction}</p>}
+                  {/* Labelled rather than anonymous grey italic: this text is
+                      what the video renders the world from, so it needs to be
+                      recognisable as an editable lever, not decoration. */}
+                  {s.scene_direction && (
+                    <p className="text-xs text-gray-500 mt-1.5 rounded-md bg-gray-50 border border-gray-100 px-2 py-1.5">
+                      <span className="text-gray-400 uppercase tracking-wide text-[10px]">Setting</span>{" "}
+                      {s.scene_direction}
+                    </p>
+                  )}
                   {s.shots && s.shots.length > 0 && (
                     <ol className="mt-2 space-y-2">
                       {s.shots.map((shot) => (
@@ -1075,6 +1139,12 @@ export default function ScriptManager({ brandId, scripts, setScripts, variants, 
                           </span>
                           {shot.visual && (
                             <p className="mt-0.5"><span className="text-gray-400">Visual:</span> {shot.visual}</p>
+                          )}
+                          {shot.lighting && (
+                            <p className="mt-0.5"><span className="text-gray-400">Lighting:</span> {shot.lighting}</p>
+                          )}
+                          {shot.blocking && (
+                            <p className="mt-0.5"><span className="text-gray-400">Blocking:</span> {shot.blocking}</p>
                           )}
                           <p className="mt-0.5">
                             <span className="text-gray-400">Action:</span> {shot.action}

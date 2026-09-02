@@ -3057,7 +3057,7 @@ def regenerate_script(script_id: str, body: dict):
     from app.models.character_variant import CharacterVariant
     from app.services.culturetoon_script import (
         generate_toon_script, generate_toon_script_from_idea, judge_script_comedy,
-        ToonScriptGenerationError, TONE_OPTIONS as _TONES,
+        label_speakers, ToonScriptGenerationError, TONE_OPTIONS as _TONES,
     )
 
     user_id = body.get("user_id")
@@ -3110,7 +3110,15 @@ def regenerate_script(script_id: str, body: dict):
         # concrete to anchor to and edit minimally instead of rewriting the
         # whole story — see _build_prompt_from_context's REVISION MODE.
         previous_draft = (
-            {"hook_line": script.hook_line, "shots": script.shots}
+            {
+                "hook_line": script.hook_line,
+                # Names restored from speaker_variant_id — see label_speakers.
+                "shots": label_speakers(script.shots, variants),
+                # Include the current world too, so "make the lighting
+                # moodier" revises the setting that's actually there
+                # instead of inventing a new one the shots then clash with.
+                "setting": script.scene_direction,
+            }
             if critique_feedback and script.shots else None
         )
 
@@ -3149,6 +3157,15 @@ def regenerate_script(script_id: str, body: dict):
         script.tone = result.get("tone")
         script.shots = result.get("shots")
         script.total_duration_seconds = result.get("total_duration_seconds")
+        # The world the scene plays in, same as the create paths. Without
+        # this a regeneration kept the OLD setting while replacing every
+        # shot around it — and since the video prompt reads the setting from
+        # here, "enrich this into the Minecraft world" produced new shots
+        # still rendered against the previous bland background. Only
+        # overwrite when the model actually returned one, so an enrich that
+        # omits `setting` doesn't wipe a setting the user hand-wrote.
+        if result.get("setting"):
+            script.scene_direction = result["setting"]
         script.comedy_judgment = judge_script_comedy(result)
         script.status = "draft"
         session.commit()

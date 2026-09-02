@@ -712,6 +712,15 @@ export interface ToonScriptShot {
   // both instead of one vague merged description. Optional/absent on
   // scripts generated before this field existed.
   visual?: string | null;
+  // Light in THIS shot, with a stated direction ("warm lamp from frame left,
+  // cold window light right"). Consistent directional light is what makes
+  // separate shots read as one continuous scene rather than unrelated clips.
+  lighting?: string | null;
+  // Where each character sits in frame and what they hold. Positions and
+  // held props keep characters distinguishable when faces are small or
+  // moving — which matters more under LTX-2.5, where identity rides on a
+  // first-frame anchor rather than a per-character trained model.
+  blocking?: string | null;
   action: string;
   expression: (typeof EXPRESSION_NAMES)[number] | null;
   dialogue: string | null;

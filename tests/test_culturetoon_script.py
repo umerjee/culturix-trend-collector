@@ -14,6 +14,8 @@ from app.services.culturetoon_script import (
     judge_script_comedy,
     ToonScriptGenerationError,
     _assign_speakers,
+    _format_script_for_prompt,
+    label_speakers,
 )
 
 
@@ -425,6 +427,58 @@ class TestAssignSpeakers:
         shots = [{"shot_number": 1, "speaker_name": "kumar"}]
         result = _assign_speakers(shots, [v])
         assert result[0]["speaker_variant_id"] == "abc"
+
+
+class TestLabelSpeakers:
+    """Round-trip guard: a persisted script fed back as a revision draft must
+    carry speaker NAMES again, or the model re-attributes dialogue and a
+    character who should speak silently loses their line to someone else."""
+
+    def test_restores_name_from_speaker_variant_id(self, mocker):
+        v = mocker.Mock(); v.id = "abc"; v.name = "Captain Nova"
+        result = label_speakers([{"shot_number": 1, "speaker_variant_id": "abc"}], [v])
+        assert result[0]["speaker_name"] == "Captain Nova"
+
+    def test_round_trips_with_assign_speakers(self, mocker):
+        v = mocker.Mock(); v.id = "abc"; v.name = "Kumar"
+        stored = _assign_speakers([{"shot_number": 1, "speaker_name": "Kumar"}], [v])
+        assert "speaker_name" not in stored[0]
+        assert label_speakers(stored, [v])[0]["speaker_name"] == "Kumar"
+
+    def test_unknown_variant_id_adds_no_name(self, mocker):
+        v = mocker.Mock(); v.id = "abc"; v.name = "Kumar"
+        result = label_speakers([{"shot_number": 1, "speaker_variant_id": "gone"}], [v])
+        assert "speaker_name" not in result[0]
+
+    def test_no_variants_returns_shots_unchanged(self):
+        shots = [{"shot_number": 1, "speaker_variant_id": "abc"}]
+        assert label_speakers(shots, []) == shots
+
+
+class TestFormatScriptForPrompt:
+    """Whatever this omits, a revision silently drops — it IS the draft the
+    model edits. So every craft field the generator can emit must survive."""
+
+    def test_renders_setting_lighting_blocking_and_speaker(self):
+        text = _format_script_for_prompt({
+            "hook_line": "H",
+            "setting": "Inside a Minecraft world: blocky cubic terrain, torch-lit cave",
+            "shots": [{
+                "shot_number": 1, "speaker_name": "Zara",
+                "lighting": "orange torchlight from frame left",
+                "blocking": "Zara centre holding a pickaxe",
+                "action": "swings", "expression": "Annoyed",
+            }],
+        })
+        assert "Inside a Minecraft world" in text
+        assert "orange torchlight from frame left" in text
+        assert "Zara centre holding a pickaxe" in text
+        assert "Zara" in text
+
+    def test_omits_setting_line_when_absent(self):
+        text = _format_script_for_prompt({"hook_line": "H", "shots": []})
+        assert "Setting:" not in text
+        assert text.startswith("Hook: H")
 
 
 class TestBuildKlingPrompt:

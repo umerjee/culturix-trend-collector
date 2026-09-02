@@ -557,6 +557,29 @@ def _assign_speakers(shots: list, variants: list) -> list:
     return result
 
 
+def label_speakers(shots: list, variants: list) -> list:
+    """Inverse of _assign_speakers: puts "speaker_name" back on each shot.
+
+    Persisted shots only carry speaker_variant_id, so a stored script handed
+    straight back to the LLM as a revision draft reads as dialogue nobody is
+    attributed to — and the model then re-assigns lines to whichever
+    character it likes. That is the same failure as a shot rendering the
+    wrong speaker, just introduced one step earlier, so revision drafts get
+    the names restored before the prompt is built.
+    """
+    if not variants:
+        return shots
+    by_id = {str(v.id): v.name for v in variants}
+    result = []
+    for shot in shots or []:
+        shot = dict(shot)
+        name = by_id.get(str(shot.get("speaker_variant_id") or ""))
+        if name:
+            shot["speaker_name"] = name
+        result.append(shot)
+    return result
+
+
 def _parse(raw: str) -> dict:
     text = raw.strip()
     if text.startswith("```"):
@@ -689,15 +712,33 @@ def _format_script_for_prompt(script_result: dict) -> str:
         parts = [f"Shot {s.get('shot_number')}"]
         if s.get("shot_type"):
             parts.append(f"[{s['shot_type']} shot" + (f", {s['camera_movement']}]" if s.get("camera_movement") else "]"))
+        if s.get("speaker_name"):
+            parts.append(f"Character: {s['speaker_name']}")
         if s.get("visual"):
             parts.append(f"Visual: {s['visual']}")
+        # Every craft field the generator can emit is rendered back here.
+        # In revision mode this text IS the draft the model edits, so a
+        # field missing from it reads as a field the draft never had — an
+        # enrich would then silently drop the lighting and blocking of
+        # every shot it wasn't asked to touch.
+        if s.get("lighting"):
+            parts.append(f"Lighting: {s['lighting']}")
+        if s.get("blocking"):
+            parts.append(f"Blocking: {s['blocking']}")
         if s.get("action"):
             parts.append(f"Action: {s['action']}")
+        if s.get("expression"):
+            parts.append(f"Expression: {s['expression']}")
         if s.get("dialogue"):
             delivery = f" ({s['dialogue_delivery']})" if s.get("dialogue_delivery") else ""
             parts.append(f'Dialogue{delivery}: "{s["dialogue"]}"')
         shot_lines.append(" | ".join(parts))
-    return f"Hook: {hook}\n\n" + "\n".join(shot_lines)
+    # The world the whole scene plays in — same reason as the per-shot
+    # fields: without it a revision re-invents the setting instead of
+    # keeping the one already on the script.
+    setting = (script_result.get("setting") or "").strip()
+    setting_line = f"Setting: {setting}\n\n" if setting else ""
+    return f"{setting_line}Hook: {hook}\n\n" + "\n".join(shot_lines)
 
 
 def _build_judge_prompt(script_result: dict) -> str:
