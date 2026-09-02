@@ -499,10 +499,23 @@ Requirements:
   (e.g. "Loud & Hyped", "Deadpan / Robotic", "Whispered, intense") — null when dialogue is null.
 - "shot_type" must be one of exactly these values: {SHOT_TYPES}.
 - "camera_movement" must be one of exactly these values, or null for a static shot: {CAMERA_MOVEMENTS}.
-- hook_line is a punchy, stand-alone opening line/on-screen text summarizing the skit (max 15 words).{speaker_field}
+- hook_line is a punchy, stand-alone opening line/on-screen text summarizing the skit (max 15 words).
+- "setting" is the WORLD this skit physically takes place in (max ~45 words), and it is the
+  single biggest lever on whether the video feels immersive or bland. Put the characters
+  INSIDE the subject matter rather than in a neutral room talking about it. If the trend is a
+  game, a place, a film, a sport or a platform, stage the scene in that world and name its
+  concrete visual signatures.
+  Good — a Minecraft trend: "Inside a Minecraft world: blocky cubic terrain, a grass-block
+  cliff, floating dirt islands, flickering torches on stone walls, pixelated sunset sky,
+  low-poly trees casting hard square shadows."
+  Bad — the same trend: "A living room where they talk about Minecraft." That wastes the
+  premise and produces exactly the bland footage this field exists to prevent.
+  Name materials, architecture, weather, time of day and era. Describe the empty set only —
+  no characters, no actions, no dialogue.{speaker_field}
 
 Return ONLY valid JSON with exactly these keys:
 - hook_line: string
+- setting: string
 - shots: array of objects, each with exactly: shot_number (int), duration_seconds (int),
   visual (string), lighting (string), blocking (string), action (string),
   expression (string or null), dialogue (string or null),
@@ -654,6 +667,12 @@ def _call_llm_for_script(prompt: str, tone: str, variants: list) -> dict:
     total = sum(s.get("duration_seconds", 0) for s in shots) if shots else 0
     return {
         "hook_line": parsed.get("hook_line"),
+        # The world the skit is staged in. Previously an AI-generated script
+        # carried no setting at all — only hook_line/tone/shots — so unless
+        # someone separately picked a Location, nothing ever told the video
+        # model WHERE the scene happens. A Minecraft trend then rendered as
+        # people in a neutral room, which is the "bland background" problem.
+        "setting": parsed.get("setting"),
         "tone": tone,
         "shots": _assign_speakers(shots, variants),
         "total_duration_seconds": parsed.get("total_duration_seconds") or total,

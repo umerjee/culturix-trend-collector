@@ -2942,6 +2942,11 @@ def suggest_script_from_idea(body: dict):
             character_variant_ids=[str(v.id) for v in variants],
             source_type="idea", idea_text=idea,
             hook_line=result.get("hook_line"),
+            # The generated world is stored on scene_direction, the existing
+            # column for "where this scene happens" — without persisting it,
+            # an AI script still reaches the video model with no setting and
+            # renders as characters in a neutral room.
+            scene_direction=result.get("setting"),
             tone=result.get("tone"),
             shots=result.get("shots"),
             total_duration_seconds=result.get("total_duration_seconds"),
@@ -3781,6 +3786,11 @@ def suggest_next_episode_part(episode_id: str, body: dict):
             character_variant_ids=[str(v.id) for v in variants],
             source_type="idea", idea_text=idea,
             hook_line=result.get("hook_line"),
+            # The generated world is stored on scene_direction, the existing
+            # column for "where this scene happens" — without persisting it,
+            # an AI script still reaches the video model with no setting and
+            # renders as characters in a neutral room.
+            scene_direction=result.get("setting"),
             tone=result.get("tone"),
             shots=result.get("shots"),
             total_duration_seconds=result.get("total_duration_seconds"),

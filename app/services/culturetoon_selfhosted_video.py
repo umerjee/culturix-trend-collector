@@ -625,6 +625,20 @@ def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
     positions = ["LEFT", "CENTRE", "RIGHT", "FAR RIGHT", "BACKGROUND"]
     parts = []
 
+    # The script's OWN world comes first. An AI script now generates a
+    # `setting` grounded in the trend's subject (stored on scene_direction),
+    # so a Minecraft trend is staged inside a Minecraft world rather than in
+    # a neutral room where people discuss Minecraft. Before this existed, a
+    # script carried no setting at all and a toon with no Location selected
+    # reached the model with nothing describing the place — which is what
+    # produced bland, non-cinematic backgrounds.
+    #
+    # A chosen Location still wins when present: it is an explicit user
+    # decision and has its own art direction.
+    scene_setting = (getattr(script, "scene_direction", None) or "").strip()
+    if scene_setting and background is None:
+        parts.append(f"Setting: {scene_setting}")
+
     if background is not None:
         name = (getattr(background, "name", None) or "").strip()
         description = (getattr(background, "description", None) or "").strip()

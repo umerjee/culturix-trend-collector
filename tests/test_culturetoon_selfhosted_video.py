@@ -1018,3 +1018,31 @@ class TestLTX25ScenePrompt:
         prompt = build_ltx25_scene_prompt(script, self._cast(mocker))
         assert "Blix (CENTRE) is the focus" in prompt
         assert "is the one speaking" not in prompt
+
+    def test_script_setting_is_used_when_no_location_is_chosen(self, mocker):
+        """An AI script previously carried no setting at all, so a toon with
+        no Location reached the model with nothing describing WHERE the
+        scene happens — the "bland background" failure. The script's own
+        generated world now fills that gap."""
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+
+        script = mocker.Mock(hook_line="They react to a trend.")
+        script.scene_direction = "Inside a Minecraft world: blocky cubic terrain, flickering torches."
+        script.shots = [{"speaker_variant_id": "z", "action": "leans in", "dialogue": "Seen this?"}]
+        cast = self._cast(mocker)[:1]
+        prompt = build_ltx25_scene_prompt(script, cast, background=None)
+        assert prompt.startswith("Setting: Inside a Minecraft world")
+
+    def test_a_chosen_location_takes_precedence_over_the_script_setting(self, mocker):
+        """A selected Location is an explicit user decision and carries its
+        own art direction, so it wins."""
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+
+        script = mocker.Mock(hook_line="h")
+        script.scene_direction = "Inside a Minecraft world."
+        script.shots = [{"speaker_variant_id": "z", "action": "waves"}]
+        background = mocker.Mock(description="A warm kitchen", country=None, visual_style=None)
+        background.name = "Kitchen"
+        prompt = build_ltx25_scene_prompt(script, self._cast(mocker)[:1], background=background)
+        assert "Setting: Kitchen" in prompt
+        assert "Minecraft" not in prompt
