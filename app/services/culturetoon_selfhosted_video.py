@@ -965,11 +965,25 @@ def _is_coupled_shot(shot: dict) -> bool:
     boundary here would cut the joke/exchange in half: imagine splitting
     right between a line and the shocked reaction to it. Heuristics, since
     "this is a reaction" isn't a stored field:
-    - shot_focus "both" (a character reacting alongside the subject)
     - no dialogue at all (a pure reaction/reveal shot has nothing to say on
       its own — it exists only in relation to its neighbor)
+    - shot_focus "both" (character + subject together) with NO speaker of
+      its own — riding along with whoever is already established, not
+      introducing a new voice.
 
-    Does NOT check whether blocking/visual/action merely NAME 2+ cast
+    Does NOT treat EVERY "both" shot as coupled — an earlier version did,
+    and that was wrong: confirmed live 2026-09-07 on a solar eclipse
+    script, where each stage of the eclipse had its OWN distinct speaker
+    (Zara, then Blix, then Captain Nova, then Zara again) with shot_focus
+    "both" throughout (character explaining alongside the phenomenon). The
+    old rule glued every one of those to whichever speaker got there
+    first, so Blix's and the second Zara shot's lines were rendered under
+    someone ELSE's anchored face entirely — the exact misattribution bug
+    this whole segmentation redesign exists to prevent, just reintroduced
+    by an over-broad coupling rule. A "both" shot with its own speaker is a
+    real, fresh beat and must be allowed to start its own segment.
+
+    Also does NOT check whether blocking/visual/action merely NAME 2+ cast
     members — an earlier version did, but that fires on completely
     ordinary blocking like "Carlos centre, Hans left" (Hans just present in
     frame, not interacting), which isn't a reaction at all. That mattered
@@ -977,9 +991,9 @@ def _is_coupled_shot(shot: dict) -> bool:
     change, not just duration: a real change of speaker should split even
     when the outgoing speaker is still named in the new shot's blocking —
     that's the whole point of anchoring each segment on its own primary."""
-    if (shot.get("shot_focus") or "").strip().lower() == "both":
+    if not (shot.get("dialogue") or "").strip():
         return True
-    return not (shot.get("dialogue") or "").strip()
+    return (shot.get("shot_focus") or "").strip().lower() == "both" and not shot.get("speaker_variant_id")
 
 
 def _split_shots_into_segments(shots: list,
