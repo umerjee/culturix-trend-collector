@@ -770,6 +770,16 @@ Requirements:
   fluorescent, hard shadows". Keep it consistent between shots in the same location unless the
   story changes it; consistent light is what makes separate shots feel like one continuous scene
   rather than unrelated clips.
+  EXCEPTION — if the subject itself changes the light (an eclipse progressing, a sunset, a storm
+  rolling in, a power outage, fireworks, an explosion), the lighting field MUST change shot to
+  shot to track it: describe the actual light getting dimmer/warmer/redder, shadows softening or
+  vanishing, colors muting. Confirmed live 2026-09-07: an eclipse script wrote "the moon
+  completely covers the sun, leaving only a glowing corona" as the visual for its final shot but
+  reused the exact same "Natural sunlight from above, with no other light sources" lighting line
+  from shot 1 for every shot including that one — the rendered video never dimmed at all because
+  nothing in the prompt ever asked it to. Writing the phenomenon into "visual" is not enough by
+  itself; "lighting" has to carry the actual light-level change or the render has no reason to
+  show it.
 - "blocking" says WHERE each character PRESENT IN THIS SHOT is in the frame and what they
   physically hold (max ~20 words). Only name characters who are actually in this shot — for a
   multi-character script, most shots should be about ONE character alone or two at most, not
@@ -796,6 +806,14 @@ Requirements:
   is the single most common failure of this format. Open on the subject wherever the premise
   has one, cut to the character to react or explain, and return to the subject to close.
   At least one shot in every script of 3+ shots must be "subject" or "both".
+  If a "both" shot has dialogue, "blocking"/"action" must keep the speaker's face toward
+  camera — glancing toward the subject or gesturing at it is fine, but do NOT write them as
+  fully turned away or head craned up/off staring at the subject while they're also supposed
+  to be delivering the line. Confirmed live 2026-09-07: a shot blocked as "looking up at the
+  sky, adjusting binoculars" while carrying that character's only line rendered as her turning
+  away from camera in silence — the physical action of looking away won over the dialogue, so
+  the line was never delivered on screen at all. A character can't be shown speaking to camera
+  and looking away from it in the same shot; write the action so both can actually happen.
 - "subject_visual" describes what fills the frame when shot_focus is "subject" or "both"
   (max ~30 words) — the thing itself, cinematically, with scale and motion: "a supermassive
   black hole filling frame, orange accretion disk churning, starlight bending around the
