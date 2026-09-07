@@ -590,6 +590,16 @@ informative but teaches nothing:
   voiceover. Cut to the character only where seeing a face genuinely adds something: a
   reaction to a startling fact, or a moment of direct address. A script where every shot is
   the presenter holding a prop has failed, however good the words are.
+  When the subject is a PROCESS that unfolds over time (an eclipse, a chemical reaction, a
+  planet forming) rather than a static object, give it MULTIPLE subject shots, each ONE
+  distinct stage of that process with its own specific subject_visual — not one shot's
+  subject_visual trying to summarize the whole mechanism in a sentence. Confirmed live
+  2026-09-07: a solar eclipse script gave the entire event exactly ONE subject shot at the
+  very end, and everything before it was the presenter talking with the eclipse reduced to a
+  screen behind her — the moon actually touching the sun's edge, the crescent narrowing,
+  totality, the shadow racing across the ground were never their own moments at all. A
+  multi-stage phenomenon with only one shot to its name is under-told regardless of how
+  good that single subject_visual line reads.
 - The character is the NARRATOR here, not the subject. Their personality lives in HOW they
   say things — word choice, delivery, what amazes them — not in physical business invented to
   give them something to do on camera.
