@@ -335,7 +335,7 @@ def _serialize_variant(v) -> dict:
     return {
         "id": str(v.id), "character_id": str(v.character_id), "name": v.name,
         "culture_tag": v.culture_tag, "culture_id": str(v.culture_id) if v.culture_id else None,
-        "description": v.description,
+        "description": v.description, "voice_description": v.voice_description,
         "image_url": v.image_url, "reference_image_url": v.reference_image_url,
         "previous_image_urls": v.previous_image_urls or [],
         "persona_id": v.persona_id, "is_active": v.is_active,
@@ -1768,6 +1768,7 @@ def create_variant(body: dict):
             culture_tag=body.get("culture_tag"),
             culture_id=_uuid.UUID(culture_id) if culture_id else None,
             description=body.get("description"),
+            voice_description=body.get("voice_description"),
             persona_id=body.get("persona_id"),
         )
         session.add(variant)
@@ -1824,7 +1825,7 @@ def update_variant(variant_id: str, body: dict):
             from app.models.culture import Culture
             if not session.query(Culture).filter_by(id=_uuid.UUID(body["culture_id"])).first():
                 raise HTTPException(status_code=404, detail="Culture not found")
-        for field in ("name", "culture_tag", "culture_id", "description", "persona_id", "is_active",
+        for field in ("name", "culture_tag", "culture_id", "description", "voice_description", "persona_id", "is_active",
                       "voice_provider", "elevenlabs_voice_id"):
             if field in body:
                 setattr(variant, field, _uuid.UUID(body[field]) if field == "culture_id" and body[field] else body[field])

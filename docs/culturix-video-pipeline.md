@@ -66,8 +66,188 @@ The 2.3 LoRA machinery (`culturetoon_lora.py`, training pods, the
 inference-volume sync) is **left intact and unused** under 2.5. It still
 works if `LTX_MODEL_VERSION` is unset.
 
-Open question: identity drift over longer durations, since the anchor is
-only the *first* frame. Verified good at 12s / 4 shots; untested beyond.
+**Identity drift beyond ~12s / 4 shots is CONFIRMED, not just an open question.**
+A 33s / 5-shot / 3-character render (2026-09-03) was inspected frame by frame
+(ffmpeg extraction, not just watched) and showed two distinct failures:
+1. The opening ~5-7s is a near-static replay of the composite anchor itself
+   (individual portrait crops, black divider bars, studio backgrounds) with
+   only mouth movement — expected behavior for I2V conditioning, since frame
+   0 of the output IS the anchor by construction, and no amount of prompt
+   wording ("break from it immediately") can make frame 0 not resemble its
+   own seed image. It just takes time to drift away, and here it took most
+   of a whole shot.
+2. From there on, all 3 cast members converged onto ONE face template
+   (same hair, same mustache, same glasses, differing only by shirt color)
+   for the rest of the video — not one duplicate, the WHOLE cast collapsed.
+   The visually distinct character (grey hair, older, plain features) never
+   appeared at all. Scene also barely moved for ~25s despite varied
+   shot_type/camera_movement in the script.
+Prompt-level fixes (explicit cast intro tied to the anchor, per-shot
+location cuts, closed-cast "exactly N individuals" statement, voice/accent
+cues) were already in place for this render and did not prevent it — this
+is not a wording problem.
+
+**Actual mechanism, found by reading the workflow graph, not by guessing:**
+`ltx25_image_to_video.api.json`'s sampler schedule (`ManualSigmas` nodes,
+one per pass) is a FIXED **8 steps (base) + 3 steps (upscale)** — Comfy-Org's
+own tuning for their demo at **5s / 121 frames**. `frames = duration_seconds
+* 24 + 1` (node 378), and `build_workflow()` never touches the sigma nodes —
+only the prompt/seed/duration change. So a longer render doesn't get more
+steps, it spreads the SAME 11-step budget over more frames: 12s = 289
+frames (2.4x the tested case), 33s = 793 frames (6.5x). Too few steps to
+diverge from the conditioning frame quickly (static opening), too few to
+keep 3 identities differentiated over hundreds of frames (collapse to one
+attractor face), undersampled schedule stretched thin (hallucinated fine
+detail, e.g. a background clock rendering as garbled digits). A second,
+26s render (2026-09-03) showed the same undersampling signature as
+*instability* rather than steady decay — one clean, coherent single-
+character shot sitting right next to a fully melted/hallucinated frame in
+the same clip.
+
+**Fix shipped 2026-09-03** (`culturetoon_selfhosted_video.py`): rather than
+raise the step count (touches the official template graph — this file's own
+header already warns against hand-modifying it without real testing, and
+nobody has re-tuned steps against a live endpoint yet), `generate_toon_video_ltx25`
+now splits a script into ~15s **segments** (`_split_shots_into_segments`,
+`LTX25_SEGMENT_TARGET_SECONDS`/`_HARD_CAP_SECONDS`) and renders each as its
+own generation, keeping every single generation within the one envelope
+ever confirmed to work. Segments aren't cut blindly — `_is_coupled_shot`
+keeps a reaction/interaction shot (silent, `shot_focus="both"`, or blocking
+naming 2+ cast members) glued to the shot it's reacting to, up to the hard
+cap, rather than splitting a joke's setup from its payoff. Segment 1 anchors
+on the composite portrait grid as before; every later segment anchors on
+the PREVIOUS segment's own last rendered frame instead
+(`_extract_last_frame_png`) — re-anchoring every segment on the static
+portrait grid would trade one bad opening for a jump-cut back to it every
+~15s. Segments are stream-copy concatenated (`_concat_video_segments`,
+same ffmpeg concat-demuxer pattern the narration-audio path already used)
+into one final file.
+
+**Validated live 2026-09-03, and it did NOT fix the problem — see below for
+what the evidence actually points at instead.**
+
+Rendered the same 3-character script segmented (2 segments: shots 1-2 at
+15s, shots 3-4-5 at 18s per the interaction-coupling rule) and inspected
+frame by frame across the WHOLE 33s output, including right at the segment
+boundary. Findings:
+- The boundary itself is invisible — last-frame chaining works exactly as
+  designed, no jump cut.
+- But for the ENTIRE video (both segments, t=11s through t=31s checked),
+  the LEFT (Hans) and RIGHT (Carlos) panels of the composite anchor **never
+  once left the static portrait-grid format** — same pose, same black
+  divider bars, same individual studio background as the original anchor
+  image, the whole time, only tiny expression micro-motion. Only the
+  CENTRE panel (Kumar) ever became a real animated scene, and stayed the
+  one doing all the acting regardless of whose dialogue was supposedly
+  playing. Segment 2 chained off segment 1's last frame, which was itself
+  still in this broken state — so it inherited the same stuck panels
+  rather than a real scene to continue from.
+- This is a DIFFERENT and more total failure than the original 33s
+  monolithic render (which did eventually escape into one full-frame scene
+  by ~8s, just with all 3 identities then collapsing into one face).
+  Shortening the generation did not make it escape the anchor faster or at
+  all for 2 of 3 panels — if anything this run got stuck worse.
+
+**Revised theory, and why prompt engineering is very unlikely to be the
+answer**: the workflow's `LTXVDualCFGGuider` nodes are both set to
+`video_cfg: 1, audio_cfg: 1` — classifier-free guidance is essentially
+off. At CFG≈1 the text prompt has very little power to steer generation at
+all; the model's own image-conditioning prior dominates instead. That
+would directly explain why two of three anchor crops just sit there as
+static image regions no matter what the prompt says, AND why **four
+separate rounds of prompt engineering across this whole investigation**
+(cast-first ordering + explicit reference-image framing, per-shot location
+cut cues, blocking restricted to present characters, explicit voice/accent
+instructions, anti-static-lineup wording, closed-cast statements) never
+fixed the static-opening, identity-collapse, or misattribution symptoms —
+none of it was ever the actual lever. `build_workflow()` has never touched
+`video_cfg`/`audio_cfg`, or the `LTXVImgToVideoInplace` `strength` values
+(0.7 base pass, 1.0 upscale pass) — all sitting at the official template's
+defaults this whole time.
+
+**CFG/strength experiments run 2026-09-03 — both made it WORSE, not
+better.** Same 15s segment, three variants, all against the live endpoint:
+
+| Variant | Result |
+|---|---|
+| Baseline (strength 0.7, cfg 1 — template defaults) | LEFT/RIGHT panels frozen in the anchor grid the whole segment; CENTRE panel eventually escapes into a real animated scene |
+| `image_strength=0.4` | ALL THREE panels frozen for the entire clip, including the previously-escaping CENTRE one |
+| `image_strength=0.95` | Same total failure as `strength=0.4` — ALL THREE panels frozen the whole clip, including CENTRE |
+| `video_cfg=4, audio_cfg=4` | Same total failure as `strength=0.4` — all three panels frozen the whole clip, CENTRE included |
+
+Two completely different levers (image-conditioning fidelity and
+classifier-free guidance) converged on the SAME degraded outcome when
+pushed away from the template's exact defaults. That convergence is
+itself informative: this reads as a distilled model that only really
+works at its one calibrated operating point (strength 0.7, CFG 1), where
+deviating in either direction makes adherence to the static anchor WORSE,
+not better — not a "turn the right knob and it unlocks" situation.
+**Recommendation: stop tuning `video_cfg`/`audio_cfg`/`strength` for this
+problem.** Further trial-and-error here has diminishing odds of a
+different outcome and burns real RunPod cost per attempt.
+
+**The untested distinction that matters most going forward: every failure
+in this whole section (2026-09-02/03) was observed on a 3-CHARACTER
+composite-anchor toon.** `build_composite_anchor()` with a single portrait
+produces one full-frame image with no panel dividers at all — not "three
+photos taped together," just the one photo, much closer to what Comfy-Org's
+own official demo actually was. Whether single-character self-hosted
+renders share ANY of these failures (static opening, identity drift,
+hallucination) is genuinely unverified. Before assuming the self-hosted
+path is broken in general, test a single-character toon on it — the
+multi-character composite-grid architecture may be the actual boundary of
+what's broken, not LTX-2.5 or this pipeline as a whole.
+
+**FIXED, validated live 2026-09-03 — per-speaker single-anchor segmentation.**
+A user's suggestion after the CFG/strength dead-end: stop trying to keep
+the WHOLE cast precisely anchored at once. Each segment now anchors on a
+single portrait (the segment's primary/speaking character) instead of the
+multi-portrait composite — `_split_shots_into_segments` also cuts on a
+change of speaker now, not just duration, and `generate_toon_video_ltx25`
+fetches a fresh single-character anchor on every such cut (chaining off the
+previous segment's last frame only when a duration-forced split keeps the
+SAME speaker). Any other cast member visible in a segment (e.g. a silent
+reaction shot) renders as an unanchored, generic background presence — the
+deliberate tradeoff: one precisely-identity-matched person per segment,
+everyone else generic.
+
+Validated on two separate live renders: the original 3-character script
+(Kumar/Carlos/Hans, re-rendered) and a brand-new 4-character script
+(Kumar/Hans/Wen/Aisha — first female voice tested all session), both
+inspected frame by frame across their full ~33-45s length. Every segment
+showed real, distinct, well-animated coverage of its anchored character —
+genuine expressions, real prop interaction (Wen pouring tea from a
+teapot), no panel grid, no frozen portraits, no identity collapse across
+either test. This is the first render all session that didn't fail.
+
+Residual, much smaller issue still visible in every anchor: a
+dotted/pixelated matte edge around each portrait's cutout silhouette
+(`_matte_background()` in `ltx25_workflow.py` — the flood-fill mask's
+edge isn't anti-aliased/feathered enough before compositing). Worth a
+follow-up pass, not remotely comparable in severity to what's now fixed.
+
+Also added 2026-09-03: `CharacterVariant.voice_description` — a dedicated,
+user-editable field (visible in `CharacterVariantManager.tsx`) for a
+character's accent/vocal tone/pacing, read by `build_ltx25_scene_prompt`'s
+voice instruction in preference to the auto-derived-from-appearance
+fallback. Not yet populated on any tested character, so the two validated
+renders above still used the fallback — a real listen-through (not
+verifiable via frames) is the next step to confirm voice persistence
+itself, separately from the now-fixed visual/identity problem.
+
+**Where this leaves the self-hosted multi-character path:**
+1. Segmenting (the 2026-09-03 fix earlier in this section) is still worth
+   keeping — it correctly bounds generation length and the chaining
+   mechanism works — but it is NOT sufficient on its own and should not be
+   presented as "fixed" for multi-character casts.
+2. `video_cfg`/`audio_cfg`/`strength` tuning is a dead end per the
+   experiments above — don't re-attempt without a genuinely new hypothesis.
+3. For 2+ character casts specifically, Kling Omni (per-character Element
+   registration, not one fused composite image) remains the more likely
+   near-term path, pending its own validation against this exact failure
+   mode.
+4. Single-character toons on the self-hosted path are UNTESTED for these
+   specific failures and should not be assumed broken — verify separately.
 
 ---
 
@@ -265,7 +445,9 @@ killed a running 40GB download because cleanup sat in `finally`.
 
 - **The full path through the website has not been exercised on 2.5.** All
   validation so far was direct API calls.
-- **Identity drift beyond ~12s / 4 shots is untested.**
+- **Identity drift beyond ~12s / 4 shots is CONFIRMED** (2026-09-03, frame-by-frame
+  inspection of a 33s/5-shot/3-character render) — see section 2 above for what it
+  actually looks like and why prompt fixes alone didn't help.
 - **Aisha's LoRA is corrupt at source** (three fresh S3 downloads all failed
   `safe_open`). Moot while on 2.5; needs retraining if 2.3 is ever revived.
 - **Background images** were generated from the old malformed Location

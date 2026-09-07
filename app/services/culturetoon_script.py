@@ -61,6 +61,15 @@ INFORMATIVE_TONES = {"educational", "explainer", "informative", "inspirational"}
 # shots ran at 3-7 w/s, one at 7.3, which is what "talking too fast" was.
 SPEECH_WORDS_PER_SECOND = 2.5
 
+# Extra seconds given to the shot carrying the LAST spoken line in the whole
+# script, on top of what its word count alone needs. Every other shot's line
+# can run a little long into the cut to the next shot and it's barely
+# noticeable; the closing line has nothing after it to bleed into, so fitting
+# it to the word budget exactly means it gets cut off right as the last word
+# lands, with no room for the natural trailing consonant/breath. Confirmed
+# live 2026-09-02: Hans's closing line was audibly clipped at the very end.
+CLOSING_LINE_BREATH_SECONDS = 1
+
 # What the CAMERA is on in a shot. Before this, every shot was implicitly
 # "character": the schema described blocking, action and expression and
 # nothing else, so a script could not express a shot of the SUBJECT — the
@@ -117,6 +126,23 @@ def fit_shot_durations(shots: list, max_total: Optional[int] = None) -> list:
             continue
         shot["duration_seconds"] = needed
         total += extra
+
+    closing_shots = [s for s in fitted if (s.get("dialogue") or "").strip()]
+    if closing_shots:
+        closer = closing_shots[-1]
+        words = len(closer["dialogue"].split())
+        current = closer.get("duration_seconds") or 0
+        needed = max(1, math.ceil(words / SPEECH_WORDS_PER_SECOND)) + CLOSING_LINE_BREATH_SECONDS
+        extra = needed - current
+        if extra > 0:
+            if total + extra > limit:
+                logger.warning(
+                    "Closing shot %s needs %ds (incl. trailing breath) for %d words but the "
+                    "script is at %ds/%ds — closing line left without breathing room",
+                    closer.get("shot_number"), needed, words, total, limit,
+                )
+            else:
+                closer["duration_seconds"] = needed
     return fitted
 
 
@@ -586,7 +612,13 @@ STRONG (this is the bar):
 The difference: the strong version names ONE mechanism (next-word prediction), gives it a
 visual the viewer can hold (the fill-in-the-blank on the whiteboard), and each shot depends on
 the shot before it. The viewer can repeat the explanation afterwards. Match THIS level of
-concreteness and structure on every shot."""
+concreteness and structure on every shot.
+
+THE EXAMPLE ABOVE IS A DEMONSTRATION OF CRAFT LEVEL ONLY, about ONE specific subject
+(hallucination). It is not a template — do not reuse its subject, its mechanism (next-word
+prediction), its whiteboard visual, its character names, or any of its lines for a script about
+a different subject. Invent the actual mechanism, visual and specifics from the real subject
+given below."""
     else:
         role_line = (
             "You are a scriptwriter for short character-based comedy skits for "
@@ -643,7 +675,19 @@ The difference isn't just wording — the strong version has real numbers (500-p
 each beat is bigger/weirder than the last, and Hans's bureaucratic deadpan is pushed to a
 genuinely absurd extreme instead of a throwaway "we sleep" aside. Match THIS level of
 specificity and commitment, not the weak version, on every shot you write — regardless of
-premise."""
+premise.
+
+THE EXAMPLE ABOVE IS A DEMONSTRATION OF CRAFT LEVEL ONLY. It is not a template and must not be
+reused. Confirmed live 2026-09-02: a script for an unrelated premise (comparing how different
+countries handle a new student's first day) reproduced this exact example almost verbatim —
+same feast/dancing/aunties beat, same safety-vest/stopwatch/binder/Standesamt beat down to
+"Ordnung muss sein" — with only the noun "baby" swapped for "new student." That is not writing a
+new scene, it is copying this one. Your script must not reuse this example's premise (a newborn
+baby), its countries, its specific props (drum, confetti, sacred oil, scroll, safety vest,
+binder, stopwatch), its exact numbers (500, 4 days, 12, 7), its phrases ("Ordnung muss sein" or
+any other line here), or its character-to-culture mapping. If your draft shares any of those
+specifics with the example, you have copied it — discard it and invent a genuinely new premise,
+escalation and set of specifics from the persona/trend context actually given below."""
 
     return f"""{role_line}
 
@@ -667,10 +711,38 @@ close-up (e.g. that stopwatch), reveal for a punchline. Not every shot needs cam
 (static is a real, correct choice), but push_in on an escalating line or whip_pan into a reveal
 reads as far more intentional than leaving every shot on the same static medium framing.
 
+Dialogue rhythm — for a 2+ character script, do NOT default to strict back-and-forth turn-taking
+(A speaks, B speaks, A speaks, B speaks...) for the whole runtime. That's a ping-pong match, not
+a scene — confirmed live 2026-09-07: a 9-shot Brian/Hans script alternated speaker on literally
+every single shot, with nearly the same "X left, Y right, both facing camera" two-shot blocking
+repeated each time, only the dialogue changing. A real scene has uneven rhythm: let a character
+carry TWO OR THREE shots in a row to build one whole beat (a rising bit, a rant, a demonstration)
+before cutting away, rather than handing the other character a reflexive one-line reply every
+single time. Vary who gets the longer run of screen time between beats — one character dominates
+the opening, another owns the turn, not a metronome. And vary blocking BETWEEN shots the way
+you'd vary shot_type — position, distance, who's near what — not the same symmetric two-shot
+held for the whole script with only the line changing.
+
 Requirements:
 - Between {MIN_SHOTS} and {MAX_SHOTS} shots. shot_number must be 1, 2, 3... with no gaps.
 - Each shot's duration_seconds is a whole number >= 1. The SUM of all shots'
   duration_seconds must be between {MIN_TOTAL_SECONDS} and {MAX_TOTAL_SECONDS} (hard limits).
+- "location" is the CONCRETE PHYSICAL PLACE this shot happens in (max ~25 words) — distinct from
+  "setting" below (the one overall world the whole skit is framed in) and from "visual" (what's
+  staged inside this place). This whole script is rendered as ONE continuous video generation
+  with no automatic scene changes between shots — a location change happens ONLY if this field
+  spells it out. Two rules, no exceptions:
+  1. A shot in the SAME place as the previous shot repeats that previous shot's "location" text
+     VERBATIM, word for word. Do not paraphrase or shorten it — a reworded repeat reads as a
+     new place.
+  2. A shot in a DIFFERENT place writes the new place out in full, naming architecture,
+     materials and what's visible in the background, at the same concreteness as "setting"
+     below (e.g. "A cramped Munich Standesamt office: grey filing cabinets, a queue-ticket
+     dispenser, a laminated regulations poster on the wall" — not "a different office").
+  Shot 1 always writes its location in full (there is no previous shot to match). If every
+  character in this script is naturally tied to a different real place (e.g. each represents a
+  different country), that is a reason to actually move the camera there shot by shot, not a
+  reason to leave everyone standing together in one generic room for the whole video.
 - "visual" describes the staging: props, environment, positioning, what's physically in frame
   (max ~35 words). Name specific OBJECTS and MATERIALS, not categories — "a chipped enamel
   teapot on scratched oak, a half-eaten plate of jalebi, coats piled on the chair back" rather
@@ -680,9 +752,21 @@ Requirements:
   fluorescent, hard shadows". Keep it consistent between shots in the same location unless the
   story changes it; consistent light is what makes separate shots feel like one continuous scene
   rather than unrelated clips.
-- "blocking" says WHERE each character is in the frame and what they physically hold (max ~20
-  words) — e.g. "Hans left with the laptop, Kumar centre holding a mug, Wen right with a book".
-  Positions and held props keep characters distinguishable even when faces are small or moving.
+- "blocking" says WHERE each character PRESENT IN THIS SHOT is in the frame and what they
+  physically hold (max ~20 words). Only name characters who are actually in this shot — for a
+  multi-character script, most shots should be about ONE character alone or two at most, not
+  the full cast. e.g. a shot that is Hans's moment is "Hans centre with the laptop", not "Hans
+  centre with the laptop, Kumar left holding a mug, Wen right with a book" — do not pad blocking
+  with cast members who have no reason to be in that shot. Defaulting to the whole cast lined up
+  in every shot (one stepping forward to speak while the others stand and wait) is the single
+  most common failure of multi-character blocking — it reads as a static group photo, not a
+  scene, and makes it harder to tell who is actually speaking. Cut to a character's own shot
+  instead of keeping everyone on screen throughout.
+  Only the named cast members supplied to you have a real photo the render is anchored to. If a
+  shot needs other people on screen (a crowd, classmates, a teacher), describe them ONLY as
+  generic, unnamed background extras ("a cluster of classmates in the background") — never give
+  a non-cast person a name, a distinct description, or dialogue. An invented named character has
+  no photo to be drawn from and the render has nothing to anchor them to.
 - "action" {action_rule}
 - "shot_focus" is WHAT THE CAMERA IS ON, one of exactly: {SHOT_FOCUS_TYPES}.
     "character" — the character performs on camera. A talking head.
@@ -737,7 +821,7 @@ Return ONLY valid JSON with exactly these keys:
 - hook_line: string
 - setting: string
 - shots: array of objects, each with exactly: shot_number (int), duration_seconds (int),
-  visual (string), lighting (string), blocking (string), action (string),
+  location (string), visual (string), lighting (string), blocking (string), action (string),
   shot_focus (string), subject_visual (string or null), voiceover (boolean),
   expression (string or null), dialogue (string or null),
   dialogue_delivery (string or null), shot_type (string), camera_movement (string or null){speaker_key}
@@ -940,6 +1024,8 @@ def _format_script_for_prompt(script_result: dict) -> str:
             parts.append(f"[{s['shot_type']} shot" + (f", {s['camera_movement']}]" if s.get("camera_movement") else "]"))
         if s.get("speaker_name"):
             parts.append(f"Character: {s['speaker_name']}")
+        if s.get("location"):
+            parts.append(f"Location: {s['location']}")
         if s.get("visual"):
             parts.append(f"Visual: {s['visual']}")
         # Every craft field the generator can emit is rendered back here.

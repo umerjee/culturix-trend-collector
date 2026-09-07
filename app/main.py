@@ -307,6 +307,10 @@ async def lifespan(_):
             "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS lora_preview_url TEXT",
             "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS lora_preview_status VARCHAR(12) NOT NULL DEFAULT 'none'",
             "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS lora_preview_error TEXT",
+            # User-editable voice/accent reference for self-hosted LTX-2.5's
+            # joint audio+video generation — see
+            # CharacterVariant.voice_description's docstring.
+            "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS voice_description TEXT",
         ]:
             try:
                 _conn.execute(_text(_stmt))

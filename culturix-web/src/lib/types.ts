@@ -482,6 +482,10 @@ export interface CharacterVariant {
   name: string;
   culture_tag: string | null;
   description: string | null;
+  // Accent/vocal tone/pacing reference for self-hosted LTX-2.5's joint
+  // audio+video generation — separate from `description` (appearance).
+  // Falls back to `description` in the render prompt when left blank.
+  voice_description: string | null;
   image_url: string | null;
   reference_image_url: string | null;
   previous_image_urls: string[];

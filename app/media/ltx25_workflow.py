@@ -122,14 +122,30 @@ def _strip_resize_node(workflow: dict) -> None:
 def build_workflow(prompt_text: str, duration_seconds: int,
                    negative_prompt: Optional[str] = None,
                    seed: Optional[int] = None,
-                   reference_image_filename: str = "reference.png") -> dict:
+                   reference_image_filename: str = "reference.png",
+                   video_cfg: Optional[float] = None,
+                   audio_cfg: Optional[float] = None,
+                   image_strength: Optional[float] = None) -> dict:
     """Returns a submit-ready copy of the LTX-2.5 graph.
 
     duration_seconds drives the template's own duration input (it derives
     frame count and audio length from it), so shots are NOT looped here the
     way the 2.3 path loops them — 2.5 renders the whole multi-shot scene in
     one generation.
-    """
+
+    video_cfg/audio_cfg/image_strength are EXPERIMENTAL overrides, left at
+    the official template's own defaults (both CFGs at 1, i.e. effectively
+    no classifier-free guidance; image-conditioning strength at 0.7 for the
+    base pass) when not given. Added 2026-09-03 to investigate a live
+    finding: two of three composite-anchor face regions never left their
+    static portrait-crop framing for an ENTIRE 33s render regardless of
+    prompt wording (four separate rounds of prompt changes had no effect on
+    this specific symptom) — CFG≈1 gives the text prompt very little power
+    to steer the output at all, which would explain that. UNVALIDATED:
+    distilled models are frequently trained specifically around CFG≈1, so
+    raising it, or lowering the image-conditioning strength, could degrade
+    output a different way instead of fixing this. See docs/culturix-video-
+    pipeline.md section 2 for the full investigation."""
     workflow = copy.deepcopy(load_workflow_template())
 
     # Positive prompt: the template feeds it through a
@@ -182,6 +198,24 @@ def build_workflow(prompt_text: str, duration_seconds: int,
         workflow[node_id]["inputs"].setdefault("format", "auto")
         workflow[node_id]["inputs"].setdefault("codec", "auto")
 
+    # See this function's own docstring — experimental, unvalidated overrides.
+    if video_cfg is not None or audio_cfg is not None:
+        for node_id in _nodes_of_class(workflow, "LTXVDualCFGGuider"):
+            if video_cfg is not None:
+                workflow[node_id]["inputs"]["video_cfg"] = video_cfg
+            if audio_cfg is not None:
+                workflow[node_id]["inputs"]["audio_cfg"] = audio_cfg
+    if image_strength is not None:
+        # Only the BASE pass (strength 0.7 in the official template) governs
+        # initial adherence to the reference image — matched by value, same
+        # convention this function already uses for the duration widget,
+        # since node ids aren't a stable way to address the template. The
+        # upscale pass's strength=1 is a different, later commit step and is
+        # deliberately left alone.
+        for node_id in _nodes_of_class(workflow, "LTXVImgToVideoInplace"):
+            if workflow[node_id]["inputs"].get("strength") == 0.7:
+                workflow[node_id]["inputs"]["strength"] = image_strength
+
     return workflow
 
 
@@ -226,7 +260,22 @@ def _matte_background(image, tolerance: int = _MATTE_TOLERANCE):
         logger.warning("Matte kept only %.0f%% of the portrait — leaving it unmatted", kept * 100)
         return Image.new("L", image.size, 255)
 
-    return mask.resize(image.size, Image.BILINEAR)
+    resized = mask.resize(image.size, Image.BILINEAR)
+    # BILINEAR smooths the VALUES at the edge but not its SHAPE — the
+    # boundary is still the coarse, blocky contour of a _MATTE_RESOLUTION-px
+    # grid, just stretched up. Confirmed live 2026-09-03: this reads as a
+    # dotted/pixelated outline tracing every character's silhouette in the
+    # final render (reported on Hans, Carlos AND Aisha — every anchor, not
+    # one bad portrait). A Gaussian blur on the already-upscaled mask smooths
+    # that staircase directly, cheap (no per-pixel Python loop, unlike the
+    # flood-fill above) regardless of _MATTE_RESOLUTION. Radius scales with
+    # the upscale factor so it's roughly one low-res grid cell wide at full
+    # resolution — enough to erase the staircase without eating real detail
+    # (a stray hair, a collar point) into a visible halo.
+    from PIL import ImageFilter
+    upscale_factor = image.size[0] / width
+    blur_radius = max(2, round(upscale_factor / 2))
+    return resized.filter(ImageFilter.GaussianBlur(radius=blur_radius))
 
 
 def build_composite_anchor(image_bytes_list: list, backdrop_bytes: Optional[bytes] = None) -> bytes:

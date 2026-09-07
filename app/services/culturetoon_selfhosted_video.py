@@ -646,12 +646,25 @@ def use_ltx25() -> bool:
     return (os.getenv("LTX_MODEL_VERSION", "") or "").strip() == "2.5"
 
 
-def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
-    """One prompt describing the WHOLE scene, cast included.
+def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Optional[list] = None,
+                              continuation_anchor: bool = False) -> str:
+    """One prompt describing a SEGMENT of the scene, cast included.
 
     2.5 renders a multi-shot scene in a single generation (native
     multishot), so unlike the 2.3 path this does not produce one prompt per
-    shot — cuts are expressed inside the text instead.
+    shot — cuts are expressed inside the text instead. A "segment" is a
+    run of consecutive shots rendered as one generation — see
+    _split_shots_into_segments's docstring for why the whole script isn't
+    always one segment.
+
+    shots, when given, overrides getattr(script, "shots", ...) — the
+    caller passes just this segment's own shots (their own "shot_number"
+    is preserved, so cut labels stay globally correct even mid-script).
+
+    continuation_anchor is True for every segment after the first: its
+    reference image is the PREVIOUS segment's actual last rendered frame,
+    not the composite portrait grid, so the framing/instructions around
+    "the opening frame" change to match what's really being conditioned on.
 
     Character descriptions come from the parent Character row, never
     invented. Confirmed the hard way 2026-09-02: a hand-written prompt
@@ -664,7 +677,90 @@ def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
     positions = ["LEFT", "CENTRE", "RIGHT", "FAR RIGHT", "BACKGROUND"]
     parts = []
 
-    # The script's OWN world comes first. An AI script now generates a
+    # Identity comes FIRST, before setting or premise, and is explicitly tied
+    # to the reference image rather than left implicit. This is a first-frame
+    # image-conditioned model with no per-character LoRA, so the ONLY thing
+    # binding a name to a face is this text agreeing with the composite
+    # anchor's left-to-right order — putting it up front, ahead of anything
+    # else the model has to hold in mind, is what a user asked for directly
+    # (2026-09-02) after a render confused which face was which.
+    # A single variant means this segment anchors on ONE character's own
+    # plain portrait (see generate_toon_video_ltx25) — there is no grid, so
+    # LEFT/CENTRE/RIGHT positions would be meaningless and actively
+    # confusing ("LEFT is Hans" when the reference image is just Hans,
+    # full-frame). Position language only applies when there's actually a
+    # multi-portrait composite to describe positions within.
+    single_anchor = len(variants) == 1
+    described = []
+    voice_lines = []
+    position_of = {}
+    for index, variant in enumerate(variants):
+        position = positions[index] if index < len(positions) else f"POSITION {index + 1}"
+        # Recorded for every cast member, even one with no description, so
+        # per-shot speaker attribution below can still place them.
+        position_of[str(getattr(variant, "id", ""))] = (getattr(variant, "name", "") or "", "" if single_anchor else position)
+        name = (getattr(variant, "name", "") or "").strip()
+        character = getattr(variant, "character", None)
+        text = (getattr(character, "description", None) or "").strip()
+        if text:
+            if single_anchor:
+                described.append(f"{name}: {text}" if name else text)
+            else:
+                described.append(f"{position} is {name}: {text}" if name else f"{position}: {text}")
+
+        # Audio is denoised JOINTLY with video on 2.5 (see module docstring), so a
+        # character's voice is as much an identity trait as their face — but until
+        # 2026-09-02 this prompt only ever said what each character LOOKS like,
+        # never how they should SOUND, leaving accent/vocal tone to be guessed
+        # from appearance alone on a model already prone to mixing identities up
+        # (confirmed live: a German character's line rendered in an Indian accent).
+        # CharacterVariant.voice_description (added 2026-09-03) is a dedicated,
+        # user-editable field for exactly this — visible in the character editor
+        # so a wrong accent can be fixed directly instead of by rewriting the
+        # whole appearance description. Falls back to the appearance text (still
+        # somewhat useful — "Indian expat", "German middle aged man" — but never
+        # written with voice in mind) only when the user hasn't set one.
+        voice_text = (getattr(variant, "voice_description", None) or "").strip()
+        if not voice_text and text:
+            voice_text = f"accent, vocal tone and speech pattern fitting being {text}"
+        if voice_text:
+            if single_anchor:
+                voice_lines.append(f"{name}'s voice: {voice_text}" if name else f"Voice: {voice_text}")
+            else:
+                voice_lines.append(
+                    f"{position} ({name})'s voice: {voice_text}" if name else f"{position}'s voice: {voice_text}"
+                )
+    if described or voice_lines:
+        if continuation_anchor:
+            who = "the same person" if single_anchor else f"same {len(variants)} real individuals"
+            parts.append(
+                f"This is a direct continuation of the same scene, {who}, same location — the "
+                "reference image is the actual last frame of what just happened, not a new "
+                "opening. For identity only (not blocking):"
+            )
+        elif single_anchor:
+            parts.append(
+                "The reference image is a face anchor for exactly one real person — use it ONLY "
+                "to know what they look like, never as a pose or blocking to hold. Any other "
+                "people appearing in the shots below are NOT this reference image and have no "
+                "face anchor of their own — render them as ordinary, unremarkable background "
+                "people, distinct from the one anchored identity below:"
+            )
+        else:
+            parts.append(
+                f"The reference image is a face anchor for exactly {len(variants)} real "
+                "individuals, arranged left to right in this exact order — use it ONLY to know "
+                "what each of them looks like, never as the scene's blocking or starting pose:"
+            )
+        parts.extend(described)
+        parts.append(
+            "Voice is part of each character's fixed identity, exactly like their face — it "
+            "must match THEIR OWN description, not another character's, and never drift "
+            "mid-video:"
+        )
+        parts.extend(voice_lines)
+
+    # The script's OWN world comes next. An AI script now generates a
     # `setting` grounded in the trend's subject (stored on scene_direction),
     # so a Minecraft trend is staged inside a Minecraft world rather than in
     # a neutral room where people discuss Minecraft. Before this existed, a
@@ -690,32 +786,36 @@ def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
         if visual_style:
             parts.append(_expand_visual_style(visual_style))
 
-    described = []
-    position_of = {}
-    for index, variant in enumerate(variants):
-        position = positions[index] if index < len(positions) else f"POSITION {index + 1}"
-        # Recorded for every cast member, even one with no description, so
-        # per-shot speaker attribution below can still place them.
-        position_of[str(getattr(variant, "id", ""))] = (getattr(variant, "name", "") or "", position)
-        character = getattr(variant, "character", None)
-        text = (getattr(character, "description", None) or "").strip()
-        if not text:
-            continue
-        name = (getattr(variant, "name", "") or "").strip()
-        described.append(f"{position} is {name}: {text}" if name else f"{position}: {text}")
-    if described:
-        parts.append(f"{len(described)} characters share the scene.")
-        parts.extend(described)
-
     hook = (getattr(script, "hook_line", None) or "").strip()
-    if hook:
+    if hook and not continuation_anchor:
         parts.append(f"Premise: {hook}")
 
-    for index, shot in enumerate(getattr(script, "shots", None) or [], start=1):
+    # Tracks the previous shot's "location" so a repeat (same place) stays
+    # silent and a change gets an explicit cut cue — see culturetoon_script.py's
+    # "location" field docs. Without this, the ONE global Setting/background
+    # above is the only place description the model ever sees, so a script
+    # whose shots are meant to move somewhere else has no signal to actually
+    # do that inside this single continuous generation. Confirmed live
+    # 2026-09-02: a three-country script stayed on one background for the
+    # whole video because nothing ever told the model to cut anywhere.
+    previous_location = None
+    segment_shots = shots if shots is not None else (getattr(script, "shots", None) or [])
+    for index, shot in enumerate(segment_shots, start=1):
         shot_text = _build_shot_prompt(shot, background=None)
         if not shot_text:
             continue
-        lead = "SHOT 1" if index == 1 else f"CUT TO SHOT {index}"
+        # shot_number is the GLOBAL position in the full script (preserved even
+        # when `shots` is one segment out of several), so cut labels stay
+        # meaningful mid-script instead of resetting to "SHOT 1" every segment.
+        global_number = shot.get("shot_number", index)
+        lead = "SHOT 1" if (index == 1 and not continuation_anchor) else f"CUT TO SHOT {global_number}"
+
+        location = (shot.get("location") or "").strip()
+        location_cue = ""
+        if location and location != previous_location:
+            location_cue = f" NEW LOCATION — {location}."
+        if location:
+            previous_location = location
 
         # Name WHO speaks, and where they are in frame.
         #
@@ -743,7 +843,7 @@ def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
         # is empty of people, and the voice-over line is attributed there.
         focus_type = (shot.get("shot_focus") or "character").strip().lower()
         if focus_type == "subject":
-            parts.append(f"{lead} — {shot_text}")
+            parts.append(f"{lead} —{location_cue} {shot_text}")
             continue
         # Audio is denoised JOINTLY with video on 2.5, so silence is something
         # to ask for, not the default. With no line in the prompt and nothing
@@ -760,14 +860,40 @@ def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
             focus = f"{who} is the focus of this shot"
             if not silent:
                 focus += f" and is the one speaking — the line is {name}'s, not another character's"
-            parts.append(f"{lead} — {focus}. {shot_text}{silence_note}")
+            parts.append(f"{lead} —{location_cue} {focus}. {shot_text}{silence_note}")
         else:
-            parts.append(f"{lead} — {shot_text}{silence_note}")
+            parts.append(f"{lead} —{location_cue} {shot_text}{silence_note}")
 
     parts.append(
-        "Consistent character appearance throughout, faces matching the opening frame exactly. "
+        "Consistent character appearance throughout, faces matching the reference image exactly. "
         "Natural facial performance and lip movement synced to the dialogue."
     )
+    if continuation_anchor:
+        # The reference image here is a REAL scene frame (the previous segment's
+        # last frame), not the artificial portrait grid — so the risk flips: instead
+        # of freezing on an unnatural line-up, the model can freeze on whatever pose
+        # that last frame happened to catch. Same "keep moving" instruction, different
+        # reason.
+        parts.append(
+            "The reference image is where the scene physically was one instant ago, not a "
+            "pose to hold. Keep moving immediately in a way that matches this segment's own "
+            "shots below — do not freeze on the reference image's exact pose."
+        )
+    else:
+        # The composite anchor is three (or more) head-and-shoulders portraits evenly spaced
+        # side by side — nothing but a face reference. Without an explicit instruction the model
+        # reads that even spacing as the scene's actual blocking and holds it: a frozen line-up
+        # for the whole video with one character stepping forward per line, confirmed live
+        # 2026-09-02 as a rendered "cast standing together for no reason" result. Each shot's own
+        # blocking (built above) already says who is actually present in that shot; this tells the
+        # model to trust that over the anchor's layout.
+        parts.append(
+            "The opening frame is a face reference only, not the scene's blocking or a starting pose "
+            "to hold. Break from it immediately: from SHOT 1, only the characters named in that "
+            "shot's own blocking are on screen, positioned and moving as that blocking describes — "
+            "characters not named in a shot are not visible in it. Continuous natural movement "
+            "throughout, no frozen held poses, no static line-up of the cast waiting their turn."
+        )
     # The opening frame is a composite showing every cast member side by side,
     # so the model has seen each face at a fixed position. When a later shot
     # moves one of them elsewhere in frame, it can leave a COPY behind at the
@@ -776,11 +902,12 @@ def build_ltx25_scene_prompt(script, variants: list, background=None) -> str:
     # is the prompt-side counterpart to the negative prompt's duplicate terms.
     cast_names = [n for n, _ in position_of.values() if n]
     if cast_names:
+        noun = "individual" if len(cast_names) == 1 else "individuals"
         parts.append(
-            f"The complete cast is exactly {len(cast_names)} individuals: {', '.join(cast_names)}. "
+            f"The anchored cast is exactly {len(cast_names)} {noun}: {', '.join(cast_names)}. "
             "There is exactly ONE of each of them on screen at any time — never two of the same "
             "character in the same frame, never a copy or double of anyone in the background. "
-            "The opening frame is a reference of who they are, not a fixed seating arrangement."
+            "The reference image is a reference of who they are, not a fixed seating arrangement."
         )
     return " ".join(p for p in parts if p)
 
@@ -808,44 +935,235 @@ def ltx25_timeout_seconds(duration_seconds) -> int:
     return int(min(_MAX_TIMEOUT_SECONDS, _COLD_START_ALLOWANCE_SECONDS + generation))
 
 
+# The official LTX-2.5 template's sampling schedule (ManualSigmas nodes in
+# ltx25_image_to_video.api.json) is a FIXED 8 steps (base pass) + 3 steps
+# (upscale pass) — Comfy-Org's own tuning for their 5s/121-frame demo.
+# build_workflow() never touches those nodes; only duration changes, so a
+# longer render spreads the exact same step budget over more frames
+# (frames = duration_seconds * 24 + 1). Confirmed live 2026-09-03, frame by
+# frame, on a 33s/5-shot/3-character render (793 frames on an 11-step
+# schedule): ~5-7s of near-static replay of the portrait anchor before the
+# model diverged from it at all, then the whole cast collapsed into one
+# face for the rest of the video. 12s (289 frames) is the only duration
+# this path has ever been confirmed to hold up at. Rather than raise the
+# step count (touches the official template graph, which this codebase's
+# own comments already warn against hand-modifying without real testing —
+# see ltx25_workflow.py's header), each generation is kept within this
+# budget and a longer script is rendered as multiple chained segments
+# instead — see _split_shots_into_segments.
+LTX25_SEGMENT_TARGET_SECONDS = 15
+# A segment may run past the target, up to this hard ceiling, ONLY to avoid
+# splitting a shot away from one it's reacting to/interacting with (see
+# _is_coupled_shot) — cutting mid-interaction is worse than a slightly long
+# segment. Past this, it splits regardless.
+LTX25_SEGMENT_HARD_CAP_SECONDS = 20
+
+
+def _is_coupled_shot(shot: dict) -> bool:
+    """True when `shot` must stay glued to the shot immediately before it —
+    a reaction to what just happened, not its own fresh beat. A segment
+    boundary here would cut the joke/exchange in half: imagine splitting
+    right between a line and the shocked reaction to it. Heuristics, since
+    "this is a reaction" isn't a stored field:
+    - shot_focus "both" (a character reacting alongside the subject)
+    - no dialogue at all (a pure reaction/reveal shot has nothing to say on
+      its own — it exists only in relation to its neighbor)
+
+    Does NOT check whether blocking/visual/action merely NAME 2+ cast
+    members — an earlier version did, but that fires on completely
+    ordinary blocking like "Carlos centre, Hans left" (Hans just present in
+    frame, not interacting), which isn't a reaction at all. That mattered
+    once _split_shots_into_segments started also cutting on a SPEAKER
+    change, not just duration: a real change of speaker should split even
+    when the outgoing speaker is still named in the new shot's blocking —
+    that's the whole point of anchoring each segment on its own primary."""
+    if (shot.get("shot_focus") or "").strip().lower() == "both":
+        return True
+    return not (shot.get("dialogue") or "").strip()
+
+
+def _split_shots_into_segments(shots: list,
+                                target_seconds: int = LTX25_SEGMENT_TARGET_SECONDS,
+                                hard_cap_seconds: int = LTX25_SEGMENT_HARD_CAP_SECONDS) -> list:
+    """Groups consecutive shots into segments safe for one LTX-2.5
+    generation each (see LTX25_SEGMENT_TARGET_SECONDS above for why this
+    exists at all) AND anchorable on a SINGLE character's own portrait
+    rather than the multi-portrait composite.
+
+    Confirmed live 2026-09-03 (docs/culturix-video-pipeline.md section 2):
+    the composite anchor itself — not duration, not CFG, not image-
+    conditioning strength, all independently tested — is the actual
+    ceiling. Two of three composite face-crops stayed frozen in their
+    portrait pose for an entire video regardless of any of that tuning.
+    A user's suggestion fixes this from a different angle: keep only the
+    scene's PRIMARY (speaking) character precisely anchored per segment,
+    and accept that any other cast member on screen in that segment (e.g.
+    a silent reaction shot) renders as an unanchored background presence
+    instead — no face reference to freeze on to in the first place.
+
+    So a shot starts a NEW segment when EITHER:
+    - it would push the current segment past target_seconds and isn't
+      coupled to what's already in it (same rule as before), or
+    - its speaker_variant_id differs from the segment's established
+      primary speaker — UNLESS it's coupled (see _is_coupled_shot): an
+      interaction/reaction beat stays glued to its predecessor's primary
+      even if, taken alone, it would "belong" to someone else, exactly
+      like keeping a reaction shot attached to the line it's reacting to.
+    A shot with no speaker (a pure reaction/subject shot) never changes
+    the segment's established primary by itself."""
+    segments = []
+    current: list = []
+    current_total = 0
+    current_primary = None
+    for shot in shots:
+        duration = shot.get("duration_seconds") or 0
+        speaker = shot.get("speaker_variant_id")
+        coupled = bool(current) and _is_coupled_shot(shot)
+        primary_changed = bool(current) and bool(speaker) and bool(current_primary) and speaker != current_primary and not coupled
+        exceeds_target = bool(current) and (current_total + duration > target_seconds)
+        must_split_anyway = exceeds_target and (not coupled or current_total + duration > hard_cap_seconds)
+        if current and (primary_changed or must_split_anyway):
+            segments.append(current)
+            current = [shot]
+            current_total = duration
+            current_primary = speaker
+            continue
+        current.append(shot)
+        current_total += duration
+        if speaker and not current_primary:
+            current_primary = speaker
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _segment_primary_variant(segment_shots: list, variants: list):
+    """The ONE cast member this segment's reference image anchors — the
+    first speaker found among its shots, or the first-listed cast member
+    if none of them have a speaker at all (e.g. an all-subject segment)."""
+    variants_by_id = {str(getattr(v, "id", "")): v for v in variants}
+    for shot in segment_shots:
+        speaker_id = shot.get("speaker_variant_id")
+        if speaker_id and str(speaker_id) in variants_by_id:
+            return variants_by_id[str(speaker_id)]
+    return variants[0] if variants else None
+
+
+def _extract_last_frame_png(video_bytes: bytes) -> bytes:
+    """The still frame at (effectively) the end of `video_bytes`, as PNG —
+    used to chain segment N+1's identity conditioning off segment N's
+    actual last frame instead of re-anchoring on the static portrait grid
+    every ~15s (see generate_toon_video_ltx25). Seeks 0.5s before EOF rather
+    than to the exact end, since seeking exactly to a video's duration is
+    unreliable across containers/decoders (can land on no frame at all)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        video_path = os.path.join(tmp_dir, "segment.mp4")
+        frame_path = os.path.join(tmp_dir, "last_frame.png")
+        with open(video_path, "wb") as f:
+            f.write(video_bytes)
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-sseof", "-0.5", "-i", video_path, "-frames:v", "1", "-q:v", "2", frame_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0 or not os.path.exists(frame_path):
+            raise SelfHostedVideoGenerationError(
+                f"ffmpeg failed extracting the last frame for segment chaining: {result.stderr[-1000:]}"
+            )
+        with open(frame_path, "rb") as f:
+            return f.read()
+
+
+def _concat_video_segments(video_byte_list: list) -> bytes:
+    """Stream-copies multiple segment MP4s (each from the same workflow —
+    same codec/resolution/framerate, so -c copy is safe and lossless) into
+    one file, same ffmpeg concat-demuxer pattern already used for narration
+    audio above."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        segment_paths = []
+        for i, video_bytes in enumerate(video_byte_list):
+            path = os.path.join(tmp_dir, f"segment_{i}.mp4")
+            with open(path, "wb") as f:
+                f.write(video_bytes)
+            segment_paths.append(path)
+        list_path = os.path.join(tmp_dir, "concat_list.txt")
+        with open(list_path, "w", encoding="utf-8") as f:
+            for path in segment_paths:
+                f.write(f"file '{path}'\n")
+        output_path = os.path.join(tmp_dir, "combined.mp4")
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output_path],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            raise SelfHostedVideoGenerationError(
+                f"ffmpeg failed concatenating video segments: {result.stderr[-1000:]}"
+            )
+        with open(output_path, "rb") as f:
+            return f.read()
+
+
+def _fetch_portrait_anchor(variant, backdrop: Optional[bytes]) -> bytes:
+    """A single-character reference image — build_composite_anchor with ONE
+    image is just that one portrait, full-frame, no panel dividers at all
+    (slot_width becomes the whole width). Used per segment now instead of
+    the multi-portrait composite — see generate_toon_video_ltx25's own
+    docstring for why."""
+    import httpx
+    from app.media import ltx25_workflow
+
+    image_url = getattr(variant, "image_url", None)
+    image_bytes = []
+    if image_url:
+        try:
+            image_bytes = [httpx.get(image_url, timeout=30).content]
+        except Exception:
+            logger.warning(
+                "Could not fetch %s's portrait for this segment's anchor",
+                getattr(variant, "name", "?"), exc_info=True,
+            )
+    return ltx25_workflow.build_composite_anchor(image_bytes, backdrop_bytes=backdrop)
+
+
 def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
                               duration_seconds: Optional[int] = None,
                               background=None, stats: Optional[dict] = None) -> bytes:
-    """Renders a whole script as ONE LTX-2.5 generation.
+    """Renders a script as one or more LTX-2.5 generations — one per SEGMENT
+    (see _split_shots_into_segments) — concatenated into a single file.
 
-    No per-shot loop, no LoRA, no narration mux and no last-frame chaining:
-    2.5 handles multishot and synchronized audio natively, and identity
-    comes from a composite first-frame anchor built from the cast's real
-    portraits. Every one of those workarounds existed to approximate
-    something 2.5 does itself.
+    Each segment anchors on a SINGLE character's own portrait — the
+    segment's primary (speaking) cast member — not the multi-portrait
+    composite. A user's suggestion, 2026-09-03, after the composite anchor
+    itself was confirmed as the actual ceiling (docs/culturix-video-
+    pipeline.md section 2: two of three composite face-crops stayed frozen
+    for an entire video, independent of duration, CFG, or image-strength
+    tuning — all separately tested and all ruled out). Any other cast
+    member visible in a segment (e.g. a silent reaction shot with two
+    people on screen) renders as an unanchored background presence instead
+    — the tradeoff this approach deliberately accepts: exactly one
+    precisely-identity-matched person per segment, everyone else generic.
+
+    When consecutive segments share the same primary (a duration-forced
+    split mid-speaker, not a change of who's talking), the later one
+    chains off the earlier one's own last rendered frame instead of
+    re-anchoring on a fresh portrait — continuity within one person's own
+    coverage. When the primary CHANGES, that's a real cut to a different
+    person's own coverage, so it re-anchors on their fresh portrait rather
+    than chaining off a frame that doesn't show their face at all.
     """
-    import httpx
     from app.media import ltx25_workflow, runpod_serverless_client
 
     shots = getattr(script, "shots", None) or []
     if not shots:
         raise SelfHostedVideoGenerationError("Script has no shot data — nothing to generate")
 
-    total_duration = duration_seconds or getattr(script, "total_duration_seconds", None) or sum(
-        s.get("duration_seconds", 0) for s in shots
-    ) or 8
+    segments = _split_shots_into_segments(shots)
+    primary_variants = [_segment_primary_variant(seg, variants) for seg in segments]
 
-    anchor_images = []
-    for variant in variants:
-        image_url = getattr(variant, "image_url", None)
-        if not image_url:
-            continue
-        try:
-            anchor_images.append(httpx.get(image_url, timeout=30).content)
-        except Exception:
-            logger.warning(
-                "Could not fetch %s's portrait for the composite anchor — that identity will "
-                "not be anchored", getattr(variant, "name", "?"), exc_info=True,
-            )
     # The Location's own art, behind the cast, in the video's first frame.
     # Without it the anchor's backdrop is a flat neutral — better than the
-    # portraits' white studio, but a real backdrop puts the opening shot in
-    # the scene instead of leaving the model to establish it after frame 1.
+    # portrait's own white studio, but a real backdrop puts the opening shot
+    # in the scene instead of leaving the model to establish it after frame 1.
+    import httpx
     backdrop = None
     backdrop_url = getattr(background, "image_url", None) if background is not None else None
     if backdrop_url:
@@ -854,18 +1172,45 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
         except Exception:
             logger.warning("Could not fetch the location backdrop for the anchor", exc_info=True)
 
-    anchor = ltx25_workflow.build_composite_anchor(anchor_images, backdrop_bytes=backdrop)
+    logger.info("LTX-2.5 generation: %d shots split into %d segment(s), primaries: %s",
+                len(shots), len(segments), [getattr(v, "name", "?") for v in primary_variants])
 
-    prompt = build_ltx25_scene_prompt(script, variants, background=background)
-    workflow = ltx25_workflow.build_workflow(prompt, total_duration)
-    logger.info("LTX-2.5 generation: %ds, %d shots, %d anchored characters",
-                total_duration, len(shots), len(anchor_images))
+    segment_videos = []
+    current_anchor = None
+    previous_primary_id = None
+    for seg_index, segment_shots in enumerate(segments):
+        primary_variant = primary_variants[seg_index]
+        primary_id = str(getattr(primary_variant, "id", ""))
+        is_cut = current_anchor is None or primary_id != previous_primary_id
+        if is_cut:
+            current_anchor = _fetch_portrait_anchor(primary_variant, backdrop)
 
-    return runpod_serverless_client.run_inference_job(
-        endpoint_id, workflow, reference_image_bytes=anchor,
-        timeout_seconds=ltx25_timeout_seconds(total_duration),
-        stats=stats,
-    )
+        segment_duration = sum(s.get("duration_seconds", 0) for s in segment_shots) or 5
+        prompt = build_ltx25_scene_prompt(
+            script, [primary_variant], background=background, shots=segment_shots,
+            continuation_anchor=not is_cut,
+        )
+        workflow = ltx25_workflow.build_workflow(prompt, segment_duration)
+        segment_stats: dict = {}
+        video_bytes = runpod_serverless_client.run_inference_job(
+            endpoint_id, workflow, reference_image_bytes=current_anchor,
+            timeout_seconds=ltx25_timeout_seconds(segment_duration),
+            stats=segment_stats,
+        )
+        segment_videos.append(video_bytes)
+        if stats is not None:
+            # Summed across segments — record_usage's cost calculation reads
+            # this expecting ONE number for the whole render, not per-segment.
+            stats["execution_seconds"] = (stats.get("execution_seconds") or 0) + (segment_stats.get("execution_seconds") or 0)
+            stats["delay_seconds"] = (stats.get("delay_seconds") or 0) + (segment_stats.get("delay_seconds") or 0)
+            stats.setdefault("worker_ids", []).append(segment_stats.get("worker_id"))
+        previous_primary_id = primary_id
+        if seg_index < len(segments) - 1:
+            # Tentative — overwritten by a fresh portrait at the top of the
+            # next iteration if that segment's primary turns out to differ.
+            current_anchor = _extract_last_frame_png(video_bytes)
+
+    return segment_videos[0] if len(segment_videos) == 1 else _concat_video_segments(segment_videos)
 
 def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
     """Interactive-button counterpart to culturetoon_video.py's

@@ -117,6 +117,9 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
   const [variantNameDraft, setVariantNameDraft] = useState("");
   const [savingVariantName, setSavingVariantName] = useState(false);
   const [saveVariantNameError, setSaveVariantNameError] = useState<string | null>(null);
+  const [voiceDescriptionDraft, setVoiceDescriptionDraft] = useState("");
+  const [savingVoiceDescription, setSavingVoiceDescription] = useState(false);
+  const [saveVoiceDescriptionError, setSaveVoiceDescriptionError] = useState<string | null>(null);
   const [archivingVariant, setArchivingVariant] = useState(false);
   const [archiveVariantError, setArchiveVariantError] = useState<string | null>(null);
 
@@ -164,6 +167,8 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
     setVariantImageGenWarning(null);
     setVariantNameDraft(selectedVariant?.name ?? "");
     setSaveVariantNameError(null);
+    setVoiceDescriptionDraft(selectedVariant?.voice_description ?? "");
+    setSaveVoiceDescriptionError(null);
     setRegisterError(null);
     setTrainError(null);
   }, [selectedVariantId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -532,6 +537,30 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
       setSaveVariantNameError("Network error — check your connection and try again.");
     } finally {
       setSavingVariantName(false);
+    }
+  }
+
+  async function saveVoiceDescription() {
+    if (!selectedVariant || voiceDescriptionDraft === (selectedVariant.voice_description ?? "")) return;
+    setSavingVoiceDescription(true);
+    setSaveVoiceDescriptionError(null);
+    try {
+      const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, voice_description: voiceDescriptionDraft.trim() || null }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setVariants((prev) => prev.map((v) => (v.id === selectedVariant.id ? (data as CharacterVariant) : v)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setSaveVoiceDescriptionError(typeof data.detail === "string" ? data.detail : `Couldn't save voice reference (${res.status})`);
+      }
+    } catch {
+      setSaveVoiceDescriptionError("Network error — check your connection and try again.");
+    } finally {
+      setSavingVoiceDescription(false);
     }
   }
 
@@ -1073,6 +1102,24 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
                     : `No reference photo of its own — generation stays visually connected to ${selectedCharacter.name} while following this description for who the variant actually is (gender, ethnicity, etc.).`
                 }
               />
+              <div>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <label className="text-xs font-medium text-gray-600">Voice reference</label>
+                  <InfoTooltip text="Drives this character's accent, vocal tone and pacing in self-hosted (LTX-2.5) video generation, which produces audio and video together — a real identity trait, not just appearance. Leave blank to fall back to the description above. Edit this directly if the voice comes out wrong or inconsistent instead of rewriting the whole appearance description." />
+                </div>
+                <textarea
+                  value={voiceDescriptionDraft}
+                  onChange={(e) => setVoiceDescriptionDraft(e.target.value)}
+                  onBlur={saveVoiceDescription}
+                  placeholder={`How ${selectedVariant.name} should SOUND, e.g. "Warm, lilting South Indian English accent, fast and excitable pace, laughs easily mid-sentence."`}
+                  rows={2}
+                  className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 resize-y"
+                />
+                <div className="flex items-center gap-1.5 mt-1">
+                  {savingVoiceDescription && <Loader2 className="h-3 w-3 text-gray-400 animate-spin shrink-0" />}
+                  {saveVoiceDescriptionError && <p className="text-[11px] text-red-500">{saveVoiceDescriptionError}</p>}
+                </div>
+              </div>
             </div>
           ) : (
             <p className="text-xs text-gray-400">Name a variant above, or skip this if {selectedCharacter.name} doesn&apos;t need one.</p>

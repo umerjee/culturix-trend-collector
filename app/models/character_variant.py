@@ -24,6 +24,17 @@ class CharacterVariant(Base):
     # quick). See docs/culturix-comedy-architecture.md §3.7.
     culture_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     description = Column(Text, nullable=True)
+    # User-editable accent/vocal tone/pacing reference — separate from
+    # `description` above (visual appearance/personality). Added 2026-09-03
+    # because self-hosted LTX-2.5 generates audio and video JOINTLY (see
+    # app/services/culturetoon_selfhosted_video.py's module docstring), so a
+    # character's voice is as real an identity trait as their face, but
+    # until now the render's voice instruction was auto-derived from
+    # `description` with no user-facing control at all — confirmed live
+    # (2026-09-02/03) a wrong or ambiguous accent can't be fixed without
+    # rewriting the whole appearance description. Falls back to `description`
+    # in the render prompt when left blank, so this is purely additive.
+    voice_description = Column(Text, nullable=True)
     image_url = Column(Text, nullable=True)
     # A variant-specific raw reference photo, if the user has one (e.g. a
     # real photo for the "Wife" variant). Optional — when absent, AI image
