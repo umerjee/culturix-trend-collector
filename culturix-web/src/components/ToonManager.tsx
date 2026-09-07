@@ -28,6 +28,15 @@ interface Props {
 }
 
 const STATUSES: Toon["status"][] = ["idea", "animating", "ready", "posted", "archived", "failed"];
+
+// Same compact format as ShopifyDigest.tsx's fmt() — used here to show
+// when a toon's video was last generated (updated_at bumps on every
+// regeneration, so it's the closest available signal to "when was this
+// video actually made" without a dedicated video-generated-at column).
+function fmtGeneratedAt(iso: string | null): string | null {
+  if (!iso) return null;
+  return new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
 // "animating" is system-managed — only the real Generate video flow (which
 // also launches the actual background Kling call) should ever set it.
 // Picking it manually from this dropdown used to set the status flag with
@@ -400,6 +409,11 @@ export default function ToonManager({ brandId, brandName, toons, setToons, scrip
             <div key={t.id} className="rounded-2xl bg-white border border-gray-100 p-4">
               <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
                 <div>
+                  {t.final_video_url && fmtGeneratedAt(t.updated_at) && (
+                    <span className="block text-[10px] text-gray-400 font-medium mb-0.5">
+                      {fmtGeneratedAt(t.updated_at)}
+                    </span>
+                  )}
                   <span className="text-sm font-medium text-gray-900">{toonHeadline(t)}</span>
                   <div className="text-xs text-gray-400 mt-0.5">
                     {variantName(t.character_variant_id)}
