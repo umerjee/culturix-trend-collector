@@ -1031,7 +1031,11 @@ class TestLTX25ScenePrompt:
         script.shots = [{"speaker_variant_id": "z", "action": "leans in", "dialogue": "Seen this?"}]
         cast = self._cast(mocker)[:1]
         prompt = build_ltx25_scene_prompt(script, cast, background=None)
-        assert prompt.startswith("Setting: Inside a Minecraft world")
+        # Not startswith: a single-variant cast still leads with its own
+        # identity/voice preamble (single_anchor mode) before the setting,
+        # same as every other cast size — this only checks the setting text
+        # actually made it into the prompt at all.
+        assert "Setting: Inside a Minecraft world" in prompt
 
     def test_a_chosen_location_takes_precedence_over_the_script_setting(self, mocker):
         """A selected Location is an explicit user decision and carries its
@@ -1167,7 +1171,10 @@ class TestLTX25SubjectShots:
             {"shot_number": 1, "speaker_variant_id": "z", "action": "leans in",
              "dialogue": "Seen this?"},
         ]), self._cast(mocker))
-        assert "Zara (LEFT) is the focus" in prompt
+        # This class's cast is a single variant (single_anchor mode, added
+        # 2026-09-02) — no LEFT/CENTRE/RIGHT position label to name since
+        # there's no composite grid to place one within.
+        assert "Zara is the focus" in prompt
         assert "No people in frame" not in prompt
 
     def test_cast_is_declared_as_single_individuals(self, mocker):

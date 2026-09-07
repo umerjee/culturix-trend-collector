@@ -867,11 +867,25 @@ class TestFitShotDurations:
 
     def test_extends_a_shot_to_fit_its_line(self):
         from app.services.culturetoon_script import fit_shot_durations
-        # 19 words needs 8s at 2.5 w/s; the draft gave it 4.
+        # 19 words needs 8s at 2.5 w/s; the draft gave it 4. A second dialogue
+        # shot follows so shot 1 isn't the closing line — otherwise
+        # CLOSING_LINE_BREATH_SECONDS would add its own +1s on top and this
+        # test would no longer be isolating the base fit-to-line math (see
+        # test_closing_shot_gets_extra_breathing_room below for that).
+        fitted = fit_shot_durations([
+            {"shot_number": 1, "duration_seconds": 4, "dialogue": " ".join(["w"] * 19)},
+            {"shot_number": 2, "duration_seconds": 3, "dialogue": "a short closing line"},
+        ])
+        assert fitted[0]["duration_seconds"] == 8
+
+    def test_closing_shot_gets_extra_breathing_room(self):
+        from app.services.culturetoon_script import fit_shot_durations, CLOSING_LINE_BREATH_SECONDS
+        # A single shot is trivially both the base fit AND the closing line,
+        # so it should land on the base 8s PLUS the breath, not just 8s.
         fitted = fit_shot_durations([
             {"shot_number": 1, "duration_seconds": 4, "dialogue": " ".join(["w"] * 19)},
         ])
-        assert fitted[0]["duration_seconds"] == 8
+        assert fitted[0]["duration_seconds"] == 8 + CLOSING_LINE_BREATH_SECONDS
 
     def test_never_shortens_a_shot(self):
         from app.services.culturetoon_script import fit_shot_durations
