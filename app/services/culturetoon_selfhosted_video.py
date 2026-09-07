@@ -1049,6 +1049,18 @@ def _segment_primary_variant(segment_shots: list, variants: list):
     return variants[0] if variants else None
 
 
+def _segment_is_subject_only(segment_shots: list) -> bool:
+    """True when EVERY shot in this segment is shot_focus "subject" — no
+    character on screen at all, e.g. a whole segment devoted to explaining
+    a solar eclipse with the eclipse itself filling the frame. Such a
+    segment must not be anchored on (or chained from) a character's face —
+    see generate_toon_video_ltx25's docstring for the live-confirmed
+    failure this prevents."""
+    return bool(segment_shots) and all(
+        (s.get("shot_focus") or "").strip().lower() == "subject" for s in segment_shots
+    )
+
+
 def _extract_last_frame_png(video_bytes: bytes) -> bytes:
     """The still frame at (effectively) the end of `video_bytes`, as PNG —
     used to chain segment N+1's identity conditioning off segment N's
@@ -1179,17 +1191,36 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
     current_anchor = None
     previous_primary_id = None
     for seg_index, segment_shots in enumerate(segments):
-        primary_variant = primary_variants[seg_index]
-        primary_id = str(getattr(primary_variant, "id", ""))
-        is_cut = current_anchor is None or primary_id != previous_primary_id
-        if is_cut:
-            current_anchor = _fetch_portrait_anchor(primary_variant, backdrop)
+        # A segment entirely of shot_focus "subject" has nobody on screen by
+        # design (e.g. a whole beat explaining a solar eclipse with the
+        # eclipse itself filling the frame) — it must never be anchored on,
+        # or chained from, a character's face. See _segment_is_subject_only
+        # and build_backdrop_only_anchor's own docstrings for the live-
+        # confirmed failure this branch exists to prevent.
+        subject_only = _segment_is_subject_only(segment_shots)
+        if subject_only:
+            current_anchor = ltx25_workflow.build_backdrop_only_anchor(backdrop)
+            prompt = build_ltx25_scene_prompt(
+                script, [], background=background, shots=segment_shots,
+                continuation_anchor=False,
+            )
+            # Whatever comes after this must also re-anchor fresh — chaining
+            # a character segment off a face-less subject frame would lose
+            # identity just as badly as the bug this branch fixes.
+            previous_primary_id = None
+        else:
+            primary_variant = primary_variants[seg_index]
+            primary_id = str(getattr(primary_variant, "id", ""))
+            is_cut = current_anchor is None or primary_id != previous_primary_id
+            if is_cut:
+                current_anchor = _fetch_portrait_anchor(primary_variant, backdrop)
+            prompt = build_ltx25_scene_prompt(
+                script, [primary_variant], background=background, shots=segment_shots,
+                continuation_anchor=not is_cut,
+            )
+            previous_primary_id = primary_id
 
         segment_duration = sum(s.get("duration_seconds", 0) for s in segment_shots) or 5
-        prompt = build_ltx25_scene_prompt(
-            script, [primary_variant], background=background, shots=segment_shots,
-            continuation_anchor=not is_cut,
-        )
         workflow = ltx25_workflow.build_workflow(prompt, segment_duration)
         segment_stats: dict = {}
         video_bytes = runpod_serverless_client.run_inference_job(
@@ -1204,10 +1235,12 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
             stats["execution_seconds"] = (stats.get("execution_seconds") or 0) + (segment_stats.get("execution_seconds") or 0)
             stats["delay_seconds"] = (stats.get("delay_seconds") or 0) + (segment_stats.get("delay_seconds") or 0)
             stats.setdefault("worker_ids", []).append(segment_stats.get("worker_id"))
-        previous_primary_id = primary_id
-        if seg_index < len(segments) - 1:
-            # Tentative — overwritten by a fresh portrait at the top of the
-            # next iteration if that segment's primary turns out to differ.
+        if seg_index < len(segments) - 1 and not subject_only:
+            # Tentative — overwritten by a fresh anchor at the top of the
+            # next iteration if that segment's primary turns out to differ
+            # (or is itself subject-only). Skipped entirely after a
+            # subject-only segment, since that case is ALWAYS overwritten
+            # (previous_primary_id was just forced to None above).
             current_anchor = _extract_last_frame_png(video_bytes)
 
     return segment_videos[0] if len(segment_videos) == 1 else _concat_video_segments(segment_videos)

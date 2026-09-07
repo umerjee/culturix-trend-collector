@@ -278,6 +278,52 @@ def _matte_background(image, tolerance: int = _MATTE_TOLERANCE):
     return resized.filter(ImageFilter.GaussianBlur(radius=blur_radius))
 
 
+def _paint_backdrop_canvas(backdrop_bytes: Optional[bytes]):
+    """A TARGET_WIDTH x TARGET_HEIGHT canvas showing the Location's own art
+    (cover-fit and centered), or a dark neutral if there's none — shared by
+    build_composite_anchor and build_backdrop_only_anchor so a subject-only
+    segment's empty-of-people frame still matches the same backdrop the
+    cast's own anchor uses, not a different-looking fallback."""
+    from io import BytesIO
+    from PIL import Image
+
+    canvas = Image.new("RGB", (TARGET_WIDTH, TARGET_HEIGHT), (28, 24, 22))
+    if backdrop_bytes:
+        backdrop = Image.open(BytesIO(backdrop_bytes)).convert("RGB")
+        scale = max(TARGET_WIDTH / backdrop.width, TARGET_HEIGHT / backdrop.height)
+        backdrop = backdrop.resize(
+            (max(1, round(backdrop.width * scale)), max(1, round(backdrop.height * scale)))
+        )
+        left = (backdrop.width - TARGET_WIDTH) // 2
+        top = (backdrop.height - TARGET_HEIGHT) // 2
+        canvas.paste(backdrop.crop((left, top, left + TARGET_WIDTH, top + TARGET_HEIGHT)), (0, 0))
+    return canvas
+
+
+def build_backdrop_only_anchor(backdrop_bytes: Optional[bytes] = None) -> bytes:
+    """A reference frame with NO character face in it at all — for a
+    segment whose shots are all shot_focus "subject" (nobody on screen,
+    e.g. explaining a solar eclipse with the eclipse itself, not the
+    narrator, filling the frame). Confirmed live 2026-09-07: chaining such
+    a segment off the previous segment's last frame (a character's own
+    close-up) kept that face dominant through the ENTIRE subject shot —
+    the eclipse itself only appeared as a small background element in the
+    last second. A face-free anchor removes the thing the model was
+    holding onto instead of asking it to let go via text, which this
+    model has already been confirmed not to reliably do (see docs/culturix-
+    video-pipeline.md's CFG/strength experiments — text has very little
+    steering power here).
+
+    Returns PNG bytes at TARGET_WIDTH x TARGET_HEIGHT.
+    """
+    from io import BytesIO
+
+    canvas = _paint_backdrop_canvas(backdrop_bytes)
+    buffer = BytesIO()
+    canvas.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def build_composite_anchor(image_bytes_list: list, backdrop_bytes: Optional[bytes] = None) -> bytes:
     """Composites every cast member's portrait into ONE first frame.
 
@@ -296,19 +342,7 @@ def build_composite_anchor(image_bytes_list: list, backdrop_bytes: Optional[byte
     if not usable:
         raise LTX25WorkflowError("No character images available to build a composite anchor")
 
-    # The backdrop is what the viewer sees behind the cast in frame 1. With
-    # none supplied this stays a dark neutral rather than the portraits' own
-    # white studio, which read on screen as a deliberate white cyclorama.
-    canvas = Image.new("RGB", (TARGET_WIDTH, TARGET_HEIGHT), (28, 24, 22))
-    if backdrop_bytes:
-        backdrop = Image.open(BytesIO(backdrop_bytes)).convert("RGB")
-        scale = max(TARGET_WIDTH / backdrop.width, TARGET_HEIGHT / backdrop.height)
-        backdrop = backdrop.resize(
-            (max(1, round(backdrop.width * scale)), max(1, round(backdrop.height * scale)))
-        )
-        left = (backdrop.width - TARGET_WIDTH) // 2
-        top = (backdrop.height - TARGET_HEIGHT) // 2
-        canvas.paste(backdrop.crop((left, top, left + TARGET_WIDTH, top + TARGET_HEIGHT)), (0, 0))
+    canvas = _paint_backdrop_canvas(backdrop_bytes)
 
     slot_width = TARGET_WIDTH // len(usable)
     for index, raw in enumerate(usable):

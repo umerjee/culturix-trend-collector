@@ -574,6 +574,14 @@ informative but teaches nothing:
 - Use the cast to carry the structure: one character can hold the naive question the viewer is
   actually thinking, another the answer. Their personalities and cultures stay intact — a
   character who is blunt explains bluntly.
+  REQUIRED when 2+ characters are cast: every one of them must be the speaker of at least one
+  shot — a real question, reaction, or beat of their own, not just standing named in another
+  character's blocking the whole time. Confirmed live 2026-09-07: a 3-character cast (Zara,
+  Blix, Captain Nova) produced a script where Zara narrated the entire thing solo and the other
+  two never spoke a single line — that defeats the point of casting them, and it also means the
+  render has no real reason to ever anchor their identity. Give the second/third character a
+  genuine question, a wrong guess Zara corrects, or a reaction beat with their own dialogue — not
+  silent presence.
 - Accuracy is a hard requirement. Do not invent statistics, studies or quotes. If you don't
   know a real number, describe the mechanism instead of fabricating a figure.
 - SHOW THE PHENOMENON, not the presenter. The viewer came for the black hole, not for the
