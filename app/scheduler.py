@@ -47,6 +47,32 @@ def run_daily_pipeline():
         logger.error("Daily pipeline failed: %s", e)
 
 
+def run_calendar_sync():
+    """Refreshes upcoming cultural/religious/political events (app/services/
+    calendar_events.py) — national holidays from the free Nager API, plus
+    re-upserting the hand-curated religious/political list (picks up any
+    edits to that file on the next deploy without a manual seed step).
+    Runs once per day, before daily_pipeline, so load_upcoming_events
+    (app/pipeline/nodes/calendar_context.py) has fresh data for that
+    morning's run. Holiday/event dates don't change intraday — daily is
+    already more often than needed, chosen for schedule simplicity over a
+    slower cadence."""
+    logger.info("Calendar sync starting...")
+    try:
+        from app.db import SessionLocal
+        from app.services.calendar_events import sync_holidays, seed_curated_events
+
+        session = SessionLocal()
+        try:
+            holiday_count = sync_holidays(session)
+            curated_count = seed_curated_events(session)
+            logger.info("Calendar sync done: %d holiday rows, %d curated rows", holiday_count, curated_count)
+        finally:
+            session.close()
+    except Exception as e:
+        logger.error("Calendar sync failed: %s", e)
+
+
 def run_content_check():
     """Daily audit of previously generated content ideas — flags stale ones.
     Runs once per day at 09:00 UTC, after the content engine has run."""
@@ -523,6 +549,10 @@ def start():
             CronTrigger(hour=hour, minute=0),
             id=f"collect_{hour:02d}h",
         )
+    # Calendar sync (holidays API + curated religious/political events) —
+    # once daily at 06:00 UTC, ahead of daily_pipeline so that run's
+    # load_upcoming_events node has fresh data.
+    scheduler.add_job(run_calendar_sync, CronTrigger(hour=6, minute=0), id="calendar_sync")
     # Full digest pipeline once per day at 07:00 UTC (morning run includes collection)
     scheduler.add_job(run_daily_pipeline, CronTrigger(hour=7, minute=0), id="daily_pipeline")
     # Content Check — audit prior content for staleness once per day at 09:00 UTC
@@ -567,6 +597,7 @@ def start():
     scheduler.start()
     logger.info(
         "Scheduler started — collection at 01:00/07:00/13:00/19:00 UTC, "
+        "calendar sync at 06:00 UTC, "
         "full pipeline at 07:00 UTC, content check at 09:00 UTC, "
         "post metrics refresh at 10:00 UTC, %s, "
         "digest dispatch every 15 min, culturetoon trend dispatch every 15 min, "

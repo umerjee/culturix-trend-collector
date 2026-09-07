@@ -76,7 +76,40 @@ def _history_note(cluster: dict) -> str:
     return f"seen {count} time(s) before, pattern still unclear"
 
 
-def _build_prompt(profile: dict, clusters: list[dict], top_signals: Optional[list[dict]] = None) -> str:
+def _events_section(upcoming_events: Optional[list[dict]], profile: dict) -> str:
+    """Renders app/services/calendar_events.py's upcoming-events list into a
+    prompt section, added 2026-09-07 — before this, content ideas could
+    only ever react to a trend that had already appeared in collected
+    signals, with no way to anticipate a known-ahead-of-time cultural,
+    religious or political date. Filtering to target_regions here (when
+    the profile has any) rather than in the DB query itself
+    (app/services/calendar_events.py's get_upcoming_events) keeps the
+    query state-wide/cheap and lets a profile with no region preference
+    still see every tracked-region event, same posture as the untargeted
+    cluster/signal context above."""
+    if not upcoming_events:
+        return ""
+    target_regions = set(profile.get("target_regions") or [])
+    relevant = [
+        e for e in upcoming_events
+        if not target_regions or not e.get("regions") or target_regions & set(e["regions"])
+    ]
+    if not relevant:
+        return ""
+    lines = [
+        f"- {e['name']} ({e['category']}) on {e['date']}"
+        + (f" — {e['description']}" if e.get("description") else "")
+        for e in relevant
+    ]
+    return (
+        "\nUpcoming events in the next several weeks relevant to this audience — use one "
+        "ONLY where it genuinely fits a trend above; do not force an unrelated idea to "
+        "reference one just because it's listed:\n" + "\n".join(lines) + "\n"
+    )
+
+
+def _build_prompt(profile: dict, clusters: list[dict], top_signals: Optional[list[dict]] = None,
+                   upcoming_events: Optional[list[dict]] = None) -> str:
     """Builds a prompt asking for exactly len(clusters) ideas, one per cluster, IN THE
     SAME ORDER as the input list — the caller (not the model) is responsible for
     tagging each returned idea with its cluster_index, since trusting an LLM to
@@ -127,6 +160,7 @@ def _build_prompt(profile: dict, clusters: list[dict], top_signals: Optional[lis
         f"{json.dumps(signal_texts, ensure_ascii=False)}\n"
         if signal_texts else ""
     )
+    events_section = _events_section(upcoming_events, profile)
 
     return f"""You are an expert content strategist for {niche}.
 
@@ -140,7 +174,7 @@ Target audience:
 Today's trending cultural signals (summarized, each with its "history" — how often
 and in what pattern we've observed it before):
 {cluster_summary}
-{signals_section}
+{signals_section}{events_section}
 Generate EXACTLY {count} content idea{"s" if count != 1 else ""} — ONE per trend above, IN THE SAME ORDER
 they're listed. Idea 1 must be about trend 1, idea 2 about trend 2, and so on — do not
 skip, reorder, merge, or combine trends.
@@ -191,14 +225,18 @@ def _parse_ideas(raw: str) -> list[dict]:
     return json.loads(text.strip())
 
 
-def _generate_ideas_for_clusters(profile: dict, clusters: list[dict], top_signals: Optional[list[dict]] = None) -> list[dict]:
+def _generate_ideas_for_clusters(profile: dict, clusters: list[dict], top_signals: Optional[list[dict]] = None,
+                                  upcoming_events: Optional[list[dict]] = None) -> list[dict]:
     """Generates exactly len(clusters) ideas, one per cluster, in the same order as
     the input list. Used both for proactive top-3 generation and the on-demand
-    single-cluster endpoint — one prompt-building/parsing path for both."""
+    single-cluster endpoint — one prompt-building/parsing path for both.
+    upcoming_events is optional and only ever passed by the proactive pipeline
+    (generate_content below) — the on-demand endpoint (POST /api/generate-idea
+    in app/main.py) omits it, same as it already omits top_signals context."""
     if not clusters:
         return []
 
-    prompt = _build_prompt(profile, clusters, top_signals)
+    prompt = _build_prompt(profile, clusters, top_signals, upcoming_events)
     if os.getenv("QWEN_API_KEY"):
         qwen = _get_qwen_client()
         response = qwen.chat.completions.create(
@@ -232,6 +270,7 @@ def generate_content(state: PipelineState) -> PipelineState:
         state["generated_content"] = []
         return state
 
+    upcoming_events = state.get("upcoming_events", [])
     results = []
     for match in matches:
         user_id = match["user_id"]
@@ -242,7 +281,7 @@ def generate_content(state: PipelineState) -> PipelineState:
 
         ideas = []
         try:
-            ideas = _generate_ideas_for_clusters(profile, proactive_clusters, top_signals)
+            ideas = _generate_ideas_for_clusters(profile, proactive_clusters, top_signals, upcoming_events)
             # Tag by position — proactive_clusters is clusters[:N], so its indices
             # already match the position each cluster holds in the full `clusters`
             # list stored on the digest below. No remapping needed.

@@ -51,6 +51,7 @@ async def lifespan(_):
     from app.models.culture import Culture                            # noqa: F401
     from app.models.toon_scene import ToonScene                       # noqa: F401
     from app.models.toon_shot import ToonShot                         # noqa: F401
+    from app.models.calendar_event import CalendarEvent                # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).

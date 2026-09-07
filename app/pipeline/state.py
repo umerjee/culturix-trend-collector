@@ -6,6 +6,7 @@ class PipelineState(TypedDict):
     user_profiles: List[dict]      # from user_profiles table
     embeddings: List[List[float]]  # from Voyage AI
     clusters: List[dict]           # AI-identified cultural clusters
+    upcoming_events: List[dict]    # from app/services/calendar_events.py, see calendar_context.py
     persona_matches: List[dict]    # user_id -> relevant clusters + signals
     generated_content: List[dict]  # final content ideas per user
     errors: List[str]

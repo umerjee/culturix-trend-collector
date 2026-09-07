@@ -2,7 +2,14 @@
 LangGraph pipeline — daily orchestrator. Runs collection→digest end to end:
 translate_signals → load_signals → embed_signals → cluster_and_persist →
 cluster_trends → validate_clusters → map_trend_history → map_persona_tags →
-map_personas → generate_content → validate_ideas → write_digests
+map_personas → load_upcoming_events → generate_content → validate_ideas →
+write_digests
+
+load_upcoming_events (added 2026-09-07) attaches cultural/religious/
+political events happening within the next ~45 days (app/services/
+calendar_events.py) so content_strategist.py can write ideas that
+anticipate an event ahead of time instead of only reacting to what's
+already trending — see app/pipeline/nodes/calendar_context.py.
 
 cluster_and_persist keeps the admin-facing Cluster table populated (HDBSCAN);
 cluster_trends/map_personas use Voyage+Qdrant+DeepSeek for the actual
@@ -41,6 +48,7 @@ from app.pipeline.nodes.trend_validator import validate_clusters, validate_ideas
 from app.pipeline.nodes.trend_historian import map_trend_history
 from app.pipeline.nodes.persona_tag_tracker import map_persona_tags
 from app.pipeline.nodes.persona_mapper import map_personas
+from app.pipeline.nodes.calendar_context import load_upcoming_events
 from app.pipeline.nodes.content_strategist import generate_content
 from app.pipeline.nodes.digest_writer import write_digests
 
@@ -134,6 +142,7 @@ def build_pipeline():
     graph.add_node("map_trend_history", map_trend_history)
     graph.add_node("map_persona_tags", map_persona_tags)
     graph.add_node("map_personas", map_personas)
+    graph.add_node("load_upcoming_events", load_upcoming_events)
     graph.add_node("generate_content", generate_content)
     graph.add_node("validate_ideas", validate_ideas)
     graph.add_node("write_digests", write_digests)
@@ -147,7 +156,8 @@ def build_pipeline():
     graph.add_edge("validate_clusters", "map_trend_history")
     graph.add_edge("map_trend_history", "map_persona_tags")
     graph.add_edge("map_persona_tags", "map_personas")
-    graph.add_edge("map_personas", "generate_content")
+    graph.add_edge("map_personas", "load_upcoming_events")
+    graph.add_edge("load_upcoming_events", "generate_content")
     graph.add_edge("generate_content", "validate_ideas")
     graph.add_edge("validate_ideas", "write_digests")
     graph.add_edge("write_digests", END)
@@ -163,6 +173,7 @@ def run_pipeline() -> PipelineState:
         "user_profiles": [],
         "embeddings": [],
         "clusters": [],
+        "upcoming_events": [],
         "persona_matches": [],
         "generated_content": [],
         "errors": [],
