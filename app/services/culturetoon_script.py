@@ -780,6 +780,13 @@ Requirements:
   nothing in the prompt ever asked it to. Writing the phenomenon into "visual" is not enough by
   itself; "lighting" has to carry the actual light-level change or the render has no reason to
   show it.
+  The change must land on the SAME shot whose "visual"/"subject_visual" describes the peak
+  effect, not a shot after it. Confirmed live 2026-09-07 again on the retry: the shot literally
+  describing "the moon completely covers the sun, leaving only a glowing corona" (totality) still
+  kept the bright, unchanged lighting line — only the NEXT shot's lighting was updated to
+  "dimmer". That shot renders bright regardless of what the following shot says; the darkening
+  has to be written into that shot's own lighting field, exactly in step with what its own visual
+  is depicting, not deferred to whatever comes after it.
 - "blocking" says WHERE each character PRESENT IN THIS SHOT is in the frame and what they
   physically hold (max ~20 words). Only name characters who are actually in this shot — for a
   multi-character script, most shots should be about ONE character alone or two at most, not
@@ -790,6 +797,17 @@ Requirements:
   most common failure of multi-character blocking — it reads as a static group photo, not a
   scene, and makes it harder to tell who is actually speaking. Cut to a character's own shot
   instead of keeping everyone on screen throughout.
+  HARD RULE, not just a pacing preference: NEVER name 2+ cast members together as equally
+  present in one shot's blocking (a "gathered together", "all three looking up", "the whole
+  crew" closing beat is the classic place this happens). The render anchors each segment on
+  exactly ONE character's real photo — every OTHER named character in that shot has no photo
+  reference at all, and confirmed live 2026-09-07 on two separate scripts, the render does not
+  draw them as themselves or even as generic strangers — it duplicates the one anchored face to
+  fill the extra people, so "Zara, Blix, and Captain Nova standing together" came back as two
+  visibly identical Zaras. If the story wants a full-cast ending, cut rapidly between separate
+  single-character shots (each its own beat, each anchored on its own speaker) rather than
+  writing one shared shot that claims multiple named identities at once — a name only belongs in
+  blocking when they are that shot's own anchored focus.
   Only the named cast members supplied to you have a real photo the render is anchored to. If a
   shot needs other people on screen (a crowd, classmates, a teacher), describe them ONLY as
   generic, unnamed background extras ("a cluster of classmates in the background") — never give
@@ -851,7 +869,16 @@ Requirements:
   Bad — the same trend: "A living room where they talk about Minecraft." That wastes the
   premise and produces exactly the bland footage this field exists to prevent.
   Name materials, architecture, weather, time of day and era. Describe the empty set only —
-  no characters, no actions, no dialogue.{speaker_field}
+  no characters, no actions, no dialogue.
+  If the subject is a real-world SKY/LIGHT phenomenon (an eclipse, a sunset, an aurora, a meteor
+  shower, a storm rolling in) the setting MUST be grounded at ground level outdoors with open sky
+  actually visible — a field, a rooftop, a street, a beach — starting from ordinary daytime light,
+  never a night backdrop, a space station, or anywhere already dim/starlit. Confirmed live
+  2026-09-07: an eclipse script staged itself on a "futuristic space observatory" deck with a
+  permanently starry sky in frame from shot 1 — there was no bright baseline left for anything to
+  visibly darken FROM, so even a correctly-written darkening "lighting" field on the totality
+  shot would have nothing to contrast against. The phenomenon's visual payoff depends on the
+  viewer seeing the light actually change, which requires starting somewhere it can change from.{speaker_field}
 
 Return ONLY valid JSON with exactly these keys:
 - hook_line: string
