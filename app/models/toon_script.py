@@ -91,7 +91,22 @@ class ToonScript(Base):
     # POST /scripts/{id}/generate-background) — a script's setting drives
     # its background, not the other way around, so a Toon built from this
     # script defaults to inheriting it rather than picking one blind.
+    # For a script whose story visits more than one location, this stays
+    # the "primary/default" background (back-compat with the Kling path
+    # and any single-scene script) — scene_backgrounds below is the real
+    # per-location mapping for a multi-scene script.
     background_id = Column(UUID(as_uuid=True), nullable=True)
+
+    # [{"scene_index": int, "background_id": str}, ...] — one row per scene
+    # planned by app.services.culturetoon_script.plan_scenes(), in the same
+    # order plan_scenes returned them. Each shot in `shots` carries its own
+    # "scene_index" (int) pointing into this list, so a segment's render can
+    # resolve which backdrop image it belongs to (see
+    # generate_toon_video_ltx25 in culturetoon_selfhosted_video.py). A
+    # single-scene script (or one predating scene planning) leaves this
+    # NULL/empty and every shot falls back to `background_id` above — same
+    # posture as character_variant_ids falling back to character_variant_id.
+    scene_backgrounds = Column(JSON, nullable=True)
 
     generation_source = Column(String(10), nullable=False, default="manual")  # manual|ai|ai_auto
     status = Column(String(12), nullable=False, default="draft")  # draft|approved|archived

@@ -77,6 +77,13 @@ CLOSING_LINE_BREATH_SECONDS = 1
 # talking head in front of a background.
 SHOT_FOCUS_TYPES = ["character", "subject", "both"]
 
+# Ceiling on how many distinct physical locations plan_scenes() may plan for
+# one script — a cost/complexity backstop, not a target. The actual count
+# for any given script is theme-driven and almost always lower (see
+# plan_scenes' own docstring) — never treat this as how many scenes a
+# script "should" have.
+MAX_PLANNED_SCENES = 4
+
 
 def dialogue_word_budget(duration_seconds) -> int:
     """Words that fit in a shot at natural pace. Floor of 3 so a very short
@@ -493,12 +500,82 @@ def _build_prompt_from_context(source_type: str, context: str, variants: list, t
                                 cultures: Optional[list] = None,
                                 performance_context: Optional[str] = None,
                                 critique_feedback: Optional[str] = None,
-                                previous_draft: Optional[dict] = None) -> str:
+                                previous_draft: Optional[dict] = None,
+                                planned_scenes: Optional[list] = None) -> str:
     cast_line = _cast_line(variants, source_type, character_personalities)
     relationship_line = _relationship_context(relationships)
     memory_line = _memory_context(memories)
     culture_line = _culture_context(cultures)
     performance_line = performance_context or ""
+    # When plan_scenes() has already locked the story's physical locations
+    # (see that function's docstring), hand them back here as a fixed list
+    # to pick from — every shot's own "location"/"scene_index" instructions
+    # below branch on whether this is set. Absent for any caller that
+    # hasn't been updated to plan scenes first, or chose not to — the
+    # original single free-form "setting" behavior is unchanged then.
+    if planned_scenes:
+        scene_lines = "\n".join(
+            f"  scene_index {s['scene_index']}: {s['description']}" for s in planned_scenes
+        )
+        planned_scenes_block = (
+            "\nPLANNED LOCATIONS — this story takes place across EXACTLY these locations, already "
+            f"locked, in this order:\n{scene_lines}\n"
+        )
+        location_field_instructions = """- "location" and "scene_index" together say WHERE this shot happens — both required, and they
+  must agree: "location" is copied EXACTLY, word for word, from one of the PLANNED LOCATIONS
+  above (never paraphrased, shortened, or invented), and "scene_index" is that location's own
+  scene_index number. This whole script is rendered as ONE continuous video generation with no
+  automatic scene changes between shots — a location change happens ONLY when scene_index
+  itself changes from the previous shot's. Pick whichever planned location this specific shot's
+  story beat actually belongs to; nothing says shots have to move through the list in order, but
+  most scripts naturally will."""
+        setting_field_instructions = (
+            '- "setting" is a ONE-SENTENCE overall summary tying the PLANNED LOCATIONS above '
+            "together (e.g. \"A story moving between a rural Indian kitchen and a bustling New "
+            'York office."). The locations themselves already carry the real detail — this is '
+            "just the throughline, not another full environment description."
+        )
+        scene_index_key = ", scene_index (int)"
+    else:
+        planned_scenes_block = ""
+        location_field_instructions = """- "location" is the CONCRETE PHYSICAL PLACE this shot happens in (max ~25 words) — distinct from
+  "setting" below (the one overall world the whole skit is framed in) and from "visual" (what's
+  staged inside this place). This whole script is rendered as ONE continuous video generation
+  with no automatic scene changes between shots — a location change happens ONLY if this field
+  spells it out. Two rules, no exceptions:
+  1. A shot in the SAME place as the previous shot repeats that previous shot's "location" text
+     VERBATIM, word for word. Do not paraphrase or shorten it — a reworded repeat reads as a
+     new place.
+  2. A shot in a DIFFERENT place writes the new place out in full, naming architecture,
+     materials and what's visible in the background, at the same concreteness as "setting"
+     below (e.g. "A cramped Munich Standesamt office: grey filing cabinets, a queue-ticket
+     dispenser, a laminated regulations poster on the wall" — not "a different office").
+  Shot 1 always writes its location in full (there is no previous shot to match). If every
+  character in this script is naturally tied to a different real place (e.g. each represents a
+  different country), that is a reason to actually move the camera there shot by shot, not a
+  reason to leave everyone standing together in one generic room for the whole video."""
+        setting_field_instructions = """- "setting" is the WORLD this skit physically takes place in (max ~45 words), and it is the
+  single biggest lever on whether the video feels immersive or bland. Put the characters
+  INSIDE the subject matter rather than in a neutral room talking about it. If the trend is a
+  game, a place, a film, a sport or a platform, stage the scene in that world and name its
+  concrete visual signatures.
+  Good — a Minecraft trend: "Inside a Minecraft world: blocky cubic terrain, a grass-block
+  cliff, floating dirt islands, flickering torches on stone walls, pixelated sunset sky,
+  low-poly trees casting hard square shadows."
+  Bad — the same trend: "A living room where they talk about Minecraft." That wastes the
+  premise and produces exactly the bland footage this field exists to prevent.
+  Name materials, architecture, weather, time of day and era. Describe the empty set only —
+  no characters, no actions, no dialogue.
+  If the subject is a real-world SKY/LIGHT phenomenon (an eclipse, a sunset, an aurora, a meteor
+  shower, a storm rolling in) the setting MUST be grounded at ground level outdoors with open sky
+  actually visible — a field, a rooftop, a street, a beach — starting from ordinary daytime light,
+  never a night backdrop, a space station, or anywhere already dim/starlit. Confirmed live
+  2026-09-07: an eclipse script staged itself on a "futuristic space observatory" deck with a
+  permanently starry sky in frame from shot 1 — there was no bright baseline left for anything to
+  visibly darken FROM, so even a correctly-written darkening "lighting" field on the totality
+  shot would have nothing to contrast against. The phenomenon's visual payoff depends on the
+  viewer seeing the light actually change, which requires starting somewhere it can change from."""
+        scene_index_key = ""
     # Showing the model the ACTUAL previous draft (not just abstract
     # feedback text) is what makes this a targeted revision instead of a
     # fresh rewrite — confirmed live: without the previous draft's real
@@ -710,6 +787,7 @@ escalation and set of specifics from the persona/trend context actually given be
     return f"""{role_line}
 
 {context}
+{planned_scenes_block}
 {cast_line}
 {relationship_line}
 {memory_line}
@@ -741,26 +819,27 @@ the opening, another owns the turn, not a metronome. And vary blocking BETWEEN s
 you'd vary shot_type — position, distance, who's near what — not the same symmetric two-shot
 held for the whole script with only the line changing.
 
+Character presence — how a character is framed changes across their own coverage, it isn't
+fixed for the whole script:
+- A character's FIRST shot in a given location (their first appearance there — not necessarily
+  shot 1 overall) must be an unambiguous, close/solo introduction beat: them alone or with at
+  most one other character, clearly framed, not buried in a crowd. The render anchors identity
+  on exactly this kind of shot — a character who is never given one never gets rendered
+  accurately.
+- Once a character has had that introduction in a location, their LATER shots there are free to
+  place them smaller, off-center, part of a busier composition — they don't need to repeat a
+  centered close-up every time they're on screen again.
+- Dialogue delivery is a per-shot DIRECTORIAL CHOICE, not a fixed pattern to default into: a line
+  can be delivered face to face between two characters in frame together, as voiceover while the
+  speaker is shown small within a wider shot (or not shown at all, on a "subject" shot), or as a
+  deliberate centered close-up for emphasis at a beat that earns it. Use whichever actually serves
+  that specific moment — don't let the whole script settle into only one of these.
+
 Requirements:
 - Between {MIN_SHOTS} and {MAX_SHOTS} shots. shot_number must be 1, 2, 3... with no gaps.
 - Each shot's duration_seconds is a whole number >= 1. The SUM of all shots'
   duration_seconds must be between {MIN_TOTAL_SECONDS} and {MAX_TOTAL_SECONDS} (hard limits).
-- "location" is the CONCRETE PHYSICAL PLACE this shot happens in (max ~25 words) — distinct from
-  "setting" below (the one overall world the whole skit is framed in) and from "visual" (what's
-  staged inside this place). This whole script is rendered as ONE continuous video generation
-  with no automatic scene changes between shots — a location change happens ONLY if this field
-  spells it out. Two rules, no exceptions:
-  1. A shot in the SAME place as the previous shot repeats that previous shot's "location" text
-     VERBATIM, word for word. Do not paraphrase or shorten it — a reworded repeat reads as a
-     new place.
-  2. A shot in a DIFFERENT place writes the new place out in full, naming architecture,
-     materials and what's visible in the background, at the same concreteness as "setting"
-     below (e.g. "A cramped Munich Standesamt office: grey filing cabinets, a queue-ticket
-     dispenser, a laminated regulations poster on the wall" — not "a different office").
-  Shot 1 always writes its location in full (there is no previous shot to match). If every
-  character in this script is naturally tied to a different real place (e.g. each represents a
-  different country), that is a reason to actually move the camera there shot by shot, not a
-  reason to leave everyone standing together in one generic room for the whole video.
+{location_field_instructions}
 - "visual" describes the staging: props, environment, positioning, what's physically in frame
   (max ~35 words). Name specific OBJECTS and MATERIALS, not categories — "a chipped enamel
   teapot on scratched oak, a half-eaten plate of jalebi, coats piled on the chair back" rather
@@ -858,27 +937,7 @@ Requirements:
 - "shot_type" must be one of exactly these values: {SHOT_TYPES}.
 - "camera_movement" must be one of exactly these values, or null for a static shot: {CAMERA_MOVEMENTS}.
 - hook_line is a punchy, stand-alone opening line/on-screen text summarizing the skit (max 15 words).
-- "setting" is the WORLD this skit physically takes place in (max ~45 words), and it is the
-  single biggest lever on whether the video feels immersive or bland. Put the characters
-  INSIDE the subject matter rather than in a neutral room talking about it. If the trend is a
-  game, a place, a film, a sport or a platform, stage the scene in that world and name its
-  concrete visual signatures.
-  Good — a Minecraft trend: "Inside a Minecraft world: blocky cubic terrain, a grass-block
-  cliff, floating dirt islands, flickering torches on stone walls, pixelated sunset sky,
-  low-poly trees casting hard square shadows."
-  Bad — the same trend: "A living room where they talk about Minecraft." That wastes the
-  premise and produces exactly the bland footage this field exists to prevent.
-  Name materials, architecture, weather, time of day and era. Describe the empty set only —
-  no characters, no actions, no dialogue.
-  If the subject is a real-world SKY/LIGHT phenomenon (an eclipse, a sunset, an aurora, a meteor
-  shower, a storm rolling in) the setting MUST be grounded at ground level outdoors with open sky
-  actually visible — a field, a rooftop, a street, a beach — starting from ordinary daytime light,
-  never a night backdrop, a space station, or anywhere already dim/starlit. Confirmed live
-  2026-09-07: an eclipse script staged itself on a "futuristic space observatory" deck with a
-  permanently starry sky in frame from shot 1 — there was no bright baseline left for anything to
-  visibly darken FROM, so even a correctly-written darkening "lighting" field on the totality
-  shot would have nothing to contrast against. The phenomenon's visual payoff depends on the
-  viewer seeing the light actually change, which requires starting somewhere it can change from.{speaker_field}
+{setting_field_instructions}{speaker_field}
 
 Return ONLY valid JSON with exactly these keys:
 - hook_line: string
@@ -887,7 +946,7 @@ Return ONLY valid JSON with exactly these keys:
   location (string), visual (string), lighting (string), blocking (string), action (string),
   shot_focus (string), subject_visual (string or null), voiceover (boolean),
   expression (string or null), dialogue (string or null),
-  dialogue_delivery (string or null), shot_type (string), camera_movement (string or null){speaker_key}
+  dialogue_delivery (string or null), shot_type (string), camera_movement (string or null){scene_index_key}{speaker_key}
 
 Return ONLY the JSON object, no other text."""
 
@@ -896,11 +955,11 @@ def _build_prompt(persona_or_cluster, variants: list, tone: str, num_shots: int,
                    character_personalities: Optional[dict] = None, relationships: Optional[list] = None,
                    memories: Optional[list] = None, cultures: Optional[list] = None,
                    performance_context: Optional[str] = None, critique_feedback: Optional[str] = None,
-                   previous_draft: Optional[dict] = None) -> str:
+                   previous_draft: Optional[dict] = None, planned_scenes: Optional[list] = None) -> str:
     source_type, context = _source_type_and_context(persona_or_cluster)
     return _build_prompt_from_context(source_type, context, variants, tone, num_shots, target_duration_seconds,
                                        character_personalities, relationships, memories, cultures, performance_context,
-                                       critique_feedback, previous_draft)
+                                       critique_feedback, previous_draft, planned_scenes)
 
 
 def _assign_speakers(shots: list, variants: list) -> list:
@@ -1052,7 +1111,83 @@ def derive_scene_setting(script) -> dict:
     return {"name": name, "description": description, "country": country}
 
 
-def _call_llm_for_script(prompt: str, tone: str, variants: list) -> dict:
+def plan_scenes(context: str, tone: str, variants: list, target_duration_seconds: int) -> list:
+    """Decides, BEFORE any shot gets written, how many distinct physical
+    locations this specific story needs (1 to MAX_PLANNED_SCENES — always
+    theme-driven, never a fixed count) and writes each one as a fully
+    exhaustive, locked environment description. The shot-writer prompt
+    then hands these back as a fixed list to pick from per shot (see
+    _build_prompt_from_context's planned_scenes param) instead of a shot
+    inventing or drifting its own "location" text shot by shot.
+
+    Added 2026-09-08 per an explicit rework request, after three narrower
+    prompt-only fixes (camera-facing speakers, no naming 2+ cast in one
+    shot's blocking, lighting tracking a phenomenon) still left every
+    segment anchored on one flat, whole-script text description of "the
+    setting" — which is why an eclipse script kept reading as a sunset:
+    "the decision of how many scenes (dynamic backgrounds) will be
+    necessary per toon will depend on the theme... if you want to make
+    engaging videos you have to make the users travel" — so this must not
+    hardcode a count, and a single-location story choosing exactly 1 scene
+    is a correct, expected outcome, not an under-use of the feature.
+
+    context/tone/variants: same shape as the shot-writer's own
+    _build_prompt_from_context call (context is the persona/cluster/idea
+    text already assembled by the caller). Returns
+    [{"scene_index": int, "description": str}, ...] in story order. Raises
+    ToonScriptGenerationError on LLM failure or an unusable response, same
+    as every other call in this module."""
+    cast_names = ", ".join(v.name for v in variants if getattr(v, "name", None)) or "the cast"
+
+    prompt = (
+        "You are a production designer planning the PHYSICAL LOCATIONS a short video will be "
+        "shot in, before a single shot is written.\n\n"
+        f"{context}\n\n"
+        f"Tone: {tone}. Cast: {cast_names}. The whole story runs about "
+        f"{target_duration_seconds} seconds total.\n\n"
+        "Decide how many DISTINCT physical locations this specific story genuinely needs — "
+        "driven by the story, not a fixed number. A scene that never leaves one room needs "
+        "exactly 1 location; that is a correct answer, not a lesser one. A story that compares "
+        "something across cultures, follows a journey, or has a clear before/after moment "
+        "(arriving somewhere, a transformation, a phenomenon unfolding across a changing sky) "
+        "should actually move the camera there — write as many locations as the story needs to "
+        f"feel like it travels, up to {MAX_PLANNED_SCENES}. Do not pad the count with a location "
+        "the story doesn't need, and do not force a story that wants to travel into one location "
+        "just to keep this simple.\n\n"
+        "For EACH location, write a FULLY exhaustive, locked description (60-100 words) — enough "
+        "that nothing about the physical space itself is left for anyone downstream to invent or "
+        "guess: architecture/terrain, materials, specific props already in the space, weather, "
+        "time of day, and the quality and DIRECTION of the ambient light. Two different locations "
+        "must read as visibly different places, not variations on the same room.\n\n"
+        "If the subject is a real-world SKY/LIGHT phenomenon (an eclipse, a sunset, an aurora, a "
+        "storm), its location must be grounded at ground level outdoors with open sky actually "
+        "visible, starting from ordinary daytime light — never a space station, a night backdrop, "
+        "or anywhere already dim. There has to be a bright baseline for the light to visibly "
+        "change FROM.\n\n"
+        "Return ONLY valid JSON with exactly one key:\n"
+        "- scenes: array of objects, each with exactly: scene_index (int, starting at 0, in the "
+        "order the story visits this location), description (string, the locked environment "
+        "description above)\n\n"
+        "Return ONLY the JSON object, no other text."
+    )
+    parsed = _call_llm_json(prompt, temperature=0.6, max_tokens=700)
+    scenes = parsed.get("scenes") or []
+    # scene_index is renumbered contiguously (0, 1, 2...) from whichever
+    # scenes actually have usable text, NOT copied from the model's own
+    # numbering — a dropped scene must not leave a gap, since this index is
+    # what shots/backgrounds key off downstream (see plan_scenes' own
+    # callers) and a gap there is a needless way to break that lookup.
+    cleaned = []
+    for scene in scenes[:MAX_PLANNED_SCENES]:
+        description = (scene.get("description") or "").strip()
+        if description:
+            cleaned.append({"scene_index": len(cleaned), "description": description})
+    if not cleaned:
+        raise ToonScriptGenerationError(f"Scene planning returned no usable locations: {parsed}")
+    return cleaned
+
+
+def _call_llm_for_script(prompt: str, tone: str, variants: list, planned_scenes: Optional[list] = None) -> dict:
     parsed = _call_llm_json(prompt, temperature=0.7, max_tokens=900)
     # Pace before anything else reads the shots, so the stored duration is
     # always one the line actually fits into — see fit_shot_durations.
@@ -1072,6 +1207,12 @@ def _call_llm_for_script(prompt: str, tone: str, variants: list) -> dict:
         # fit_shot_durations the two disagree, and the shots are the truth.
         # The stale figure is what a render would have been billed for.
         "total_duration_seconds": total or parsed.get("total_duration_seconds"),
+        # [{"scene_index", "description"}, ...] from plan_scenes(), or None
+        # when the caller didn't plan scenes — the router uses this to
+        # generate one backdrop image per location and build ToonScript.
+        # scene_backgrounds (see app/services/culturetoon_selfhosted_video.py
+        # for the render-side half of this).
+        "scenes": planned_scenes,
     }
 
 
@@ -1202,7 +1343,8 @@ def generate_toon_script(persona_or_cluster, variants: Optional[list] = None, to
                           cultures: Optional[list] = None,
                           performance_context: Optional[str] = None,
                           critique_feedback: Optional[str] = None,
-                          previous_draft: Optional[dict] = None) -> dict:
+                          previous_draft: Optional[dict] = None,
+                          planned_scenes: Optional[list] = None) -> dict:
     """variants: the full cast for this script (list of CharacterVariant-like
     objects) — one real character writes a monologue, two or more write an
     actual scene between them (see _cast_line). character_personalities:
@@ -1217,15 +1359,21 @@ def generate_toon_script(persona_or_cluster, variants: Optional[list] = None, to
     {hook_line, shots} dict being revised — passing both together switches
     the prompt into REVISION MODE so the model anchors on and minimally
     edits the existing draft instead of writing a new story — see
-    POST /scripts/{id}/regenerate. Returns {"hook_line":
+    POST /scripts/{id}/regenerate. planned_scenes: this function does NOT
+    call plan_scenes() itself — the caller plans scenes first (a separate
+    LLM call) and passes the result here, same reasoning as
+    character_personalities/relationships being pre-resolved by the caller
+    rather than fetched inside this module. Omit to keep the original
+    single free-form "setting" behavior (e.g. a quick/cheap generation that
+    doesn't need multi-location planning). Returns {"hook_line":
     str, "tone": str, "shots": [{"shot_number", "duration_seconds",
     "action", "expression", "dialogue", "speaker_variant_id"}, ...],
-    "total_duration_seconds": int}."""
+    "total_duration_seconds": int, "scenes": [{"scene_index", "description"}, ...] or None}."""
     variants = variants or []
     prompt = _build_prompt(persona_or_cluster, variants, tone, num_shots, target_duration_seconds,
                             character_personalities, relationships, memories, cultures, performance_context,
-                            critique_feedback, previous_draft)
-    return _call_llm_for_script(prompt, tone, variants)
+                            critique_feedback, previous_draft, planned_scenes)
+    return _call_llm_for_script(prompt, tone, variants, planned_scenes)
 
 
 def generate_toon_script_from_idea(idea: str, variants: Optional[list] = None, tone: str = "funny",
@@ -1236,18 +1384,22 @@ def generate_toon_script_from_idea(idea: str, variants: Optional[list] = None, t
                                     cultures: Optional[list] = None,
                                     performance_context: Optional[str] = None,
                                     critique_feedback: Optional[str] = None,
-                                    previous_draft: Optional[dict] = None) -> dict:
+                                    previous_draft: Optional[dict] = None,
+                                    planned_scenes: Optional[list] = None) -> dict:
     """Same shape/contract as generate_toon_script, but grounded in the
     user's own free-text scenario idea instead of a live trending Persona
     or Cluster — for when someone already knows what they want the
-    character to react to and doesn't want to wait for/browse trends."""
+    character to react to and doesn't want to wait for/browse trends.
+    planned_scenes: see generate_toon_script's own docstring — the caller
+    plans scenes first via plan_scenes() (using this same idea as context,
+    see that function) and passes the result here."""
     variants = variants or []
     context = f"User's scenario idea: {idea.strip()}"
     prompt = _build_prompt_from_context("user-provided scenario idea", context, variants, tone,
                                          num_shots, target_duration_seconds,
                                          character_personalities, relationships, memories, cultures,
-                                         performance_context, critique_feedback, previous_draft)
-    return _call_llm_for_script(prompt, tone, variants)
+                                         performance_context, critique_feedback, previous_draft, planned_scenes)
+    return _call_llm_for_script(prompt, tone, variants, planned_scenes)
 
 
 def generate_toon_script_continuing_episode(prior_parts_summary: str, idea: str, variants: Optional[list] = None,
@@ -1257,13 +1409,16 @@ def generate_toon_script_continuing_episode(prior_parts_summary: str, idea: str,
                                              relationships: Optional[list] = None,
                                              memories: Optional[list] = None,
                                              cultures: Optional[list] = None,
-                                             performance_context: Optional[str] = None) -> dict:
+                                             performance_context: Optional[str] = None,
+                                             planned_scenes: Optional[list] = None) -> dict:
     """Same shape/contract as generate_toon_script_from_idea, but grounded in
     a synopsis of an episode's prior parts too (see
     app/routers/culturetoons.py's _episode_synopsis) — the next part is
     written with awareness of what already happened instead of starting
     cold each time, which is what episode stitching otherwise leaves to the
-    user to maintain by hand across separately-suggested scripts."""
+    user to maintain by hand across separately-suggested scripts.
+    planned_scenes: see generate_toon_script's own docstring — the caller
+    plans scenes first via plan_scenes() and passes the result here."""
     variants = variants or []
     context = (
         f"What has happened so far in this story, in order:\n{prior_parts_summary.strip()}\n\n"
@@ -1272,13 +1427,13 @@ def generate_toon_script_continuing_episode(prior_parts_summary: str, idea: str,
     prompt = _build_prompt_from_context(
         "the ongoing story so far, and what should happen in this next part", context, variants, tone,
         num_shots, target_duration_seconds, character_personalities, relationships, memories, cultures,
-        performance_context,
+        performance_context, planned_scenes=planned_scenes,
     )
     prompt += (
         "\n\nThis is a continuation, not a new story — do not recap, re-introduce the characters, "
         "or restate what already happened. Continue directly from where the story left off."
     )
-    return _call_llm_for_script(prompt, tone, variants)
+    return _call_llm_for_script(prompt, tone, variants, planned_scenes)
 
 
 def build_kling_prompt(shots: list, element_names) -> str:

@@ -1015,7 +1015,16 @@ def _split_shots_into_segments(shots: list,
     a silent reaction shot) renders as an unanchored background presence
     instead — no face reference to freeze on to in the first place.
 
-    So a shot starts a NEW segment when EITHER:
+    So a shot starts a NEW segment when ANY of:
+    - its scene_index differs from the segment's established scene —
+      UNCONDITIONALLY, never softened by coupling. A coupled reaction shot
+      can stay glued to a different SPEAKER, but not to a different
+      BACKDROP: the anchor image bakes one specific scene's backdrop into
+      the composite PNG (see build_composite_anchor's own docstring), so a
+      shot from scene 1 glued into a scene 0 segment would render against
+      the wrong scene's backdrop regardless of who's speaking. Absent
+      (None) for a script that never had plan_scenes() run over it — those
+      scripts behave exactly as before this existed.
     - it would push the current segment past target_seconds and isn't
       coupled to what's already in it (same rule as before), or
     - its speaker_variant_id differs from the segment's established
@@ -1024,28 +1033,37 @@ def _split_shots_into_segments(shots: list,
       even if, taken alone, it would "belong" to someone else, exactly
       like keeping a reaction shot attached to the line it's reacting to.
     A shot with no speaker (a pure reaction/subject shot) never changes
-    the segment's established primary by itself."""
+    the segment's established primary by itself. Same for scene_index."""
     segments = []
     current: list = []
     current_total = 0
     current_primary = None
+    current_scene_index = None
     for shot in shots:
         duration = shot.get("duration_seconds") or 0
         speaker = shot.get("speaker_variant_id")
+        scene_index = shot.get("scene_index")
+        scene_changed = (
+            bool(current) and scene_index is not None
+            and current_scene_index is not None and scene_index != current_scene_index
+        )
         coupled = bool(current) and _is_coupled_shot(shot)
         primary_changed = bool(current) and bool(speaker) and bool(current_primary) and speaker != current_primary and not coupled
         exceeds_target = bool(current) and (current_total + duration > target_seconds)
         must_split_anyway = exceeds_target and (not coupled or current_total + duration > hard_cap_seconds)
-        if current and (primary_changed or must_split_anyway):
+        if current and (scene_changed or primary_changed or must_split_anyway):
             segments.append(current)
             current = [shot]
             current_total = duration
             current_primary = speaker
+            current_scene_index = scene_index
             continue
         current.append(shot)
         current_total += duration
         if speaker and not current_primary:
             current_primary = speaker
+        if scene_index is not None and current_scene_index is None:
+            current_scene_index = scene_index
     if current:
         segments.append(current)
     return segments
@@ -1061,6 +1079,20 @@ def _segment_primary_variant(segment_shots: list, variants: list):
         if speaker_id and str(speaker_id) in variants_by_id:
             return variants_by_id[str(speaker_id)]
     return variants[0] if variants else None
+
+
+def _segment_scene_index(segment_shots: list) -> Optional[int]:
+    """Which plan_scenes() location this segment's backdrop should be —
+    every shot in one segment shares the same scene_index by construction
+    (_split_shots_into_segments splits unconditionally on a scene change),
+    so the first shot that has one speaks for the whole segment. None for
+    a script that never had plan_scenes() run over it, or a segment whose
+    shots simply don't carry the field."""
+    for shot in segment_shots:
+        scene_index = shot.get("scene_index")
+        if scene_index is not None:
+            return scene_index
+    return None
 
 
 def _segment_is_subject_only(segment_shots: list) -> bool:
@@ -1210,7 +1242,8 @@ def _fetch_portrait_anchor(variant, backdrop: Optional[bytes]) -> bytes:
 
 def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
                               duration_seconds: Optional[int] = None,
-                              background=None, stats: Optional[dict] = None) -> bytes:
+                              background=None, scene_backgrounds: Optional[dict] = None,
+                              stats: Optional[dict] = None) -> bytes:
     """Renders a script as one or more LTX-2.5 generations — one per SEGMENT
     (see _split_shots_into_segments) — concatenated into a single file.
 
@@ -1226,15 +1259,31 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
     — the tradeoff this approach deliberately accepts: exactly one
     precisely-identity-matched person per segment, everyone else generic.
 
-    When consecutive segments share the same primary (a duration-forced
-    split mid-speaker, not a change of who's talking), the later one
-    chains off the earlier one's own last rendered frame instead of
-    re-anchoring on a fresh portrait — continuity within one person's own
-    coverage. When the primary CHANGES, that's a real cut to a different
-    person's own coverage, so it re-anchors on their fresh portrait rather
-    than chaining off a frame that doesn't show their face at all.
+    When consecutive segments share the same primary AND the same scene
+    (a duration-forced split mid-speaker, not a change of who's talking or
+    where), the later one chains off the earlier one's own last rendered
+    frame instead of re-anchoring on a fresh portrait — continuity within
+    one person's own coverage. When the primary changes, OR the scene
+    changes (a different planned location's backdrop), that's a real cut,
+    so it re-anchors fresh rather than chaining off a frame that doesn't
+    show the right face, or the right place, at all.
+
+    background: the script's single DEFAULT backdrop (a ToonBackground-like
+    object, or anything with .image_url) — used for every segment on a
+    script that was never run through plan_scenes() (no shot carries a
+    scene_index), same as before this parameter's sibling existed.
+    scene_backgrounds: {scene_index (int): ToonBackground-like object},
+    resolved by the caller (this function has no DB session — same
+    no-DB-access reasoning as `background` above) from ToonScript.
+    scene_backgrounds. Added 2026-09-08 for the theme-driven multi-scene
+    rework — a script planned across N locations gets N distinct backdrop
+    images instead of one repeated across the whole video. A segment whose
+    shots carry no scene_index (or whose scene_index has no matching entry
+    here) falls back to `background`, so a partially-migrated or manually-
+    edited script still renders sensibly.
     """
     from app.media import ltx25_workflow, runpod_serverless_client
+    import httpx
 
     shots = getattr(script, "shots", None) or []
     if not shots:
@@ -1242,27 +1291,42 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
 
     segments = _split_shots_into_segments(shots)
     primary_variants = [_segment_primary_variant(seg, variants) for seg in segments]
+    segment_scene_indices = [_segment_scene_index(seg) for seg in segments]
 
     # The Location's own art, behind the cast, in the video's first frame.
     # Without it the anchor's backdrop is a flat neutral — better than the
     # portrait's own white studio, but a real backdrop puts the opening shot
     # in the scene instead of leaving the model to establish it after frame 1.
-    import httpx
-    backdrop = None
-    backdrop_url = getattr(background, "image_url", None) if background is not None else None
-    if backdrop_url:
-        try:
-            backdrop = httpx.get(backdrop_url, timeout=30).content
-        except Exception:
-            logger.warning("Could not fetch the location backdrop for the anchor", exc_info=True)
+    # Fetched lazily and cached per scene_index — a script with 3 planned
+    # scenes needs at most 3 fetches total, not one per segment.
+    default_backdrop_url = getattr(background, "image_url", None) if background is not None else None
+    backdrop_cache: dict = {}
 
-    logger.info("LTX-2.5 generation: %d shots split into %d segment(s), primaries: %s",
-                len(shots), len(segments), [getattr(v, "name", "?") for v in primary_variants])
+    def _resolve_backdrop(scene_index: Optional[int]) -> Optional[bytes]:
+        bg = (scene_backgrounds or {}).get(scene_index) if scene_index is not None else None
+        url = getattr(bg, "image_url", None) if bg is not None else default_backdrop_url
+        cache_key = scene_index if bg is not None else "__default__"
+        if cache_key not in backdrop_cache:
+            fetched = None
+            if url:
+                try:
+                    fetched = httpx.get(url, timeout=30).content
+                except Exception:
+                    logger.warning("Could not fetch the scene %s backdrop for the anchor", scene_index, exc_info=True)
+            backdrop_cache[cache_key] = fetched
+        return backdrop_cache[cache_key]
+
+    logger.info("LTX-2.5 generation: %d shots split into %d segment(s), primaries: %s, scenes: %s",
+                len(shots), len(segments), [getattr(v, "name", "?") for v in primary_variants],
+                segment_scene_indices)
 
     segment_videos = []
     current_anchor = None
     previous_primary_id = None
+    previous_scene_index = None
     for seg_index, segment_shots in enumerate(segments):
+        this_scene_index = segment_scene_indices[seg_index]
+        backdrop = _resolve_backdrop(this_scene_index)
         # A segment entirely of shot_focus "subject" has nobody on screen by
         # design (e.g. a whole beat explaining a solar eclipse with the
         # eclipse itself filling the frame) — it must never be anchored on,
@@ -1280,10 +1344,15 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
             # a character segment off a face-less subject frame would lose
             # identity just as badly as the bug this branch fixes.
             previous_primary_id = None
+            previous_scene_index = None
         else:
             primary_variant = primary_variants[seg_index]
             primary_id = str(getattr(primary_variant, "id", ""))
-            is_cut = current_anchor is None or primary_id != previous_primary_id
+            is_cut = (
+                current_anchor is None
+                or primary_id != previous_primary_id
+                or this_scene_index != previous_scene_index
+            )
             if is_cut:
                 current_anchor = _fetch_portrait_anchor(primary_variant, backdrop)
             prompt = build_ltx25_scene_prompt(
@@ -1291,6 +1360,7 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
                 continuation_anchor=not is_cut,
             )
             previous_primary_id = primary_id
+            previous_scene_index = this_scene_index
 
         segment_duration = sum(s.get("duration_seconds", 0) for s in segment_shots) or 5
         workflow = ltx25_workflow.build_workflow(prompt, segment_duration)
@@ -1309,13 +1379,44 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
             stats.setdefault("worker_ids", []).append(segment_stats.get("worker_id"))
         if seg_index < len(segments) - 1 and not subject_only:
             # Tentative — overwritten by a fresh anchor at the top of the
-            # next iteration if that segment's primary turns out to differ
-            # (or is itself subject-only). Skipped entirely after a
+            # next iteration if that segment's primary or scene turns out to
+            # differ (or is itself subject-only). Skipped entirely after a
             # subject-only segment, since that case is ALWAYS overwritten
-            # (previous_primary_id was just forced to None above).
+            # (previous_primary_id/previous_scene_index were just forced to
+            # None above).
             current_anchor = _extract_last_frame_png(video_bytes)
 
     return segment_videos[0] if len(segment_videos) == 1 else _concat_video_segments(segment_videos)
+
+def resolve_scene_backgrounds(session, script) -> Optional[dict]:
+    """{scene_index (int): ToonBackground row} for a script planned across
+    more than one location — see generate_toon_video_ltx25's own docstring
+    on the param this feeds. Shared by both LTX-2.5 callers (the
+    interactive generate_video_for_toon_selfhosted below, and the scheduled
+    batch runner in culturetoon_selfhosted_batch.py) rather than duplicated,
+    since both need the exact same resolution. None for a script with no
+    scene_backgrounds at all (predates scene planning, or plan_scenes()
+    itself failed when the script was created — both already fail open to
+    the script's single `background_id` upstream)."""
+    from app.models.toon_background import ToonBackground
+
+    if not getattr(script, "scene_backgrounds", None):
+        return None
+    scene_bg_ids = {
+        entry["scene_index"]: entry["background_id"]
+        for entry in script.scene_backgrounds if entry.get("background_id")
+    }
+    if not scene_bg_ids:
+        return None
+    rows = session.query(ToonBackground).filter(
+        ToonBackground.id.in_([_uuid.UUID(v) for v in scene_bg_ids.values()])
+    ).all()
+    rows_by_id = {str(r.id): r for r in rows}
+    return {
+        scene_index: rows_by_id[bg_id]
+        for scene_index, bg_id in scene_bg_ids.items() if bg_id in rows_by_id
+    } or None
+
 
 def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
     """Interactive-button counterpart to culturetoon_video.py's
@@ -1399,6 +1500,11 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
         if background_id:
             background = session.query(ToonBackground).filter_by(id=background_id).first()
 
+        # One distinct backdrop per plan_scenes() location, for a script
+        # that was planned across more than one — see resolve_scene_
+        # backgrounds' and generate_toon_video_ltx25's own docstrings.
+        scene_backgrounds = resolve_scene_backgrounds(session, script)
+
         # Same resolve-and-decrypt pattern as app/services/
         # culturetoon_video.py::generate_video_for_toon: the primary cast
         # member drives voice_provider for the whole video, and a missing/
@@ -1418,7 +1524,7 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
         if use_ltx25():
             video_bytes = generate_toon_video_ltx25(
                 script, variants, endpoint_id, duration_seconds=duration, background=background,
-                stats=run_stats,
+                scene_backgrounds=scene_backgrounds, stats=run_stats,
             )
         else:
             video_bytes = generate_toon_video_selfhosted(

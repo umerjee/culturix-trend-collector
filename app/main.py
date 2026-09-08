@@ -214,6 +214,9 @@ async def lifespan(_):
             # Advisory comedy-quality score/feedback — see ToonScript.
             # comedy_judgment's docstring.
             "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS comedy_judgment JSON",
+            # Per-scene backdrop mapping for a multi-location script — see
+            # ToonScript.scene_backgrounds's docstring.
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS scene_backgrounds JSON",
             # Kling Omni video pipeline state — see app/services/culturetoon_video.py.
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS raw_video_url TEXT",
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS clip_video_urls TEXT[] DEFAULT '{}'",

@@ -384,6 +384,7 @@ def _serialize_script(s) -> dict:
         "tone": s.tone, "shots": s.shots, "total_duration_seconds": s.total_duration_seconds,
         "comedy_judgment": s.comedy_judgment,
         "background_id": str(s.background_id) if s.background_id else None,
+        "scene_backgrounds": s.scene_backgrounds,
         "generation_source": s.generation_source, "status": s.status,
         "created_at": s.created_at.isoformat() if s.created_at else None,
         "updated_at": s.updated_at.isoformat() if s.updated_at else None,
@@ -2810,7 +2811,10 @@ def suggest_script(body: dict):
     pattern (the caller needs the result immediately to render it)."""
     from app.db import SessionLocal
     from app.models.toon_script import ToonScript
-    from app.services.culturetoon_script import generate_toon_script, judge_script_comedy, ToonScriptGenerationError, TONE_OPTIONS as _TONES
+    from app.services.culturetoon_script import (
+        generate_toon_script, judge_script_comedy, plan_scenes,
+        ToonScriptGenerationError, TONE_OPTIONS as _TONES,
+    )
 
     user_id = body.get("user_id")
     brand_id = body.get("brand_id")
@@ -2850,6 +2854,18 @@ def suggest_script(body: dict):
         )
 
         try:
+            # See suggest_script_from_idea's own comment on this same
+            # pattern — scenes are planned first (own LLM call, fails open
+            # to the original freeform setting on error) and handed to the
+            # shot-writer as a locked list.
+            planned_scenes = None
+            try:
+                planned_scenes = plan_scenes(
+                    f"{source_type.capitalize()} context: {source_query_text}", tone, variants, target_duration_seconds,
+                )
+            except ToonScriptGenerationError:
+                logger.warning("Scene planning failed for %s script — falling back to freeform setting", source_type, exc_info=True)
+
             idea = generate_toon_script(
                 source, variants, tone=tone,
                 num_shots=num_shots,
@@ -2859,9 +2875,20 @@ def suggest_script(body: dict):
                 memories=memories,
                 cultures=cultures,
                 performance_context=performance_context,
+                planned_scenes=planned_scenes,
             )
         except ToonScriptGenerationError as exc:
             raise HTTPException(status_code=502, detail=f"Script generation failed: {exc}")
+
+        scene_backgrounds = None
+        budget_warning = None
+        if planned_scenes:
+            try:
+                scene_backgrounds, budget_warning = _generate_scene_backgrounds(
+                    session, brand, user_id, planned_scenes, body.get("art_style") or DEFAULT_ART_STYLE,
+                )
+            except HTTPException:
+                logger.warning("Per-scene background generation failed for %s script — script saved without them", source_type, exc_info=True)
 
         script = ToonScript(
             brand_id=brand.id,
@@ -2870,9 +2897,11 @@ def suggest_script(body: dict):
             source_type=source_type,
             source_id=source_id,
             hook_line=idea.get("hook_line"),
+            scene_direction=idea.get("setting"),
             tone=idea.get("tone"),
             shots=idea.get("shots"),
             total_duration_seconds=idea.get("total_duration_seconds"),
+            scene_backgrounds=scene_backgrounds,
             comedy_judgment=judge_script_comedy(idea),
             generation_source="ai",
             status="draft",
@@ -2880,7 +2909,10 @@ def suggest_script(body: dict):
         session.add(script)
         session.commit()
         session.refresh(script)
-        return _serialize_script(script)
+        serialized = _serialize_script(script)
+        if budget_warning:
+            serialized["budget_warning"] = budget_warning
+        return serialized
     finally:
         session.close()
 
@@ -2896,7 +2928,8 @@ def suggest_script_from_idea(body: dict):
     from app.db import SessionLocal
     from app.models.toon_script import ToonScript
     from app.services.culturetoon_script import (
-        generate_toon_script_from_idea, judge_script_comedy, ToonScriptGenerationError, TONE_OPTIONS as _TONES,
+        generate_toon_script_from_idea, judge_script_comedy, plan_scenes,
+        ToonScriptGenerationError, TONE_OPTIONS as _TONES,
     )
 
     user_id = body.get("user_id")
@@ -2924,6 +2957,21 @@ def suggest_script_from_idea(body: dict):
         )
 
         try:
+            # Scenes are planned FIRST (own LLM call) and handed to the
+            # shot-writer as a locked list to pick from — see plan_scenes'
+            # own docstring for why this can't just be one call. Fails open
+            # to the original single free-form "setting" behavior: a script
+            # is still worth having even if scene planning itself errors,
+            # same resilience posture as generate_script_background's own
+            # derive_scene_setting fallback below.
+            planned_scenes = None
+            try:
+                planned_scenes = plan_scenes(
+                    f"User's scenario idea: {idea}", tone, variants, target_duration_seconds,
+                )
+            except ToonScriptGenerationError:
+                logger.warning("Scene planning failed for idea script — falling back to freeform setting", exc_info=True)
+
             result = generate_toon_script_from_idea(
                 idea, variants, tone=tone,
                 num_shots=num_shots,
@@ -2933,9 +2981,24 @@ def suggest_script_from_idea(body: dict):
                 memories=memories,
                 cultures=cultures,
                 performance_context=performance_context,
+                planned_scenes=planned_scenes,
             )
         except ToonScriptGenerationError as exc:
             raise HTTPException(status_code=502, detail=f"Script generation failed: {exc}")
+
+        # One backdrop image per planned scene — same fail-open posture as
+        # planning itself: a script without scene_backgrounds still falls
+        # back correctly at render time (see generate_toon_video_ltx25),
+        # so a background-generation hiccup shouldn't block the script.
+        scene_backgrounds = None
+        budget_warning = None
+        if planned_scenes:
+            try:
+                scene_backgrounds, budget_warning = _generate_scene_backgrounds(
+                    session, brand, user_id, planned_scenes, body.get("art_style") or DEFAULT_ART_STYLE,
+                )
+            except HTTPException:
+                logger.warning("Per-scene background generation failed for idea script — script saved without them", exc_info=True)
 
         script = ToonScript(
             brand_id=brand.id,
@@ -2951,6 +3014,7 @@ def suggest_script_from_idea(body: dict):
             tone=result.get("tone"),
             shots=result.get("shots"),
             total_duration_seconds=result.get("total_duration_seconds"),
+            scene_backgrounds=scene_backgrounds,
             comedy_judgment=judge_script_comedy(result),
             generation_source="ai",
             status="draft",
@@ -2958,7 +3022,10 @@ def suggest_script_from_idea(body: dict):
         session.add(script)
         session.commit()
         session.refresh(script)
-        return _serialize_script(script)
+        serialized = _serialize_script(script)
+        if budget_warning:
+            serialized["budget_warning"] = budget_warning
+        return serialized
     finally:
         session.close()
 
@@ -3118,7 +3185,7 @@ def regenerate_script(script_id: str, body: dict):
     from app.db import SessionLocal
     from app.models.character_variant import CharacterVariant
     from app.services.culturetoon_script import (
-        generate_toon_script, generate_toon_script_from_idea, judge_script_comedy,
+        generate_toon_script, generate_toon_script_from_idea, judge_script_comedy, plan_scenes,
         label_speakers, ToonScriptGenerationError, TONE_OPTIONS as _TONES,
     )
 
@@ -3132,7 +3199,7 @@ def regenerate_script(script_id: str, body: dict):
 
     session = SessionLocal()
     try:
-        _get_brand_owned(session, brand_id, user_id)
+        brand = _get_brand_owned(session, brand_id, user_id)
         script = _get_script_owned(session, script_id, brand_id, user_id)
 
         cast_ids = list(script.character_variant_ids or ([str(script.character_variant_id)] if script.character_variant_id else []))
@@ -3184,6 +3251,20 @@ def regenerate_script(script_id: str, body: dict):
             if critique_feedback and script.shots else None
         )
 
+        # Scenes are planned fresh on every regenerate too (a known
+        # simplification — see plan_scenes' own docstring: reusing the
+        # PREVIOUS plan on a revision is a future improvement, not this
+        # one), same fail-open posture as the create paths.
+        planned_scenes = None
+        try:
+            if script.source_type in ("persona", "cluster") and script.source_id is not None:
+                planning_context = f"{script.source_type.capitalize()} context: {script.hook_line or script.idea_text or ''}"
+            else:
+                planning_context = f"User's scenario idea: {script.idea_text or script.hook_line or ''}"
+            planned_scenes = plan_scenes(planning_context, effective_tone, variants, target_duration_seconds)
+        except ToonScriptGenerationError:
+            logger.warning("Scene planning failed while regenerating script %s — falling back to freeform setting", script_id, exc_info=True)
+
         try:
             if script.source_type in ("persona", "cluster") and script.source_id is not None:
                 source = _fetch_trend_source(session, script.source_type, script.source_id)
@@ -3198,6 +3279,7 @@ def regenerate_script(script_id: str, body: dict):
                     character_personalities=character_personalities, relationships=relationships,
                     memories=memories, cultures=cultures, performance_context=performance_context,
                     critique_feedback=critique_feedback, previous_draft=previous_draft,
+                    planned_scenes=planned_scenes,
                 )
             elif script.idea_text:
                 result = generate_toon_script_from_idea(
@@ -3206,6 +3288,7 @@ def regenerate_script(script_id: str, body: dict):
                     character_personalities=character_personalities, relationships=relationships,
                     memories=memories, cultures=cultures, performance_context=performance_context,
                     critique_feedback=critique_feedback, previous_draft=previous_draft,
+                    planned_scenes=planned_scenes,
                 )
             else:
                 raise HTTPException(
@@ -3214,6 +3297,16 @@ def regenerate_script(script_id: str, body: dict):
                 )
         except ToonScriptGenerationError as exc:
             raise HTTPException(status_code=502, detail=f"Regeneration failed: {exc}")
+
+        scene_backgrounds = None
+        budget_warning = None
+        if planned_scenes:
+            try:
+                scene_backgrounds, budget_warning = _generate_scene_backgrounds(
+                    session, brand, user_id, planned_scenes, body.get("art_style") or DEFAULT_ART_STYLE,
+                )
+            except HTTPException:
+                logger.warning("Per-scene background generation failed while regenerating script %s — script saved without them", script_id, exc_info=True)
 
         script.hook_line = result.get("hook_line")
         script.tone = result.get("tone")
@@ -3228,11 +3321,16 @@ def regenerate_script(script_id: str, body: dict):
         # omits `setting` doesn't wipe a setting the user hand-wrote.
         if result.get("setting"):
             script.scene_direction = result["setting"]
+        if scene_backgrounds:
+            script.scene_backgrounds = scene_backgrounds
         script.comedy_judgment = judge_script_comedy(result)
         script.status = "draft"
         session.commit()
         session.refresh(script)
-        return _serialize_script(script)
+        serialized = _serialize_script(script)
+        if budget_warning:
+            serialized["budget_warning"] = budget_warning
+        return serialized
     finally:
         session.close()
 
@@ -3389,6 +3487,30 @@ def _generate_background_asset(session, brand, user_id: str, description: str, a
     )
     session.add(background)
     return background, budget_warning
+
+
+def _generate_scene_backgrounds(session, brand, user_id: str, planned_scenes: list, art_style: str) -> tuple:
+    """One ToonBackground per plan_scenes() location — reuses
+    _generate_background_asset (the same free/text-only image path already
+    used for a single script-wide background), just called once per planned
+    scene instead of once per script. Returns
+    ([{"scene_index": int, "background_id": str}, ...], budget_warning),
+    ready to store as ToonScript.scene_backgrounds. Rows are added to the
+    session UNCOMMITTED, same convention as _generate_background_asset
+    itself — the caller commits alongside the script row in one
+    transaction. budget_warning is the FIRST one hit (an approaching-budget
+    warning isn't a hard stop — subsequent scenes still generate, same
+    posture _check_budget_or_raise already has for a single background)."""
+    mapping = []
+    budget_warning = None
+    for scene in planned_scenes:
+        background, warning = _generate_background_asset(
+            session, brand, user_id, scene["description"], art_style,
+            None, f"Scene {scene['scene_index'] + 1}",
+        )
+        budget_warning = budget_warning or warning
+        mapping.append({"scene_index": scene["scene_index"], "background_id": str(background.id)})
+    return mapping, budget_warning
 
 
 # ── toons ─────────────────────────────────────────────────────────────────

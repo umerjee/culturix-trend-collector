@@ -190,11 +190,14 @@ def _process_brand(session, brand, endpoint_id: str, deadline: float, job_tracke
             # scheduled batch would silently keep rendering on LTX-2.3 after
             # production had been moved to 2.5, producing visibly different
             # (and audio-less) output from the same scripts.
-            from app.services.culturetoon_selfhosted_video import generate_toon_video_ltx25, use_ltx25
+            from app.services.culturetoon_selfhosted_video import (
+                generate_toon_video_ltx25, use_ltx25, resolve_scene_backgrounds,
+            )
 
             if use_ltx25():
                 video_bytes = generate_toon_video_ltx25(
                     script, variants, endpoint_id, duration_seconds=duration,
+                    scene_backgrounds=resolve_scene_backgrounds(session, script),
                 )
             else:
                 video_bytes = generate_toon_video_selfhosted(

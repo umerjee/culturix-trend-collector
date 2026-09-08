@@ -99,6 +99,25 @@ def _no_real_comedy_judge_call(mocker):
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_real_scene_planning_call(mocker):
+    # plan_scenes() makes a real (billed) LLM call before script generation
+    # even starts — same failure mode as _no_real_comedy_judge_call right
+    # above (real Anthropic auth-retry hang, not a fast failure) confirmed
+    # to add ~8-10s across this file's suggest_script*/regenerate_script
+    # tests. The router's own fail-open handling around plan_scenes()
+    # treats a ToonScriptGenerationError exactly like "scene planning
+    # wasn't available" (falls back to the original freeform setting), so
+    # that's what this raises by default — tests that specifically want to
+    # exercise scene planning override this mock explicitly (see
+    # TestSuggestScriptFromIdea::test_plans_scenes_and_generates_one_background_per_scene).
+    from app.services.culturetoon_script import ToonScriptGenerationError
+    return mocker.patch(
+        "app.services.culturetoon_script.plan_scenes",
+        side_effect=ToonScriptGenerationError("mocked — no real scene planning in tests"),
+    )
+
+
 @pytest.fixture
 def db(mocker):
     engine = create_engine("sqlite:///:memory:")
@@ -2002,6 +2021,43 @@ class TestSuggestScriptFromIdea:
         mock_generate.assert_called_once()
         call_args = mock_generate.call_args
         assert call_args[0][0] == "The character comes home to find the kitchen destroyed"
+
+    def test_plans_scenes_and_generates_one_background_per_scene(self, db, user_id, brand_and_character, mocker):
+        """End-to-end wiring: plan_scenes() runs first, its result is
+        threaded into generate_toon_script_from_idea, and one ToonBackground
+        gets generated per planned scene and stored on scene_backgrounds —
+        not just the fail-open path other tests here exercise by accident."""
+        from app.media.base import MediaResult
+        brand, _character, variant = brand_and_character
+        fake_shots = [{"shot_number": 1, "duration_seconds": 5, "action": "arrives", "expression": None, "dialogue": None}]
+        planned = [
+            {"scene_index": 0, "description": "A rural Indian kitchen."},
+            {"scene_index": 1, "description": "A New York office."},
+        ]
+        mock_plan = mocker.patch("app.services.culturetoon_script.plan_scenes", return_value=planned)
+        mock_generate = mocker.patch(
+            "app.services.culturetoon_script.generate_toon_script_from_idea",
+            return_value={"hook_line": "H", "tone": "funny", "shots": fake_shots, "total_duration_seconds": 5, "scenes": planned},
+        )
+        mocker.patch(
+            "app.media.image_hybrid.HybridImageProvider.generate",
+            return_value=MediaResult(asset_bytes=_TINY_PNG_BYTES, content_type="image/png"),
+        )
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/scene-bg.png")
+
+        result = culturetoons.suggest_script_from_idea({
+            "user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"],
+            "idea": "A story that travels", "tone": "funny",
+        })
+
+        mock_plan.assert_called_once()
+        assert mock_generate.call_args.kwargs["planned_scenes"] == planned
+        assert result["scene_backgrounds"] == [
+            {"scene_index": 0, "background_id": mocker.ANY},
+            {"scene_index": 1, "background_id": mocker.ANY},
+        ]
+        assert len(result["scene_backgrounds"]) == 2
+        assert result["scene_backgrounds"][0]["background_id"] != result["scene_backgrounds"][1]["background_id"]
 
     def test_passes_personality_and_relationships_to_generator(self, db, user_id, brand_and_character, mocker):
         # Locks in the Phase 3 wiring: _gather_script_generation_context

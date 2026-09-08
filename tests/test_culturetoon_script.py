@@ -12,10 +12,12 @@ from app.services.culturetoon_script import (
     generate_toon_script,
     build_kling_prompt,
     judge_script_comedy,
+    plan_scenes,
     ToonScriptGenerationError,
     _assign_speakers,
     _format_script_for_prompt,
     label_speakers,
+    MAX_PLANNED_SCENES,
 )
 
 
@@ -200,6 +202,115 @@ class TestGenerateToonScript:
 
         sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
         assert "speaker_name" not in sent_prompt
+
+
+class TestPlanScenes:
+    def test_returns_cleaned_scene_list(self, mocker):
+        _mock_qwen_response(mocker, {"scenes": [
+            {"scene_index": 0, "description": "A sunlit kitchen."},
+            {"scene_index": 1, "description": "A rainy street outside."},
+        ]})
+        kumar = mocker.Mock(name="Kumar")
+        kumar.name = "Kumar"
+
+        result = plan_scenes("User's scenario idea: a story that travels", "funny", [kumar], 20)
+
+        assert result == [
+            {"scene_index": 0, "description": "A sunlit kitchen."},
+            {"scene_index": 1, "description": "A rainy street outside."},
+        ]
+
+    def test_caps_at_max_planned_scenes(self, mocker):
+        too_many = [{"scene_index": i, "description": f"Location {i}"} for i in range(MAX_PLANNED_SCENES + 3)]
+        _mock_qwen_response(mocker, {"scenes": too_many})
+
+        result = plan_scenes("idea", "funny", [], 20)
+
+        assert len(result) == MAX_PLANNED_SCENES
+        # scene_index is renumbered 0..N-1 from the KEPT scenes, not the
+        # model's own (possibly out-of-order or gappy) numbering.
+        assert [s["scene_index"] for s in result] == list(range(MAX_PLANNED_SCENES))
+
+    def test_drops_scenes_with_no_description(self, mocker):
+        _mock_qwen_response(mocker, {"scenes": [
+            {"scene_index": 0, "description": "A real place."},
+            {"scene_index": 1, "description": ""},
+            {"scene_index": 2, "description": None},
+        ]})
+
+        result = plan_scenes("idea", "funny", [], 20)
+
+        assert len(result) == 1
+        assert result[0]["description"] == "A real place."
+
+    def test_raises_when_no_usable_scenes(self, mocker):
+        _mock_qwen_response(mocker, {"scenes": []})
+
+        with pytest.raises(ToonScriptGenerationError):
+            plan_scenes("idea", "funny", [], 20)
+
+    def test_missing_scenes_key_raises(self, mocker):
+        _mock_qwen_response(mocker, {"hook_line": "not a scene response"})
+
+        with pytest.raises(ToonScriptGenerationError):
+            plan_scenes("idea", "funny", [], 20)
+
+
+class TestPlannedScenesInPrompt:
+    """generate_toon_script_from_idea doesn't plan scenes itself — the
+    caller plans them (plan_scenes) and passes the result in. These tests
+    cover what that does to the actual prompt sent to the model."""
+
+    def test_planned_scenes_replace_freeform_location_rules(self, mocker):
+        from app.services.culturetoon_script import generate_toon_script_from_idea
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "setting": "S", "shots": _VALID_SHOTS})
+        planned = [
+            {"scene_index": 0, "description": "A rural Indian kitchen."},
+            {"scene_index": 1, "description": "A New York office."},
+        ]
+
+        generate_toon_script_from_idea("A story that travels", tone="funny", planned_scenes=planned)
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "PLANNED LOCATIONS" in sent_prompt
+        assert "A rural Indian kitchen." in sent_prompt
+        assert "A New York office." in sent_prompt
+        assert "scene_index (int)" in sent_prompt
+        # The old free-form "repeat verbatim / write it out in full" rules
+        # only apply when there's no locked list to pick from instead.
+        assert "Two rules, no exceptions" not in sent_prompt
+
+    def test_no_planned_scenes_keeps_original_freeform_behavior(self, mocker):
+        from app.services.culturetoon_script import generate_toon_script_from_idea
+
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "setting": "S", "shots": _VALID_SHOTS})
+
+        generate_toon_script_from_idea("A single-room idea", tone="funny")
+
+        sent_prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "PLANNED LOCATIONS" not in sent_prompt
+        assert "Two rules, no exceptions" in sent_prompt
+        assert "scene_index (int)" not in sent_prompt
+
+    def test_result_carries_the_scenes_through(self, mocker):
+        from app.services.culturetoon_script import generate_toon_script_from_idea
+
+        _mock_qwen_response(mocker, {"hook_line": "H", "setting": "S", "shots": _VALID_SHOTS})
+        planned = [{"scene_index": 0, "description": "A kitchen."}]
+
+        result = generate_toon_script_from_idea("idea", tone="funny", planned_scenes=planned)
+
+        assert result["scenes"] == planned
+
+    def test_result_scenes_is_none_when_not_planned(self, mocker):
+        from app.services.culturetoon_script import generate_toon_script_from_idea
+
+        _mock_qwen_response(mocker, {"hook_line": "H", "setting": "S", "shots": _VALID_SHOTS})
+
+        result = generate_toon_script_from_idea("idea", tone="funny")
+
+        assert result["scenes"] is None
 
 
 class TestPersonalityAndRelationshipContext:

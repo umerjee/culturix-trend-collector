@@ -22,9 +22,11 @@ from app.models.toon_background import ToonBackground
 from app.models.generation_usage import GenerationUsage
 from app.services.culturetoon_selfhosted_video import (
     build_prompt_from_script, resolve_ready_lora, generate_toon_video_selfhosted,
-    generate_video_for_toon_selfhosted, SelfHostedVideoGenerationError,
+    generate_video_for_toon_selfhosted, generate_toon_video_ltx25, SelfHostedVideoGenerationError,
+    resolve_scene_backgrounds,
     _resilient_commit, _gather_dialogue, _resolve_narration,
     _build_shot_prompt, _resolve_shot_variant,
+    _split_shots_into_segments, _segment_scene_index, _segment_primary_variant, _segment_is_subject_only,
 )
 
 
@@ -962,6 +964,114 @@ class TestGenerateVideoForToonSelfhosted:
         assert mutate.call_count == session.commit.call_count
 
 
+class TestSplitShotsIntoSegmentsSceneBoundary:
+    """Scene-boundary splitting (added 2026-09-08 for the multi-scene
+    rework) — must be UNCONDITIONAL, never softened by _is_coupled_shot the
+    way a primary-speaker change can be, since the anchor image itself
+    bakes one specific scene's backdrop into the composite PNG."""
+
+    def test_scene_change_forces_a_split_even_with_the_same_speaker(self):
+        shots = [
+            {"shot_number": 1, "duration_seconds": 3, "speaker_variant_id": "z", "scene_index": 0, "dialogue": "Hi"},
+            {"shot_number": 2, "duration_seconds": 3, "speaker_variant_id": "z", "scene_index": 1, "dialogue": "Still me"},
+        ]
+        segments = _split_shots_into_segments(shots)
+        assert len(segments) == 2
+        assert segments[0] == [shots[0]]
+        assert segments[1] == [shots[1]]
+
+    def test_scene_change_splits_even_a_coupled_reaction_shot(self):
+        """A shot with no dialogue is normally glued to its predecessor
+        (_is_coupled_shot) — a scene change must override that gluing,
+        since chaining across scenes bakes the wrong backdrop into the
+        continuation's own first frame."""
+        shots = [
+            {"shot_number": 1, "duration_seconds": 3, "speaker_variant_id": "z", "scene_index": 0, "dialogue": "Hi"},
+            # No dialogue: would normally be coupled to shot 1.
+            {"shot_number": 2, "duration_seconds": 2, "scene_index": 1, "action": "reacts", "dialogue": None},
+        ]
+        segments = _split_shots_into_segments(shots)
+        assert len(segments) == 2
+
+    def test_same_scene_does_not_force_a_split(self):
+        shots = [
+            {"shot_number": 1, "duration_seconds": 3, "speaker_variant_id": "z", "scene_index": 0, "dialogue": "Hi"},
+            {"shot_number": 2, "duration_seconds": 3, "speaker_variant_id": "z", "scene_index": 0, "dialogue": "More"},
+        ]
+        segments = _split_shots_into_segments(shots)
+        assert len(segments) == 1
+
+    def test_no_scene_index_at_all_behaves_exactly_as_before(self):
+        """A script that never had plan_scenes() run over it carries no
+        scene_index on any shot — must split purely on the pre-existing
+        primary-speaker/duration rules, unaffected by this feature."""
+        shots = [
+            {"shot_number": 1, "duration_seconds": 3, "speaker_variant_id": "z", "dialogue": "Hi"},
+            {"shot_number": 2, "duration_seconds": 3, "speaker_variant_id": "z", "dialogue": "Still me"},
+        ]
+        segments = _split_shots_into_segments(shots)
+        assert len(segments) == 1
+
+    def test_primary_speaker_change_within_the_same_scene_still_splits(self):
+        """Scene planning must not swallow the pre-existing speaker-change
+        split rule — a real change of speaker still gets its own segment
+        even when the backdrop hasn't changed."""
+        shots = [
+            {"shot_number": 1, "duration_seconds": 3, "speaker_variant_id": "z", "scene_index": 0, "dialogue": "Hi"},
+            {"shot_number": 2, "duration_seconds": 3, "speaker_variant_id": "b", "scene_index": 0, "dialogue": "Hey"},
+        ]
+        segments = _split_shots_into_segments(shots)
+        assert len(segments) == 2
+
+
+class TestSegmentSceneIndex:
+    def test_returns_the_first_shots_scene_index(self):
+        segment = [
+            {"shot_number": 1, "scene_index": 2, "dialogue": "Hi"},
+            {"shot_number": 2, "scene_index": 2, "dialogue": "More"},
+        ]
+        assert _segment_scene_index(segment) == 2
+
+    def test_none_when_no_shot_carries_a_scene_index(self):
+        segment = [{"shot_number": 1, "action": "reacts"}]
+        assert _segment_scene_index(segment) is None
+
+    def test_scene_index_zero_is_not_confused_with_none(self):
+        """0 is a real, valid scene_index — must not be treated as falsy/
+        missing the way `if shot.get("scene_index")` would."""
+        segment = [{"shot_number": 1, "scene_index": 0, "dialogue": "Hi"}]
+        assert _segment_scene_index(segment) == 0
+
+
+class TestResolveSceneBackgrounds:
+    def test_returns_none_when_script_has_no_scene_backgrounds(self, mocker):
+        script = mocker.Mock(scene_backgrounds=None)
+        assert resolve_scene_backgrounds(mocker.Mock(), script) is None
+
+    def test_maps_scene_index_to_the_right_background_row(self, mocker):
+        script = mocker.Mock(scene_backgrounds=[
+            {"scene_index": 0, "background_id": "11111111-1111-1111-1111-111111111111"},
+            {"scene_index": 1, "background_id": "22222222-2222-2222-2222-222222222222"},
+        ])
+        bg0 = mocker.Mock(id=uuid.UUID("11111111-1111-1111-1111-111111111111"))
+        bg1 = mocker.Mock(id=uuid.UUID("22222222-2222-2222-2222-222222222222"))
+        session = mocker.Mock()
+        session.query.return_value.filter.return_value.all.return_value = [bg0, bg1]
+
+        result = resolve_scene_backgrounds(session, script)
+
+        assert result == {0: bg0, 1: bg1}
+
+    def test_none_when_a_background_row_no_longer_exists(self, mocker):
+        script = mocker.Mock(scene_backgrounds=[
+            {"scene_index": 0, "background_id": "11111111-1111-1111-1111-111111111111"},
+        ])
+        session = mocker.Mock()
+        session.query.return_value.filter.return_value.all.return_value = []  # row deleted
+
+        assert resolve_scene_backgrounds(session, script) is None
+
+
 class TestLTX25ScenePrompt:
     """LTX-2.5 renders the whole scene in ONE generation, so unlike the 2.3
     path there is no per-shot anchor to imply who is on screen — everything
@@ -1231,6 +1341,144 @@ class TestUsageRecordingNeverMasksTheResult:
         except Exception as exc:  # pragma: no cover - the point is this never runs
             raise AssertionError(f"usage recording escaped: {exc}")
         assert logged.called
+
+
+class TestGenerateToonVideoLtx25SceneAwareAnchoring:
+    """End-to-end coverage of the render loop's scene-boundary handling
+    (added 2026-09-08) — the highest-risk part of the multi-scene rework,
+    per its own design review: a scene change must force a fresh portrait
+    anchor (never chain off the previous segment's last frame) and must
+    fetch that scene's OWN backdrop, not reuse whatever the previous
+    segment used."""
+
+    def _variant(self, mocker, vid="z", name="Zara"):
+        v = mocker.Mock(id=vid, image_url=f"https://example.com/{vid}.png")
+        v.name = name
+        return v
+
+    def _script(self, mocker, shots):
+        script = mocker.Mock(hook_line="H", scene_direction=None)
+        script.shots = shots
+        return script
+
+    def _patch_pipeline(self, mocker):
+        """Mocks every external boundary generate_toon_video_ltx25 crosses:
+        backdrop/portrait fetches (httpx.get), the anchor builder, the
+        RunPod call, last-frame extraction, and segment concatenation.
+        Returns the mocks the tests need to assert against."""
+        def fake_get(url, timeout=30):
+            resp = mocker.Mock()
+            resp.content = f"bytes-for-{url}".encode()
+            return resp
+        mock_httpx_get = mocker.patch("httpx.get", side_effect=fake_get)
+        mock_build_composite = mocker.patch(
+            "app.media.ltx25_workflow.build_composite_anchor",
+            side_effect=lambda images, backdrop_bytes=None: b"anchor:" + (backdrop_bytes or b"none"),
+        )
+        mocker.patch("app.media.ltx25_workflow.build_workflow", return_value={"fake": "workflow"})
+        mock_run_job = mocker.patch(
+            "app.media.runpod_serverless_client.run_inference_job",
+            side_effect=lambda *a, **kw: f"video-bytes-{mock_run_job.call_count}".encode(),
+        )
+        mock_last_frame = mocker.patch(
+            "app.services.culturetoon_selfhosted_video._extract_last_frame_png",
+            return_value=b"last-frame",
+        )
+        mocker.patch(
+            "app.services.culturetoon_selfhosted_video._concat_video_segments",
+            side_effect=lambda videos: b"|".join(videos),
+        )
+        return mock_httpx_get, mock_build_composite, mock_run_job, mock_last_frame
+
+    def test_scene_change_re_anchors_instead_of_chaining(self, mocker):
+        """Same speaker (Zara) throughout, but scene_index changes — the
+        SECOND segment must be anchored on a fresh portrait, not on the
+        first segment's extracted last frame. (The last frame is still
+        speculatively extracted after segment 1 in case it turns out to be
+        needed — that's pre-existing, tentative-until-overwritten behavior,
+        see generate_toon_video_ltx25's own comment — so this asserts what
+        actually gets used as the anchor, not whether extraction ran.)"""
+        _, mock_build_composite, _, mock_last_frame = self._patch_pipeline(mocker)
+        zara = self._variant(mocker, "z", "Zara")
+        shots = [
+            {"shot_number": 1, "duration_seconds": 5, "speaker_variant_id": "z", "scene_index": 0, "dialogue": "Hi"},
+            {"shot_number": 2, "duration_seconds": 5, "speaker_variant_id": "z", "scene_index": 1, "dialogue": "New place!"},
+        ]
+        script = self._script(mocker, shots)
+        bg0 = mocker.Mock(image_url="https://example.com/scene0.png")
+        bg1 = mocker.Mock(image_url="https://example.com/scene1.png")
+
+        generate_toon_video_ltx25(script, [zara], "endpoint-1", scene_backgrounds={0: bg0, 1: bg1})
+
+        # A fresh portrait anchor was built for BOTH segments — chaining
+        # would have skipped the second build_composite_anchor call.
+        assert mock_build_composite.call_count == 2
+
+    def test_scene_change_fetches_that_scenes_own_backdrop(self, mocker):
+        mock_httpx_get, mock_build_composite, _, _ = self._patch_pipeline(mocker)
+        zara = self._variant(mocker, "z", "Zara")
+        shots = [
+            {"shot_number": 1, "duration_seconds": 5, "speaker_variant_id": "z", "scene_index": 0, "dialogue": "Hi"},
+            {"shot_number": 2, "duration_seconds": 5, "speaker_variant_id": "z", "scene_index": 1, "dialogue": "New place!"},
+        ]
+        script = self._script(mocker, shots)
+        bg0 = mocker.Mock(image_url="https://example.com/scene0.png")
+        bg1 = mocker.Mock(image_url="https://example.com/scene1.png")
+
+        generate_toon_video_ltx25(script, [zara], "endpoint-1", scene_backgrounds={0: bg0, 1: bg1})
+
+        fetched_urls = {call.args[0] for call in mock_httpx_get.call_args_list}
+        assert "https://example.com/scene0.png" in fetched_urls
+        assert "https://example.com/scene1.png" in fetched_urls
+        # Each segment's anchor was composited against its OWN scene's
+        # backdrop bytes, not a shared/repeated one.
+        backdrops_used = {call.kwargs["backdrop_bytes"] for call in mock_build_composite.call_args_list}
+        assert len(backdrops_used) == 2
+
+    def test_same_scene_still_chains_when_only_duration_forced_the_split(self, mocker):
+        """Sanity check that this feature doesn't regress the pre-existing
+        chaining behavior: same primary AND same scene, split only because
+        the combined duration exceeds LTX25_SEGMENT_TARGET_SECONDS (15),
+        must still CHAIN the second segment off the first's last frame —
+        not re-anchor fresh."""
+        _, mock_build_composite, _, mock_last_frame = self._patch_pipeline(mocker)
+        zara = self._variant(mocker, "z", "Zara")
+        # 10 + 10 = 20s > target (15), forcing a split despite matching
+        # speaker and scene throughout.
+        shots = [
+            {"shot_number": 1, "duration_seconds": 10, "speaker_variant_id": "z", "scene_index": 0, "dialogue": "Hi there, a longer line"},
+            {"shot_number": 2, "duration_seconds": 10, "speaker_variant_id": "z", "scene_index": 0, "dialogue": "Still here, still talking"},
+        ]
+        script = self._script(mocker, shots)
+        bg0 = mocker.Mock(image_url="https://example.com/scene0.png")
+
+        generate_toon_video_ltx25(script, [zara], "endpoint-1", scene_backgrounds={0: bg0})
+
+        # Only the FIRST segment gets a fresh portrait anchor — the second
+        # chains off the first's extracted last frame instead.
+        assert mock_build_composite.call_count == 1
+        mock_last_frame.assert_called_once()
+
+    def test_falls_back_to_default_background_when_scene_has_no_entry(self, mocker):
+        """A shot whose scene_index has no matching scene_backgrounds entry
+        (e.g. background generation failed for just that one scene) must
+        fall back to the script's single default `background`, not crash
+        or silently render with no backdrop at all."""
+        mock_httpx_get, _, _, _ = self._patch_pipeline(mocker)
+        zara = self._variant(mocker, "z", "Zara")
+        shots = [{"shot_number": 1, "duration_seconds": 5, "speaker_variant_id": "z", "scene_index": 5, "dialogue": "Hi"}]
+        script = self._script(mocker, shots)
+        default_bg = mocker.Mock(
+            image_url="https://example.com/default.png",
+            description=None, country=None, visual_style=None,
+        )
+        default_bg.name = None  # "name" is a reserved Mock() constructor kwarg, must be set after
+
+        generate_toon_video_ltx25(script, [zara], "endpoint-1", background=default_bg, scene_backgrounds={0: mocker.Mock(image_url="https://example.com/scene0.png")})
+
+        fetched_urls = {call.args[0] for call in mock_httpx_get.call_args_list}
+        assert "https://example.com/default.png" in fetched_urls
+        assert "https://example.com/scene0.png" not in fetched_urls
 
 
 class TestLTX25TimeoutBudget:
