@@ -27,6 +27,7 @@ from app.services.culturetoon_selfhosted_video import (
     _resilient_commit, _gather_dialogue, _resolve_narration,
     _build_shot_prompt, _resolve_shot_variant,
     _split_shots_into_segments, _segment_scene_index, _segment_primary_variant, _segment_is_subject_only,
+    _scrub_unanchored_names, _sanitize_segment_shots,
 )
 
 
@@ -1375,7 +1376,7 @@ class TestGenerateToonVideoLtx25SceneAwareAnchoring:
             "app.media.ltx25_workflow.build_composite_anchor",
             side_effect=lambda images, backdrop_bytes=None: b"anchor:" + (backdrop_bytes or b"none"),
         )
-        mocker.patch("app.media.ltx25_workflow.build_workflow", return_value={"fake": "workflow"})
+        mock_build_workflow = mocker.patch("app.media.ltx25_workflow.build_workflow", return_value={"fake": "workflow"})
         mock_run_job = mocker.patch(
             "app.media.runpod_serverless_client.run_inference_job",
             side_effect=lambda *a, **kw: f"video-bytes-{mock_run_job.call_count}".encode(),
@@ -1388,7 +1389,7 @@ class TestGenerateToonVideoLtx25SceneAwareAnchoring:
             "app.services.culturetoon_selfhosted_video._concat_video_segments",
             side_effect=lambda videos: b"|".join(videos),
         )
-        return mock_httpx_get, mock_build_composite, mock_run_job, mock_last_frame
+        return mock_httpx_get, mock_build_composite, mock_run_job, mock_last_frame, mock_build_workflow
 
     def test_scene_change_re_anchors_instead_of_chaining(self, mocker):
         """Same speaker (Zara) throughout, but scene_index changes — the
@@ -1398,7 +1399,7 @@ class TestGenerateToonVideoLtx25SceneAwareAnchoring:
         needed — that's pre-existing, tentative-until-overwritten behavior,
         see generate_toon_video_ltx25's own comment — so this asserts what
         actually gets used as the anchor, not whether extraction ran.)"""
-        _, mock_build_composite, _, mock_last_frame = self._patch_pipeline(mocker)
+        _, mock_build_composite, _, mock_last_frame, _ = self._patch_pipeline(mocker)
         zara = self._variant(mocker, "z", "Zara")
         shots = [
             {"shot_number": 1, "duration_seconds": 5, "speaker_variant_id": "z", "scene_index": 0, "dialogue": "Hi"},
@@ -1415,7 +1416,7 @@ class TestGenerateToonVideoLtx25SceneAwareAnchoring:
         assert mock_build_composite.call_count == 2
 
     def test_scene_change_fetches_that_scenes_own_backdrop(self, mocker):
-        mock_httpx_get, mock_build_composite, _, _ = self._patch_pipeline(mocker)
+        mock_httpx_get, mock_build_composite, _, _, _ = self._patch_pipeline(mocker)
         zara = self._variant(mocker, "z", "Zara")
         shots = [
             {"shot_number": 1, "duration_seconds": 5, "speaker_variant_id": "z", "scene_index": 0, "dialogue": "Hi"},
@@ -1441,7 +1442,7 @@ class TestGenerateToonVideoLtx25SceneAwareAnchoring:
         the combined duration exceeds LTX25_SEGMENT_TARGET_SECONDS (15),
         must still CHAIN the second segment off the first's last frame —
         not re-anchor fresh."""
-        _, mock_build_composite, _, mock_last_frame = self._patch_pipeline(mocker)
+        _, mock_build_composite, _, mock_last_frame, _ = self._patch_pipeline(mocker)
         zara = self._variant(mocker, "z", "Zara")
         # 10 + 10 = 20s > target (15), forcing a split despite matching
         # speaker and scene throughout.
@@ -1464,7 +1465,7 @@ class TestGenerateToonVideoLtx25SceneAwareAnchoring:
         (e.g. background generation failed for just that one scene) must
         fall back to the script's single default `background`, not crash
         or silently render with no backdrop at all."""
-        mock_httpx_get, _, _, _ = self._patch_pipeline(mocker)
+        mock_httpx_get, _, _, _, _ = self._patch_pipeline(mocker)
         zara = self._variant(mocker, "z", "Zara")
         shots = [{"shot_number": 1, "duration_seconds": 5, "speaker_variant_id": "z", "scene_index": 5, "dialogue": "Hi"}]
         script = self._script(mocker, shots)
@@ -1479,6 +1480,115 @@ class TestGenerateToonVideoLtx25SceneAwareAnchoring:
         fetched_urls = {call.args[0] for call in mock_httpx_get.call_args_list}
         assert "https://example.com/default.png" in fetched_urls
         assert "https://example.com/scene0.png" not in fetched_urls
+
+    def test_other_cast_names_never_reach_the_actual_prompt(self, mocker):
+        """End-to-end: even when the script names 2+ cast members in one
+        shot's blocking (the exact failure confirmed live 2026-09-08 despite
+        the writer prompt forbidding it), the text that actually reaches
+        build_workflow must not name the unanchored one."""
+        *_, mock_build_workflow = self._patch_pipeline(mocker)
+        zara = self._variant(mocker, "z", "Zara")
+        nova = self._variant(mocker, "n", "Captain Nova")
+        shots = [{
+            "shot_number": 1, "duration_seconds": 5, "speaker_variant_id": "z", "scene_index": 0,
+            "blocking": "Zara centre, Captain Nova left", "dialogue": "Hi",
+        }]
+        script = self._script(mocker, shots)
+
+        generate_toon_video_ltx25(script, [zara, nova], "endpoint-1")
+
+        sent_prompt = mock_build_workflow.call_args[0][0]
+        assert "Captain Nova" not in sent_prompt
+        assert "Zara" in sent_prompt
+
+
+class TestScrubUnanchoredNames:
+    """Deterministic backstop for the group-shot duplicate-identity bug —
+    confirmed live 2026-09-08 (twice, on two separate scripts) that the
+    script-writer prompt's explicit rule against naming 2+ cast members in
+    one shot's blocking is not reliably followed. This can't be skipped."""
+
+    def test_replaces_another_characters_name(self):
+        result = _scrub_unanchored_names("Zara centre, Captain Nova left, Blix right", "Zara", ["Captain Nova", "Blix"])
+        assert "Captain Nova" not in result
+        assert "Blix" not in result
+        assert "Zara" in result
+
+    def test_leaves_the_anchored_name_alone(self):
+        result = _scrub_unanchored_names("Zara stands centre, looking up", "Zara", ["Captain Nova", "Blix"])
+        assert result == "Zara stands centre, looking up"
+
+    def test_case_insensitive_match(self):
+        result = _scrub_unanchored_names("blix waves from the side", "Zara", ["Blix"])
+        assert "blix" not in result.lower()
+
+    def test_whole_word_match_does_not_clip_unrelated_text(self):
+        """A name shouldn't match as a substring of an unrelated word."""
+        result = _scrub_unanchored_names("Novartis banner in the background", "Zara", ["Nova"])
+        assert "Novartis" in result
+
+    def test_empty_text_returns_empty(self):
+        assert _scrub_unanchored_names("", "Zara", ["Blix"]) == ""
+
+    def test_no_other_names_is_a_no_op(self):
+        text = "Zara stands alone."
+        assert _scrub_unanchored_names(text, "Zara", []) == text
+
+
+class TestSanitizeSegmentShots:
+    def _variant(self, mocker, vid, name):
+        v = mocker.Mock(id=vid)
+        v.name = name
+        return v
+
+    def test_scrubs_other_names_from_blocking_action_visual(self, mocker):
+        zara = self._variant(mocker, "z", "Zara")
+        nova = self._variant(mocker, "n", "Captain Nova")
+        blix = self._variant(mocker, "b", "Blix")
+        shots = [{
+            "shot_number": 1,
+            "blocking": "Zara centre, Captain Nova left, Blix right",
+            "action": "Captain Nova waves, Blix nods",
+            "visual": "Zara, Captain Nova and Blix standing together",
+            "dialogue": "Captain Nova, is that really you?",
+        }]
+
+        result = _sanitize_segment_shots(shots, zara, [zara, nova, blix])
+
+        assert "Captain Nova" not in result[0]["blocking"]
+        assert "Blix" not in result[0]["blocking"]
+        assert "Zara" in result[0]["blocking"]
+        assert "Captain Nova" not in result[0]["action"]
+        assert "Blix" not in result[0]["visual"]
+        # Dialogue is the anchored speaker's own line — never touched, even
+        # when it happens to mention another character by name.
+        assert result[0]["dialogue"] == "Captain Nova, is that really you?"
+
+    def test_does_not_mutate_the_original_shot_dicts(self, mocker):
+        """The persisted/original script must be untouched — this is a
+        render-time-only sanitization, not a rewrite of the stored script
+        (a user editing the script should still see what the AI wrote)."""
+        zara = self._variant(mocker, "z", "Zara")
+        nova = self._variant(mocker, "n", "Captain Nova")
+        original = [{"shot_number": 1, "blocking": "Zara centre, Captain Nova left"}]
+
+        _sanitize_segment_shots(original, zara, [zara, nova])
+
+        assert original[0]["blocking"] == "Zara centre, Captain Nova left"
+
+    def test_single_cast_member_returns_shots_unchanged(self, mocker):
+        zara = self._variant(mocker, "z", "Zara")
+        shots = [{"shot_number": 1, "blocking": "Zara centre"}]
+        assert _sanitize_segment_shots(shots, zara, [zara]) is shots
+
+    def test_shot_with_no_relevant_fields_is_left_alone(self, mocker):
+        zara = self._variant(mocker, "z", "Zara")
+        nova = self._variant(mocker, "n", "Captain Nova")
+        shots = [{"shot_number": 1, "dialogue": "Hello there"}]
+
+        result = _sanitize_segment_shots(shots, zara, [zara, nova])
+
+        assert result[0]["dialogue"] == "Hello there"
 
 
 class TestLTX25TimeoutBudget:

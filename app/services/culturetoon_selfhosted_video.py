@@ -34,6 +34,7 @@ separately.
 import logging
 import os
 import random
+import re
 import subprocess
 import tempfile
 import time
@@ -1240,6 +1241,57 @@ def _fetch_portrait_anchor(variant, backdrop: Optional[bytes]) -> bytes:
     return ltx25_workflow.build_composite_anchor(image_bytes, backdrop_bytes=backdrop)
 
 
+def _scrub_unanchored_names(text: str, anchored_name: str, other_names: list) -> str:
+    """Replaces any OTHER cast member's name in `text` with a generic
+    reference — a segment can only precisely anchor ONE identity (see
+    generate_toon_video_ltx25's own docstring on why), so blocking/action/
+    visual text that still names a second or third character produces a
+    duplicate of the anchored face or a generic imposter instead of that
+    character, not themselves. Confirmed live 2026-09-08 on two separate
+    scripts (a wide shot, and a scene's opening AND closing "whole cast
+    together" beat) despite the script-writer prompt explicitly forbidding
+    this — a text instruction to the WRITER has proven unreliable twice
+    now, so this enforces it deterministically at the last point before
+    the render actually sees the text, rather than trying a third,
+    stronger-worded prompt fix."""
+    if not text:
+        return text
+    scrubbed = text
+    for name in other_names:
+        name = (name or "").strip()
+        if not name or name.lower() == (anchored_name or "").strip().lower():
+            continue
+        scrubbed = re.sub(r"\b" + re.escape(name) + r"\b", "another figure nearby", scrubbed, flags=re.IGNORECASE)
+    return scrubbed
+
+
+def _sanitize_segment_shots(segment_shots: list, primary_variant, all_variants: list) -> list:
+    """A COPY of segment_shots with every OTHER cast member's name scrubbed
+    out of blocking/action/visual text (see _scrub_unanchored_names) —
+    dialogue is untouched, since that's always the segment's own anchored
+    speaker's line. The segment's own primary's name is left alone.
+    Returns segment_shots unchanged (same list, no copy) when there's only
+    one cast member total — nothing to scrub."""
+    if len(all_variants) < 2:
+        return segment_shots
+    anchored_name = (getattr(primary_variant, "name", "") or "").strip()
+    other_names = [
+        (getattr(v, "name", "") or "").strip()
+        for v in all_variants
+        if str(getattr(v, "id", "")) != str(getattr(primary_variant, "id", "")) and getattr(v, "name", None)
+    ]
+    if not other_names:
+        return segment_shots
+    sanitized = []
+    for shot in segment_shots:
+        shot = dict(shot)
+        for field in ("blocking", "action", "visual"):
+            if shot.get(field):
+                shot[field] = _scrub_unanchored_names(shot[field], anchored_name, other_names)
+        sanitized.append(shot)
+    return sanitized
+
+
 def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
                               duration_seconds: Optional[int] = None,
                               background=None, scene_backgrounds: Optional[dict] = None,
@@ -1355,8 +1407,13 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
             )
             if is_cut:
                 current_anchor = _fetch_portrait_anchor(primary_variant, backdrop)
+            # Deterministic backstop for a script that still named 2+ cast
+            # members in one shot's blocking/action/visual despite the
+            # writer prompt forbidding it — see _sanitize_segment_shots'
+            # own docstring.
+            sanitized_shots = _sanitize_segment_shots(segment_shots, primary_variant, variants)
             prompt = build_ltx25_scene_prompt(
-                script, [primary_variant], background=background, shots=segment_shots,
+                script, [primary_variant], background=background, shots=sanitized_shots,
                 continuation_anchor=not is_cut,
             )
             previous_primary_id = primary_id
