@@ -292,7 +292,8 @@ def _paint_backdrop_canvas(backdrop_bytes: Optional[bytes]):
         backdrop = Image.open(BytesIO(backdrop_bytes)).convert("RGB")
         scale = max(TARGET_WIDTH / backdrop.width, TARGET_HEIGHT / backdrop.height)
         backdrop = backdrop.resize(
-            (max(1, round(backdrop.width * scale)), max(1, round(backdrop.height * scale)))
+            (max(1, round(backdrop.width * scale)), max(1, round(backdrop.height * scale))),
+            Image.LANCZOS,
         )
         left = (backdrop.width - TARGET_WIDTH) // 2
         top = (backdrop.height - TARGET_HEIGHT) // 2
@@ -351,10 +352,20 @@ def build_composite_anchor(image_bytes_list: list, backdrop_bytes: Optional[byte
         # Cover-fit into the slot, cropping rather than stretching so faces
         # keep their proportions. The mask is transformed identically, or the
         # cut-out would drift off the character.
+        #
+        # Explicit resample filters matter here: _matte_background already
+        # smoothed the mask's edge with a Gaussian blur sized for the
+        # portrait's OWN resolution, but this resize almost never lands on
+        # that same resolution (slot_width/TARGET_HEIGHT rarely match the
+        # source photo) — an unspecified/nearest-neighbor resize on the mask
+        # would reintroduce the blocky "staircase" edge the blur was added
+        # to remove, one resize later. BILINEAR on the mask keeps the smooth
+        # edge; LANCZOS on the color image avoids resampling artifacts of
+        # its own on the character's fur/hair detail.
         scale = max(slot_width / image.width, TARGET_HEIGHT / image.height)
         size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
-        image = image.resize(size)
-        mask = mask.resize(size)
+        image = image.resize(size, Image.LANCZOS)
+        mask = mask.resize(size, Image.BILINEAR)
         left = (image.width - slot_width) // 2
         top = (image.height - TARGET_HEIGHT) // 2
         box = (left, top, left + slot_width, top + TARGET_HEIGHT)

@@ -1099,11 +1099,40 @@ def _extract_last_frame_png(video_bytes: bytes) -> bytes:
             return f.read()
 
 
+_SEGMENT_TRANSITION_SECONDS = 0.4
+
+
+def _probe_duration_seconds(path: str) -> float:
+    """ffprobe's own reported duration for one video file — needed to
+    compute xfade's cumulative offsets below (each crossfade shortens the
+    output timeline by its own length, so every later transition's offset
+    has to account for every prior segment AND every prior crossfade)."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        raise SelfHostedVideoGenerationError(
+            f"ffprobe failed reading segment duration: {result.stderr[-500:]}"
+        )
+    return float(result.stdout.strip())
+
+
 def _concat_video_segments(video_byte_list: list) -> bytes:
-    """Stream-copies multiple segment MP4s (each from the same workflow —
-    same codec/resolution/framerate, so -c copy is safe and lossless) into
-    one file, same ffmpeg concat-demuxer pattern already used for narration
-    audio above."""
+    """Joins segment MP4s into one file. A single segment returns as-is —
+    nothing to transition between. Multiple segments cross-fade into each
+    other (video via xfade, audio via acrossfade) instead of the hard
+    `-c copy` cut this used to do — confirmed live 2026-09-08: back-to-back
+    segments (each its own independent LTX-2.5 generation — different
+    framing/motion/lighting by construction, even mid-scene) read as a
+    jarring jump cut with literally no transition. A short, fixed crossfade
+    smooths the join without trying to be content-aware about it.
+    Re-encoding is unavoidable once frames are actually blended, unlike the
+    old stream-copy path."""
+    if len(video_byte_list) == 1:
+        return video_byte_list[0]
+
     with tempfile.TemporaryDirectory() as tmp_dir:
         segment_paths = []
         for i, video_bytes in enumerate(video_byte_list):
@@ -1111,18 +1140,47 @@ def _concat_video_segments(video_byte_list: list) -> bytes:
             with open(path, "wb") as f:
                 f.write(video_bytes)
             segment_paths.append(path)
-        list_path = os.path.join(tmp_dir, "concat_list.txt")
-        with open(list_path, "w", encoding="utf-8") as f:
-            for path in segment_paths:
-                f.write(f"file '{path}'\n")
-        output_path = os.path.join(tmp_dir, "combined.mp4")
-        result = subprocess.run(
-            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", output_path],
-            capture_output=True, text=True, timeout=120,
+
+        durations = [_probe_duration_seconds(p) for p in segment_paths]
+        # Capped at 40% of the shorter neighbor in any one transition — a
+        # crossfade longer than the clip it's fading against is nonsensical,
+        # and guards a pathological very-short segment (duration-capped near
+        # a script's end) from breaking the filter graph.
+        cf = min(
+            _SEGMENT_TRANSITION_SECONDS,
+            *(min(durations[i], durations[i + 1]) * 0.4 for i in range(len(durations) - 1)),
         )
+
+        video_filters = []
+        audio_filters = []
+        cumulative = durations[0]
+        v_label, a_label = "0:v", "0:a"
+        for i in range(1, len(segment_paths)):
+            is_last = i == len(segment_paths) - 1
+            v_out = "vout" if is_last else f"v{i}"
+            a_out = "aout" if is_last else f"a{i}"
+            offset = cumulative - cf
+            video_filters.append(
+                f"[{v_label}][{i}:v]xfade=transition=fade:duration={cf:.3f}:offset={offset:.3f}[{v_out}]"
+            )
+            audio_filters.append(f"[{a_label}][{i}:a]acrossfade=d={cf:.3f}:c1=tri:c2=tri[{a_out}]")
+            v_label, a_label = v_out, a_out
+            cumulative += durations[i] - cf
+
+        output_path = os.path.join(tmp_dir, "combined.mp4")
+        cmd = ["ffmpeg", "-y"]
+        for path in segment_paths:
+            cmd += ["-i", path]
+        cmd += [
+            "-filter_complex", ";".join(video_filters + audio_filters),
+            "-map", f"[{v_label}]", "-map", f"[{a_label}]",
+            "-c:v", "libx264", "-c:a", "aac",
+            output_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         if result.returncode != 0:
             raise SelfHostedVideoGenerationError(
-                f"ffmpeg failed concatenating video segments: {result.stderr[-1000:]}"
+                f"ffmpeg failed cross-fading video segments: {result.stderr[-1000:]}"
             )
         with open(output_path, "rb") as f:
             return f.read()
