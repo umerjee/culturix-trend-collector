@@ -1534,6 +1534,31 @@ class TestScrubUnanchoredNames:
         text = "Zara stands alone."
         assert _scrub_unanchored_names(text, "Zara", []) == text
 
+    def test_two_other_names_joined_by_and_collapse_to_one_count_phrase(self):
+        """Confirmed live 2026-09-08: substituting each name independently
+        produced "another figure nearby and another figure nearby" — a
+        repeated, degenerate phrase that rendered as a crowd of ~6 unrelated
+        characters instead of the two actually implied. A joined run must
+        collapse to ONE phrase, not one substitution per name."""
+        result = _scrub_unanchored_names(
+            "Zara center, looking up at the sky, Captain Nova and Blix off to the side.",
+            "Zara", ["Captain Nova", "Blix"],
+        )
+        assert result == "Zara center, looking up at the sky, two other figures off to the side."
+        # The degenerate repeated phrase must not appear at all.
+        assert "another figure nearby and another figure nearby" not in result
+        assert result.count("figure") == 1
+
+    def test_two_other_names_joined_by_comma_also_collapse(self):
+        result = _scrub_unanchored_names("Captain Nova, Blix and Zara stand together.", "Zara", ["Captain Nova", "Blix"])
+        assert result == "two other figures and Zara stand together."
+
+    def test_three_other_names_use_the_word_three(self):
+        result = _scrub_unanchored_names(
+            "Kumar, Hans and Wen watch from the side.", "Zara", ["Kumar", "Hans", "Wen"],
+        )
+        assert result == "three other figures watch from the side."
+
 
 class TestSanitizeSegmentShots:
     def _variant(self, mocker, vid, name):

@@ -1241,6 +1241,9 @@ def _fetch_portrait_anchor(variant, backdrop: Optional[bytes]) -> bytes:
     return ltx25_workflow.build_composite_anchor(image_bytes, backdrop_bytes=backdrop)
 
 
+_COUNT_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
+
+
 def _scrub_unanchored_names(text: str, anchored_name: str, other_names: list) -> str:
     """Replaces any OTHER cast member's name in `text` with a generic
     reference — a segment can only precisely anchor ONE identity (see
@@ -1253,16 +1256,44 @@ def _scrub_unanchored_names(text: str, anchored_name: str, other_names: list) ->
     this — a text instruction to the WRITER has proven unreliable twice
     now, so this enforces it deterministically at the last point before
     the render actually sees the text, rather than trying a third,
-    stronger-worded prompt fix."""
+    stronger-worded prompt fix.
+
+    A RUN of consecutive other-names joined by "and"/"," (e.g. "Zara and
+    Captain Nova", "Captain Nova, Blix") is matched and replaced as ONE
+    unit with a single count-correct phrase ("two other figures"), not
+    substituted name-by-name. Confirmed live 2026-09-08 (again) that
+    independent per-name substitution produced a repeated, degenerate
+    phrase — "another figure nearby and another figure nearby" — and that
+    one shot with this pattern rendered as a crowd of roughly six unrelated
+    characters instead of the two actually implied. Repeating an identical
+    phrase back-to-back reads as an open-ended "several", not an exact
+    count; collapsing the whole run into one phrase removes the
+    repetition entirely rather than trying to word around it."""
     if not text:
         return text
-    scrubbed = text
-    for name in other_names:
-        name = (name or "").strip()
-        if not name or name.lower() == (anchored_name or "").strip().lower():
-            continue
-        scrubbed = re.sub(r"\b" + re.escape(name) + r"\b", "another figure nearby", scrubbed, flags=re.IGNORECASE)
-    return scrubbed
+
+    anchored_lower = (anchored_name or "").strip().lower()
+    # Longest first so a multi-word name like "Captain Nova" is tried
+    # before any other name that could otherwise partially overlap it.
+    names = sorted(
+        {(n or "").strip() for n in other_names if (n or "").strip().lower() != anchored_lower},
+        key=len, reverse=True,
+    )
+    names = [n for n in names if n]
+    if not names:
+        return text
+
+    name_alt = "|".join(re.escape(n) for n in names)
+    one_name = re.compile(rf"\b(?:{name_alt})\b", re.IGNORECASE)
+    run = re.compile(rf"\b(?:{name_alt})\b(?:\s*(?:,|and)\s*\b(?:{name_alt})\b)*", re.IGNORECASE)
+
+    def _replace_run(match: re.Match) -> str:
+        count = len(one_name.findall(match.group(0)))
+        if count <= 1:
+            return "another figure"
+        return f"{_COUNT_WORDS.get(count, str(count))} other figures"
+
+    return run.sub(_replace_run, text)
 
 
 def _sanitize_segment_shots(segment_shots: list, primary_variant, all_variants: list) -> list:
