@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { Zap, LayoutDashboard, TrendingUp, Settings, ShieldCheck, LogOut, HelpCircle, ShoppingBag, Drama } from "lucide-react";
+import { Zap, LayoutDashboard, TrendingUp, Settings, ShieldCheck, LogOut, HelpCircle, ShoppingBag, Drama, CalendarDays } from "lucide-react";
 import ProductSwitcher, { ProductKey } from "./ProductSwitcher";
 
-type NavKey = "dashboard" | "performance" | "shopify" | "culturetoons" | "settings";
+type NavKey = "dashboard" | "performance" | "calendar" | "shopify" | "culturetoons" | "settings";
 
 interface Props {
   active: NavKey;
@@ -26,6 +26,7 @@ const PRODUCT_ITEMS: Record<ProductKey, NavItem[]> = {
   "posting-ideation": [
     { key: "dashboard", href: "/dashboard", icon: <LayoutDashboard className="h-3.5 w-3.5" />, label: "Dashboard" },
     { key: "performance", href: "/dashboard/performance", icon: <TrendingUp className="h-3.5 w-3.5" />, label: "Performance" },
+    { key: "calendar", href: "/dashboard/calendar", icon: <CalendarDays className="h-3.5 w-3.5" />, label: "Calendar" },
   ],
   shopify: [
     { key: "shopify", href: "/dashboard/shopify", icon: <ShoppingBag className="h-3.5 w-3.5" />, label: "Shopify" },

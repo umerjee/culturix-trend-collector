@@ -29,6 +29,10 @@ const EVENT_CATEGORY_STYLE: Record<string, string> = {
   music: "bg-pink-50 text-pink-700",
 };
 
+// Mirrors app/services/calendar_events.py's TRACKED_REGIONS — the fixed set
+// of countries the trend collectors (and so this calendar) actually cover.
+const EVENT_REGIONS = ["US", "GB", "IN", "JP", "KR", "FR", "DE", "BR", "CA", "AU", "CN", "IT", "ES", "PT"];
+
 export default function OverviewPage() {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [trends, setTrends] = useState<Trend[]>([]);
@@ -37,6 +41,8 @@ export default function OverviewPage() {
   const [health, setHealth] = useState<IntegrationHealthEntry[]>([]);
   const [alerts, setAlerts] = useState<HighVelocityAlert[]>([]);
   const [events, setEvents] = useState<CalendarEventEntry[]>([]);
+  const [eventCategoryFilter, setEventCategoryFilter] = useState<string>("");
+  const [eventRegionFilter, setEventRegionFilter] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [checkingHealth, setCheckingHealth] = useState(false);
@@ -188,30 +194,65 @@ export default function OverviewPage() {
 
       {/* Upcoming events — holidays/religious/political (live since 2026-09-07)
           plus sports/music (added 2026-09-16); previously had no admin view
-          at all despite already feeding content_strategist.py's prompts. */}
-      {events.length > 0 && (
-        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-50">
-            <h2 className="font-semibold text-gray-900 text-sm flex items-center gap-1.5">
-              <CalendarDays className="h-4 w-4 text-indigo-500" /> Upcoming events
-            </h2>
+          at all despite already feeding content_strategist.py's prompts.
+          Category/region filtering is client-side over the already-fetched
+          120-day window (dozens-to-low-hundreds of rows) rather than a
+          refetch per filter change — simpler and instant. */}
+      {events.length > 0 && (() => {
+        const filteredEvents = events.filter((e) =>
+          (!eventCategoryFilter || e.category === eventCategoryFilter) &&
+          (!eventRegionFilter || e.regions.length === 0 || e.regions.includes(eventRegionFilter))
+        );
+        return (
+          <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-50 flex items-center justify-between gap-3 flex-wrap">
+              <h2 className="font-semibold text-gray-900 text-sm flex items-center gap-1.5">
+                <CalendarDays className="h-4 w-4 text-indigo-500" /> Upcoming events
+              </h2>
+              <div className="flex items-center gap-2">
+                <select
+                  value={eventCategoryFilter}
+                  onChange={(e) => setEventCategoryFilter(e.target.value)}
+                  className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 text-gray-600 bg-white"
+                >
+                  <option value="">All categories</option>
+                  {Object.keys(EVENT_CATEGORY_STYLE).map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+                <select
+                  value={eventRegionFilter}
+                  onChange={(e) => setEventRegionFilter(e.target.value)}
+                  className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 text-gray-600 bg-white"
+                >
+                  <option value="">All regions</option>
+                  {EVENT_REGIONS.map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            {filteredEvents.length === 0 ? (
+              <p className="px-6 py-6 text-sm text-gray-400">No events match this filter.</p>
+            ) : (
+              <ul className="divide-y divide-gray-50 max-h-96 overflow-y-auto">
+                {filteredEvents.map((e) => (
+                  <li key={e.id} className="flex items-center gap-3 px-6 py-3">
+                    <span className={`text-[10px] font-medium uppercase tracking-wide px-2 py-0.5 rounded shrink-0 ${EVENT_CATEGORY_STYLE[e.category] ?? "bg-gray-100 text-gray-600"}`}>
+                      {e.category}
+                    </span>
+                    <span className="flex-1 text-sm text-gray-700 truncate" title={e.description ?? undefined}>{e.name}</span>
+                    <span className="text-xs text-gray-400 whitespace-nowrap shrink-0">
+                      {e.regions.length > 0 ? e.regions.join(", ") : "global"}
+                    </span>
+                    <span className="text-xs text-gray-400 whitespace-nowrap shrink-0">{fmtDateOnly(e.date)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
-          <ul className="divide-y divide-gray-50 max-h-96 overflow-y-auto">
-            {events.map((e) => (
-              <li key={e.id} className="flex items-center gap-3 px-6 py-3">
-                <span className={`text-[10px] font-medium uppercase tracking-wide px-2 py-0.5 rounded shrink-0 ${EVENT_CATEGORY_STYLE[e.category] ?? "bg-gray-100 text-gray-600"}`}>
-                  {e.category}
-                </span>
-                <span className="flex-1 text-sm text-gray-700 truncate" title={e.description ?? undefined}>{e.name}</span>
-                <span className="text-xs text-gray-400 whitespace-nowrap shrink-0">
-                  {e.regions.length > 0 ? e.regions.join(", ") : "global"}
-                </span>
-                <span className="text-xs text-gray-400 whitespace-nowrap shrink-0">{fmtDateOnly(e.date)}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+        );
+      })()}
 
       {/* High-velocity alerts — same visibility gap as integration health. */}
       {alerts.length > 0 && (

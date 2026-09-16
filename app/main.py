@@ -2115,6 +2115,53 @@ def list_all_content_posts(user_id: str, content_profile_id: Optional[str] = Non
         session.close()
 
 
+@app.get("/api/calendar-events", dependencies=[Depends(require_internal_secret)])
+def calendar_events_for_user(user_id: str, lookahead_days: int = 120, category: Optional[str] = None):
+    """User-facing counterpart to /admin/calendar-events — same underlying
+    CalendarEvent data, but region-scoped to the CALLING user's own
+    ContentProfile.target_regions (falls back to all tracked regions if the
+    user hasn't set any target_regions on any profile) rather than an
+    admin picking a region to inspect. Added 2026-09-16 alongside the admin
+    view — this data previously only reached users indirectly, through
+    whatever events content_strategist.py's ideas happened to reference."""
+    from app.db import SessionLocal
+    from app.models.content_profile import ContentProfile
+    from app.regions import REGION_LABEL_TO_CODES
+    from app.services.calendar_events import get_upcoming_events
+    import uuid as _uuid
+
+    session = SessionLocal()
+    try:
+        profiles = session.query(ContentProfile).filter_by(user_id=_uuid.UUID(user_id)).all()
+        # Same REGION_LABEL_TO_CODES catalog + "Global bypasses everything"
+        # convention persona_mapper.py's _filter_by_region already
+        # established — target_regions is picker labels ("EU", "Global"),
+        # not the calendar's own ISO country codes, and "EU" specifically
+        # expands to multiple codes (FR/GB/ES/IT/PT/DE), not a 1:1 rename.
+        target_labels = {r for p in profiles for r in (p.target_regions or [])}
+        if not target_labels or "Global" in target_labels:
+            regions = None
+        else:
+            allowed: set = set()
+            for label in target_labels:
+                allowed |= REGION_LABEL_TO_CODES.get(label, set())
+            regions = sorted(allowed) or None
+
+        events = get_upcoming_events(session, lookahead_days=lookahead_days, regions=regions)
+        if category:
+            events = [e for e in events if e.category == category]
+        return [
+            {
+                "id": e.id, "name": e.name, "category": e.category,
+                "date": e.date.isoformat(), "regions": e.regions or [],
+                "description": e.description,
+            }
+            for e in events
+        ]
+    finally:
+        session.close()
+
+
 def _serialize_content_post(r) -> dict:
     return {
         "id": str(r.id),
@@ -2457,22 +2504,27 @@ def high_velocity_alerts_recent(limit: int = 100):
 
 
 @app.get("/admin/calendar-events", dependencies=[Depends(require_admin_secret)])
-def calendar_events_upcoming(limit: Optional[int] = None, lookahead_days: int = 120, category: Optional[str] = None):
-    # `limit` accepted as an alias for lookahead_days (in days, not row
-    # count) so this fits the admin-data proxy's generic ?limit= forwarding
-    # (culturix-web/src/app/api/admin/data/route.ts) without special-casing
-    # this one endpoint's query param name there.
-    if limit is not None:
-        lookahead_days = limit
+def calendar_events_upcoming(
+    limit: Optional[int] = None, lookahead_days: int = 120,
+    category: Optional[str] = None, region: Optional[str] = None,
+):
     """Upcoming holiday/religious/political/sports/music events (app/services/
     calendar_events.py) — the same data content_strategist.py's prompts
     already see via load_upcoming_events, surfaced here so it's actually
     visible/verifiable instead of only inferred from digest content. No
     admin view existed for this before 2026-09-16 despite the feature
-    itself (holidays+curated) having been live since 2026-09-07."""
+    itself (holidays+curated) having been live since 2026-09-07.
+
+    `limit` accepted as an alias for lookahead_days (in days, not row
+    count) so this fits the admin-data proxy's generic ?limit= forwarding
+    (culturix-web/src/app/api/admin/data/route.ts) without special-casing
+    this one endpoint's query param name there."""
+    if limit is not None:
+        lookahead_days = limit
     from app.db import SessionLocal
     from app.models.calendar_event import CalendarEvent
     from datetime import date, timedelta
+    import sqlalchemy as sa
 
     session = SessionLocal()
     try:
@@ -2483,6 +2535,15 @@ def calendar_events_upcoming(limit: Optional[int] = None, lookahead_days: int = 
         )
         if category:
             q = q.filter(CalendarEvent.category == category)
+        if region:
+            # Same "matches this region OR is globally-tagged (no regions)"
+            # semantics as calendar_events.get_upcoming_events, so admin
+            # filtering and the pipeline's own query agree on what "relevant
+            # to a region" means.
+            q = q.filter(sa.or_(
+                CalendarEvent.regions.contains([region]),
+                CalendarEvent.regions.is_(None),
+            ))
         rows = q.order_by(CalendarEvent.date.asc()).all()
         return [
             {
