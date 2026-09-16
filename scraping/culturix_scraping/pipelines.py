@@ -25,7 +25,7 @@ from .db import AsyncSessionLocal, dispose_engine, upsert_trend
 from .dedup import Deduplicator, build_deduplicator
 from .hooks import trigger_content_engine
 from .items import TrendRecord
-from .velocity import DEFAULT_VELOCITY_THRESHOLD, is_high_velocity, velocity_score
+from .velocity import DEFAULT_VELOCITY_THRESHOLD, hours_since, is_high_velocity, velocity_score
 
 logger = logging.getLogger("culturix.scraping.pipeline")
 
@@ -117,7 +117,7 @@ class TrendVelocityPipeline:
                 await upsert_trend(session, build_upsert_values(record, score))
 
         self._processed += 1
-        if is_high_velocity(score, self.velocity_threshold):
+        if is_high_velocity(score, self.velocity_threshold, post_age_hours=hours_since(record.created_at)):
             self._high_velocity += 1
             await trigger_content_engine(record, score)
 

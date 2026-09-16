@@ -36,3 +36,25 @@ class TestIsHighVelocity:
 
     def test_below_threshold_is_not_high(self):
         assert is_high_velocity(499.9, threshold=500.0) is False
+
+    def test_age_omitted_keeps_old_behavior(self):
+        # No post_age_hours passed -- old call sites/tests must still work.
+        assert is_high_velocity(5266.0, threshold=500.0) is True
+
+    def test_fresh_post_above_threshold_is_high(self):
+        assert is_high_velocity(5266.0, threshold=500.0, post_age_hours=2.0) is True
+
+    def test_old_post_above_threshold_is_suppressed(self):
+        # Real production case: a 12-day-old post with a huge lifetime-average
+        # rate (large accumulated likes / long elapsed time) isn't a fresh
+        # spike worth alerting on.
+        assert is_high_velocity(5266.0, threshold=500.0, post_age_hours=305.0) is False
+
+    def test_old_post_below_threshold_stays_not_high(self):
+        assert is_high_velocity(100.0, threshold=500.0, post_age_hours=305.0) is False
+
+    def test_age_exactly_at_max_still_counts(self):
+        assert is_high_velocity(1000.0, threshold=500.0, post_age_hours=48.0, max_age_hours=48.0) is True
+
+    def test_age_just_past_max_is_suppressed(self):
+        assert is_high_velocity(1000.0, threshold=500.0, post_age_hours=48.1, max_age_hours=48.0) is False
