@@ -174,6 +174,17 @@ export interface CalendarEventEntry {
   source: string;
 }
 
+export interface RunpodOrphanKillEntry {
+  id: number;
+  pod_id: string;
+  pod_name: string | null;
+  gpu_display_name: string | null;
+  cost_per_hr: number | null;
+  age_hours: number;
+  estimated_cost: number | null;
+  killed_at: string | null;
+}
+
 export interface IntegrationHealthEntry {
   integration: string;
   status: string;

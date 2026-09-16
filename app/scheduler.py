@@ -81,6 +81,83 @@ def run_calendar_sync():
         logger.error("Calendar sync failed: %s", e)
 
 
+# On-demand RunPod Pods (as opposed to the production Serverless
+# endpoint, which isn't a "Pod" at all) only ever exist for two known,
+# bounded purposes: LoRA training (budgeted at up to ~1h, see
+# create_training_pod_with_retry's docstring) and manual/eval testing
+# pods created ad hoc (meant to be short-lived, see runpod_client.py's
+# module docstring). Nothing legitimate should ever run longer than this
+# — set generously above both known cases so a false-positive kill on
+# real work is essentially impossible.
+ORPHAN_POD_MAX_AGE_HOURS = 2.0
+
+
+def run_runpod_orphan_pod_reaper():
+    """Auto-terminates any on-demand RunPod Pod that's been RUNNING longer
+    than ORPHAN_POD_MAX_AGE_HOURS, independent of whether any human or
+    agent remembers to terminate it themselves. Added 2026-09-16 after a
+    manually-created evaluation pod was left running for ~5.5 hours
+    (~$11.40 real billed cost) because that was the ONLY safety
+    mechanism — nothing independently checked. Runs every 30 minutes, so
+    worst-case waste from a forgotten pod is now bounded to roughly
+    ORPHAN_POD_MAX_AGE_HOURS + 30min, not "however long until someone
+    notices." Every kill is logged AND persisted (RunpodOrphanKill) so
+    it's visible via GET /admin/runpod-orphan-kills, not just a log line."""
+    try:
+        from datetime import datetime
+        from app.media.runpod_client import list_pods, terminate_pod
+
+        pods = list_pods()
+        if not pods:
+            return
+
+        now = datetime.utcnow()
+        killed = 0
+        from app.db import SessionLocal
+        from app.models.runpod_orphan_kill import RunpodOrphanKill
+
+        session = SessionLocal()
+        try:
+            for pod in pods:
+                if pod.get("desiredStatus") != "RUNNING":
+                    continue
+                last_started = pod.get("lastStartedAt")
+                if not last_started:
+                    continue
+                try:
+                    started_dt = datetime.fromisoformat(str(last_started).replace("Z", "+00:00")).replace(tzinfo=None)
+                except ValueError:
+                    continue
+                age_hours = (now - started_dt).total_seconds() / 3600.0
+                if age_hours < ORPHAN_POD_MAX_AGE_HOURS:
+                    continue
+
+                pod_id = pod.get("id")
+                cost_per_hr = pod.get("costPerHr")
+                logger.error(
+                    "RunPod orphan-pod reaper: terminating pod %s (%s) — running %.1fh at $%s/hr",
+                    pod_id, pod.get("name"), age_hours, cost_per_hr,
+                )
+                terminate_pod(pod_id)
+                session.add(RunpodOrphanKill(
+                    pod_id=pod_id,
+                    pod_name=pod.get("name"),
+                    gpu_display_name=((pod.get("machine") or {}).get("gpuDisplayName")),
+                    cost_per_hr=cost_per_hr,
+                    age_hours=round(age_hours, 2),
+                    estimated_cost=round(age_hours * cost_per_hr, 4) if cost_per_hr else None,
+                ))
+                killed += 1
+            if killed:
+                session.commit()
+        finally:
+            session.close()
+        if killed:
+            logger.warning("RunPod orphan-pod reaper: terminated %d pod(s)", killed)
+    except Exception as e:
+        logger.error("RunPod orphan-pod reaper failed: %s", e)
+
+
 def run_content_check():
     """Daily audit of previously generated content ideas — flags stale ones.
     Runs once per day at 09:00 UTC, after the content engine has run."""
@@ -591,6 +668,10 @@ def start():
     # thing that ever cleans those up.
     from app.services.culturetoon_reaper import run_toon_reaper
     scheduler.add_job(run_toon_reaper, CronTrigger(minute="*/30"), id="toon_reaper")
+    # RunPod orphan-pod reaper — every 30 min, same cadence as the toon
+    # reaper above. See run_runpod_orphan_pod_reaper's own docstring for
+    # the incident that motivated this.
+    scheduler.add_job(run_runpod_orphan_pod_reaper, CronTrigger(minute="*/30"), id="runpod_orphan_pod_reaper")
     # Integration health check — once daily, 12:00 UTC (after the other morning jobs)
     scheduler.add_job(run_integration_health_check, CronTrigger(hour=12, minute=0), id="integration_health_check")
     # Self-hosted (RunPod+ComfyUI+LTX-2) video batch — dormant unless

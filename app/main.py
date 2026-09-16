@@ -52,6 +52,7 @@ async def lifespan(_):
     from app.models.toon_scene import ToonScene                       # noqa: F401
     from app.models.toon_shot import ToonShot                         # noqa: F401
     from app.models.calendar_event import CalendarEvent                # noqa: F401
+    from app.models.runpod_orphan_kill import RunpodOrphanKill          # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -2498,6 +2499,35 @@ def high_velocity_alerts_recent(limit: int = 100):
                 "received_at": a.received_at.isoformat() if a.received_at else None,
             }
             for a in rows
+        ]
+    finally:
+        session.close()
+
+
+@app.get("/admin/runpod-orphan-kills", dependencies=[Depends(require_admin_secret)])
+def runpod_orphan_kills_recent(limit: int = 50):
+    """Audit trail for app.scheduler.run_runpod_orphan_pod_reaper — every
+    pod it's ever auto-terminated for running past ORPHAN_POD_MAX_AGE_HOURS.
+    Should normally be empty; a non-empty result means the reaper caught
+    something that would otherwise have kept billing unnoticed, same as
+    the incident (~$11.40, ~5.5h) that motivated building it."""
+    from app.db import SessionLocal
+    from app.models.runpod_orphan_kill import RunpodOrphanKill
+    session = SessionLocal()
+    try:
+        rows = session.query(RunpodOrphanKill).order_by(RunpodOrphanKill.killed_at.desc()).limit(limit).all()
+        return [
+            {
+                "id": k.id,
+                "pod_id": k.pod_id,
+                "pod_name": k.pod_name,
+                "gpu_display_name": k.gpu_display_name,
+                "cost_per_hr": k.cost_per_hr,
+                "age_hours": k.age_hours,
+                "estimated_cost": k.estimated_cost,
+                "killed_at": k.killed_at.isoformat() if k.killed_at else None,
+            }
+            for k in rows
         ]
     finally:
         session.close()

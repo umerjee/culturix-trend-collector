@@ -374,3 +374,18 @@ def terminate_pod(pod_id: str) -> None:
         logger.info("Training pod %s terminated", pod_id)
     except Exception:
         logger.exception("Failed to terminate RunPod training pod %s — check the RunPod console manually", pod_id)
+
+
+def list_pods() -> list:
+    """All on-demand Pods currently on the account (REST GET /pods — same
+    endpoint create_training_pod already POSTs to; this module's opening
+    docstring calling the REST surface unexercised predates that and is
+    stale). Used by app.scheduler.run_runpod_orphan_pod_reaper — added
+    2026-09-16 after a manually-created evaluation pod was left running for
+    ~5.5 hours (real billed cost) because terminating it depended entirely
+    on a human/agent remembering to, with nothing checking independently.
+    Each dict includes `lastStartedAt` (ISO string) and `costPerHr`, both
+    needed to compute how long a pod has been burning money."""
+    resp = httpx.get(f"{_REST_API_BASE}/pods", headers={"Authorization": f"Bearer {_api_key()}"}, timeout=30)
+    resp.raise_for_status()
+    return resp.json() or []

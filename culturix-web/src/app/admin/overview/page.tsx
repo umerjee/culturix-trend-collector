@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { TrendingUp, Layers, Users, LayoutDashboard, AlertTriangle, Activity, RefreshCw, CalendarDays } from "lucide-react";
+import { TrendingUp, Layers, Users, LayoutDashboard, AlertTriangle, Activity, RefreshCw, CalendarDays, Skull } from "lucide-react";
 import { fetchAdminData } from "@/lib/admin/fetchAdmin";
-import type { AdminStats, Trend, Cluster, Digest, IntegrationHealthEntry, HighVelocityAlert, CalendarEventEntry } from "@/lib/admin/types";
+import type { AdminStats, Trend, Cluster, Digest, IntegrationHealthEntry, HighVelocityAlert, CalendarEventEntry, RunpodOrphanKillEntry } from "@/lib/admin/types";
 import { fmt } from "@/lib/admin/types";
 import { StatCard, PlatformBadge } from "@/components/admin/badges";
 import Badge from "@/components/ui/Badge";
@@ -43,6 +43,7 @@ export default function OverviewPage() {
   const [events, setEvents] = useState<CalendarEventEntry[]>([]);
   const [eventCategoryFilter, setEventCategoryFilter] = useState<string>("");
   const [eventRegionFilter, setEventRegionFilter] = useState<string>("");
+  const [orphanKills, setOrphanKills] = useState<RunpodOrphanKillEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [checkingHealth, setCheckingHealth] = useState(false);
@@ -60,8 +61,9 @@ export default function OverviewPage() {
       fetchAdminData<IntegrationHealthEntry[]>("integration-health"),
       fetchAdminData<HighVelocityAlert[]>("high-velocity-alerts", { limit: 5 }),
       fetchAdminData<CalendarEventEntry[]>("calendar-events", { limit: 120 }),
+      fetchAdminData<RunpodOrphanKillEntry[]>("runpod-orphan-kills", { limit: 20 }),
     ]);
-    const [s, t, c, d, h, a, ev] = results;
+    const [s, t, c, d, h, a, ev, ok] = results;
     const firstErr = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
     if (firstErr) setError(firstErr.reason?.message ?? String(firstErr.reason));
     setStats(s.status === "fulfilled" ? s.value : null);
@@ -71,6 +73,7 @@ export default function OverviewPage() {
     setHealth(h.status === "fulfilled" && Array.isArray(h.value) ? h.value : []);
     setAlerts(a.status === "fulfilled" && Array.isArray(a.value) ? a.value : []);
     setEvents(ev.status === "fulfilled" && Array.isArray(ev.value) ? ev.value : []);
+    setOrphanKills(ok.status === "fulfilled" && Array.isArray(ok.value) ? ok.value : []);
     setLoading(false);
   }
 
@@ -110,6 +113,35 @@ export default function OverviewPage() {
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-xl px-5 py-3 text-sm text-red-700 font-mono break-all">
           ⚠ {error}
+        </div>
+      )}
+
+      {/* Should normally be empty — a non-empty result means the RunPod
+          orphan-pod reaper (app/scheduler.py, every 30 min) caught a pod
+          left running past ORPHAN_POD_MAX_AGE_HOURS and auto-terminated
+          it. Surfaced prominently since real money is on the line — added
+          2026-09-16 after a manually-created eval pod ran unterminated
+          for ~5.5h with nothing catching it. */}
+      {orphanKills.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl overflow-hidden">
+          <div className="px-5 py-3 border-b border-amber-100">
+            <h2 className="font-semibold text-amber-800 text-sm flex items-center gap-1.5">
+              <Skull className="h-4 w-4" /> RunPod pods auto-terminated (orphan-pod reaper)
+            </h2>
+          </div>
+          <ul className="divide-y divide-amber-100">
+            {orphanKills.map((k) => (
+              <li key={k.id} className="flex items-center gap-3 px-5 py-2.5 text-sm">
+                <span className="flex-1 text-amber-900 truncate">
+                  {k.pod_name ?? k.pod_id} {k.gpu_display_name && <span className="text-amber-600">({k.gpu_display_name})</span>}
+                </span>
+                <span className="text-xs text-amber-700 whitespace-nowrap shrink-0">
+                  ran {k.age_hours.toFixed(1)}h{k.estimated_cost != null ? ` — ~$${k.estimated_cost.toFixed(2)}` : ""}
+                </span>
+                <span className="text-xs text-amber-600 whitespace-nowrap shrink-0">{fmt(k.killed_at)}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
