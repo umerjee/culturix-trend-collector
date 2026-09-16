@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { TrendingUp, Layers, Users, LayoutDashboard, AlertTriangle, Activity, RefreshCw } from "lucide-react";
+import { TrendingUp, Layers, Users, LayoutDashboard, AlertTriangle, Activity, RefreshCw, CalendarDays } from "lucide-react";
 import { fetchAdminData } from "@/lib/admin/fetchAdmin";
-import type { AdminStats, Trend, Cluster, Digest, IntegrationHealthEntry, HighVelocityAlert } from "@/lib/admin/types";
+import type { AdminStats, Trend, Cluster, Digest, IntegrationHealthEntry, HighVelocityAlert, CalendarEventEntry } from "@/lib/admin/types";
 import { fmt } from "@/lib/admin/types";
 import { StatCard, PlatformBadge } from "@/components/admin/badges";
 import Badge from "@/components/ui/Badge";
@@ -14,6 +14,21 @@ const HEALTH_VARIANT: Record<string, "success" | "warning" | "danger"> = {
   ok: "success", degraded: "warning", down: "danger",
 };
 
+// `fmt` from lib/admin/types always appends a time-of-day, which is
+// misleading for date-only calendar events (they'd all show "12:00 AM").
+function fmtDateOnly(dateStr: string): string {
+  const d = new Date(dateStr + "T00:00:00Z");
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+}
+
+const EVENT_CATEGORY_STYLE: Record<string, string> = {
+  holiday: "bg-emerald-50 text-emerald-700",
+  religious: "bg-purple-50 text-purple-700",
+  political: "bg-red-50 text-red-700",
+  sports: "bg-blue-50 text-blue-700",
+  music: "bg-pink-50 text-pink-700",
+};
+
 export default function OverviewPage() {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [trends, setTrends] = useState<Trend[]>([]);
@@ -21,6 +36,7 @@ export default function OverviewPage() {
   const [digests, setDigests] = useState<Digest[]>([]);
   const [health, setHealth] = useState<IntegrationHealthEntry[]>([]);
   const [alerts, setAlerts] = useState<HighVelocityAlert[]>([]);
+  const [events, setEvents] = useState<CalendarEventEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [checkingHealth, setCheckingHealth] = useState(false);
@@ -37,8 +53,9 @@ export default function OverviewPage() {
       fetchAdminData<Digest[]>("digests", { limit: 5 }),
       fetchAdminData<IntegrationHealthEntry[]>("integration-health"),
       fetchAdminData<HighVelocityAlert[]>("high-velocity-alerts", { limit: 5 }),
+      fetchAdminData<CalendarEventEntry[]>("calendar-events", { limit: 120 }),
     ]);
-    const [s, t, c, d, h, a] = results;
+    const [s, t, c, d, h, a, ev] = results;
     const firstErr = results.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
     if (firstErr) setError(firstErr.reason?.message ?? String(firstErr.reason));
     setStats(s.status === "fulfilled" ? s.value : null);
@@ -47,6 +64,7 @@ export default function OverviewPage() {
     setDigests(d.status === "fulfilled" && Array.isArray(d.value) ? d.value : []);
     setHealth(h.status === "fulfilled" && Array.isArray(h.value) ? h.value : []);
     setAlerts(a.status === "fulfilled" && Array.isArray(a.value) ? a.value : []);
+    setEvents(ev.status === "fulfilled" && Array.isArray(ev.value) ? ev.value : []);
     setLoading(false);
   }
 
@@ -168,6 +186,33 @@ export default function OverviewPage() {
         )}
       </div>
 
+      {/* Upcoming events — holidays/religious/political (live since 2026-09-07)
+          plus sports/music (added 2026-09-16); previously had no admin view
+          at all despite already feeding content_strategist.py's prompts. */}
+      {events.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-50">
+            <h2 className="font-semibold text-gray-900 text-sm flex items-center gap-1.5">
+              <CalendarDays className="h-4 w-4 text-indigo-500" /> Upcoming events
+            </h2>
+          </div>
+          <ul className="divide-y divide-gray-50 max-h-96 overflow-y-auto">
+            {events.map((e) => (
+              <li key={e.id} className="flex items-center gap-3 px-6 py-3">
+                <span className={`text-[10px] font-medium uppercase tracking-wide px-2 py-0.5 rounded shrink-0 ${EVENT_CATEGORY_STYLE[e.category] ?? "bg-gray-100 text-gray-600"}`}>
+                  {e.category}
+                </span>
+                <span className="flex-1 text-sm text-gray-700 truncate" title={e.description ?? undefined}>{e.name}</span>
+                <span className="text-xs text-gray-400 whitespace-nowrap shrink-0">
+                  {e.regions.length > 0 ? e.regions.join(", ") : "global"}
+                </span>
+                <span className="text-xs text-gray-400 whitespace-nowrap shrink-0">{fmtDateOnly(e.date)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* High-velocity alerts — same visibility gap as integration health. */}
       {alerts.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
@@ -182,9 +227,15 @@ export default function OverviewPage() {
                 <PlatformBadge platform={a.platform} />
                 <span className="flex-1 text-sm text-gray-700 truncate">{a.description ?? a.external_id}</span>
                 <span className="text-xs text-gray-400 whitespace-nowrap shrink-0">
-                  {a.velocity_score != null ? `${a.velocity_score.toFixed(1)}x velocity` : "—"}
+                  {/* velocity_score is likes/hour averaged over the post's whole
+                      lifetime, not a "Nx faster than normal" multiplier — the
+                      old "Nx velocity" label implied a ratio that was never
+                      being computed. */}
+                  {a.velocity_score != null ? `${a.velocity_score.toFixed(1)} likes/hr` : "—"}
                 </span>
-                <span className="text-xs text-gray-400 whitespace-nowrap shrink-0">{fmt(a.received_at)}</span>
+                <span className="text-xs text-gray-400 whitespace-nowrap shrink-0" title="When the post was actually made, not when it was scraped">
+                  posted {fmt(a.trend_posted_at)}
+                </span>
               </li>
             ))}
           </ul>

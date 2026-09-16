@@ -16,10 +16,69 @@ Two data sources, per CalendarEvent's own docstring:
   every few months. Dates researched live 2026-09-07; lunar-calendar dates
   are moon-sighting-dependent and can shift by a day.
 """
+import json
 import logging
-from datetime import date, timedelta
+import os
+from datetime import date, datetime, timedelta
 
 logger = logging.getLogger("culturix.services.calendar_events")
+
+# 2026-09-16: this file originally only covered holiday/religious/political
+# events -- sports and music (both explicitly requested up front) were never
+# added. No single free API covers "upcoming major sports events" and
+# "upcoming major music events" across all of TRACKED_REGIONS the way Nager
+# does for holidays, and hand-curating them like CURATED_EVENTS would need
+# constant manual upkeep for two fast-moving categories. LLM-generated
+# instead, refreshed periodically (see _sports_music_needs_refresh) rather
+# than on every daily sync, since this costs real API calls and day-to-day
+# churn in "what sports/music events are coming up" is low.
+#
+# Same failure mode as trend_validator.py's pre-2026-09-16 bug applies here
+# if not careful: an LLM has a training cutoff and no web access, so asking
+# it to invent SPECIFIC one-off claims (a particular unannounced album drop
+# date) would just produce fabrications with false confidence. The prompt
+# below is scoped to well-established, calendar-fixed recurring events
+# (major championships/tournaments/award shows that happen on a known
+# annual cycle) rather than speculative one-off announcements, for exactly
+# that reason.
+_SPORTS_MUSIC_REFRESH_INTERVAL_DAYS = 7
+
+
+def _call_calendar_llm(prompt: str) -> str:
+    """Same DeepSeek-primary/Claude-Haiku-fallback resilience pattern as
+    trend_validator.py's _call_validation_llm — kept as its own copy since
+    each pipeline/service module here owns its LLM call helper rather than
+    sharing one across unrelated concerns."""
+    if os.getenv("DEEPSEEK_API_KEY"):
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"], base_url="https://api.deepseek.com")
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.warning("DeepSeek calendar-generation call failed, falling back to Claude: %s", e)
+
+    import anthropic
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    message = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=3000,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return message.content[0].text.strip()
+
+
+def _parse_json_array(raw: str) -> list:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+    return json.loads(text.strip())
 
 # Same canonical region vocabulary as app/collectors/region_codes.py,
 # matching the countries the trend collectors already track — so an
@@ -171,6 +230,87 @@ def seed_curated_events(session) -> int:
         written += 1
     session.commit()
     logger.info("Curated event seed wrote %d new rows", written)
+    return written
+
+
+def _sports_music_needs_refresh(session) -> bool:
+    from app.models.calendar_event import CalendarEvent
+
+    latest = (
+        session.query(CalendarEvent.created_at)
+        .filter(CalendarEvent.source == "llm_generated")
+        .order_by(CalendarEvent.created_at.desc())
+        .first()
+    )
+    if latest is None or latest[0] is None:
+        return True
+    age_days = (datetime.utcnow() - latest[0]).total_seconds() / 86400.0
+    return age_days >= _SPORTS_MUSIC_REFRESH_INTERVAL_DAYS
+
+
+def generate_sports_and_music_events(session, lookahead_days: int = 120) -> int:
+    """LLM-generated upcoming sports/music events, upserted the same way as
+    seed_curated_events (keyed on (name, date), safe to re-run). Skips the
+    LLM call entirely if a batch was already generated within
+    _SPORTS_MUSIC_REFRESH_INTERVAL_DAYS -- see module docstring for why this
+    is periodic rather than run on every daily sync."""
+    from app.models.calendar_event import CalendarEvent
+
+    if not _sports_music_needs_refresh(session):
+        logger.info("Sports/music events generated within the last %d days — skipping", _SPORTS_MUSIC_REFRESH_INTERVAL_DAYS)
+        return 0
+
+    today = date.today()
+    horizon = today + timedelta(days=lookahead_days)
+    prompt = f"""List notable upcoming SPORTS and MUSIC events between {today.isoformat()} and {horizon.isoformat()}, relevant to a social-media content-intelligence platform tracking these countries: {", ".join(TRACKED_REGIONS)}.
+
+Consider ALL of these sub-areas before answering, and include every one where you have a high-confidence, calendar-fixed date in this window — don't stop after the first few obvious ones: major football/soccer (Premier League, Champions League, La Liga, Bundesliga, Serie A — openers, finals, or notable fixture dates), American football (NFL), basketball (NBA), baseball (MLB), cricket (IPL, international series), tennis Grand Slams, Formula 1 races, major boxing/UFC cards, the Olympics/World Cup only if genuinely within this window; and for music: major annual award shows (Grammys, VMAs, Billboard Music Awards, BRIT Awards, etc.), well-known recurring festivals with fixed annual dates (Coachella, Glastonbury, etc.).
+
+Only include events you have HIGH confidence actually occur on a known, calendar-fixed annual/recurring cycle. Do NOT invent or guess at specific one-off announcements you aren't confident about (a particular unannounced album release date, an unconfirmed tour date) — if you're not sure of the exact date, either omit it or use your best-known recurring date for that annual event; do not fabricate specifics to seem more complete. Aim for a thorough list (10-20 events) covering as many of the above sub-areas as you can respond to with genuine confidence, not just one or two.
+
+For EACH event, provide:
+- name: short, specific event name
+- category: "sports" or "music"
+- date: EXACTLY ONE date, YYYY-MM-DD — never a range or "X to Y". If the event is a season/tournament that spans multiple days or weeks (a league season, a multi-week tournament), pick the SINGLE most newsworthy day within this window to represent it (the opening day, or the final/championship day, or the awards-ceremony date) — not the whole span.
+- regions: array of ISO country codes from the list above this event is relevant to (diaspora/fandom-aware, not just country of origin)
+- description: one sentence
+
+Return ONLY a JSON array of objects with exactly these keys: name, category, date, regions, description. Every "date" value MUST be a single YYYY-MM-DD string, and MUST fall within {today.isoformat()} and {horizon.isoformat()} inclusive. Return an empty array if you have no high-confidence events to report — do not pad with speculative ones."""
+
+    try:
+        events = _parse_json_array(_call_calendar_llm(prompt))
+    except Exception as e:
+        logger.warning("Sports/music event generation failed — skipping this cycle: %s", e)
+        return 0
+
+    written = 0
+    for event in events:
+        try:
+            name = str(event["name"])[:200]
+            category = event.get("category") if event.get("category") in ("sports", "music") else "sports"
+            event_date = date.fromisoformat(event["date"])
+        except (KeyError, ValueError, TypeError):
+            logger.warning("Skipping malformed LLM-generated event: %r", event)
+            continue
+        if not (today <= event_date <= horizon):
+            continue  # LLM occasionally drifts outside the requested window
+        regions = [r for r in (event.get("regions") or []) if r in TRACKED_REGIONS]
+        description = event.get("description")
+
+        existing = session.query(CalendarEvent).filter_by(name=name, date=event_date).first()
+        if existing:
+            existing.regions = regions
+            existing.description = description
+            existing.category = category
+            existing.source = "llm_generated"
+            continue
+        session.add(CalendarEvent(
+            name=name, category=category, date=event_date,
+            regions=regions, description=description, source="llm_generated",
+        ))
+        written += 1
+    session.commit()
+    logger.info("Sports/music event generation wrote %d new rows", written)
     return written
 
 

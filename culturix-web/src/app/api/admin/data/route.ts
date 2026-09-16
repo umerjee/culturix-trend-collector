@@ -18,6 +18,7 @@ const PATH_MAP: Record<string, { path: string; defaultLimit?: number }> = {
   "integration-health":  { path: "/admin/integration-health" },
   "content-check-log":   { path: "/admin/content-check-log", defaultLimit: 100 },
   "high-velocity-alerts": { path: "/admin/high-velocity-alerts", defaultLimit: 50 },
+  "calendar-events":     { path: "/admin/calendar-events", defaultLimit: 120 }, // limit = lookahead_days here, not a row count
 };
 
 // Types that need an :id substituted into the backend path

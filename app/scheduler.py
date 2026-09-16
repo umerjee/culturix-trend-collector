@@ -48,25 +48,33 @@ def run_daily_pipeline():
 
 
 def run_calendar_sync():
-    """Refreshes upcoming cultural/religious/political events (app/services/
-    calendar_events.py) — national holidays from the free Nager API, plus
-    re-upserting the hand-curated religious/political list (picks up any
-    edits to that file on the next deploy without a manual seed step).
-    Runs once per day, before daily_pipeline, so load_upcoming_events
-    (app/pipeline/nodes/calendar_context.py) has fresh data for that
-    morning's run. Holiday/event dates don't change intraday — daily is
-    already more often than needed, chosen for schedule simplicity over a
-    slower cadence."""
+    """Refreshes upcoming cultural/religious/political/sports/music events
+    (app/services/calendar_events.py) — national holidays from the free
+    Nager API, re-upserting the hand-curated religious/political list
+    (picks up any edits to that file on the next deploy without a manual
+    seed step), and LLM-generated sports/music events. Runs once per day,
+    before daily_pipeline, so load_upcoming_events (app/pipeline/nodes/
+    calendar_context.py) has fresh data for that morning's run.
+    Holiday/curated event dates don't change intraday — daily is already
+    more often than needed for those, chosen for schedule simplicity over a
+    slower cadence. generate_sports_and_music_events is itself internally
+    gated to only actually call the LLM once every few days (see its
+    _sports_music_needs_refresh check) — safe to invoke daily here without
+    daily LLM cost."""
     logger.info("Calendar sync starting...")
     try:
         from app.db import SessionLocal
-        from app.services.calendar_events import sync_holidays, seed_curated_events
+        from app.services.calendar_events import sync_holidays, seed_curated_events, generate_sports_and_music_events
 
         session = SessionLocal()
         try:
             holiday_count = sync_holidays(session)
             curated_count = seed_curated_events(session)
-            logger.info("Calendar sync done: %d holiday rows, %d curated rows", holiday_count, curated_count)
+            sports_music_count = generate_sports_and_music_events(session)
+            logger.info(
+                "Calendar sync done: %d holiday rows, %d curated rows, %d sports/music rows",
+                holiday_count, curated_count, sports_music_count,
+            )
         finally:
             session.close()
     except Exception as e:

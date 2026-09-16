@@ -164,6 +164,16 @@ export interface HighVelocityAlert {
   received_at: string | null;
 }
 
+export interface CalendarEventEntry {
+  id: number;
+  name: string;
+  category: string;
+  date: string;
+  regions: string[];
+  description: string | null;
+  source: string;
+}
+
 export interface IntegrationHealthEntry {
   integration: string;
   status: string;

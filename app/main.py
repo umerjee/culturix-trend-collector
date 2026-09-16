@@ -2456,6 +2456,50 @@ def high_velocity_alerts_recent(limit: int = 100):
         session.close()
 
 
+@app.get("/admin/calendar-events", dependencies=[Depends(require_admin_secret)])
+def calendar_events_upcoming(limit: Optional[int] = None, lookahead_days: int = 120, category: Optional[str] = None):
+    # `limit` accepted as an alias for lookahead_days (in days, not row
+    # count) so this fits the admin-data proxy's generic ?limit= forwarding
+    # (culturix-web/src/app/api/admin/data/route.ts) without special-casing
+    # this one endpoint's query param name there.
+    if limit is not None:
+        lookahead_days = limit
+    """Upcoming holiday/religious/political/sports/music events (app/services/
+    calendar_events.py) — the same data content_strategist.py's prompts
+    already see via load_upcoming_events, surfaced here so it's actually
+    visible/verifiable instead of only inferred from digest content. No
+    admin view existed for this before 2026-09-16 despite the feature
+    itself (holidays+curated) having been live since 2026-09-07."""
+    from app.db import SessionLocal
+    from app.models.calendar_event import CalendarEvent
+    from datetime import date, timedelta
+
+    session = SessionLocal()
+    try:
+        today = date.today()
+        horizon = today + timedelta(days=lookahead_days)
+        q = session.query(CalendarEvent).filter(
+            CalendarEvent.date >= today, CalendarEvent.date <= horizon,
+        )
+        if category:
+            q = q.filter(CalendarEvent.category == category)
+        rows = q.order_by(CalendarEvent.date.asc()).all()
+        return [
+            {
+                "id": e.id,
+                "name": e.name,
+                "category": e.category,
+                "date": e.date.isoformat(),
+                "regions": e.regions or [],
+                "description": e.description,
+                "source": e.source,
+            }
+            for e in rows
+        ]
+    finally:
+        session.close()
+
+
 @app.get("/admin/personas", dependencies=[Depends(require_admin_secret)])
 def personas_recent(limit: int = 50):
     from app.db import SessionLocal
