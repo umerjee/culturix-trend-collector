@@ -26,11 +26,14 @@ class TestRankClustersByRelevance:
             {"name": "FIFA World Cup tournaments", "description": "..."},
             {"name": "Skincare routines going viral", "description": "..."},
         ]
-        # FIFA cluster embedding is orthogonal to the query; beauty cluster
-        # embedding points the same direction as the query.
+        # Both point somewhat toward the query so both clear the relevance
+        # floor, but skincare is a closer match (angle-of-45deg vs
+        # orthogonal-ish) — isolates ranking order from floor filtering,
+        # which test_relevance_floor_excludes_clearly_off_niche_clusters
+        # below covers separately.
         mocker.patch(
             "app.pipeline.nodes.persona_mapper._embed_clusters_as_documents",
-            return_value=[[0.0, 1.0], [1.0, 0.0]],
+            return_value=[[0.3, 1.0], [1.0, 0.3]],
         )
         query_vec = [1.0, 0.0]  # "beauty & self-care" query
 
@@ -38,6 +41,47 @@ class TestRankClustersByRelevance:
 
         assert ranked[0]["name"] == "Skincare routines going viral"
         assert ranked[1]["name"] == "FIFA World Cup tournaments"
+
+    def test_relevance_floor_excludes_clearly_off_niche_clusters(self, mocker):
+        # Regression test for the second bug report: an Entertainment News
+        # profile got GLP-1 drug side-effects content because ranking alone
+        # (no floor) always padded out to top_n regardless of how weak the
+        # actual match was.
+        clusters = [
+            {"name": "GLP-1 drug side effects Reddit analysis", "description": "..."},
+            {"name": "Harry Styles 2027 Together Together Tour", "description": "..."},
+        ]
+        # GLP-1 embedding is orthogonal to the query (0.0 similarity, well
+        # below _RELEVANCE_FLOOR); Harry Styles points the same direction.
+        mocker.patch(
+            "app.pipeline.nodes.persona_mapper._embed_clusters_as_documents",
+            return_value=[[0.0, 1.0], [1.0, 0.0]],
+        )
+        query_vec = [1.0, 0.0]  # "Entertainment News" query
+
+        ranked = _rank_clusters_by_relevance(clusters, query_vec, top_n=2)
+
+        assert len(ranked) == 1
+        assert ranked[0]["name"] == "Harry Styles 2027 Together Together Tour"
+
+    def test_nothing_clears_the_floor_returns_single_best_not_empty(self, mocker):
+        # A genuinely slow day for this niche shouldn't mean an empty digest
+        # — the single best-available match beats padding with several
+        # clearly-irrelevant ones, and beats returning nothing at all.
+        clusters = [
+            {"name": "GLP-1 drug side effects Reddit analysis", "description": "..."},
+            {"name": "DR Congo Ebola Outbreak Deaths", "description": "..."},
+        ]
+        mocker.patch(
+            "app.pipeline.nodes.persona_mapper._embed_clusters_as_documents",
+            return_value=[[0.0, 1.0], [0.05, 1.0]],
+        )
+        query_vec = [1.0, 0.0]
+
+        ranked = _rank_clusters_by_relevance(clusters, query_vec, top_n=2)
+
+        assert len(ranked) == 1
+        assert ranked[0]["name"] == "DR Congo Ebola Outbreak Deaths"  # the (barely) less-orthogonal one
 
     def test_respects_top_n(self, mocker):
         clusters = [{"name": f"cluster {i}", "description": ""} for i in range(5)]

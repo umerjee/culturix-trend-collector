@@ -30,7 +30,31 @@ math."""
 # merges (unrelated trends folding into the same theme) turn out to be a
 # problem at this level, or if occurrence counts still aren't climbing after
 # a couple more weeks of real data.
-SIMILARITY_THRESHOLD = 0.75
+#
+# Recalibrated again 2026-09-16: exactly that revisit trigger fired —
+# occurrence counts still weren't climbing (96% of 647 themes across ~7
+# weeks stuck at 1 occurrence). Brute-forced cosine similarity across every
+# pair of single-occurrence (undrifted) theme embeddings in production and
+# found the SAME failure mode as the 0.85->0.75 change, just less severe:
+# clear same-story pairs, ONE DAY apart, scoring just under 0.75 --
+# "Avengers: Doomsday Doctor Doom MCU" <-> "Avengers Doomsday Doctor Doom"
+# (0.747), "Unruly Aircraft Passenger Duct-Tape Incident" <-> "Unruly
+# passenger duct taped" (0.730), "Silo Season 3 Finale Drama" <-> "Silo
+# Season 3 Episode 9 Finale" (0.709), "Lily Hooper Australian Missing
+# Hiker" <-> "Lily Hooper missing hiker found dead Australia" (0.704).
+# 0.70 catches all of these while the surrounding score band (0.63-0.70:
+# "Reacher Season 4 Release" vs "...Episode 6 Cliffhanger" 0.690, "Trump
+# Declares Economic War on Iran" vs "...Iran Economic D-Day sanctions"
+# 0.681, "King Harald V of Norway Death" vs "...Death Mourning" 0.648) is
+# ALSO mostly genuine same-story pairs, not false-positive territory --
+# but going much lower than 0.70 starts running into pairs like "Basketball
+# Culture and Debates" vs "WNBA Sports Trending Interest" (0.570) that are
+# related-but-distinct, not the same story. No single fixed threshold
+# cleanly separates same-story from different-story in this embedding
+# space (the two distributions genuinely overlap) — 0.70 is a real,
+# evidence-based improvement over 0.75, not a guaranteed-clean cutoff;
+# expect some remaining false negatives in the 0.60s, same as before.
+SIMILARITY_THRESHOLD = 0.70
 
 
 def cosine_similarity(a: list, b: list) -> float:

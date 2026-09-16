@@ -70,6 +70,24 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+# Query-vs-document asymmetric cosine similarity runs on a much lower/more
+# compressed scale than the symmetric document-vs-document comparisons
+# elsewhere in this pipeline (trend_historian.py's theme matching) — do not
+# reuse that scale's thresholds here. Calibrated 2026-09-16 against real
+# production data after an Entertainment News profile got GLP-1 drug side-
+# effects and political content in its "Trending right now" digest: genuine
+# on-niche clusters scored 0.193-0.298 (Anne Hathaway NYFW for Beauty,
+# Koh-Lanta/Harry Styles for Entertainment, GTA 6 for Gaming), while clearly
+# off-niche clusters scored 0.133-0.185 (GLP-1/Ebola/Trump-politics against
+# Entertainment/Gaming/Beauty queries). The two bands are noisy and overlap
+# somewhat (a political cluster at 0.185 sits close to a genuine match at
+# 0.193) — 0.17 is set to clear the worst, most egregious mismatches (the
+# ones that actually prompted the complaint) with margin, not to draw a
+# perfectly clean line; expect some remaining borderline misses, same
+# caveat as _similarity.py's SIMILARITY_THRESHOLD.
+_RELEVANCE_FLOOR = 0.17
+
+
 def _rank_clusters_by_relevance(clusters: list[dict], query_vec: list[float], top_n: int = 8) -> list[dict]:
     """Ranks clusters by embedding similarity to the profile's niche/tags/
     platforms query instead of the previous unconditional clusters[:8] —
@@ -77,7 +95,16 @@ def _rank_clusters_by_relevance(clusters: list[dict], query_vec: list[float], to
     is how e.g. a Beauty & Self-Care profile ended up with FIFA World Cup
     clusters in its digest. Fails open to the old slice-based behavior if
     embedding fails for any reason, consistent with the rest of this
-    pipeline's fail-open philosophy."""
+    pipeline's fail-open philosophy.
+
+    Also hard-floors on _RELEVANCE_FLOOR (added 2026-09-16) — ranking alone
+    still always padded out to top_n regardless of how weak the actual
+    matches were, which is how genuinely off-niche content (medical,
+    political) kept appearing for e.g. an Entertainment News profile on
+    days its own niche was under-represented in that day's cluster pool.
+    Returning fewer than top_n (or the single best match, never zero) is
+    preferable to padding with clusters nothing about the niche actually
+    matches."""
     if not clusters or not query_vec:
         return clusters[:top_n]
     try:
@@ -91,7 +118,13 @@ def _rank_clusters_by_relevance(clusters: list[dict], query_vec: list[float], to
         key=lambda pair: _cosine_similarity(query_vec, pair[1]),
         reverse=True,
     )
-    return [c for c, _ in scored[:top_n]]
+    above_floor = [(c, v) for c, v in scored if _cosine_similarity(query_vec, v) >= _RELEVANCE_FLOOR]
+    if not above_floor:
+        # Nothing cleared the bar at all (a genuinely slow day for this
+        # niche) — one weak-but-best match beats padding out with several
+        # clearly-irrelevant ones, and beats returning nothing.
+        above_floor = scored[:1]
+    return [c for c, _ in above_floor[:top_n]]
 
 
 def _search_qdrant(query_vec: list[float], limit: int = 20) -> list[dict]:
