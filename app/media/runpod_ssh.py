@@ -1,6 +1,7 @@
-"""Remote command execution on a RunPod pod over SSH — used to trigger
-ltx-trainer for LoRA training (app/services/culturetoon_lora.py) without
-requiring a human to SSH in and run it by hand.
+"""Remote command execution on a RunPod pod over SSH — used by
+app/media/runpod_volume_relay.py's short-lived carrier pods (reaching a
+Network Volume that has no S3-compatible API of its own) without requiring
+a human to SSH in and run it by hand.
 
 Requires RUNPOD_SSH_PRIVATE_KEY (the PEM-format private key content, or a
 path to a file containing it — see _load_private_key). The matching public
@@ -100,10 +101,10 @@ def upload_file(host: str, port: int, remote_path: str, data: bytes, timeout_sec
 
 
 def download_file(host: str, port: int, remote_path: str, timeout_seconds: int = 300) -> bytes:
-    """Fetches a file from the pod via SFTP — used for retrieving trained
-    LoRA files (can be tens-hundreds of MB), where piping through
-    exec_command's stdout (e.g. base64-encoded) would be both slower and
-    memory-heavier than a proper file transfer.
+    """Fetches a file from the pod via SFTP — used for retrieving model
+    files (can be tens-hundreds of MB) off a Network Volume, where piping
+    through exec_command's stdout (e.g. base64-encoded) would be both
+    slower and memory-heavier than a proper file transfer.
 
     Confirmed live 2026-08-25: with no timeout set, a half-dead connection
     (the underlying TCP session goes silent instead of cleanly resetting —

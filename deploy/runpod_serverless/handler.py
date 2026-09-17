@@ -287,8 +287,11 @@ def _upload_reference_image(image_base64: str) -> str:
 _LORA_LOAD_MAX_RETRIES = 2  # up to 3 total attempts per shot
 
 
+_LORA_LOADER_CLASS_NAMES = ("LoraLoaderModelOnly", "ComfyUILTX25MSRICLoRALoader")
+
+
 def _is_transient_lora_load_error(exc: Exception) -> bool:
-    """Confirmed live 2026-09-01: LoraLoaderModelOnly intermittently raises
+    """Confirmed live 2026-09-01: LoraLoaderModelOnly intermittently raised
     `RuntimeError: shape '[...]' is invalid for input of size N` when
     loading a LoRA off the Network Volume — NOT because the file is bad
     (the same file, byte-verified via the official safetensors library and
@@ -297,12 +300,17 @@ def _is_transient_lora_load_error(exc: Exception) -> bool:
     matches a network-filesystem mmap reliability issue (a partial/torn
     read racing the buffer slice in comfy/utils.py's load_safetensors),
     not file corruption — retrying the same load is the correct response,
-    not re-fetching or regenerating the LoRA. Narrowly matched (not a bare
-    `except RuntimeError`) so a genuinely different, deterministic
-    workflow error still fails fast instead of burning 3x the time on a
-    guaranteed-repeat failure."""
+    not re-fetching or regenerating the LoRA. The class-name check stays
+    narrow (not a bare `except RuntimeError`) so a genuinely different,
+    deterministic workflow error still fails fast instead of burning 3x
+    the time on a guaranteed-repeat failure — but covers every LoRA-loader
+    node class that reads off the same Network Volume, not just the
+    original LTX-2.3 per-character one (LoraLoaderModelOnly), since the
+    root cause is the storage mechanism, not that specific node. MSR's own
+    ComfyUILTX25MSRICLoRALoader (app/media/ltx25_workflow.py) reads its
+    LoRA off the same volume and is equally exposed."""
     text = str(exc)
-    return "LoraLoaderModelOnly" in text and "is invalid for input of size" in text
+    return any(name in text for name in _LORA_LOADER_CLASS_NAMES) and "is invalid for input of size" in text
 
 
 def _generate_single_shot(workflow_json: dict, reference_image_base64: str = None,

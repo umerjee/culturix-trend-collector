@@ -343,10 +343,6 @@ def _serialize_variant(v) -> dict:
         "kling_voice_id": v.kling_voice_id, "element_status": v.element_status,
         "element_error": v.element_error,
         "voice_provider": v.voice_provider, "elevenlabs_voice_id": v.elevenlabs_voice_id,
-        "lora_path": v.lora_path, "lora_status": v.lora_status, "lora_error": v.lora_error,
-        "lora_training_images": v.lora_training_images or [],
-        "lora_preview_url": v.lora_preview_url, "lora_preview_status": v.lora_preview_status,
-        "lora_preview_error": v.lora_preview_error,
         "expressions_generating": v.expressions_generating,
         "expressions_generate_errors": v.expressions_generate_errors or {},
         "created_at": v.created_at.isoformat() if v.created_at else None,
@@ -568,28 +564,20 @@ def create_brand(body: dict):
 def get_video_config():
     """What the frontend needs to know about the active video backend.
 
-    Exists because readiness is server-side policy, not something the UI can
-    infer from a variant's columns. Under LTX-2.5 a character needs only a
-    PORTRAIT — identity comes from a composite first-frame anchor — so
-    gating the Generate button on lora_status/element_status (as the UI did)
-    blocks generations the API would happily accept, and tells users to do
-    setup work that no longer applies.
+    The self-hosted path is LTX-2.5 only now (the earlier LTX-2.3 /
+    per-character-LoRA path has been removed) — a character needs only a
+    PORTRAIT, identity comes from image conditioning (a composite/backdrop
+    anchor, or MSR for multi-character segments), and there is no separate
+    voice/TTS selection since audio is generated in the same pass as video.
 
     Deliberately unauthenticated and brand-independent: it exposes no user
     data, only which renderer this deployment is running.
     """
-    from app.services.culturetoon_selfhosted_video import use_ltx25
-
-    ltx25 = use_ltx25()
     return {
-        "video_model": "ltx-2.5" if ltx25 else "ltx-2.3",
-        # Under 2.5 neither a trained LoRA nor a Kling element is required to
-        # use the self-hosted path.
-        "self_hosted_requires_lora": not ltx25,
+        "video_model": "ltx-2.5",
+        "self_hosted_requires_lora": False,
         "self_hosted_requires_portrait": True,
-        # 2.5 generates synchronized audio in the same pass as the video, so
-        # there is no separate voice/TTS selection to make.
-        "native_audio": ltx25,
+        "native_audio": True,
     }
 
 
@@ -2071,108 +2059,6 @@ def register_variant_element(variant_id: str, body: dict, background_tasks: Back
     return response
 
 
-@router.post("/variants/{variant_id}/lora-training-images")
-async def upload_lora_training_images(variant_id: str, user_id: str = Form(...), brand_id: str = Form(...),
-                                       files: list[UploadFile] = File(...)):
-    """Uploads one or more reference images for this variant's self-hosted
-    (RunPod+ComfyUI+LTX-2) LoRA training set — see
-    app/services/culturetoon_lora.py. Accumulates across multiple calls
-    (doesn't replace the existing set) so a user can build up toward
-    MIN_LORA_TRAINING_IMAGES incrementally."""
-    from app.db import SessionLocal
-    from app.services.culturetoon_media import save_image, ImageUploadError
-    from app.services.culturetoon_lora import add_training_images
-
-    session = SessionLocal()
-    try:
-        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
-        uploaded_urls = []
-        for i, file in enumerate(files):
-            data = await file.read()
-            existing_count = len(variant.lora_training_images or []) + i
-            path = f"culturetoons/{variant.character_id}/{variant.id}/lora-training/{existing_count}.png"
-            try:
-                uploaded_urls.append(save_image(data, file.content_type, path))
-            except ImageUploadError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-        add_training_images(variant, uploaded_urls)
-        session.commit()
-        session.refresh(variant)
-        return _serialize_variant(variant)
-    finally:
-        session.close()
-
-
-@router.post("/variants/{variant_id}/train-lora")
-def train_variant_lora(variant_id: str, body: dict, background_tasks: BackgroundTasks):
-    """Backgrounded — a full ltx-trainer run over SSH can take up to an
-    hour (see culturetoon_lora.py's _TRAINING_TIMEOUT_SECONDS), far past any
-    HTTP gateway timeout. Sets lora_status to 'training' synchronously so
-    the UI sees the state flip immediately, same pattern as
-    register_variant_element's element_status='pending'."""
-    from app.db import SessionLocal
-    from app.services.culturetoon_lora import MIN_LORA_TRAINING_IMAGES, run_lora_training, curate_training_images
-
-    user_id, brand_id = body.get("user_id"), body.get("brand_id")
-    if not user_id or not brand_id:
-        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
-
-    session = SessionLocal()
-    try:
-        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
-        # Culturix decides the training set (curate_training_images) —
-        # this variant's own Expression images by default, not just
-        # whatever's been manually uploaded — so this count reflects what
-        # will actually be trained on, not a raw upload tally.
-        image_count = len(curate_training_images(session, variant))
-        if image_count < MIN_LORA_TRAINING_IMAGES:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Need at least {MIN_LORA_TRAINING_IMAGES} training images, have {image_count}. "
-                    "Generate this variant's remaining Expressions to reach the minimum automatically, "
-                    "or upload supplemental reference images."
-                ),
-            )
-        variant.lora_status = "training"
-        variant.lora_error = None
-        session.commit()
-    finally:
-        session.close()
-
-    background_tasks.add_task(run_lora_training, variant_id=variant_id)
-    return {"status": "training_started"}
-
-
-@router.post("/variants/{variant_id}/lora-preview")
-def generate_lora_preview(variant_id: str, body: dict, background_tasks: BackgroundTasks):
-    """Backgrounded, same reasoning as /train-lora — a Serverless generation
-    call (cold start + sampling) can take minutes. Sets lora_preview_status
-    to 'generating' synchronously so the UI sees the state flip immediately.
-    See CharacterVariant.lora_preview_url's docstring for why this exists:
-    there's no automated quality signal for a trained LoRA otherwise."""
-    from app.db import SessionLocal
-    from app.services.culturetoon_lora import run_lora_preview
-
-    user_id, brand_id = body.get("user_id"), body.get("brand_id")
-    if not user_id or not brand_id:
-        raise HTTPException(status_code=400, detail="user_id and brand_id are required")
-
-    session = SessionLocal()
-    try:
-        variant = _get_variant_owned(session, variant_id, brand_id, user_id)
-        if variant.lora_status != "ready" or not variant.lora_path:
-            raise HTTPException(status_code=400, detail="This variant has no ready trained LoRA to preview")
-        variant.lora_preview_status = "generating"
-        variant.lora_preview_error = None
-        session.commit()
-    finally:
-        session.close()
-
-    background_tasks.add_task(run_lora_preview, variant_id=variant_id, user_id=user_id)
-    return {"status": "preview_started"}
-
-
 # ── expressions ───────────────────────────────────────────────────────────
 
 @router.get("/variants/{variant_id}/expressions")
@@ -2317,8 +2203,7 @@ def generate_expression_image(variant_id: str, name: str, body: dict):
 def run_generate_all_expressions(variant_id: str) -> None:
     """Background-task entry point (POST /variants/{id}/expressions/
     generate-all) — owns its own session lifecycle since it runs after the
-    request's own session has already closed, same shape as
-    run_lora_training. Fills every EXPRESSION_NAMES slot that doesn't
+    request's own session has already closed. Fills every EXPRESSION_NAMES slot that doesn't
     already have an image, skipping ones that do (idempotent/safe to
     re-run — doesn't burn cost regenerating choices the user already
     kept). Continues past a single name's failure instead of aborting the
@@ -2330,7 +2215,7 @@ def run_generate_all_expressions(variant_id: str) -> None:
     own serverless function execution limit — ten sequential paid
     image-generation calls run well past it regardless of what the
     client-side fetch allows, so this has to be backgrounded and polled
-    like element/LoRA registration, not just given a longer timeout."""
+    like element registration, not just given a longer timeout."""
     import uuid as _uuid
     from app.db import SessionLocal
     from app.models.character_variant import CharacterVariant
@@ -2370,10 +2255,10 @@ def generate_all_expression_images(variant_id: str, body: dict, background_tasks
     doesn't have to click "Generate" ten separate times after building a
     character. Backgrounded (see run_generate_all_expressions) — sets
     expressions_generating=True synchronously so the UI sees the state
-    flip immediately, same pattern as register_variant_element/
-    train_variant_lora. The frontend polls the variant (existing
-    element_status/lora_status poll effect, extended to also watch this
-    flag) rather than this endpoint returning the results directly."""
+    flip immediately, same pattern as register_variant_element. The
+    frontend polls the variant (existing element_status poll effect,
+    extended to also watch this flag) rather than this endpoint
+    returning the results directly."""
     if not EXPRESSION_NAMES:
         return {"status": "nothing_to_generate"}
     from app.db import SessionLocal
@@ -3643,14 +3528,13 @@ def generate_toon_video(toon_id: str, body: dict, background_tasks: BackgroundTa
     Serverless call is comparably slow on a cold worker).
 
     provider ("kling_omni" | "self_hosted") is optional — when omitted,
-    auto-picks self_hosted if the toon's own character variant already has
-    a ready LoRA, else falls back to kling_omni (today's only behavior,
-    unchanged for every variant that hasn't been through Phase 1's LoRA
-    training yet). The Kling readiness check stays exactly as before
-    (the toon's own variant only) — self-hosted's readiness check covers
-    the script's FULL cast instead, since generate_toon_video_selfhosted's
-    resolve_ready_lora requires every cast member to have a trained LoRA
-    even though only the primary one is visually grounded."""
+    auto-picks self_hosted if the toon's own character variant has a
+    portrait image (self-hosted/LTX-2.5 carries identity via image
+    conditioning, no trained LoRA needed or used), else falls back to
+    kling_omni. The Kling readiness check covers the toon's own variant
+    only; self-hosted's readiness check covers the script's FULL cast
+    instead, since every present cast member needs a portrait to anchor
+    on (not just the primary one)."""
     from app.db import SessionLocal
     from app.services.culturetoon_video import generate_video_for_toon
     from app.services.culturetoon_selfhosted_video import generate_video_for_toon_selfhosted
@@ -3673,41 +3557,25 @@ def generate_toon_video(toon_id: str, body: dict, background_tasks: BackgroundTa
         if not variant:
             raise HTTPException(status_code=400, detail="Character variant not found")
 
-        from app.services.culturetoon_selfhosted_video import use_ltx25
-        ltx25 = use_ltx25()
-
-        # LTX-2.5 carries character identity with a composite first-frame
-        # anchor built from the cast's real portraits, so a trained LoRA is
-        # not required — or even used. Gating on lora_status under 2.5 would
-        # permanently route every character without one to Kling, which is
-        # the opposite of the intent. What it actually needs is a portrait
-        # per character.
-        if ltx25:
-            provider = body.get("provider") or ("self_hosted" if variant.image_url else "kling_omni")
-        else:
-            provider = body.get("provider") or ("self_hosted" if variant.lora_status == "ready" else "kling_omni")
+        # LTX-2.5 carries character identity with image conditioning (a
+        # composite/backdrop anchor, or MSR for multi-character segments)
+        # built from the cast's real portraits — no trained LoRA required
+        # or used. What it actually needs is a portrait per character.
+        provider = body.get("provider") or ("self_hosted" if variant.image_url else "kling_omni")
 
         if provider == "self_hosted":
             cast = _resolve_script_cast(session, script, toon)
             if not cast:
                 raise HTTPException(status_code=400, detail="Script has no resolvable cast to generate for")
-            if ltx25:
-                missing_portraits = [v.name for v in cast if not v.image_url]
-                if missing_portraits:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "Character(s) have no portrait image to anchor identity on: "
-                            f"{', '.join(missing_portraits)}. Generate or upload one first."
-                        ),
-                    )
-            else:
-                not_ready = [v.name for v in cast if v.lora_status != "ready"]
-                if not_ready:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Character(s) not ready for self-hosted generation (no trained LoRA): {', '.join(not_ready)}",
-                    )
+            missing_portraits = [v.name for v in cast if not v.image_url]
+            if missing_portraits:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Character(s) have no portrait image to anchor identity on: "
+                        f"{', '.join(missing_portraits)}. Generate or upload one first."
+                    ),
+                )
         else:
             if variant.element_status != "ready":
                 raise HTTPException(status_code=400, detail="Character variant is not a ready Kling element — register it first")

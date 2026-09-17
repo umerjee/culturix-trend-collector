@@ -44,7 +44,7 @@ function ElementStatusIcon({ status }: { status: CharacterVariant["element_statu
 
 // The variant create_character auto-creates alongside every new character
 // (same name, no description/culture_tag of its own) — this is "the
-// character itself" for registration/Expressions/LoRA purposes, as opposed
+// character itself" for registration/Expressions purposes, as opposed
 // to a deliberately-created cultural recast. There's no explicit
 // is_default flag in the schema, so name-match (falling back to whichever
 // variant is oldest/first) is the same heuristic the backend's own
@@ -102,12 +102,8 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
   const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>("kling");
   const [registering, setRegistering] = useState(false);
   const [registerError, setRegisterError] = useState<string | null>(null);
-  const [training, setTraining] = useState(false);
-  const [trainError, setTrainError] = useState<string | null>(null);
   const [startingGenerateAll, setStartingGenerateAll] = useState(false);
   const [generateAllStartError, setGenerateAllStartError] = useState<string | null>(null);
-  const [startingLoraPreview, setStartingLoraPreview] = useState(false);
-  const [loraPreviewStartError, setLoraPreviewStartError] = useState<string | null>(null);
 
   const [variantDescriptionDraft, setVariantDescriptionDraft] = useState("");
   const [variantCultureTagDraft, setVariantCultureTagDraft] = useState("");
@@ -127,14 +123,12 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
   const characterVariants = variants.filter((v) => v.character_id === selectedCharacterId);
   const selectedVariant = variants.find((v) => v.id === selectedVariantId) ?? null;
 
-  // Poll while a variant's element registration, LoRA training, LoRA
-  // preview generation, or bulk expression generation is in flight.
+  // Poll while a variant's element registration or bulk expression
+  // generation is in flight.
   useEffect(() => {
     if (!selectedVariant) return;
     if (
       selectedVariant.element_status !== "pending"
-      && selectedVariant.lora_status !== "training"
-      && selectedVariant.lora_preview_status !== "generating"
       && !selectedVariant.expressions_generating
     ) return;
     const interval = setInterval(async () => {
@@ -170,7 +164,6 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
     setVoiceDescriptionDraft(selectedVariant?.voice_description ?? "");
     setSaveVoiceDescriptionError(null);
     setRegisterError(null);
-    setTrainError(null);
   }, [selectedVariantId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleCharacterCreated(character: Character, defaultVariant: CharacterVariant | null) {
@@ -253,35 +246,13 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
     }
   }
 
-  async function trainLora() {
-    if (!selectedVariant) return;
-    setTraining(true);
-    setTrainError(null);
-    try {
-      const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}/train-lora`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brand_id: brandId }),
-      });
-      if (res.ok) {
-        setVariants((prev) => prev.map((v) => (v.id === selectedVariant.id ? { ...v, lora_status: "training", lora_error: null } : v)));
-      } else {
-        const data = await res.json().catch(() => ({}));
-        setTrainError(typeof data.detail === "string" ? data.detail : `Couldn't start training (${res.status})`);
-      }
-    } catch {
-      setTrainError("Network error — check your connection and try again.");
-    } finally {
-      setTraining(false);
-    }
-  }
-
   // What this deployment's renderer actually requires. Under LTX-2.5 a
-  // character needs only a portrait — identity comes from a composite
-  // first-frame anchor — so Kling registration, the Expression catalogue
-  // (which existed as LoRA training data) and LoRA training are all
-  // unnecessary. Showing them as required steps sends users to do work that
-  // no longer affects anything.
+  // character needs only a portrait — identity comes from image
+  // conditioning — so Kling registration and the Expression catalogue
+  // (which existed as LoRA training data, back when self-hosted video
+  // needed a trained per-character model) are unnecessary. Showing them
+  // as required steps sends users to do work that no longer affects
+  // anything.
   const [videoConfig, setVideoConfig] = useState<{
     video_model: string;
     self_hosted_requires_lora: boolean;
@@ -309,8 +280,8 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
         body: JSON.stringify({ brand_id: brandId }),
       });
       if (res.ok) {
-        // Optimistic flip, same pattern as registerElement/trainLora above —
-        // the poll effect (keyed on expressions_generating) picks up from
+        // Optimistic flip, same pattern as registerElement above — the
+        // poll effect (keyed on expressions_generating) picks up from
         // here and keeps refetching until the background job finishes.
         setVariants((prev) => prev.map((v) => (v.id === selectedVariant.id ? { ...v, expressions_generating: true, expressions_generate_errors: {} } : v)));
       } else {
@@ -321,29 +292,6 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
       setGenerateAllStartError("Network error — check your connection and try again.");
     } finally {
       setStartingGenerateAll(false);
-    }
-  }
-
-  async function generateLoraPreview() {
-    if (!selectedVariant) return;
-    setStartingLoraPreview(true);
-    setLoraPreviewStartError(null);
-    try {
-      const res = await fetch(`/api/culturetoons/variants/${selectedVariant.id}/lora-preview`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ brand_id: brandId }),
-      });
-      if (res.ok) {
-        setVariants((prev) => prev.map((v) => (v.id === selectedVariant.id ? { ...v, lora_preview_status: "generating", lora_preview_error: null } : v)));
-      } else {
-        const data = await res.json().catch(() => ({}));
-        setLoraPreviewStartError(typeof data.detail === "string" ? data.detail : `Couldn't start (${res.status})`);
-      }
-    } catch {
-      setLoraPreviewStartError("Network error — check your connection and try again.");
-    } finally {
-      setStartingLoraPreview(false);
     }
   }
 
@@ -805,16 +753,16 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
 
           {selectedVariant ? (
             <div className="space-y-4">
-              {/* Kling registration, the Expression catalogue and LoRA
-                  training are all pre-LTX-2.5 machinery. They still work and
-                  are still required for the Kling path, so they are kept —
-                  but collapsed and labelled optional rather than presented
-                  as blocking setup, which is what made users train models
-                  they did not need. */}
+              {/* Kling registration and the Expression catalogue are
+                  pre-LTX-2.5 machinery. They still work and are still
+                  required for the Kling path, so they are kept — but
+                  collapsed and labelled optional rather than presented as
+                  blocking setup, which is what made users register
+                  characters they did not need. */}
               <details open={legacySetup} className="group">
                 <summary className={legacySetup ? "hidden" : "cursor-pointer list-none text-xs font-medium text-gray-500 hover:text-gray-700 flex items-center gap-1"}>
                   <ChevronRight className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
-                  Advanced — Kling registration, expressions &amp; visual-identity training (not needed for {videoConfig?.video_model ?? "this renderer"})
+                  Advanced — Kling registration &amp; expressions (not needed for {videoConfig?.video_model ?? "this renderer"})
                 </summary>
                 <div className="space-y-4 pt-3">
               <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
@@ -881,99 +829,6 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
                 startingGenerateAll={startingGenerateAll}
                 generateAllStartError={generateAllStartError}
               />
-
-              <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-gray-700">Visual identity (self-hosted)</span>
-                  {selectedVariant.lora_status === "ready" && (
-                    <span className="inline-flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> Ready</span>
-                  )}
-                  {selectedVariant.lora_status === "training" && (
-                    <span className="inline-flex items-center gap-1 text-xs text-amber-600"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Training…</span>
-                  )}
-                  {selectedVariant.lora_status === "failed" && (
-                    <span className="inline-flex items-center gap-1 text-xs text-red-600"><XCircle className="h-3.5 w-3.5" /> Failed</span>
-                  )}
-                </div>
-                <p className="text-[11px] text-gray-500 mb-2">
-                  {legacySetup ? (
-                    <>
-                      Trains this variant&apos;s own visual identity for self-hosted (RunPod/LTX-2) video
-                      generation — separate from Kling registration above, and required before self-hosted
-                      video can use this character. Uses the Expression set above as training images
-                      automatically, so finishing that set is usually all that&apos;s needed here.
-                    </>
-                  ) : (
-                    <>
-                      Legacy: trained a per-character model for the older LTX-2.3 renderer. The current
-                      renderer does not read it — identity comes from the portrait — and a trained model
-                      is locked to the version it was trained on, so this would need redoing on every
-                      model upgrade. Left here only for the older path.
-                    </>
-                  )}
-                </p>
-                {selectedVariant.lora_error && (
-                  <p className="text-[11px] text-red-500 mb-2">{selectedVariant.lora_error}</p>
-                )}
-                <button
-                  onClick={trainLora}
-                  disabled={training || selectedVariant.lora_status === "training"}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 text-white text-xs font-medium px-3 py-1.5 hover:bg-gray-800 transition-colors disabled:opacity-60"
-                >
-                  {training ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                  {selectedVariant.lora_status === "ready" || selectedVariant.lora_status === "failed" ? "Retrain" : "Start training"}
-                </button>
-                <p className="text-[11px] text-gray-400 mt-1.5">
-                  Training runs on a dedicated GPU pod and can take up to an hour — feel free to switch
-                  tabs or characters; it&apos;ll keep running and update here when done.
-                </p>
-                {trainError && <p className="text-[11px] text-red-500 mt-1.5">{trainError}</p>}
-
-                {selectedVariant.lora_status === "ready" && (
-                  <div className="mt-3 pt-3 border-t border-gray-200">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-semibold text-gray-700">Preview</span>
-                      {selectedVariant.lora_preview_status === "ready" && (
-                        <span className="inline-flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> Ready</span>
-                      )}
-                      {selectedVariant.lora_preview_status === "generating" && (
-                        <span className="inline-flex items-center gap-1 text-xs text-amber-600"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Generating…</span>
-                      )}
-                      {selectedVariant.lora_preview_status === "failed" && (
-                        <span className="inline-flex items-center gap-1 text-xs text-red-600"><XCircle className="h-3.5 w-3.5" /> Failed</span>
-                      )}
-                    </div>
-                    <p className="text-[11px] text-gray-500 mb-2">
-                      There&apos;s no automated quality check for a trained LoRA — this generates one
-                      cheap, short test clip using it, so you can actually look at whether the character
-                      looks right before using it for real.
-                    </p>
-                    {selectedVariant.lora_preview_error && (
-                      <p className="text-[11px] text-red-500 mb-2">{selectedVariant.lora_preview_error}</p>
-                    )}
-                    <button
-                      onClick={generateLoraPreview}
-                      disabled={startingLoraPreview || selectedVariant.lora_preview_status === "generating"}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 text-white text-xs font-medium px-3 py-1.5 hover:bg-gray-800 transition-colors disabled:opacity-60"
-                    >
-                      {startingLoraPreview || selectedVariant.lora_preview_status === "generating"
-                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        : <Sparkles className="h-3.5 w-3.5" />}
-                      {selectedVariant.lora_preview_status === "ready" || selectedVariant.lora_preview_status === "failed"
-                        ? "Regenerate preview" : "Generate preview"}
-                    </button>
-                    {loraPreviewStartError && <p className="text-[11px] text-red-500 mt-1.5">{loraPreviewStartError}</p>}
-                    {selectedVariant.lora_preview_url && (
-                      <video
-                        key={selectedVariant.lora_preview_url}
-                        src={selectedVariant.lora_preview_url}
-                        controls
-                        className="mt-2 rounded-lg max-w-[240px] border border-gray-200"
-                      />
-                    )}
-                  </div>
-                )}
-              </div>
 
                 </div>
               </details>

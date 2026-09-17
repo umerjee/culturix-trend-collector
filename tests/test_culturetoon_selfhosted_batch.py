@@ -40,7 +40,7 @@ def user_id():
     return str(uuid.uuid4())
 
 
-def _make_variant(db, user_id, brand_id, name="Kumar", lora_status="ready"):
+def _make_variant(db, user_id, brand_id, name="Kumar"):
     character = culturetoons.create_character({"user_id": user_id, "brand_id": brand_id, "name": name})
     variant_data = culturetoons.create_variant({
         "user_id": user_id, "brand_id": brand_id, "character_id": character["id"], "name": name,
@@ -48,8 +48,7 @@ def _make_variant(db, user_id, brand_id, name="Kumar", lora_status="ready"):
     session = db()
     try:
         variant = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant_data["id"])).first()
-        variant.lora_status = lora_status
-        variant.lora_path = f"loras/{name}.safetensors"
+        variant.image_url = f"https://example.com/{name}.png"
         session.commit()
         return variant.id
     finally:
@@ -146,7 +145,7 @@ class TestRunSelfhostedVideoBatch:
         monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-123")
 
         mock_generate = mocker.patch(
-            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25",
             return_value=b"video-bytes",
         )
         mocker.patch("app.media.storage.upload", return_value="https://example.com/video.mp4")
@@ -175,7 +174,7 @@ class TestRunSelfhostedVideoBatch:
         monkeypatch.setenv("SELFHOSTED_VIDEO_BRAND_IDS", brand["id"])
         monkeypatch.delenv("RUNPOD_SERVERLESS_ENDPOINT_ID", raising=False)
 
-        mock_generate = mocker.patch("app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted")
+        mock_generate = mocker.patch("app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25")
 
         run_selfhosted_video_batch()  # must not raise
 
@@ -190,7 +189,7 @@ class TestRunSelfhostedVideoBatch:
         monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-123")
 
         mocker.patch(
-            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25",
             side_effect=[RuntimeError("serverless job failed"), b"video-bytes"],
         )
         mocker.patch("app.media.storage.upload", return_value="https://example.com/video.mp4")
@@ -205,23 +204,6 @@ class TestRunSelfhostedVideoBatch:
         finally:
             session.close()
 
-    def test_character_not_lora_ready_marks_toon_failed_without_crashing_batch(self, db, user_id, monkeypatch, mocker):
-        brand = culturetoons.create_brand({"user_id": user_id})
-        variant_id = _make_variant(db, user_id, brand["id"], lora_status="none")
-        script_id = _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
-        monkeypatch.setenv("SELFHOSTED_VIDEO_BRAND_IDS", brand["id"])
-        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-123")
-
-        run_selfhosted_video_batch()
-
-        session = db()
-        try:
-            toon = session.query(Toon).filter_by(script_id=script_id).first()
-            assert toon.status == "failed"
-            assert "not ready" in toon.generation_error
-        finally:
-            session.close()
-
     def test_inactive_brand_is_not_processed(self, db, user_id, monkeypatch, mocker):
         brand = culturetoons.create_brand({"user_id": user_id})
         culturetoons.update_brand(brand["id"], {"user_id": user_id, "is_active": False})
@@ -230,78 +212,11 @@ class TestRunSelfhostedVideoBatch:
         monkeypatch.setenv("SELFHOSTED_VIDEO_BRAND_IDS", brand["id"])
         monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-123")
 
-        mock_generate = mocker.patch("app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted")
+        mock_generate = mocker.patch("app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25")
 
         run_selfhosted_video_batch()
 
         mock_generate.assert_not_called()
-
-    def test_no_elevenlabs_key_configured_passes_none(self, db, user_id, monkeypatch, mocker):
-        brand = culturetoons.create_brand({"user_id": user_id})
-        variant_id = _make_variant(db, user_id, brand["id"])
-        _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
-        monkeypatch.setenv("SELFHOSTED_VIDEO_BRAND_IDS", brand["id"])
-        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-123")
-
-        mock_generate = mocker.patch(
-            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
-            return_value=b"video-bytes",
-        )
-        mocker.patch("app.media.storage.upload", return_value="https://example.com/video.mp4")
-
-        run_selfhosted_video_batch()
-
-        assert mock_generate.call_args.kwargs["elevenlabs_api_key"] is None
-
-    def test_elevenlabs_key_configured_is_decrypted_and_passed_to_every_script(self, db, user_id, monkeypatch, mocker):
-        from app.social.crypto import encrypt
-
-        brand = culturetoons.create_brand({"user_id": user_id})
-        variant_id = _make_variant(db, user_id, brand["id"])
-        _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
-        _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
-        monkeypatch.setenv("SELFHOSTED_VIDEO_BRAND_IDS", brand["id"])
-        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-123")
-
-        session = db()
-        try:
-            brand_row = session.query(CharacterBrand).filter_by(id=uuid.UUID(brand["id"])).first()
-            brand_row.elevenlabs_api_key_encrypted = encrypt("sk-real-key")
-            session.commit()
-        finally:
-            session.close()
-
-        mock_generate = mocker.patch(
-            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
-            return_value=b"video-bytes",
-        )
-        mocker.patch("app.media.storage.upload", return_value="https://example.com/video.mp4")
-
-        run_selfhosted_video_batch()
-
-        assert mock_generate.call_count == 2
-        for call in mock_generate.call_args_list:
-            assert call.kwargs["elevenlabs_api_key"] == "sk-real-key"
-
-    def test_only_the_first_job_of_the_window_gets_allocation_retry(self, db, user_id, monkeypatch, mocker):
-        brand = culturetoons.create_brand({"user_id": user_id})
-        variant_id = _make_variant(db, user_id, brand["id"])
-        _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
-        _make_script(db, uuid.UUID(brand["id"]), variant_id, status="approved")
-        monkeypatch.setenv("SELFHOSTED_VIDEO_BRAND_IDS", brand["id"])
-        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-123")
-
-        mock_generate = mocker.patch(
-            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
-            return_value=b"video-bytes",
-        )
-        mocker.patch("app.media.storage.upload", return_value="https://example.com/video.mp4")
-
-        run_selfhosted_video_batch()
-
-        assert mock_generate.call_count == 2
-        assert mock_generate.call_args_list[0].kwargs["use_allocation_retry"] is True
-        assert mock_generate.call_args_list[1].kwargs["use_allocation_retry"] is False
 
     def test_first_job_allocation_failure_aborts_the_rest_of_the_window_and_alerts(self, db, user_id, monkeypatch, mocker):
         from app.media.runpod_serverless_client import RunPodServerlessError
@@ -314,7 +229,7 @@ class TestRunSelfhostedVideoBatch:
         monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-123")
 
         mocker.patch(
-            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25",
             side_effect=RunPodServerlessError("no capacity after retrying"),
         )
         mock_alert = mocker.patch(
@@ -354,7 +269,7 @@ class TestRunSelfhostedVideoBatch:
         # ordinary allocation-shaped error — this is just that one clip's
         # problem, not a sign the whole endpoint is down.
         mocker.patch(
-            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25",
             side_effect=[b"video-bytes", RunPodServerlessError("transient error")],
         )
         mocker.patch("app.media.storage.upload", return_value="https://example.com/video.mp4")

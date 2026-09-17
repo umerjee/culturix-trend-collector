@@ -316,6 +316,18 @@ async def lifespan(_):
             # joint audio+video generation — see
             # CharacterVariant.voice_description's docstring.
             "ALTER TABLE character_variants ADD COLUMN IF NOT EXISTS voice_description TEXT",
+            # Per-character LoRA training removed entirely (superseded by
+            # LTX-2.5's image-conditioning identity mechanism, and now MSR
+            # for multi-character segments — see app/media/ltx25_workflow.py).
+            # Drops the columns the ADD COLUMN statements above created;
+            # left those in place rather than rewriting history.
+            "ALTER TABLE character_variants DROP COLUMN IF EXISTS lora_path",
+            "ALTER TABLE character_variants DROP COLUMN IF EXISTS lora_status",
+            "ALTER TABLE character_variants DROP COLUMN IF EXISTS lora_error",
+            "ALTER TABLE character_variants DROP COLUMN IF EXISTS lora_training_images",
+            "ALTER TABLE character_variants DROP COLUMN IF EXISTS lora_preview_url",
+            "ALTER TABLE character_variants DROP COLUMN IF EXISTS lora_preview_status",
+            "ALTER TABLE character_variants DROP COLUMN IF EXISTS lora_preview_error",
         ]:
             try:
                 _conn.execute(_text(_stmt))

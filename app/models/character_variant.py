@@ -65,64 +65,17 @@ class CharacterVariant(Base):
     voice_provider = Column(String(12), nullable=False, default="kling")  # kling|elevenlabs
     elevenlabs_voice_id = Column(String(64), nullable=True)  # only meaningful when voice_provider="elevenlabs"
 
-    # Self-hosted (RunPod Serverless + ComfyUI + LTX-2) video generation's
-    # own character-consistency mechanism — a trained LoRA, analogous to
-    # kling_element_id/element_status above but for the self-hosted path
-    # instead of Kling Omni. See app/services/culturetoon_lora.py /
-    # app/services/culturetoon_selfhosted_video.py. Independent of the Kling
-    # Element fields — a variant can have either, both, or neither ready,
-    # since the two video paths are separate and this is the self-hosted
-    # one's own identity mechanism.
-    #
-    # A bare filename (e.g. "<variant-id>.safetensors"), NOT a URL — under
-    # the Network-Volume architecture, training writes the LoRA directly
-    # into the shared volume's ComfyUI/models/loras/ directory that the
-    # Serverless inference endpoint also mounts, so the file never needs to
-    # leave the volume and this just needs to be whatever ComfyUI's
-    # LoraLoader node resolves it by.
-    lora_path = Column(Text, nullable=True)
-    lora_status = Column(String(12), nullable=False, default="none")  # none|training|ready|failed
-    # Mirrors element_error above — kept separate since the two statuses are
-    # independent. No detailed exception text (this pod ran on a since-
-    # terminated ephemeral training pod, no log capture back to the app
-    # yet) — just enough to tell the user training failed vs. never started.
-    lora_error = Column(Text, nullable=True)
-    # List of {"url": str, "caption": str} — NOT a bare URL array. A LoRA
-    # trained on identically-captioned images overfits to whatever's
-    # constant across them (a pose, a background) instead of learning the
-    # character's actual identity; ltx-trainer's own dataset format is
-    # video+caption pairs (see culturetoon_lora.py's module docstring), so
-    # each image needs its own real caption of what's actually in THAT
-    # image, not a repeated character name. Captioned automatically at
-    # upload time (culturetoon_lora.py::caption_training_image) so this
-    # data is ready before /train-lora is ever called, not discovered
-    # missing at training time.
-    lora_training_images = Column(JSONB, nullable=True)
-
-    # One-click sanity check for a freshly-trained LoRA (POST /variants/
-    # {id}/lora-preview) — there is no automated quality signal for a
-    # trained LoRA at all (lora_status="ready" only means the training
-    # process completed and the file uploaded, not that it looks good);
-    # this generates one cheap, short self-hosted clip using the trained
-    # identity so a human can actually look at it, instead of only
-    # finding out via a real production generation later. Backgrounded
-    # the same way LoRA training itself is (Serverless generation can
-    # take minutes, well past any HTTP gateway timeout).
-    lora_preview_url = Column(Text, nullable=True)
-    lora_preview_status = Column(String(12), nullable=False, default="none")  # none|generating|ready|failed
-    lora_preview_error = Column(Text, nullable=True)
-
     # Bulk "Generate all expressions" tracking (POST /variants/{id}/
-    # expressions/generate-all) — backgrounded the same way element/LoRA
-    # registration above are, since 10 sequential paid image-generation
+    # expressions/generate-all) — backgrounded the same way element
+    # registration above is, since 10 sequential paid image-generation
     # calls run well past any HTTP gateway's timeout (confirmed live: a
     # synchronous version of this got killed mid-batch by Vercel's own
     # serverless function execution limit, independent of anything the
     # client-side fetch allowed). The frontend polls while
-    # expressions_generating is true, same shape as element_status/
-    # lora_status polling. expressions_generate_errors holds the last
-    # run's {name: error} map (not a running log) — cleared at the start
-    # of each new run, read once generating flips back to false.
+    # expressions_generating is true, same shape as element_status
+    # polling. expressions_generate_errors holds the last run's
+    # {name: error} map (not a running log) — cleared at the start of
+    # each new run, read once generating flips back to false.
     expressions_generating = Column(Boolean, nullable=False, default=False)
     expressions_generate_errors = Column(JSONB, nullable=True)
 

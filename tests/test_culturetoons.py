@@ -396,219 +396,6 @@ class TestGenerateCast:
         assert exc_info.value.status_code == 404
 
 
-class TestLoraTrainingEndpoints:
-    def test_upload_training_images_accumulates_across_calls(self, db, user_id, brand_and_character, mocker):
-        brand, _character, variant = brand_and_character
-        mocker.patch("app.media.storage.upload", side_effect=lambda data, path, ct: f"https://example.com/{path}")
-        mocker.patch("app.services.culturetoon_lora.caption_training_image", return_value="a caption")
-
-        result = _run(culturetoons.upload_lora_training_images(
-            variant["id"], user_id=user_id, brand_id=brand["id"],
-            files=[_FakeUploadFile(_TINY_PNG_BYTES, "image/png")],
-        ))
-        assert len(result["lora_training_images"]) == 1
-        assert result["lora_training_images"][0]["caption"] == "a caption"
-
-        result = _run(culturetoons.upload_lora_training_images(
-            variant["id"], user_id=user_id, brand_id=brand["id"],
-            files=[_FakeUploadFile(_TINY_PNG_BYTES, "image/png"), _FakeUploadFile(_TINY_PNG_BYTES, "image/png")],
-        ))
-        assert len(result["lora_training_images"]) == 3
-
-    def test_upload_training_images_rejects_bad_content_type(self, db, user_id, brand_and_character):
-        brand, _character, variant = brand_and_character
-        with pytest.raises(HTTPException) as exc_info:
-            _run(culturetoons.upload_lora_training_images(
-                variant["id"], user_id=user_id, brand_id=brand["id"],
-                files=[_FakeUploadFile(b"not an image", "text/plain")],
-            ))
-        assert exc_info.value.status_code == 400
-
-    def test_train_lora_requires_minimum_images(self, db, user_id, brand_and_character):
-        brand, _character, variant = brand_and_character
-        with pytest.raises(HTTPException) as exc_info:
-            culturetoons.train_variant_lora(
-                variant["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=BackgroundTasks(),
-            )
-        assert exc_info.value.status_code == 400
-        assert "10" in exc_info.value.detail
-
-    def test_train_lora_sets_training_status_and_queues_background_task(self, db, user_id, brand_and_character):
-        brand, _character, variant = brand_and_character
-        session = db()
-        row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
-        row.lora_training_images = [{"url": f"url{i}", "caption": f"caption {i}"} for i in range(10)]
-        session.commit()
-        session.close()
-
-        bg = BackgroundTasks()
-        result = culturetoons.train_variant_lora(
-            variant["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=bg,
-        )
-        assert result == {"status": "training_started"}
-        assert len(bg.tasks) == 1
-
-        updated = culturetoons.get_variant(variant["id"], user_id, brand["id"])
-        assert updated["lora_status"] == "training"
-
-    def test_train_lora_reaches_minimum_from_generated_expressions_alone(self, db, user_id, brand_and_character):
-        # The whole point of curate_training_images: a variant with a
-        # complete Expression set (generated as a normal part of character
-        # setup, nothing LoRA-specific) should reach MIN_LORA_TRAINING_IMAGES
-        # with zero manual uploads to POST /lora-training-images.
-        brand, _character, variant = brand_and_character
-        session = db()
-        variant_id = uuid.UUID(variant["id"])
-        row = session.query(CharacterVariant).filter_by(id=variant_id).first()
-        row.image_url = "https://example.com/portrait.png"
-        for i, name in enumerate(culturetoons.EXPRESSION_NAMES):
-            session.add(Expression(character_variant_id=variant_id, name=name, image_url=f"https://example.com/{i}.png"))
-        assert row.lora_training_images is None  # confirms nothing was manually uploaded
-        session.commit()
-        session.close()
-
-        bg = BackgroundTasks()
-        result = culturetoons.train_variant_lora(
-            variant["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=bg,
-        )
-        assert result == {"status": "training_started"}
-
-    def test_train_lora_unknown_variant_404s(self, db, user_id):
-        brand = culturetoons.create_brand({"user_id": user_id})
-        with pytest.raises(HTTPException) as exc_info:
-            culturetoons.train_variant_lora(
-                str(uuid.uuid4()), {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=BackgroundTasks(),
-            )
-        assert exc_info.value.status_code == 404
-
-
-class TestLoraPreview:
-    def test_requires_ready_lora(self, db, user_id, brand_and_character):
-        brand, _character, variant = brand_and_character
-        with pytest.raises(HTTPException) as exc_info:
-            culturetoons.generate_lora_preview(
-                variant["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=BackgroundTasks(),
-            )
-        assert exc_info.value.status_code == 400
-        assert "no ready trained LoRA" in exc_info.value.detail
-
-    def test_sets_generating_status_and_queues_background_task(self, db, user_id, brand_and_character):
-        brand, _character, variant = brand_and_character
-        session = db()
-        row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
-        row.lora_status = "ready"
-        row.lora_path = "trained.safetensors"
-        session.commit()
-        session.close()
-
-        bg = BackgroundTasks()
-        result = culturetoons.generate_lora_preview(
-            variant["id"], {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=bg,
-        )
-        assert result == {"status": "preview_started"}
-        assert len(bg.tasks) == 1
-
-        updated = culturetoons.get_variant(variant["id"], user_id, brand["id"])
-        assert updated["lora_preview_status"] == "generating"
-        assert updated["lora_preview_error"] is None
-
-    def test_unknown_variant_404s(self, db, user_id):
-        brand = culturetoons.create_brand({"user_id": user_id})
-        with pytest.raises(HTTPException) as exc_info:
-            culturetoons.generate_lora_preview(
-                str(uuid.uuid4()), {"user_id": user_id, "brand_id": brand["id"]}, background_tasks=BackgroundTasks(),
-            )
-        assert exc_info.value.status_code == 404
-
-
-class TestRunLoraPreview:
-    """The background-task function itself (POST /variants/{id}/
-    lora-preview backgrounds this) — real DB rows, RunPod/storage mocked
-    at the app.media boundary, same convention as
-    test_culturetoon_selfhosted_video.py's own tests for the sibling
-    toon-generation path."""
-
-    def _ready_variant(self, db, variant_id):
-        session = db()
-        row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant_id)).first()
-        row.lora_status = "ready"
-        row.lora_path = "trained.safetensors"
-        row.lora_preview_status = "generating"
-        session.commit()
-        session.close()
-
-    def test_success_sets_url_and_ready_status(self, db, user_id, brand_and_character, mocker, monkeypatch):
-        from app.services.culturetoon_lora import run_lora_preview
-        brand, _character, variant = brand_and_character
-        self._ready_variant(db, variant["id"])
-        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-1")
-
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch(
-            "app.media.runpod_serverless_client.run_inference_job_with_allocation_retry",
-            return_value=b"preview-bytes",
-        )
-        mocker.patch("app.media.storage.upload", return_value="https://supabase/preview.mp4")
-
-        run_lora_preview(variant["id"], user_id)
-
-        updated = culturetoons.get_variant(variant["id"], user_id, brand["id"])
-        assert updated["lora_preview_status"] == "ready"
-        assert updated["lora_preview_url"] == "https://supabase/preview.mp4"
-        assert updated["lora_preview_error"] is None
-
-    def test_missing_endpoint_id_marks_failed(self, db, user_id, brand_and_character, monkeypatch):
-        from app.services.culturetoon_lora import run_lora_preview
-        brand, _character, variant = brand_and_character
-        self._ready_variant(db, variant["id"])
-        monkeypatch.delenv("RUNPOD_SERVERLESS_ENDPOINT_ID", raising=False)
-
-        run_lora_preview(variant["id"], user_id)
-
-        updated = culturetoons.get_variant(variant["id"], user_id, brand["id"])
-        assert updated["lora_preview_status"] == "failed"
-        assert "RUNPOD_SERVERLESS_ENDPOINT_ID" in updated["lora_preview_error"]
-
-    def test_generation_failure_marks_failed_with_message(self, db, user_id, brand_and_character, mocker, monkeypatch):
-        from app.services.culturetoon_lora import run_lora_preview
-        brand, _character, variant = brand_and_character
-        self._ready_variant(db, variant["id"])
-        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-1")
-
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch(
-            "app.media.runpod_serverless_client.run_inference_job_with_allocation_retry",
-            side_effect=RuntimeError("cold start timed out"),
-        )
-
-        run_lora_preview(variant["id"], user_id)
-
-        updated = culturetoons.get_variant(variant["id"], user_id, brand["id"])
-        assert updated["lora_preview_status"] == "failed"
-        assert "cold start timed out" in updated["lora_preview_error"]
-
-    def test_records_usage_regardless_of_outcome(self, db, user_id, brand_and_character, mocker, monkeypatch):
-        from app.services.culturetoon_lora import run_lora_preview
-        from app.models.generation_usage import GenerationUsage
-        brand, _character, variant = brand_and_character
-        self._ready_variant(db, variant["id"])
-        monkeypatch.setenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "endpoint-1")
-
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch(
-            "app.media.runpod_serverless_client.run_inference_job_with_allocation_retry",
-            side_effect=RuntimeError("boom"),
-        )
-
-        run_lora_preview(variant["id"], user_id)
-
-        session = db()
-        rows = session.query(GenerationUsage).filter_by(generation_type="lora_preview").all()
-        assert len(rows) == 1
-        assert rows[0].provider == "runpod_ltx"
-        session.close()
-
-
 class TestCharacterImageGeneration:
     def test_generate_image_requires_description(self, db, user_id, brand_and_character):
         brand, character, _variant = brand_and_character
@@ -1212,7 +999,7 @@ class TestVariantsAndExpressions:
         # mid-batch by Vercel's own serverless function execution limit,
         # regardless of what the client-side fetch allowed — this endpoint
         # must return fast and hand the real work to a background task,
-        # same shape as register_variant_element/train_variant_lora.
+        # same shape as register_variant_element.
         brand, _character, variant = brand_and_character
         session = db()
         variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
@@ -2452,17 +2239,15 @@ class TestToons:
             "character_variant_id": variant["id"], "script_id": script["id"],
         })
 
-    def test_ltx25_routes_to_selfhosted_on_a_portrait_with_no_lora(
+    def test_ltx25_routes_to_selfhosted_on_a_portrait_alone(
         self, db, user_id, brand_and_character, mocker, monkeypatch,
     ):
-        """Under LTX-2.5 identity comes from a composite first-frame anchor,
-        not a LoRA. Gating on lora_status would permanently route every
-        character without one to Kling — the opposite of the intent."""
+        """Under LTX-2.5 identity comes from image conditioning, not a
+        trained LoRA — a portrait alone is enough to route to self-hosted."""
         monkeypatch.setenv("LTX_MODEL_VERSION", "2.5")
         brand, _character, variant = brand_and_character
         session = db()
         row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
-        row.lora_status = "none"          # deliberately NOT trained
         row.image_url = "https://supabase/portrait.png"
         session.commit()
         session.close()
@@ -2481,7 +2266,6 @@ class TestToons:
         brand, _character, variant = brand_and_character
         session = db()
         row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
-        row.lora_status = "none"
         row.image_url = None
         session.commit()
         session.close()
@@ -2494,11 +2278,11 @@ class TestToons:
             )
         assert "portrait" in str(exc.value.detail).lower()
 
-    def test_generate_video_auto_picks_selfhosted_when_lora_ready(self, db, user_id, brand_and_character, mocker):
+    def test_generate_video_auto_picks_selfhosted_when_portrait_ready(self, db, user_id, brand_and_character, mocker):
         brand, _character, variant = brand_and_character
         session = db()
         variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
-        variant_row.lora_status = "ready"
+        variant_row.image_url = "https://example.com/portrait.png"
         session.commit()
         session.close()
         script = culturetoons.create_script({"user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"]})
@@ -2521,31 +2305,6 @@ class TestToons:
         # whether the mock was invoked.
         assert len(bg.tasks) == 1
         assert bg.tasks[0].func is mock_selfhosted
-
-    def test_generate_video_self_hosted_requires_ready_lora_for_whole_cast(self, db, user_id, brand_and_character):
-        brand, _character, variant = brand_and_character
-        session = db()
-        variant_row = session.query(CharacterVariant).filter_by(id=uuid.UUID(variant["id"])).first()
-        variant_row.lora_status = "none"
-        session.commit()
-        session.close()
-        script = culturetoons.create_script({"user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"]})
-        session = db()
-        script_row = session.query(ToonScript).filter_by(id=uuid.UUID(script["id"])).first()
-        script_row.shots = [{"shot_number": 1, "duration_seconds": 4, "action": "waves", "expression": "Happy", "dialogue": None}]
-        session.commit()
-        session.close()
-        toon = culturetoons.create_toon({
-            "user_id": user_id, "brand_id": brand["id"],
-            "character_variant_id": variant["id"], "script_id": script["id"],
-        })
-
-        with pytest.raises(HTTPException) as exc_info:
-            culturetoons.generate_toon_video(
-                toon["id"], {"user_id": user_id, "brand_id": brand["id"], "provider": "self_hosted"}, BackgroundTasks(),
-            )
-        assert exc_info.value.status_code == 400
-        assert "trained LoRA" in exc_info.value.detail
 
     def test_generate_video_rejects_kling_when_script_too_long_for_kling(self, db, user_id, brand_and_character):
         # A script within the general (self-hosted-sized) creation ceiling

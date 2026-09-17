@@ -1,4 +1,4 @@
-"""RunPod pod lifecycle management for the self-hosted (ComfyUI + LTX-2)
+"""RunPod pod lifecycle management for the self-hosted (ComfyUI + LTX-2.5)
 video generation path.
 
 Two distinct uses as of the Network-Volume architecture revision:
@@ -8,14 +8,13 @@ Two distinct uses as of the Network-Volume architecture revision:
     spec's own manual first-quality-check workflow (a simple on-demand pod
     is enough to confirm the model produces usable output before building
     the Serverless endpoint).
-  - create_training_pod/wait_for_ssh_ready/terminate_pod: an EPHEMERAL pod
-    created fresh per LoRA training run (app/services/culturetoon_lora.py),
-    fully deleted (not just stopped) when training finishes. Does NOT mount
-    the Network Volume — A100 PCIe training capacity and RTX 4090 inference
-    capacity frequently aren't available in the same RunPod region, so the
-    trained LoRA is pushed to the volume afterward via its S3-compatible
-    API (app/media/runpod_s3.py) instead of a filesystem write. See that
-    module and culturetoon_lora.py's docstrings.
+  - wait_for_ssh_ready/terminate_pod: for short-lived, ephemeral pods
+    created on demand for a single task and torn down when it's done —
+    e.g. the CPU carrier pods app/media/runpod_volume_relay.py rents to
+    reach a Network Volume that has no S3-compatible API of its own.
+    (Per-character LoRA training used to be another such use — an A100
+    training pod created via a since-removed create_training_pod — but
+    that whole path was retired along with LoRA training itself.)
 
 RunPod's Pods management surface is a GraphQL API at
 https://api.runpod.io/graphql, not plain REST — verify this against RunPod's
@@ -25,11 +24,6 @@ against a live account here.
 Requires env vars:
   RUNPOD_API_KEY               (RunPod console -> Settings -> API Keys)
   RUNPOD_POD_ID                (manual-testing pod only — see above)
-  RUNPOD_TRAINING_GPU_TYPE_ID  (training pod only — request "A100 80GB PCIe"
-                                 specifically, not SXM; PCIe is the more
-                                 broadly available form factor)
-  RUNPOD_TRAINING_IMAGE        (training pod only — a container image with
-                                 ltx-trainer installed)
 """
 import logging
 import os
@@ -172,173 +166,11 @@ def wait_for_pod_ready(pod_id: Optional[str] = None, comfyui_port: int = _DEFAUL
         time.sleep(_COMFYUI_READY_POLL_INTERVAL)
 
     raise TimeoutError(f"ComfyUI at {comfyui_url} did not become ready within {timeout_seconds}s")
-
-
-# Fallback-ordered list of confirmed-valid (fetched live from RunPod's own
-# gpuTypes query, 2026-08-20) 80GB+ GPU type ids suitable for LTX-2 LoRA
-# training (needs bf16/more VRAM than the 4090-class inference tier
-# comfortably provides). Live availability for any single one of these
-# turned out to be highly volatile within the same session — A100 80GB
-# PCIe on SECURE, then A100 on COMMUNITY, then H100 80GB HBM3 (the console
-# calls this "H100 SXM", but RunPod's actual gpuTypeId uses "HBM3" not
-# "SXM" — confirmed via the gpuTypes query after a guessed "...SXM" string
-# was rejected outright as unknown) all failed with SUPPLY_CONSTRAINT or
-# INVALID_INPUT in quick succession, including one the console had just
-# shown as having strong stock. A single hardcoded gpuTypeId is fighting a
-# moving target; RunPod's REST API instead accepts a priority-ordered list
-# and its own gpuTypePriority="availability" picks whichever is actually
-# free right now — structurally the right fix instead of guessing again.
-
-# Checked live against RunPod's GraphQL pricing/stock API 2026-08-26: "NVIDIA
-# A100 80GB PCIe" and "NVIDIA H100 PCIe" return no current price/stock data
-# at all (dead weight in this list), and every remaining candidate — priced
-# from $1.39-$3.59/hr — shows the same "Low" aggregate stock regardless of
-# price, so a higher tier buys no real availability edge here. What
-# actually moves the odds is trying genuinely separate GPU pools, not
-# paying more within the same contested A100/H100 pool ltx-trainer's own
-# near-miss OOM at 80GB (even with gradient checkpointing) sets our real
-# floor — every entry below is >=80GB. RTX PRO 6000 Blackwell is a
-# different, newer architecture than A100/H100 (Community-priced cheaper
-# than either, at more VRAM), so its scarcity is plausibly uncorrelated
-# with theirs — a second independent pool to try, not just a pricier draw
-# from the same one.
-_DEFAULT_TRAINING_GPU_TYPE_IDS = [
-    "NVIDIA A100-SXM4-80GB",
-    "NVIDIA RTX PRO 6000 Blackwell Server Edition",
-    "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
-    "NVIDIA H100 NVL",
-    "NVIDIA H100 80GB HBM3",
-]
-_REST_API_BASE = "https://rest.runpod.io/v1"
-
-
-def create_training_pod() -> str:
-    """Creates a fresh, ephemeral training pod on whichever GPU type in
-    _DEFAULT_TRAINING_GPU_TYPE_IDS (or RUNPOD_TRAINING_GPU_TYPE_ID first,
-    if set — kept as an optional override, not a requirement, precisely
-    because pinning one exact type proved too fragile against real
-    availability swings) RunPod's own availability-priority selection
-    finds free right now, via their REST API (not the older GraphQL
-    podFindAndDeployOnDemand mutation, which only accepts a single
-    gpuTypeId).
-
-    Does NOT mount the Network Volume — training-capacity and
-    inference-capacity regions frequently don't overlap, so this pod
-    writes ltx-trainer's output to its own local container disk, and the
-    resulting file is pushed to the volume afterward via the
-    S3-compatible API (app/media/runpod_s3.py) instead of a filesystem
-    write. Returns the new pod's id. Caller (culturetoon_lora.py) is
-    responsible for terminate_pod()-ing it when done, success or failure —
-    this is meant to exist only for the duration of one training run, not
-    as standing infrastructure."""
-    image_name = os.getenv("RUNPOD_TRAINING_IMAGE", "")
-    if not image_name:
-        raise RuntimeError("RUNPOD_TRAINING_IMAGE must be set")
-
-    gpu_type_ids = list(_DEFAULT_TRAINING_GPU_TYPE_IDS)
-    override = os.getenv("RUNPOD_TRAINING_GPU_TYPE_ID", "")
-    if override:
-        # Move to front rather than skip-if-present — an explicit override
-        # should win the priority order even when it happens to already
-        # be one of the defaults.
-        if override in gpu_type_ids:
-            gpu_type_ids.remove(override)
-        gpu_type_ids.insert(0, override)
-
-    resp = httpx.post(
-        f"{_REST_API_BASE}/pods",
-        headers={"Authorization": f"Bearer {_api_key()}", "Content-Type": "application/json"},
-        json={
-            "gpuTypeIds": gpu_type_ids,
-            "gpuTypePriority": "availability",
-            # COMMUNITY, not SECURE — confirmed live 2026-08-20: SECURE
-            # (RunPod's own guaranteed datacenters) hit a real
-            # SUPPLY_CONSTRAINT on the very first live attempt. COMMUNITY
-            # (third-party host pool) is a broader, generally
-            # better-available supply — an easy tradeoff for an ephemeral
-            # one-shot training pod.
-            "cloudType": "COMMUNITY",
-            "imageName": image_name,
-            "name": "culturix-lora-training",
-            "ports": ["22/tcp"],
-            # containerDiskInGb and volumeInGb are TWO SEPARATE disk
-            # allocations, confirmed live 2026-08-20 by inspecting a real
-            # pod's own df -h output — containerDiskInGb governs the
-            # `overlay` root filesystem (/), NOT /workspace, which is a
-            # distinct mount (/dev/mdXXX) sized by volumeInGb and DEFAULTS
-            # TO 20GB regardless of containerDiskInGb. This module's own
-            # work_dir writes to /workspace/lora_training/{variant.id}/...
-            # — setting only containerDiskInGb (an earlier fix, in the
-            # same commit history) did NOT fix the checkpoint download's
-            # "No space left on device" at all; it fixed a disk the
-            # training process never actually writes to. The training
-            # checkpoint alone (Lightricks/LTX-2.3, full precision — a
-            # DIFFERENT, larger file than the fp8 one used for inference)
-            # is 46.15GB, plus ~24GB for the Gemma text encoder — ~70GB
-            # before any working-directory margin for converted training
-            # clips, preprocessed dataset cache, or LoRA output. 150GB on
-            # BOTH leaves real headroom; disk billing is a small fraction
-            # of GPU-hour cost, not worth cutting close on either one.
-            "containerDiskInGb": 150,
-            "volumeInGb": 150,
-            "volumeMountPath": "/workspace",
-        },
-        timeout=30,
-    )
-    if resp.status_code >= 400:
-        raise RunPodError(f"RunPod pod creation failed ({resp.status_code}): {resp.text}")
-    pod = resp.json()
-    if not pod or not pod.get("id"):
-        raise RunPodError(f"RunPod did not return a new pod id: {pod}")
-    logger.info("Training pod %s created on %s", pod["id"], pod.get("machine", {}).get("gpuDisplayName", "?"))
-    return pod["id"]
-
-
-# Defaults for create_training_pod_with_retry — overridable via
-# RUNPOD_TRAINING_ALLOCATION_MAX_RETRIES/_BACKOFF_SECONDS, same knob shape
-# as app/media/runpod_serverless_client.py's allocation retry. A training
-# run is backgrounded (see culturetoon_lora.py::run_lora_training) with up
-# to an hour of budget total, so a more generous backoff than the
-# Serverless side's is affordable here.
-_DEFAULT_TRAINING_ALLOCATION_MAX_RETRIES = 2
-_DEFAULT_TRAINING_ALLOCATION_BACKOFF_SECONDS = 60
-
-
-def create_training_pod_with_retry(max_retries: int = None, backoff_seconds: float = None) -> str:
-    """Wraps create_training_pod with a retry around allocation failures
-    (SUPPLY_CONSTRAINT and similar — RunPod couldn't find a matching host
-    right now) — confirmed live this is a real, not hypothetical, failure
-    mode for A100 80GB PCIe specifically. Plain create_training_pod() has
-    no retry of its own; this is the one train_character_lora actually
-    calls."""
-    if max_retries is None:
-        max_retries = int(os.getenv("RUNPOD_TRAINING_ALLOCATION_MAX_RETRIES", str(_DEFAULT_TRAINING_ALLOCATION_MAX_RETRIES)))
-    if backoff_seconds is None:
-        backoff_seconds = float(os.getenv("RUNPOD_TRAINING_ALLOCATION_BACKOFF_SECONDS", str(_DEFAULT_TRAINING_ALLOCATION_BACKOFF_SECONDS)))
-
-    last_exc = None
-    for attempt in range(max_retries + 1):
-        try:
-            return create_training_pod()
-        except RunPodError as exc:
-            last_exc = exc
-            if attempt < max_retries:
-                logger.warning(
-                    "Training pod allocation attempt %d/%d failed: %s — retrying in %ss",
-                    attempt + 1, max_retries + 1, exc, backoff_seconds,
-                )
-                time.sleep(backoff_seconds)
-
-    raise RunPodError(
-        f"Training pod failed to allocate after {max_retries + 1} attempt(s): {last_exc}"
-    ) from last_exc
-
-
 def wait_for_ssh_ready(pod_id: str, timeout_seconds: int = 180) -> tuple:
     """Same RUNNING-status wait as wait_for_pod_ready, but returns SSH
-    connection info instead of a ComfyUI URL — a training pod doesn't run
-    ComfyUI's HTTP server, just needs to be reachable over SSH to run
-    ltx-trainer.
+    connection info instead of a ComfyUI URL — for a pod (e.g. a CPU
+    carrier pod, see app/media/runpod_volume_relay.py) that doesn't run
+    ComfyUI's HTTP server and just needs to be reachable over SSH.
 
     Polls get_pod_ssh_info within the remaining deadline instead of
     checking it once — confirmed live 2026-08-20: a pod can report
@@ -360,12 +192,12 @@ def wait_for_ssh_ready(pod_id: str, timeout_seconds: int = 180) -> tuple:
 
 def terminate_pod(pod_id: str) -> None:
     """Fully deletes the pod (as opposed to stop_pod's stop-but-keep-the-
-    boot-disk) — the right operation for an ephemeral training pod that
-    only ever needed to exist for one run; nothing about it is worth
-    keeping once training is done, since the actual output (the LoRA file)
-    already lives on the persistent Network Volume, not the pod's own
-    disk. Swallow-and-log, same reasoning as stop_pod: called from a
-    `finally` block, must never mask a real exception already propagating."""
+    boot-disk) — the right operation for an ephemeral pod (e.g. a CPU
+    carrier pod, see app/media/runpod_volume_relay.py) that only ever
+    needed to exist for one short-lived task; nothing about it is worth
+    keeping once that task is done. Swallow-and-log, same reasoning as
+    stop_pod: called from a `finally` block, must never mask a real
+    exception already propagating."""
     try:
         _graphql(
             "mutation terminatePod($input: PodTerminateInput!) { podTerminate(input: $input) }",

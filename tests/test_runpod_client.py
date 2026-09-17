@@ -1,18 +1,15 @@
-"""Tests for the training-pod lifecycle additions in
-app/media/runpod_client.py (create_training_pod/terminate_pod/
-wait_for_ssh_ready). create_training_pod uses RunPod's REST API (a list of
-fallback GPU types), the rest still use the GraphQL API — both mocked at
-the httpx boundary, RunPod's real APIs are never touched."""
+"""Tests for the ephemeral-pod lifecycle helpers in
+app/media/runpod_client.py (terminate_pod/wait_for_ssh_ready), used by
+app/media/runpod_volume_relay.py's short-lived carrier pods and
+app/scheduler.py's orphan-pod reaper — both mocked at the httpx boundary
+against the GraphQL API, RunPod's real API is never touched."""
 import os
 
 os.environ.setdefault("RUNPOD_API_KEY", "test-key")
 
 import pytest
 
-from app.media.runpod_client import (
-    create_training_pod, create_training_pod_with_retry, terminate_pod, wait_for_ssh_ready, RunPodError,
-    _DEFAULT_TRAINING_GPU_TYPE_IDS,
-)
+from app.media.runpod_client import terminate_pod, wait_for_ssh_ready, RunPodError
 
 
 def _mock_graphql_response(mocker, data=None, errors=None):
@@ -20,181 +17,6 @@ def _mock_graphql_response(mocker, data=None, errors=None):
     resp.raise_for_status = mocker.Mock()
     resp.json.return_value = {"data": data or {}, "errors": errors}
     return resp
-
-
-def _mock_rest_response(mocker, status_code=201, json_body=None, text=""):
-    resp = mocker.Mock()
-    resp.status_code = status_code
-    resp.json.return_value = json_body
-    resp.text = text
-    return resp
-
-
-class TestCreateTrainingPod:
-    def test_missing_image_raises_without_calling_runpod(self, mocker, monkeypatch):
-        monkeypatch.delenv("RUNPOD_TRAINING_IMAGE", raising=False)
-        mock_post = mocker.patch("httpx.post")
-        with pytest.raises(RuntimeError):
-            create_training_pod()
-        mock_post.assert_not_called()
-
-    def test_gpu_type_id_env_var_is_optional(self, mocker, monkeypatch):
-        # Confirmed live 2026-08-20: pinning to one exact GPU type is too
-        # fragile against real availability swings — the built-in fallback
-        # list is used automatically when this isn't set at all.
-        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
-        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        mocker.patch("httpx.post", return_value=_mock_rest_response(
-            mocker, json_body={"id": "pod-new"},
-        ))
-        assert create_training_pod() == "pod-new"
-
-    def test_success_returns_pod_id(self, mocker, monkeypatch):
-        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
-        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        mocker.patch("httpx.post", return_value=_mock_rest_response(
-            mocker, json_body={"id": "pod-new"},
-        ))
-        assert create_training_pod() == "pod-new"
-
-    def test_requests_fallback_list_with_availability_priority(self, mocker, monkeypatch):
-        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
-        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        mock_post = mocker.patch("httpx.post", return_value=_mock_rest_response(
-            mocker, json_body={"id": "pod-new"},
-        ))
-        create_training_pod()
-        sent = mock_post.call_args.kwargs["json"]
-        assert sent["gpuTypeIds"] == _DEFAULT_TRAINING_GPU_TYPE_IDS
-        assert sent["gpuTypePriority"] == "availability"
-
-    def test_gpu_type_id_override_is_prepended_not_replaced(self, mocker, monkeypatch):
-        monkeypatch.setenv("RUNPOD_TRAINING_GPU_TYPE_ID", "NVIDIA H100 80GB HBM3")
-        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        mock_post = mocker.patch("httpx.post", return_value=_mock_rest_response(
-            mocker, json_body={"id": "pod-new"},
-        ))
-        create_training_pod()
-        sent = mock_post.call_args.kwargs["json"]
-        assert sent["gpuTypeIds"][0] == "NVIDIA H100 80GB HBM3"
-        assert set(sent["gpuTypeIds"]) == {"NVIDIA H100 80GB HBM3", *_DEFAULT_TRAINING_GPU_TYPE_IDS}
-
-    def test_does_not_request_a_network_volume_mount(self, mocker, monkeypatch):
-        # The training pod and the Network Volume's inference region
-        # frequently aren't the same region — see
-        # app/services/culturetoon_lora.py's docstring — so pod creation
-        # must not request a volume mount at all.
-        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
-        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        mock_post = mocker.patch("httpx.post", return_value=_mock_rest_response(
-            mocker, json_body={"id": "pod-new"},
-        ))
-        create_training_pod()
-        sent = mock_post.call_args.kwargs["json"]
-        assert "networkVolumeId" not in sent
-
-    def test_requests_enough_container_disk_for_both_model_downloads(self, mocker, monkeypatch):
-        # Confirmed live 2026-08-20: with no containerDiskInGb specified at
-        # all, the checkpoint download (46.15GB, a different and larger
-        # file than the fp8 one used for inference) failed mid-write —
-        # ran out of disk, not a network/xet issue.
-        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
-        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        mock_post = mocker.patch("httpx.post", return_value=_mock_rest_response(
-            mocker, json_body={"id": "pod-new"},
-        ))
-        create_training_pod()
-        sent = mock_post.call_args.kwargs["json"]
-        assert sent["containerDiskInGb"] >= 100
-
-    def test_requests_enough_volume_disk_where_work_dir_actually_lives(self, mocker, monkeypatch):
-        # Confirmed live 2026-08-20 via a real pod's own df -h:
-        # containerDiskInGb and volumeInGb are TWO SEPARATE allocations —
-        # containerDiskInGb governs `/` (overlay), NOT /workspace, which
-        # is a distinct mount defaulting to 20GB regardless of
-        # containerDiskInGb. train_character_lora's work_dir writes to
-        # /workspace/lora_training/{variant.id}/... — setting only
-        # containerDiskInGb (the earlier fix) did not touch the disk the
-        # training process actually writes to at all, and the exact same
-        # "No space left on device" recurred even with containerDiskInGb
-        # at 150.
-        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
-        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        mock_post = mocker.patch("httpx.post", return_value=_mock_rest_response(
-            mocker, json_body={"id": "pod-new"},
-        ))
-        create_training_pod()
-        sent = mock_post.call_args.kwargs["json"]
-        assert sent["volumeInGb"] >= 100
-        assert sent["volumeMountPath"] == "/workspace"
-
-    def test_uses_community_cloud_not_secure(self, mocker, monkeypatch):
-        # Confirmed live 2026-08-20: SECURE-cloud hit a real
-        # SUPPLY_CONSTRAINT error on the first live attempt. COMMUNITY is a
-        # broader, generally better-available pool — an acceptable
-        # tradeoff for an ephemeral one-shot training pod.
-        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
-        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        mock_post = mocker.patch("httpx.post", return_value=_mock_rest_response(
-            mocker, json_body={"id": "pod-new"},
-        ))
-        create_training_pod()
-        sent = mock_post.call_args.kwargs["json"]
-        assert sent["cloudType"] == "COMMUNITY"
-
-    def test_no_pod_returned_raises(self, mocker, monkeypatch):
-        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
-        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        mocker.patch("httpx.post", return_value=_mock_rest_response(
-            mocker, json_body={},
-        ))
-        with pytest.raises(RunPodError):
-            create_training_pod()
-
-    def test_error_status_raises(self, mocker, monkeypatch):
-        monkeypatch.delenv("RUNPOD_TRAINING_GPU_TYPE_ID", raising=False)
-        monkeypatch.setenv("RUNPOD_TRAINING_IMAGE", "my/training-image")
-        mocker.patch("httpx.post", return_value=_mock_rest_response(
-            mocker, status_code=400, text="insufficient GPU availability",
-        ))
-        with pytest.raises(RunPodError, match="insufficient GPU availability"):
-            create_training_pod()
-
-
-class TestCreateTrainingPodWithRetry:
-    def test_succeeds_immediately_without_sleeping(self, mocker):
-        mocker.patch("app.media.runpod_client.create_training_pod", return_value="pod-1")
-        mock_sleep = mocker.patch("time.sleep")
-        assert create_training_pod_with_retry() == "pod-1"
-        mock_sleep.assert_not_called()
-
-    def test_retries_past_a_supply_constraint_then_succeeds(self, mocker):
-        # Real error confirmed live: RunPod's own SUPPLY_CONSTRAINT
-        # message when a GPU tier has no matching host available.
-        mock_create = mocker.patch(
-            "app.media.runpod_client.create_training_pod",
-            side_effect=[RunPodError("SUPPLY_CONSTRAINT: no instances available"), "pod-2"],
-        )
-        mocker.patch("time.sleep")
-        assert create_training_pod_with_retry(max_retries=2, backoff_seconds=0.01) == "pod-2"
-        assert mock_create.call_count == 2
-
-    def test_raises_after_exhausting_retries(self, mocker):
-        mocker.patch("app.media.runpod_client.create_training_pod", side_effect=RunPodError("still no supply"))
-        mocker.patch("time.sleep")
-        with pytest.raises(RunPodError, match="failed to allocate after 3 attempt"):
-            create_training_pod_with_retry(max_retries=2, backoff_seconds=0.01)
-
-    def test_retry_knobs_read_from_env_when_not_passed(self, mocker, monkeypatch):
-        monkeypatch.setenv("RUNPOD_TRAINING_ALLOCATION_MAX_RETRIES", "1")
-        monkeypatch.setenv("RUNPOD_TRAINING_ALLOCATION_BACKOFF_SECONDS", "0.01")
-        mock_create = mocker.patch(
-            "app.media.runpod_client.create_training_pod",
-            side_effect=[RunPodError("no supply"), "pod-3"],
-        )
-        mocker.patch("time.sleep")
-        assert create_training_pod_with_retry() == "pod-3"
-        assert mock_create.call_count == 2
 
 
 class TestTerminatePod:

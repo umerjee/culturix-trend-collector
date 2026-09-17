@@ -1,8 +1,8 @@
 """Tests for app/services/culturetoon_selfhosted_video.py — prompt building
-from a ToonScript's shots, the cast LoRA-readiness gate, and (TestGenerate
-VideoForToonSelfhosted below) the interactive-button orchestrator against
-an existing Toon, mirroring tests/test_culturetoon_video.py's in-memory
-SQLite/mocked-provider shape for the Kling counterpart."""
+from a ToonScript's shots, and (TestGenerateVideoForToonSelfhosted below)
+the interactive-button orchestrator against an existing Toon, mirroring
+tests/test_culturetoon_video.py's in-memory SQLite/mocked-provider shape
+for the Kling counterpart."""
 import os
 os.environ.setdefault("TOKEN_ENCRYPTION_KEY", "zJZ2n2n0vXW5X8mYQKqVYV9YQe3F2Z8h0m3nQeF1nQ8=")
 
@@ -21,10 +21,9 @@ from app.models.toon import Toon
 from app.models.toon_background import ToonBackground
 from app.models.generation_usage import GenerationUsage
 from app.services.culturetoon_selfhosted_video import (
-    build_prompt_from_script, resolve_ready_lora, generate_toon_video_selfhosted,
     generate_video_for_toon_selfhosted, generate_toon_video_ltx25, SelfHostedVideoGenerationError,
     resolve_scene_backgrounds,
-    _resilient_commit, _gather_dialogue, _resolve_narration,
+    _resilient_commit,
     _build_shot_prompt, _resolve_shot_variant,
     _split_shots_into_segments, _segment_scene_index, _segment_primary_variant, _segment_is_subject_only,
     _scrub_unanchored_names, _sanitize_segment_shots,
@@ -44,112 +43,12 @@ def _script(mocker, hook_line=None, shots=None, total_duration_seconds=None):
     return s
 
 
-def _variant(mocker, name="Kumar", lora_status="ready", lora_path="loras/kumar.safetensors",
-             image_url="https://example.com/kumar.png", voice_provider="kling", elevenlabs_voice_id=None,
-             id=None):
+def _variant(mocker, name="Kumar", image_url="https://example.com/kumar.png", id=None):
     v = mocker.Mock()
     v.id = id or name
     v.name = name
-    v.lora_status = lora_status
-    v.lora_path = lora_path
     v.image_url = image_url
-    v.voice_provider = voice_provider
-    v.elevenlabs_voice_id = elevenlabs_voice_id
     return v
-
-
-class TestBuildPromptFromScript:
-    def test_combines_hook_action_and_dialogue(self, mocker):
-        script = _script(
-            mocker, hook_line="When mom finds out",
-            shots=[
-                {"action": "storms into the kitchen", "dialogue": "You didn't eat?!"},
-                {"action": "already reaching for a pan", "dialogue": None},
-            ],
-        )
-        prompt = build_prompt_from_script(script)
-        assert "When mom finds out" in prompt
-        assert "storms into the kitchen" in prompt
-        assert 'saying "You didn\'t eat?!"' in prompt
-        assert "already reaching for a pan" in prompt
-
-    def test_includes_visual_and_dialogue_delivery_when_present(self, mocker):
-        script = _script(
-            mocker, hook_line="H",
-            shots=[{
-                "visual": "holding a massive drum, confetti mid-air",
-                "action": "dancing manically", "dialogue": "500-person feast!",
-                "dialogue_delivery": "Loud & Hyped",
-            }],
-        )
-        prompt = build_prompt_from_script(script)
-        assert "holding a massive drum, confetti mid-air" in prompt
-        assert 'saying "500-person feast!" (Loud & Hyped delivery)' in prompt
-
-    def test_includes_camera_direction_when_present(self, mocker):
-        script = _script(
-            mocker, hook_line="H",
-            shots=[{"action": "waves", "dialogue": None, "shot_type": "closeup", "camera_movement": "push_in"}],
-        )
-        prompt = build_prompt_from_script(script)
-        assert "closeup shot" in prompt
-        assert "push in camera movement" in prompt
-
-    def test_no_content_falls_back_to_generic_prompt(self, mocker):
-        script = _script(mocker, hook_line=None, shots=[])
-        assert build_prompt_from_script(script) == "A character reacts to their day."
-
-    def test_includes_expression_when_present(self, mocker):
-        # Confirmed live 2026-08-30 on a real script: every shot carries an
-        # expression field, but it was being silently dropped.
-        script = _script(mocker, hook_line="H", shots=[
-            {"action": "waves", "dialogue": None, "expression": "Confused"},
-        ])
-        prompt = build_prompt_from_script(script)
-        assert "with a confused expression" in prompt
-
-    def test_background_with_name_and_description_is_prepended(self, mocker):
-        # Mock(name=...) is reserved by unittest.mock for the mock's own
-        # repr name, not a settable `.name` attribute — must assign it
-        # after construction instead.
-        background = mocker.Mock(description="A cramped city apartment kitchen")
-        background.name = "Kitchen"
-        script = _script(mocker, hook_line="H", shots=[])
-        prompt = build_prompt_from_script(script, background=background)
-        assert prompt.startswith("Set in Kitchen: A cramped city apartment kitchen")
-
-    def test_background_with_name_only(self, mocker):
-        background = mocker.Mock(description=None)
-        background.name = "Kitchen"
-        script = _script(mocker, hook_line="H", shots=[])
-        prompt = build_prompt_from_script(script, background=background)
-        assert prompt.startswith("Set in Kitchen")
-
-    def test_background_with_description_only(self, mocker):
-        background = mocker.Mock(description="A cramped city apartment kitchen")
-        background.name = None
-        script = _script(mocker, hook_line="H", shots=[])
-        prompt = build_prompt_from_script(script, background=background)
-        assert prompt.startswith("A cramped city apartment kitchen")
-
-    def test_no_background_omits_set_in_prefix(self, mocker):
-        script = _script(mocker, hook_line="H", shots=[])
-        prompt = build_prompt_from_script(script, background=None)
-        assert "Set in" not in prompt
-
-
-class TestGatherDialogue:
-    def test_joins_dialogue_lines_in_order(self, mocker):
-        script = _script(mocker, shots=[
-            {"action": "waves", "dialogue": "Hello there"},
-            {"action": "frowns", "dialogue": None},
-            {"action": "points", "dialogue": "Rule 1: be on time"},
-        ])
-        assert _gather_dialogue(script) == "Hello there ... Rule 1: be on time"
-
-    def test_no_dialogue_at_all_returns_empty_string(self, mocker):
-        script = _script(mocker, shots=[{"action": "waves", "dialogue": None}])
-        assert _gather_dialogue(script) == ""
 
 
 class TestBuildShotPrompt:
@@ -234,7 +133,7 @@ class TestBuildShotPrompt:
 
     def test_quality_suffix_does_not_hardcode_a_conflicting_art_style(self, mocker):
         """The suffix must assert render QUALITY only — the art style comes
-        from the Location's visual_style and the character LoRA. A suffix
+        from the Location's visual_style and the reference portrait. A suffix
         hardcoding "Pixar-style 3D" directly contradicted the painterly
         "(not photoreal)" style text in the same prompt."""
         background = mocker.Mock(description="A kitchen", country=None, visual_style="cinematic_cultural")
@@ -261,366 +160,6 @@ class TestResolveShotVariant:
         hans = _variant(mocker, name="Hans", id="hans-id")
         shot = {"speaker_variant_id": "someone-else-id"}
         assert _resolve_shot_variant(shot, [hans]) is hans
-
-
-class TestResolveReadyLora:
-    def test_returns_primary_variant_lora_path_when_all_ready(self, mocker):
-        variants = [_variant(mocker, name="A"), _variant(mocker, name="B")]
-        assert resolve_ready_lora(variants) == variants[0].lora_path
-
-    def test_raises_when_any_variant_not_ready(self, mocker):
-        variants = [_variant(mocker, name="A"), _variant(mocker, name="B", lora_status="training")]
-        with pytest.raises(SelfHostedVideoGenerationError, match="B"):
-            resolve_ready_lora(variants)
-
-    def test_raises_when_lora_status_failed(self, mocker):
-        variants = [_variant(mocker, lora_status="failed")]
-        with pytest.raises(SelfHostedVideoGenerationError):
-            resolve_ready_lora(variants)
-
-
-class TestResolveNarration:
-    def test_no_dialogue_returns_none_none(self, mocker):
-        script = _script(mocker, shots=[{"action": "waves", "dialogue": None}])
-        assert _resolve_narration(script, [_variant(mocker)]) == (None, None)
-
-    def test_defaults_to_narration_text_when_voice_provider_is_kling(self, mocker):
-        script = _script(mocker, shots=[{"action": "waves", "dialogue": "Hi"}])
-        variants = [_variant(mocker, voice_provider="kling")]
-        audio_bytes, text = _resolve_narration(script, variants, elevenlabs_api_key="a-real-key")
-        assert audio_bytes is None
-        assert text == "Hi"
-
-    def test_defaults_to_narration_text_when_no_api_key_supplied(self, mocker):
-        # voice_provider="elevenlabs" but no key was resolved (e.g. brand
-        # never configured one) — must fail open to on-worker Chatterbox
-        # synthesis (narration_text), not error.
-        script = _script(mocker, shots=[{"action": "waves", "dialogue": "Hi"}])
-        variants = [_variant(mocker, voice_provider="elevenlabs", elevenlabs_voice_id="voice-123")]
-        audio_bytes, text = _resolve_narration(script, variants, elevenlabs_api_key=None)
-        assert audio_bytes is None
-        assert text == "Hi"
-
-    def test_uses_elevenlabs_per_shot_synthesis_when_fully_configured(self, mocker):
-        mock_synth = mocker.patch(
-            "app.services.culturetoon_selfhosted_video._synthesize_narration_elevenlabs",
-            return_value=b"elevenlabs-bytes",
-        )
-        script = _script(mocker, shots=[{"action": "waves", "dialogue": "Hi"}])
-        variants = [_variant(mocker, voice_provider="elevenlabs", elevenlabs_voice_id="voice-123")]
-        audio_bytes, text = _resolve_narration(script, variants, elevenlabs_api_key="a-real-key")
-        assert audio_bytes == b"elevenlabs-bytes"
-        assert text is None
-        mock_synth.assert_called_once_with(script, "a-real-key", "voice-123")
-
-    def test_elevenlabs_failure_falls_back_to_narration_text(self, mocker):
-        mocker.patch(
-            "app.services.culturetoon_selfhosted_video._synthesize_narration_elevenlabs",
-            side_effect=RuntimeError("ElevenLabs API error"),
-        )
-        script = _script(mocker, shots=[{"action": "waves", "dialogue": "Hi"}])
-        variants = [_variant(mocker, voice_provider="elevenlabs", elevenlabs_voice_id="voice-123")]
-        audio_bytes, text = _resolve_narration(script, variants, elevenlabs_api_key="a-real-key")
-        assert audio_bytes is None
-        assert text == "Hi"
-
-
-class TestGenerateToonVideoSelfhosted:
-    def test_raises_before_calling_runpod_when_cast_not_ready(self, mocker):
-        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job")
-        script = _script(mocker, hook_line="hi", shots=[{"action": "waves"}])
-        variants = [_variant(mocker, lora_status="none")]
-        with pytest.raises(SelfHostedVideoGenerationError):
-            generate_toon_video_selfhosted(script, variants, "endpoint-1")
-        mock_run.assert_not_called()
-
-    def test_raises_when_script_has_no_shots(self, mocker):
-        script = _script(mocker, hook_line="hi", shots=[])
-        variants = [_variant(mocker)]
-        with pytest.raises(SelfHostedVideoGenerationError, match="no shot data"):
-            generate_toon_video_selfhosted(script, variants, "endpoint-1")
-
-    def test_one_workflow_built_per_shot(self, mocker):
-        mock_build = mocker.patch(
-            "app.media.ltx_workflow.build_workflow",
-            side_effect=lambda prompt, duration, **kw: {"prompt": prompt, "duration": duration, **kw},
-        )
-        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-bytes")
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
-
-        script = _script(mocker, hook_line="hi", shots=[
-            {"action": "waves", "duration_seconds": 3, "shot_type": "closeup"},
-            {"action": "frowns", "duration_seconds": 4, "shot_type": "wide"},
-        ])
-        variants = [_variant(mocker)]
-        result = generate_toon_video_selfhosted(script, variants, "endpoint-1")
-
-        assert result == b"video-bytes"
-        assert mock_build.call_count == 2
-        sent_shot_workflows = mock_run.call_args.kwargs["shot_workflows"]
-        assert len(sent_shot_workflows) == 2
-        assert sent_shot_workflows[0]["duration"] == 3
-        assert sent_shot_workflows[1]["duration"] == 4
-        # Each shot's own photo anchors it — confirmed live 2026-08-29/30:
-        # text-to-video with only a LoRA for identity produced held poses,
-        # not real animation.
-        assert sent_shot_workflows[0]["reference_image_filename"] == "reference.png"
-        assert mock_run.call_args.kwargs["shot_reference_images"] == [b"ref-image-bytes", b"ref-image-bytes"]
-
-    def test_shots_chain_off_the_previous_frame_for_scene_continuity(self, mocker):
-        """Without chaining every shot is an independent generation anchored
-        on a solo portrait, so nothing carries across a cut and only one
-        character can ever be in frame — the "individual scenes glued
-        together" problem. The first shot has nothing to chain from."""
-        mocker.patch("app.media.ltx_workflow.build_workflow", side_effect=lambda p, d, **kw: {"p": p})
-        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"v")
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref"))
-
-        script = _script(mocker, hook_line="hi", shots=[{"action": f"a{i}"} for i in range(3)])
-        generate_toon_video_selfhosted(script, [_variant(mocker)], "endpoint-1")
-
-        assert mock_run.call_args.kwargs["shot_chain_from_previous"] == [False, True, True]
-
-    def test_chain_resets_at_a_scene_change(self, mocker):
-        mocker.patch("app.media.ltx_workflow.build_workflow", side_effect=lambda p, d, **kw: {"p": p})
-        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"v")
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref"))
-
-        script = _script(mocker, hook_line="hi", shots=[
-            {"action": "a0"},
-            {"action": "a1"},
-            {"action": "a2", "scene_change": True},
-        ])
-        generate_toon_video_selfhosted(script, [_variant(mocker)], "endpoint-1")
-
-        # A new scene must re-anchor on a real portrait, not inherit the
-        # previous scene's final frame.
-        assert mock_run.call_args.kwargs["shot_chain_from_previous"] == [False, True, False]
-
-    def test_chain_is_capped_to_bound_drift(self, mocker):
-        """Each chained shot generates from the previous shot's output, so
-        drift and artifacts compound; re-anchoring periodically resets
-        against a known-good photo."""
-        from app.services.culturetoon_selfhosted_video import _MAX_CHAINED_SHOTS
-
-        mocker.patch("app.media.ltx_workflow.build_workflow", side_effect=lambda p, d, **kw: {"p": p})
-        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"v")
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref"))
-
-        script = _script(mocker, hook_line="hi", shots=[{"action": f"a{i}"} for i in range(_MAX_CHAINED_SHOTS + 3)])
-        generate_toon_video_selfhosted(script, [_variant(mocker)], "endpoint-1")
-
-        flags = mock_run.call_args.kwargs["shot_chain_from_previous"]
-        assert flags[0] is False
-        assert all(flags[1:_MAX_CHAINED_SHOTS + 1])
-        # The shot right after a full run of chained shots re-anchors.
-        assert flags[_MAX_CHAINED_SHOTS + 1] is False
-
-    def test_each_shot_anchors_on_its_own_speakers_lora_and_photo(self, mocker):
-        # Confirmed live 2026-08-30 on a real 3-character script: every
-        # shot already carries its own speaker_variant_id — a multi-
-        # character script should visually ground EACH shot in that
-        # shot's own speaker, not always the primary/first-listed cast
-        # member (the old single-continuous-clip limitation).
-        mock_build = mocker.patch(
-            "app.media.ltx_workflow.build_workflow",
-            side_effect=lambda prompt, duration, **kw: {"lora_path": kw.get("lora_path")},
-        )
-        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-bytes")
-
-        hans = _variant(mocker, name="Hans", id="hans-id", lora_path="hans.safetensors", image_url="https://x/hans.png")
-        wen = _variant(mocker, name="Wen", id="wen-id", lora_path="wen.safetensors", image_url="https://x/wen.png")
-
-        def _fake_get(url, timeout=None):
-            return mocker.Mock(content=f"bytes-for-{url}".encode())
-
-        mocker.patch("httpx.get", side_effect=_fake_get)
-
-        script = _script(mocker, hook_line="hi", shots=[
-            {"action": "sips tea", "duration_seconds": 3, "speaker_variant_id": "wen-id"},
-            {"action": "checks watch", "duration_seconds": 4, "speaker_variant_id": "hans-id"},
-        ])
-        variants = [hans, wen]
-        generate_toon_video_selfhosted(script, variants, "endpoint-1")
-
-        sent_shot_workflows = mock_run.call_args.kwargs["shot_workflows"]
-        assert sent_shot_workflows[0]["lora_path"] == "wen.safetensors"
-        assert sent_shot_workflows[1]["lora_path"] == "hans.safetensors"
-        sent_images = mock_run.call_args.kwargs["shot_reference_images"]
-        assert sent_images[0] == b"bytes-for-https://x/wen.png"
-        assert sent_images[1] == b"bytes-for-https://x/hans.png"
-
-    def test_reference_image_cached_per_variant_not_refetched_per_shot(self, mocker):
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-bytes")
-        mock_get = mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
-
-        script = _script(mocker, hook_line="hi", shots=[
-            {"action": "a", "duration_seconds": 3},
-            {"action": "b", "duration_seconds": 3},
-            {"action": "c", "duration_seconds": 3},
-        ])
-        variants = [_variant(mocker)]  # same single speaker for every shot
-        generate_toon_video_selfhosted(script, variants, "endpoint-1")
-
-        mock_get.assert_called_once()
-
-    def test_use_allocation_retry_routes_through_the_retrying_client_call(self, mocker):
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
-        mock_plain = mocker.patch("app.media.runpod_serverless_client.run_inference_job")
-        mock_retry = mocker.patch(
-            "app.media.runpod_serverless_client.run_inference_job_with_allocation_retry",
-            return_value=b"video-bytes",
-        )
-
-        script = _script(mocker, hook_line="hi", shots=[{"action": "waves", "duration_seconds": 3}])
-        variants = [_variant(mocker)]
-        result = generate_toon_video_selfhosted(script, variants, "endpoint-1", use_allocation_retry=True)
-
-        assert result == b"video-bytes"
-        mock_retry.assert_called_once()
-        mock_plain.assert_not_called()
-
-    def test_reference_image_fetch_failure_falls_back_to_text_to_video_for_that_shot(self, mocker):
-        # Best-effort: a variant whose photo can't be fetched shouldn't
-        # fail the whole generation over it.
-        mock_build = mocker.patch(
-            "app.media.ltx_workflow.build_workflow",
-            side_effect=lambda prompt, duration, **kw: {"reference_image_filename": kw.get("reference_image_filename")},
-        )
-        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-bytes")
-        mocker.patch("httpx.get", side_effect=Exception("connection refused"))
-
-        script = _script(mocker, hook_line="hi", shots=[{"action": "waves", "duration_seconds": 3}])
-        variants = [_variant(mocker)]
-        result = generate_toon_video_selfhosted(script, variants, "endpoint-1")
-
-        assert result == b"video-bytes"
-        assert mock_build.call_args.kwargs["reference_image_filename"] is None
-
-    def test_duration_cap_truncates_later_shots_but_always_includes_the_first(self, mocker):
-        mock_build = mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-bytes")
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
-
-        script = _script(mocker, hook_line="hi", shots=[
-            {"action": "a", "duration_seconds": 5},
-            {"action": "b", "duration_seconds": 5},
-            {"action": "c", "duration_seconds": 5},
-        ])
-        variants = [_variant(mocker)]
-        generate_toon_video_selfhosted(script, variants, "endpoint-1", duration_seconds=8)
-
-        # 5s (shot 1) included; shot 2 would push cumulative to 10s > 8s cap.
-        assert mock_build.call_count == 1
-        assert len(mock_run.call_args.kwargs["shot_workflows"]) == 1
-
-    def test_no_cap_includes_every_shot(self, mocker):
-        mock_build = mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-bytes")
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
-
-        script = _script(mocker, hook_line="hi", shots=[
-            {"action": "a", "duration_seconds": 5},
-            {"action": "b", "duration_seconds": 5},
-            {"action": "c", "duration_seconds": 5},
-        ])
-        variants = [_variant(mocker)]
-        generate_toon_video_selfhosted(script, variants, "endpoint-1")
-
-        assert mock_build.call_count == 3
-
-    def test_shot_missing_duration_falls_back_to_default(self, mocker):
-        mock_build = mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-bytes")
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
-
-        script = _script(mocker, hook_line="hi", shots=[{"action": "waves"}])
-        variants = [_variant(mocker)]
-        generate_toon_video_selfhosted(script, variants, "endpoint-1")
-
-        assert mock_build.call_args.args[1] == 3  # _DEFAULT_SHOT_DURATION_SECONDS
-
-    def test_dialogue_sends_narration_text_for_on_worker_chatterbox_synthesis(self, mocker):
-        # This pipeline generated silent video only before ElevenLabs/
-        # Chatterbox support — confirms the default (no ElevenLabs
-        # configured) path sends raw dialogue TEXT for the RunPod worker's
-        # own GPU to synthesize via Chatterbox, not pre-synthesized bytes.
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-with-audio")
-
-        script = _script(mocker, hook_line="hi", shots=[
-            {"action": "waves", "duration_seconds": 3, "dialogue": "Hello there"},
-        ])
-        variants = [_variant(mocker)]
-        result = generate_toon_video_selfhosted(script, variants, "endpoint-1")
-
-        assert result == b"video-with-audio"
-        assert mock_run.call_args.kwargs["narration_text"] == "Hello there"
-        assert mock_run.call_args.kwargs["narration_audio_bytes"] is None
-
-    def test_no_dialogue_sends_no_narration_at_all(self, mocker):
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"silent-video-bytes")
-
-        script = _script(mocker, hook_line="hi", shots=[
-            {"action": "waves", "duration_seconds": 3, "dialogue": None},
-        ])
-        variants = [_variant(mocker)]
-        result = generate_toon_video_selfhosted(script, variants, "endpoint-1")
-
-        assert result == b"silent-video-bytes"
-        assert mock_run.call_args.kwargs["narration_audio_bytes"] is None
-        assert mock_run.call_args.kwargs["narration_text"] is None
-
-    def test_elevenlabs_configured_sends_pre_synthesized_audio_bytes(self, mocker):
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-with-audio")
-        mocker.patch(
-            "app.services.culturetoon_selfhosted_video._synthesize_narration_elevenlabs",
-            return_value=b"elevenlabs-bytes",
-        )
-
-        script = _script(mocker, hook_line="hi", shots=[
-            {"action": "waves", "duration_seconds": 3, "dialogue": "Hello there"},
-        ])
-        variants = [_variant(mocker, voice_provider="elevenlabs", elevenlabs_voice_id="voice-1")]
-        result = generate_toon_video_selfhosted(script, variants, "endpoint-1", elevenlabs_api_key="sk-key")
-
-        assert result == b"video-with-audio"
-        assert mock_run.call_args.kwargs["narration_audio_bytes"] == b"elevenlabs-bytes"
-        assert mock_run.call_args.kwargs["narration_text"] is None
-
-    def test_timeout_scales_with_shot_count(self, mocker):
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-bytes")
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
-
-        script = _script(mocker, hook_line="hi", shots=[
-            {"action": "a", "duration_seconds": 3},
-            {"action": "b", "duration_seconds": 3},
-            {"action": "c", "duration_seconds": 3},
-        ])
-        variants = [_variant(mocker)]
-        generate_toon_video_selfhosted(script, variants, "endpoint-1")
-
-        # floor is 1200s — 3 shots * 400s/shot + 300s = 1500s, above the floor.
-        assert mock_run.call_args.kwargs["timeout_seconds"] == 1500
-
-    def test_timeout_floor_applies_for_a_single_shot(self, mocker):
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video-bytes")
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
-
-        script = _script(mocker, hook_line="hi", shots=[{"action": "a", "duration_seconds": 3}])
-        variants = [_variant(mocker)]
-        generate_toon_video_selfhosted(script, variants, "endpoint-1")
-
-        assert mock_run.call_args.kwargs["timeout_seconds"] == 1200
 
 
 _SHOTS = [{"shot_number": 1, "duration_seconds": 4, "action": "waves", "expression": "Happy", "dialogue": None}]
@@ -651,10 +190,7 @@ def seeded(db):
     session.add(character)
     session.commit()
 
-    variant = CharacterVariant(
-        character_id=character.id, name="Mom", image_url="https://img/mom.png",
-        lora_status="ready", lora_path="mom.safetensors",
-    )
+    variant = CharacterVariant(character_id=character.id, name="Mom", image_url="https://img/mom.png")
     session.add(variant)
     session.commit()
 
@@ -674,8 +210,7 @@ def seeded(db):
 class TestGenerateVideoForToonSelfhosted:
     def test_success_path(self, db, seeded, mocker):
         mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch("app.media.runpod_serverless_client.run_inference_job_with_allocation_retry", return_value=b"video-bytes")
+        mocker.patch("app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25", return_value=b"video-bytes")
         mock_upload = mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
 
         generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
@@ -694,8 +229,7 @@ class TestGenerateVideoForToonSelfhosted:
 
     def test_regenerating_archives_the_previous_take(self, db, seeded, mocker):
         mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch("app.media.runpod_serverless_client.run_inference_job_with_allocation_retry", return_value=b"take-2")
+        mocker.patch("app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25", return_value=b"take-2")
         mocker.patch("app.media.storage.upload", return_value="https://supabase/take-2.mp4")
 
         session = db()
@@ -715,7 +249,7 @@ class TestGenerateVideoForToonSelfhosted:
     def test_missing_endpoint_id_marks_toon_failed(self, db, seeded, mocker):
         mocker.patch.dict("os.environ", {}, clear=False)
         mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": ""})
-        mock_run = mocker.patch("app.media.runpod_serverless_client.run_inference_job_with_allocation_retry")
+        mock_run = mocker.patch("app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25")
 
         generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
 
@@ -725,32 +259,11 @@ class TestGenerateVideoForToonSelfhosted:
         assert "RUNPOD_SERVERLESS_ENDPOINT_ID" in toon.generation_error
         mock_run.assert_not_called()
 
-    def test_lora_not_ready_marks_toon_failed_and_still_records_usage(self, db, seeded, mocker):
-        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
-        session = db()
-        variant = session.query(CharacterVariant).filter_by(id=uuid.UUID(seeded["variant_id"])).first()
-        variant.lora_status = "training"
-        session.commit()
-        session.close()
-
-        generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
-
-        session = db()
-        toon = session.query(Toon).filter_by(id=uuid.UUID(seeded["toon_id"])).first()
-        assert toon.status == "failed"
-        assert "trained LoRA" in toon.generation_error
-        # A failed generation still gets a usage row recorded (same
-        # philosophy as the batch runner) — cost is 0-duration here since
-        # generation never actually started, but the row itself exists.
-        usage = session.query(GenerationUsage).filter_by(toon_id=uuid.UUID(seeded["toon_id"])).all()
-        assert len(usage) == 1
-
     def test_runpod_failure_marks_toon_failed(self, db, seeded, mocker):
         from app.media.runpod_serverless_client import RunPodServerlessError
         mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
         mocker.patch(
-            "app.media.runpod_serverless_client.run_inference_job_with_allocation_retry",
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25",
             side_effect=RunPodServerlessError("worker allocation timed out"),
         )
 
@@ -770,9 +283,8 @@ class TestGenerateVideoForToonSelfhosted:
         should retry past exactly this and still land status='failed'."""
         from app.media.runpod_serverless_client import RunPodServerlessError
         mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
         mocker.patch(
-            "app.media.runpod_serverless_client.run_inference_job_with_allocation_retry",
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25",
             side_effect=RunPodServerlessError("worker allocation timed out"),
         )
         # Call 1 is the early status='animating' write (before RunPod even
@@ -818,7 +330,6 @@ class TestGenerateVideoForToonSelfhosted:
         session.close()
 
         mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
-        mocker.patch("app.media.runpod_serverless_client.run_inference_job_with_allocation_retry", return_value=b"video-bytes")
         mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
         # The queried ToonBackground is bound to a session that
         # generate_video_for_toon_selfhosted opens and closes internally —
@@ -826,15 +337,14 @@ class TestGenerateVideoForToonSelfhosted:
         # rather than inspecting the (by-then-detached) object afterward.
         seen_names = []
 
-        def _capture(script, background=None):
+        def _capture(*args, **kwargs):
+            background = kwargs.get("background")
             seen_names.append(background.name if background is not None else None)
-            return "a prompt"
+            return b"video-bytes"
 
         mocker.patch(
-            "app.services.culturetoon_selfhosted_video._build_shot_prompt", side_effect=_capture,
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25", side_effect=_capture,
         )
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
 
         generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
 
@@ -851,19 +361,17 @@ class TestGenerateVideoForToonSelfhosted:
         session.close()
 
         mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
-        mocker.patch("app.media.runpod_serverless_client.run_inference_job_with_allocation_retry", return_value=b"video-bytes")
         mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
         seen_names = []
 
-        def _capture(script, background=None):
+        def _capture(*args, **kwargs):
+            background = kwargs.get("background")
             seen_names.append(background.name if background is not None else None)
-            return "a prompt"
+            return b"video-bytes"
 
         mocker.patch(
-            "app.services.culturetoon_selfhosted_video._build_shot_prompt", side_effect=_capture,
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25", side_effect=_capture,
         )
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
 
         generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
 
@@ -871,85 +379,14 @@ class TestGenerateVideoForToonSelfhosted:
 
     def test_neither_script_nor_toon_has_a_background_passes_none(self, db, seeded, mocker):
         mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
-        mocker.patch("app.media.runpod_serverless_client.run_inference_job_with_allocation_retry", return_value=b"video-bytes")
-        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
-        mock_build_prompt = mocker.patch(
-            "app.services.culturetoon_selfhosted_video._build_shot_prompt", return_value="a prompt",
-        )
-        mocker.patch("app.media.ltx_workflow.build_workflow", return_value={"1": {}})
-        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"ref-image-bytes"))
-
-        generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
-
-        assert mock_build_prompt.call_args.kwargs["background"] is None
-
-    def test_no_elevenlabs_key_configured_falls_back_to_edge_tts(self, db, seeded, mocker):
-        session = db()
-        variant = session.query(CharacterVariant).filter_by(id=uuid.UUID(seeded["variant_id"])).first()
-        variant.voice_provider = "elevenlabs"
-        variant.elevenlabs_voice_id = "voice-1"
-        session.commit()
-        session.close()
-
-        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
         mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
         mock_generate = mocker.patch(
-            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
-            return_value=b"video-bytes",
+            "app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25", return_value=b"video-bytes",
         )
 
         generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
 
-        # Brand has no elevenlabs_api_key_encrypted set -> voice_provider
-        # opt-in alone isn't enough, same fail-open philosophy as the
-        # Kling path's own ElevenLabs handling.
-        assert mock_generate.call_args.kwargs["elevenlabs_api_key"] is None
-
-    def test_elevenlabs_key_configured_is_decrypted_and_passed_through(self, db, seeded, mocker):
-        from app.social.crypto import encrypt
-
-        session = db()
-        brand = session.query(CharacterBrand).filter_by(id=uuid.UUID(seeded["brand_id"])).first()
-        brand.elevenlabs_api_key_encrypted = encrypt("sk-real-key")
-        variant = session.query(CharacterVariant).filter_by(id=uuid.UUID(seeded["variant_id"])).first()
-        variant.voice_provider = "elevenlabs"
-        variant.elevenlabs_voice_id = "voice-1"
-        session.commit()
-        session.close()
-
-        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
-        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
-        mock_generate = mocker.patch(
-            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
-            return_value=b"video-bytes",
-        )
-
-        generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
-
-        assert mock_generate.call_args.kwargs["elevenlabs_api_key"] == "sk-real-key"
-
-    def test_voice_provider_kling_never_resolves_an_elevenlabs_key(self, db, seeded, mocker):
-        # variant.voice_provider defaults to "kling" in the seeded fixture —
-        # confirms the brand's elevenlabs_api_key_encrypted column is never
-        # even queried/decrypted when the variant hasn't opted in.
-        from app.social.crypto import encrypt
-
-        session = db()
-        brand = session.query(CharacterBrand).filter_by(id=uuid.UUID(seeded["brand_id"])).first()
-        brand.elevenlabs_api_key_encrypted = encrypt("sk-real-key")
-        session.commit()
-        session.close()
-
-        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
-        mocker.patch("app.media.storage.upload", return_value="https://supabase/video.mp4")
-        mock_generate = mocker.patch(
-            "app.services.culturetoon_selfhosted_video.generate_toon_video_selfhosted",
-            return_value=b"video-bytes",
-        )
-
-        generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
-
-        assert mock_generate.call_args.kwargs["elevenlabs_api_key"] is None
+        assert mock_generate.call_args.kwargs["background"] is None
 
     def test_resilient_commit_raises_after_exhausting_retries(self, mocker):
         session = mocker.Mock()

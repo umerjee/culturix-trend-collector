@@ -16,7 +16,7 @@ interface Props {
   // expressions_generating's docstring — a synchronous version got killed
   // mid-batch by Vercel's own serverless function limit, independent of
   // any client-side timeout). The parent owns starting it and polling the
-  // variant, matching how it already owns registerElement/trainLora — this
+  // variant, matching how it already owns registerElement — this
   // component just reflects that state and refetches its own expression
   // list while a batch is in flight.
   generatingAll: boolean;

@@ -82,13 +82,14 @@ def run_calendar_sync():
 
 
 # On-demand RunPod Pods (as opposed to the production Serverless
-# endpoint, which isn't a "Pod" at all) only ever exist for two known,
-# bounded purposes: LoRA training (budgeted at up to ~1h, see
-# create_training_pod_with_retry's docstring) and manual/eval testing
-# pods created ad hoc (meant to be short-lived, see runpod_client.py's
-# module docstring). Nothing legitimate should ever run longer than this
-# — set generously above both known cases so a false-positive kill on
-# real work is essentially impossible.
+# endpoint, which isn't a "Pod" at all) only ever exist for known,
+# short-lived purposes now: CPU carrier pods reaching a Network Volume
+# with no S3-compatible API (app/media/runpod_volume_relay.py — seconds
+# to a few minutes per rental) and manual/eval testing pods created ad
+# hoc (meant to be short-lived, see runpod_client.py's module docstring).
+# Nothing legitimate should ever run longer than this — set generously
+# above both known cases so a false-positive kill on real work is
+# essentially impossible.
 ORPHAN_POD_MAX_AGE_HOURS = 2.0
 
 
