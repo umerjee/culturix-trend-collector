@@ -284,8 +284,7 @@ LoRA-training pipeline. If any of these are still set in Railway/`.env`,
 they're dead and safe to remove.
 
 ### Optional
-`LTX25_WORKFLOW_PATH`, `LTX_WORKFLOW_PATH`, `RUNPOD_ALLOCATION_MAX_RETRIES`,
-`RUNPOD_ALLOCATION_BACKOFF_SECONDS`.
+`LTX25_WORKFLOW_PATH`.
 
 ---
 
@@ -467,14 +466,24 @@ killed a running 40GB download because cleanup sat in `finally`.
   descriptions. Only the text fields were regenerated. Matters for Kling,
   which uses `image_url` as a real `refer_image`; the self-hosted path never
   reads it.
-- **Last-frame chaining (`_extract_last_frame_png`/`_concat_video_segments`)
-  is NOT dead code under 2.5** — it's how `generate_toon_video_ltx25` chains
-  consecutive same-scene/same-speaker segments together. (An earlier version
-  of this doc claimed it was dead; that was wrong.) Chatterbox TTS is still
-  loaded worker-side (`deploy/runpod_serverless/handler.py::_get_chatterbox_model`)
-  as a narration fallback — whether `generate_toon_video_ltx25` still ever
-  exercises that path hasn't been re-verified since the 2.3/LoRA removal;
-  worth checking before assuming it's live or dead.
+- **Last-frame chaining (`_extract_last_frame_png`/`_concat_video_segments`
+  in `app/services/culturetoon_selfhosted_video.py`) is NOT dead code
+  under 2.5** — it's how `generate_toon_video_ltx25` chains consecutive
+  same-scene/same-speaker segments together. (An earlier version of this
+  doc claimed it was dead; that was wrong.)
+- **Chatterbox TTS and the whole narration/mux/shot_workflows surface WAS
+  confirmed dead and removed 2026-09-17.** Traced every caller: nothing
+  in production ever passed `narration_text`/`narration_audio_bytes` or
+  `shot_workflows` to `run_inference_job` — `generate_toon_video_ltx25`
+  always used the plain single-`workflow` shape with no narration fields,
+  since 2.5 denoises audio and video jointly in one pass. Removed
+  Chatterbox from the Dockerfile (and its NCCL/torch-restore workaround —
+  a real source of two past build breaks) and the corresponding dead code
+  in `handler.py`/`runpod_serverless_client.py`
+  (`run_inference_job_with_allocation_retry`/`cancel_job` too — the first
+  Serverless job of a batch window no longer gets a retry wrapper, just
+  the existing abort-and-alert-on-failure behavior, see
+  `culturetoon_selfhosted_batch.py`'s own docstring).
 - **`HF_TOKEN` was exposed in a pod's process list** during a download —
   worth rotating.
 - **No QA pass on the self-hosted path** (the Kling path has one).

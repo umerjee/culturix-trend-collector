@@ -1086,16 +1086,6 @@ class TestLTX25TimeoutBudget:
         default = inspect.signature(run_inference_job).parameters["timeout_seconds"].default
         assert ltx25_timeout_seconds(MAX_TOTAL_SECONDS) <= default
 
-    def test_allocation_retry_wrapper_waits_as_long_as_the_job_can_take(self):
-        """The interactive path goes through the retry wrapper, which kept
-        its own 1200s default when run_inference_job's was raised."""
-        import inspect
-        from app.media.runpod_serverless_client import (
-            run_inference_job, run_inference_job_with_allocation_retry)
-        assert (inspect.signature(run_inference_job_with_allocation_retry)
-                .parameters["timeout_seconds"].default
-                >= inspect.signature(run_inference_job).parameters["timeout_seconds"].default)
-
     def test_worker_ceiling_covers_the_longest_generation(self):
         import re, pathlib
         from app.services.culturetoon_script import MAX_TOTAL_SECONDS

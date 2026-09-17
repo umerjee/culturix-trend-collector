@@ -24,20 +24,22 @@ GPU lifecycle of this module's own anymore.
 Network Volume's inference region has shown only "medium" RTX 4090
 availability on RunPod, not "high," so a cold Serverless endpoint
 occasionally failing to allocate a worker on the very first request of a
-window is a real, expected failure mode — not hypothetical. The FIRST
-Serverless job of a run goes through
-generate_toon_video_selfhosted(..., use_allocation_retry=True), which
-retries with backoff (RUNPOD_ALLOCATION_MAX_RETRIES/
-RUNPOD_ALLOCATION_BACKOFF_SECONDS) specifically around that allocation
-step. If it still fails after retrying, that's treated as symptomatic of
-the whole endpoint being unavailable this run — rather than repeatedly
-failing every remaining script identically, the rest of the window is
-skipped, an alert email is sent (OPS_ALERT_EMAIL), and the failure is
-logged with enough context (brand, endpoint, timestamp, error) to act on
-without digging through logs. Every job AFTER the first one uses the plain
-(non-retrying) call and relies on the existing per-script try/except below
+window is a real, expected failure mode — not hypothetical. If the FIRST
+Serverless job of a run fails with a RunPodServerlessError/TimeoutError,
+that's treated as symptomatic of the whole endpoint being unavailable
+this run — rather than repeatedly failing every remaining script
+identically, the rest of the window is skipped (raising _AllocationAbort,
+caught by the caller below), an alert email is sent (OPS_ALERT_EMAIL),
+and the failure is logged with enough context (brand, endpoint,
+timestamp, error) to act on without digging through logs. Every job AFTER
+the first one relies on the existing per-script try/except below instead
 — once a worker is warm, an individual clip failing is an ordinary,
-isolated failure, not a sign the whole endpoint is down.
+isolated failure, not a sign the whole endpoint is down. (An earlier
+version additionally retried the first job with backoff via
+run_inference_job_with_allocation_retry before giving up — removed
+2026-09-17 along with the rest of the dead LTX-2.3-era client surface,
+since nothing else used that wrapper either; the abort-and-alert behavior
+here is unchanged.)
 """
 import logging
 import os
@@ -166,7 +168,8 @@ def _process_brand(session, brand, endpoint_id: str, deadline: float, job_tracke
         session.commit()
 
         # Only the very first Serverless call of the whole window gets the
-        # allocation-retry treatment — see this module's own docstring.
+        # abort-the-window-and-alert treatment on failure — see this
+        # module's own docstring.
         is_first_job = not job_tracker["attempted"]
         job_tracker["attempted"] = True
 

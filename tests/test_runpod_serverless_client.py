@@ -10,9 +10,7 @@ os.environ.setdefault("RUNPOD_API_KEY", "test-key")
 
 import pytest
 
-from app.media.runpod_serverless_client import (
-    run_inference_job, run_inference_job_with_allocation_retry, cancel_job, RunPodServerlessError,
-)
+from app.media.runpod_serverless_client import run_inference_job, RunPodServerlessError
 
 
 def _mock_response(mocker, status_code=200, json_data=None, content=b""):
@@ -100,10 +98,9 @@ class TestRunInferenceJob:
             run_inference_job("endpoint-1", {"1": {}}, timeout_seconds=30)
 
     def test_timeout_exception_carries_job_id(self, mocker):
-        """Confirmed live 2026-08-25: run_inference_job_with_allocation_retry
-        needs the job_id off a timed-out attempt to cancel it before
-        retrying — without this, a retry left the original job orphaned
-        in RunPod's queue instead of replaced."""
+        """The job_id lets a caller identify/log which specific job timed
+        out (RunPod's own queue keeps it running server-side regardless of
+        what this client does)."""
         submit_resp = _mock_response(mocker, 200, {"id": "job-orphan-1"})
         queued_resp = _mock_response(mocker, 200, {"status": "IN_QUEUE"})
         mocker.patch("httpx.post", return_value=submit_resp)
@@ -127,140 +124,7 @@ class TestRunInferenceJob:
             run_inference_job("endpoint-1", {"1": {}})
         assert exc_info.value.job_id == "job-failed-1"
 
-
-class TestNarrationAudioPayload:
-    def test_narration_audio_bytes_is_base64_encoded_into_job_input(self, mocker):
-        submit_resp = _mock_response(mocker, 200, {"id": "job-1"})
-        status_resp = _mock_response(mocker, 200, {
-            "status": "COMPLETED", "output": {"video_base64": base64.b64encode(b"video-with-audio").decode()},
-        })
-        mock_post = mocker.patch("httpx.post", return_value=submit_resp)
-        mocker.patch("httpx.get", return_value=status_resp)
-        mocker.patch("time.sleep")
-
-        result = run_inference_job("endpoint-1", {"1": {}}, narration_audio_bytes=b"narration-bytes")
-
-        assert result == b"video-with-audio"
-        sent_input = mock_post.call_args.kwargs["json"]["input"]
-        assert base64.b64decode(sent_input["narration_audio_base64"]) == b"narration-bytes"
-
-    def test_no_narration_audio_omits_the_key_entirely(self, mocker):
-        submit_resp = _mock_response(mocker, 200, {"id": "job-1"})
-        status_resp = _mock_response(mocker, 200, {
-            "status": "COMPLETED", "output": {"video_base64": base64.b64encode(b"video").decode()},
-        })
-        mock_post = mocker.patch("httpx.post", return_value=submit_resp)
-        mocker.patch("httpx.get", return_value=status_resp)
-        mocker.patch("time.sleep")
-
-        run_inference_job("endpoint-1", {"1": {}})
-
-        sent_input = mock_post.call_args.kwargs["json"]["input"]
-        assert "narration_audio_base64" not in sent_input
-
-
-class TestCancelJob:
-    def test_posts_to_the_documented_cancel_path(self, mocker):
-        mock_post = mocker.patch("httpx.post", return_value=_mock_response(mocker, 200, {}))
-
-        cancel_job("endpoint-1", "job-1")
-
-        mock_post.assert_called_once()
-        assert mock_post.call_args.args[0] == "https://api.runpod.ai/v2/endpoint-1/cancel/job-1"
-
-    def test_failure_to_cancel_is_swallowed_not_raised(self, mocker):
-        mocker.patch("httpx.post", side_effect=RuntimeError("network blip"))
-
-        cancel_job("endpoint-1", "job-1")  # must not raise
-
     def test_missing_api_key_raises(self, mocker, monkeypatch):
         monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
         with pytest.raises(RuntimeError):
             run_inference_job("endpoint-1", {"1": {}})
-
-
-class TestRunInferenceJobWithAllocationRetry:
-    def test_succeeds_on_first_try_without_retrying(self, mocker):
-        mock_job = mocker.patch(
-            "app.media.runpod_serverless_client.run_inference_job", return_value=b"video-bytes",
-        )
-        mock_sleep = mocker.patch("time.sleep")
-
-        result = run_inference_job_with_allocation_retry("endpoint-1", {"1": {}}, max_retries=1, backoff_seconds=1)
-
-        assert result == b"video-bytes"
-        mock_job.assert_called_once()
-        mock_sleep.assert_not_called()
-
-    def test_retries_once_after_allocation_failure_then_succeeds(self, mocker):
-        mock_job = mocker.patch(
-            "app.media.runpod_serverless_client.run_inference_job",
-            side_effect=[TimeoutError("no worker available"), b"video-bytes"],
-        )
-        mock_sleep = mocker.patch("time.sleep")
-
-        result = run_inference_job_with_allocation_retry("endpoint-1", {"1": {}}, max_retries=1, backoff_seconds=45)
-
-        assert result == b"video-bytes"
-        assert mock_job.call_count == 2
-        mock_sleep.assert_called_once_with(45)
-
-    def test_cancels_the_orphaned_job_before_retrying(self, mocker):
-        """Confirmed live 2026-08-25: a single allocation-retry left the
-        FIRST job still queued on RunPod's side (nothing ever told it to
-        stop) while a brand-new job got submitted for the same request —
-        two jobs queued against the endpoint for one user click."""
-        timed_out = TimeoutError("no worker available")
-        timed_out.job_id = "job-orphan-1"
-        mocker.patch(
-            "app.media.runpod_serverless_client.run_inference_job",
-            side_effect=[timed_out, b"video-bytes"],
-        )
-        mock_cancel = mocker.patch("app.media.runpod_serverless_client.cancel_job")
-        mocker.patch("time.sleep")
-
-        result = run_inference_job_with_allocation_retry("endpoint-1", {"1": {}}, max_retries=1, backoff_seconds=1)
-
-        assert result == b"video-bytes"
-        mock_cancel.assert_called_once_with("endpoint-1", "job-orphan-1")
-
-    def test_no_cancel_attempted_when_exception_carries_no_job_id(self, mocker):
-        # Some failure paths (e.g. "no job id in submit response") never
-        # got far enough to have a job_id at all — must not crash trying
-        # to cancel something that doesn't exist.
-        mocker.patch(
-            "app.media.runpod_serverless_client.run_inference_job",
-            side_effect=[RunPodServerlessError("no job id"), b"video-bytes"],
-        )
-        mock_cancel = mocker.patch("app.media.runpod_serverless_client.cancel_job")
-        mocker.patch("time.sleep")
-
-        result = run_inference_job_with_allocation_retry("endpoint-1", {"1": {}}, max_retries=1, backoff_seconds=1)
-
-        assert result == b"video-bytes"
-        mock_cancel.assert_not_called()
-
-    def test_raises_after_exhausting_retries(self, mocker):
-        mocker.patch(
-            "app.media.runpod_serverless_client.run_inference_job",
-            side_effect=RunPodServerlessError("no capacity"),
-        )
-        mocker.patch("time.sleep")
-
-        with pytest.raises(RunPodServerlessError, match="no capacity"):
-            run_inference_job_with_allocation_retry("endpoint-1", {"1": {}}, max_retries=1, backoff_seconds=1)
-
-    def test_reads_retry_config_from_env_when_not_passed(self, mocker, monkeypatch):
-        monkeypatch.setenv("RUNPOD_ALLOCATION_MAX_RETRIES", "2")
-        monkeypatch.setenv("RUNPOD_ALLOCATION_BACKOFF_SECONDS", "5")
-        mock_job = mocker.patch(
-            "app.media.runpod_serverless_client.run_inference_job",
-            side_effect=[TimeoutError("x"), TimeoutError("x"), b"video-bytes"],
-        )
-        mock_sleep = mocker.patch("time.sleep")
-
-        result = run_inference_job_with_allocation_retry("endpoint-1", {"1": {}})
-
-        assert result == b"video-bytes"
-        assert mock_job.call_count == 3
-        mock_sleep.assert_called_with(5.0)
