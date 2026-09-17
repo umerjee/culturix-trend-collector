@@ -291,26 +291,30 @@ def _apply_msr_graph_surgery(workflow: dict, reference_image_filenames: list,
         return guide_id
 
     def _add_crop(guide_id: str, latent_ref: list) -> str:
-        # KNOWN UNRESOLVED ISSUE, confirmed live 2026-09-17 (real GPU
-        # renders, not simulated): the last ~1s of decoded MSR output
-        # shows a raw reference portrait bleeding through (a crossfade
-        # into e.g. Zara's plain studio-background reference image),
-        # confirmed present even directly off THIS crop's own output (a
-        # diagnostic that decoded straight from the base pass, bypassing
-        # the upscale stage entirely, still showed it). LTXVCropGuides
-        # itself does cap total output at exactly the requested frame
-        # count in both good and bad cases (ruling out "crop is a total
-        # no-op"), so the leak looks more like cross-attention bleed baked
-        # into the neighboring frames DURING sampling, near the
-        # guide-frame boundary, rather than a simple wiring mistake —
-        # tried re-stamping frame_rate onto the guide's output via a
-        # fresh LTXVConditioning node before crop (matching a structural
-        # difference spotted in the official MSR sample workflow's own
-        # upscale-pass wiring) and it made no measurable difference,
-        # so that specific theory is ruled out. Left as direct guide->crop
-        # wiring (simplest known-working structure) pending further
-        # investigation. LTX25_MSR_ENABLED stays off in production until
-        # this is resolved — see docs/culturix-video-pipeline.md.
+        # PREVIOUSLY a known issue, now understood — confirmed live
+        # 2026-09-17 across three real GPU renders. A thin, single-beat
+        # test prompt ("stand together, say three lines") produced a raw
+        # reference portrait bleeding through the last ~1s of decoded
+        # output, reproduced identically even decoding straight off the
+        # BASE pass alone (bypassing upscale entirely) and unaffected by
+        # a frame_rate-restamp wiring change (ruled that theory out).
+        # LTXVCropGuides caps total output at exactly the requested frame
+        # count in every case (confirmed via nb_frames == duration*24+1,
+        # both with the leak and without), which rules out "crop is a
+        # no-op" — the reference-slot frames ARE being fully stripped.
+        # The actual cause: with a description too short to fill the
+        # requested duration, the model runs out of content partway
+        # through and drifts toward reference-like/identity-anchor
+        # imagery for the remaining frames. A SECOND real render using a
+        # denser prompt — continuous action/dialogue for all three
+        # characters explicitly written across the FULL requested
+        # duration, plus an explicit closing instruction not to settle
+        # into a static pose before the shot ends — showed a completely
+        # clean last frame, no leak, same cast/background/duration.
+        # Practical takeaway: build_ltx25_scene_prompt's msr_mode prompts
+        # need to describe action spanning the whole segment, not just
+        # its opening beat, or short/thin segments risk this. Graph
+        # wiring itself was never the problem.
         crop_id = _new_id()
         workflow[crop_id] = {
             "class_type": "LTXVCropGuides",

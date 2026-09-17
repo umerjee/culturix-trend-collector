@@ -268,13 +268,28 @@ itself, separately from the now-fixed visual/identity problem.
 ### MSR (Multiple Subject Reference), optional
 `LTX25_MSR_ENABLED=true` switches multi-character segments to MSR's
 independent per-reference conditioning instead of the single-primary-
-portrait anchor — see `app/media/ltx25_workflow.py`. **Off by default as
-of 2026-09-17**: the graph surgery and live-schema validation are
-confirmed correct, but a real end-to-end render showed a ~1s raw-
-reference-portrait leak at the tail of decoded output (root cause not
-yet found — ruled out a frame_rate-metadata theory, see
-`_add_crop`'s docstring in that file). Do not enable in production until
-that's resolved.
+portrait anchor — see `app/media/ltx25_workflow.py`. Graph surgery and
+live-schema validation are confirmed correct.
+
+**Root cause of the earlier "raw reference portrait leaks into the last
+~1s" issue is now understood (2026-09-17), and it's a prompt-content
+problem, not a graph bug**: with a description too thin to fill the
+requested duration, the model runs out of content partway through and
+drifts toward reference-like imagery for the remainder. Confirmed via
+three real GPU renders — a thin, single-beat prompt reproduced the leak
+identically twice (including decoding straight off the base pass alone,
+ruling out the upscale stage), then a denser prompt describing continuous
+action/dialogue across the FULL requested duration, with an explicit
+"don't settle into a static pose before the shot ends" instruction,
+produced a completely clean result with the same cast/background/
+duration. See `_add_crop`'s docstring in that file for the full trace.
+
+**Still off by default**: the fix (dense, full-duration prompts) is
+validated against a hand-written test prompt, not yet against
+`build_ltx25_scene_prompt`'s actual generated output for a real segment —
+worth one more real-segment check, or at least a read-through of what
+that function tends to produce for short segments, before flipping this
+on in production.
 
 ### Removed 2026-09-17 (per-character LoRA training)
 `RUNPOD_NETWORK_VOLUME_ID`, `RUNPOD_S3_*`, `RUNPOD_TRAINING_*`,

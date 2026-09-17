@@ -803,7 +803,18 @@ class TestGenerateToonVideoLtx25SceneAwareAnchoring:
         """Mocks every external boundary generate_toon_video_ltx25 crosses:
         backdrop/portrait fetches (httpx.get), the anchor builder, the
         RunPod call, last-frame extraction, and segment concatenation.
-        Returns the mocks the tests need to assert against."""
+        Returns the mocks the tests need to assert against.
+
+        Forces LTX25_MSR_ENABLED off regardless of the real environment's
+        setting (production has it on as of 2026-09-17) — this class tests
+        the CLASSIC single-anchor scene-boundary/name-scrubbing behavior
+        specifically, which MSR mode deliberately bypasses (a 2+-variant
+        cut segment routes through MSR instead when the flag is on,
+        confirmed live: this exact class failed for real once the ambient
+        .env flag flipped on, since "Captain Nova" naming her own reference
+        image is correct under MSR, not a leak)."""
+        mocker.patch("app.media.ltx25_workflow.LTX25_MSR_ENABLED", False)
+
         def fake_get(url, timeout=30):
             resp = mocker.Mock()
             resp.content = f"bytes-for-{url}".encode()
