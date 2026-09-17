@@ -1257,55 +1257,209 @@ def _format_script_for_prompt(script_result: dict) -> str:
     return f"{setting_line}Hook: {hook}\n\n" + "\n".join(shot_lines)
 
 
+# Per-tone judge rubrics: (critic framing, [criteria lines], passes_bar
+# clause). Keyed by the exact TONE_OPTIONS string. A script's rubric must
+# match what its writer prompt was actually asked for — the same reasoning
+# that motivated the original informative/comedy split (an explainer judged
+# by a comedy critic fails for not being funny, which is both wrong and
+# unactionable) extends to every tone: a dramatic scene judged by the
+# comedy rubric (reward absurd escalation) fails for not being ABSURD,
+# which is exactly backwards for drama. Each tone gets criteria that
+# reward what THAT tone is actually trying to do, not a reskin of comedy's.
+_TONE_JUDGE_RUBRICS = {
+    "educational": (
+        "a blunt, strict editor",
+        "educational",
+        [
+            "CLARITY: one clear, teachable takeaway a viewer could repeat or apply "
+            "afterward, not five half-covered points.",
+            "CONCRETENESS: real mechanisms, numbers and names, not abstract claims like "
+            "\"AI is changing everything\".",
+            "STRUCTURE: each shot builds toward that one takeaway, not a list of "
+            "unconnected facts.",
+            "ACCURACY: nothing invented. Penalise fabricated-sounding statistics, studies "
+            "or quotes heavily, and say so in the feedback.",
+        ],
+        "true only if a viewer could actually repeat or apply the one teachable takeaway "
+        "afterward",
+        "too vague or unsupported and say what to replace it with, don't just say "
+        "\"be clearer\"",
+    ),
+    "explainer": (
+        "a blunt, strict editor",
+        "explainer",
+        [
+            "MECHANISM: a genuine step-by-step account of HOW the thing actually works, "
+            "not a surface description that skips the real mechanism.",
+            "CLARITY: one clear through-line a viewer could repeat afterward, not several "
+            "half-covered angles.",
+            "STRUCTURE: each shot is a real step (cause, mechanism, consequence), not a "
+            "list of loosely related facts.",
+            "ACCURACY: nothing invented. Penalise fabricated-sounding statistics, studies "
+            "or quotes heavily, and say so in the feedback.",
+        ],
+        "true only if it actually explains the mechanism a viewer could repeat, not just "
+        "describes the topic",
+        "skips the real mechanism or is unsupported, and say what to replace it with",
+    ),
+    "informative": (
+        "a blunt, strict editor",
+        "informative facts",
+        [
+            "RELEVANCE: facts that are genuinely interesting or non-obvious, not things "
+            "most viewers already know.",
+            "CONCRETENESS: specific numbers, names and examples, not vague general "
+            "statements.",
+            "COHERENCE: the facts connect into one throughline, not an unrelated grab-bag "
+            "glued together.",
+            "ACCURACY: nothing invented. Penalise fabricated-sounding statistics, studies "
+            "or quotes heavily, and say so in the feedback.",
+        ],
+        "true only if the facts are genuinely non-obvious and connect into one throughline",
+        "too obvious/generic or doesn't connect to the rest, and say what to replace it with",
+    ),
+    "inspirational": (
+        "a blunt, strict editor",
+        "inspirational",
+        [
+            "SPECIFICITY: grounded in a real, concrete story, fact or detail — not a "
+            "generic platitude like \"believe in yourself\".",
+            "EARNED UPLIFT: the uplift follows from something actually shown or explained "
+            "in the scene, not just asserted.",
+            "AUTHENTICITY: avoids empty motivational-poster language in favor of something "
+            "that feels genuinely earned.",
+        ],
+        "true only if the uplift is earned by a specific, shown detail, not asserted",
+        "reads as a generic platitude and say what specific detail would earn it instead",
+    ),
+    "funny": (
+        "a blunt, strict comedy critic",
+        "skit",
+        [
+            "SPECIFICITY: concrete props/numbers/particulars, not generic statements a real "
+            "person might mildly say.",
+            "ESCALATION: each beat tops the one before it, not a flat list of parallel/"
+            "same-size beats.",
+            "COMMITMENT: characters pushed to an absurd, committed extreme, not a safe/mild "
+            "version.",
+        ],
+        "true only if genuinely funny and specific — most drafts should fail",
+        "too generic/mild and say what direction to push it, don't just say \"make it funnier\"",
+    ),
+    "dramatic": (
+        "a blunt, strict drama critic",
+        "dramatic scene",
+        [
+            "STAKES: something a character genuinely stands to lose or gain, not a "
+            "low-consequence situation dressed up as serious.",
+            "TURN: the scene changes something — a realization, a decision, a reveal — rather "
+            "than just restating the premise for its whole length.",
+            "RESTRAINT: emotion is shown through specific action/dialogue, not announced "
+            "outright (\"I'm so hurt\") or pushed into melodrama.",
+        ],
+        "true only if it earns real emotional weight through specifics, not asserted drama",
+        "where it tells instead of shows, or where the stakes are too vague to land",
+    ),
+    "satiric": (
+        "a blunt, strict satire editor",
+        "satirical scene",
+        [
+            "TARGET: a specific, recognizable real-world behavior, type or institution being "
+            "skewered, not a vague generic joke.",
+            "EXAGGERATION WITH LOGIC: the absurdity follows the target's own internal logic "
+            "pushed further, not random unrelated weirdness.",
+            "POINT: a viewer could state exactly what's being mocked and why — it isn't just "
+            "\"that was weird.\"",
+        ],
+        "true only if there's a real, nameable target and the exaggeration serves it",
+        "where the target is too vague or the exaggeration doesn't track its own logic",
+    ),
+    "sad": (
+        "a blunt, strict editor reviewing an emotional scene",
+        "scene",
+        [
+            "SPECIFICITY: one concrete, particular detail of the loss (an unfinished small "
+            "thing, a specific object) rather than a generic statement like \"she was sad\".",
+            "EARNED: the emotional beat follows from what's actually shown in the scene, not "
+            "just asserted by a character saying how they feel.",
+            "RESTRAINT: lands without melodrama or on-the-nose narration explaining the "
+            "feeling instead of showing it.",
+        ],
+        "true only if the emotion is earned through a specific, shown detail, not asserted",
+        "where it tells the feeling instead of showing a concrete detail that earns it",
+    ),
+    "wholesome": (
+        "a blunt, strict editor reviewing a warm/feel-good scene",
+        "scene",
+        [
+            "SPECIFICITY: a concrete gesture or detail of care between these particular "
+            "characters, not generic niceness that could belong to anyone.",
+            "EARNED CONNECTION: grounded in what's already established about these "
+            "characters' relationship/personalities, not interchangeable pleasantness.",
+            "RESTRAINT: warm without curdling into saccharine or stopping to moralize about "
+            "the lesson.",
+        ],
+        "true only if the warmth is specific to these characters, not generic niceness",
+        "where the warmth is generic/interchangeable or tips into saccharine",
+    ),
+    "chaotic": (
+        "a blunt, strict comedy critic reviewing a chaos-escalation scene",
+        "scene",
+        [
+            "MOMENTUM: each beat makes things MORE out of control than the last, compounding "
+            "rather than resetting to a new unrelated bit.",
+            "CAUSALITY: the chaos follows some — however absurd — chain of cause and effect, "
+            "not a string of random unconnected events.",
+            "COMMITMENT: characters react to the escalating chaos with real, specific "
+            "reactions, not just narration that chaos is happening.",
+        ],
+        "true only if the chaos genuinely compounds beat to beat with real causality",
+        "where the escalation resets instead of compounding, or events don't causally connect",
+    ),
+    "deadpan": (
+        "a blunt, strict comedy critic reviewing a deadpan scene",
+        "scene",
+        [
+            "CONTRAST: the more absurd the situation, the flatter and more matter-of-fact the "
+            "character's reaction/delivery — that gap IS the joke.",
+            "SPECIFICITY: a concrete, particular detail stated plainly, not a generic \"that's "
+            "weird\" reaction.",
+            "RESTRAINT: no mugging, no exclamation points, no explaining the joke — flatness "
+            "undercut by any of those fails the bit.",
+        ],
+        "true only if the flat delivery genuinely contrasts with real absurdity",
+        "where the delivery breaks flat (mugging, exclamation, over-explaining) or the "
+        "situation isn't absurd enough to need it",
+    ),
+}
+
+
 def _build_judge_prompt(script_result: dict) -> str:
     script_text = _format_script_for_prompt(script_result)
+    tone = (script_result.get("tone") or "").strip().lower()
 
-    # An explainer judged by a comedy critic fails for not being funny, which
-    # is both wrong and unactionable — the writer was never asked for jokes.
-    # The rubric has to follow the tone the script was actually written to.
-    if is_informative_tone(script_result.get("tone")):
-        return f"""You are a blunt, strict editor reviewing a short explainer script before it
-gets turned into video. Score it honestly — most first drafts sound informative while teaching
-nothing, and should NOT pass. A passing score is reserved for scripts a viewer could actually
-repeat the explanation from afterwards.
-
-{script_text}
-
-Score against these specific criteria (the exact bar the writer was given):
-- CLARITY: one clear takeaway the viewer can repeat, not five half-covered points.
-- CONCRETENESS: real mechanisms, numbers and names, not abstract claims like "AI is changing
-  everything".
-- STRUCTURE: each shot builds on the one before it (problem, mechanism, consequence) rather
-  than listing unconnected facts.
-- ACCURACY: nothing invented. Penalise fabricated-sounding statistics, studies or quotes
-  heavily, and say so in the feedback.
-
-Return ONLY valid JSON with exactly these keys:
-- comedy_score: integer 0-100 (here it scores the EXPLANATION's quality, not humour)
-- passes_bar: boolean (true only if it genuinely teaches something specific)
-- feedback: string, 1-3 sentences of SPECIFIC actionable critique — name the exact line that's
-  too vague or unsupported and say what to replace it with, don't just say "be clearer"
-
-Return ONLY the JSON object, no other text."""
-
-    return f"""You are a blunt, strict comedy critic reviewing a short skit script before it
-gets turned into video. Score it honestly — most first drafts are too safe and should NOT
-pass; a passing score should be rare, reserved for scripts that are genuinely specific and
-committed, not just "fine."
+    # Fall back to the "funny" rubric for any tone not in the table (should
+    # only happen for a value outside TONE_OPTIONS, e.g. old data) — better
+    # than crashing the judge over an unrecognized tone string.
+    framing, noun, criteria, passes_clause, feedback_clause = _TONE_JUDGE_RUBRICS.get(
+        tone, _TONE_JUDGE_RUBRICS["funny"]
+    )
+    criteria_block = "\n".join(f"- {line}" for line in criteria)
+    return f"""You are {framing} reviewing a short {noun} script before it gets turned into
+video. Score it honestly — most first drafts are too safe and should NOT pass; a passing score
+should be rare, reserved for scripts that are genuinely specific and committed, not just "fine."
 
 {script_text}
 
 Score against these specific criteria (the exact bar the writer was given):
-- SPECIFICITY: concrete props/numbers/particulars, not generic statements a real person might
-  mildly say.
-- ESCALATION: each beat tops the one before it, not a flat list of parallel/same-size beats.
-- COMMITMENT: characters pushed to an absurd, committed extreme, not a safe/mild version.
+{criteria_block}
 
 Return ONLY valid JSON with exactly these keys:
-- comedy_score: integer 0-100
-- passes_bar: boolean (true only if genuinely funny and specific — most drafts should fail)
+- comedy_score: integer 0-100 (scores against the criteria above, whatever this tone's actual
+  goal is — not necessarily humour)
+- passes_bar: boolean ({passes_clause})
 - feedback: string, 1-3 sentences of SPECIFIC actionable critique — name the exact line that's
-  too generic/mild and say what direction to push it, don't just say "make it funnier"
+  {feedback_clause}
 
 Return ONLY the JSON object, no other text."""
 

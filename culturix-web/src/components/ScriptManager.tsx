@@ -262,11 +262,28 @@ function ToneOptions() {
   );
 }
 
-/** The judgment column is named comedy_* in the DB for history, but an
- *  explainer is scored on clarity and accuracy — calling that a "comedy
- *  check" would read as the wrong rubric having been applied. */
+/** The judgment column is named comedy_* in the DB for history, but the
+ *  rubric behind it is genuinely per-tone (see culturetoon_script.py's
+ *  _TONE_JUDGE_RUBRICS) — a dramatic scene is scored on stakes/restraint,
+ *  not escalation, and calling every non-informative tone's result a
+ *  "Comedy check" would read as the wrong rubric having been applied to
+ *  eleven of TONE_OPTIONS' twelve tones. */
+const JUDGMENT_LABELS: Record<string, string> = {
+  educational: "Clarity check",
+  explainer: "Mechanism check",
+  informative: "Relevance check",
+  inspirational: "Uplift check",
+  funny: "Comedy check",
+  dramatic: "Drama check",
+  satiric: "Satire check",
+  sad: "Sentiment check",
+  wholesome: "Warmth check",
+  chaotic: "Chaos check",
+  deadpan: "Deadpan check",
+};
+
 function judgmentLabel(s: ToonScript): string {
-  return INFORMATIVE_TONES.includes(s.tone ?? "") ? "Explainer check" : "Comedy check";
+  return JUDGMENT_LABELS[s.tone ?? ""] ?? "Comedy check";
 }
 
 /** Pacing. LTX fits a line into its shot's duration by speeding the voice

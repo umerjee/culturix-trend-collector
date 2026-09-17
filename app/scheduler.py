@@ -301,7 +301,12 @@ def run_culturetoon_trend_dispatch(now=None):
     Kling/ElevenLabs budget. The draft lands as ToonScript(status="draft",
     generation_source="ai_auto") for a human to Approve or Dismiss in the
     Scripts tab, exactly like a user-clicked "Suggest" draft except the user
-    never had to ask for it.
+    never had to ask for it — including the same comedy_judgment score
+    (judge_script_comedy, one cheap text call) so the approve/dismiss
+    decision has the same signal a manually-suggested draft would. Missing
+    here until 2026-09-17 — these drafts silently had no score at all,
+    which the frontend degrades gracefully for by just not showing the
+    check, but was inconsistent, not a deliberate cost-saving choice.
 
     Idempotent per brand per day: skipped if this brand already has an
     ai_auto script created today (UTC). Skipped entirely (not an error) if
@@ -319,6 +324,7 @@ def run_culturetoon_trend_dispatch(now=None):
         from app.models.toon_script import ToonScript
         from app.services.culturetoon_script import (
             generate_toon_script, ToonScriptGenerationError, select_trend_for_brand,
+            judge_script_comedy,
         )
         from app.services.culturetoon_video import MAX_CHARACTERS_PER_VIDEO
         from app.routers.culturetoons import _gather_script_generation_context
@@ -393,6 +399,7 @@ def run_culturetoon_trend_dispatch(now=None):
                         tone=idea.get("tone"),
                         shots=idea.get("shots"),
                         total_duration_seconds=idea.get("total_duration_seconds"),
+                        comedy_judgment=judge_script_comedy(idea),
                         generation_source="ai_auto",
                         status="draft",
                     )

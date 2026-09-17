@@ -141,6 +141,30 @@ class TestRunCultureToonTrendDispatch:
         assert scripts[0].status == "draft"
         assert scripts[0].source_type == "persona"
 
+    def test_drafted_script_gets_a_comedy_judgment(self, db, user_id, mocker):
+        """Confirmed missing until 2026-09-17: this path never called
+        judge_script_comedy at all, so every auto-dispatched draft's
+        comedy_judgment was always NULL — the "funny score" badge in the
+        Scripts tab just never rendered for these, silently."""
+        _mock_qwen_script_response(mocker)
+        mock_judge = mocker.patch(
+            "app.services.culturetoon_script.judge_script_comedy",
+            return_value={"comedy_score": 82, "passes_bar": True, "feedback": "Specific and committed.", "judge_failed": False},
+        )
+        brand = _make_brand(db, user_id, delivery_time="09:00")
+        _make_variant(db, user_id, brand["id"])
+        _make_persona(db)
+
+        run_culturetoon_trend_dispatch(now=_WEDNESDAY_NOON)
+
+        mock_judge.assert_called_once()
+        session = db()
+        script = session.query(ToonScript).filter_by(brand_id=uuid.UUID(brand["id"])).first()
+        session.close()
+        assert script.comedy_judgment == {
+            "comedy_score": 82, "passes_bar": True, "feedback": "Specific and committed.", "judge_failed": False,
+        }
+
     def test_skipped_before_delivery_time(self, db, user_id, mocker):
         mock_call = _mock_qwen_script_response(mocker)
         brand = _make_brand(db, user_id, delivery_time="18:00")

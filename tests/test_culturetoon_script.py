@@ -902,10 +902,10 @@ class TestInformativeTones:
         assert "Comedy craft" in prompt
         assert "Teaching craft" not in prompt
 
-    def test_judge_scores_explainers_on_clarity_not_humour(self, mocker):
+    def test_judge_scores_educational_on_clarity_not_humour(self, mocker):
         from app.services.culturetoon_script import _build_judge_prompt
         prompt = _build_judge_prompt({"hook_line": "H", "tone": "educational", "shots": _VALID_SHOTS})
-        assert "explainer script" in prompt
+        assert "educational script" in prompt
         assert "CLARITY" in prompt
         assert "ACCURACY" in prompt
         assert "comedy critic" not in prompt
@@ -919,6 +919,60 @@ class TestInformativeTones:
     def test_missing_tone_defaults_to_the_comedy_rubric(self):
         from app.services.culturetoon_script import _build_judge_prompt
         assert "comedy critic" in _build_judge_prompt({"hook_line": "H", "shots": []})
+
+    # Every tone gets a rubric that rewards what THAT tone is actually
+    # trying to do — not a reskin of comedy's or one generic "explainer"
+    # rubric shared by every informative-family tone. One distinguishing
+    # keyword per tone, unique to a small handful of closely related tones
+    # at most (educational/explainer legitimately share CLARITY, being both
+    # teaching-focused — this checks presence, not full mutual exclusivity).
+    _TONE_DISTINGUISHING_KEYWORDS = {
+        "educational": "CLARITY",
+        "explainer": "MECHANISM",
+        "informative": "RELEVANCE",
+        "inspirational": "EARNED UPLIFT",
+        "funny": "ESCALATION",
+        "dramatic": "STAKES",
+        "satiric": "TARGET",
+        "sad": "EARNED:",
+        "wholesome": "EARNED CONNECTION",
+        "chaotic": "MOMENTUM",
+        "deadpan": "CONTRAST",
+    }
+
+    @pytest.mark.parametrize("tone,keyword", list(_TONE_DISTINGUISHING_KEYWORDS.items()))
+    def test_each_tone_gets_its_own_distinguishing_criterion(self, tone, keyword):
+        from app.services.culturetoon_script import _build_judge_prompt
+        prompt = _build_judge_prompt({"hook_line": "H", "tone": tone, "shots": _VALID_SHOTS})
+        assert keyword in prompt
+
+    def test_comedic_family_tones_dont_bleed_into_each_others_rubrics(self):
+        """dramatic/satiric/sad/wholesome/chaotic/deadpan each get a rubric
+        distinct from "funny" and from each other — this is the actual new
+        surface area (informative-family tones already shared criteria on
+        purpose, see the class docstring above)."""
+        from app.services.culturetoon_script import _build_judge_prompt
+        comedic_family = ("funny", "dramatic", "satiric", "sad", "wholesome", "chaotic", "deadpan")
+        keywords = {t: self._TONE_DISTINGUISHING_KEYWORDS[t] for t in comedic_family}
+        for tone in comedic_family:
+            prompt = _build_judge_prompt({"hook_line": "H", "tone": tone, "shots": _VALID_SHOTS})
+            for other_tone, other_keyword in keywords.items():
+                if other_tone == tone:
+                    continue
+                assert other_keyword not in prompt, (
+                    f"{tone}'s rubric unexpectedly contains {other_keyword!r} ({other_tone}'s criterion)"
+                )
+
+    def test_dramatic_and_sad_are_not_judged_by_the_comedy_rubric(self):
+        """The exact bug class this whole table exists to close: before this,
+        every non-informative tone fell through to the comedy rubric, so a
+        dramatic or sad script was scored on ESCALATION/COMMITMENT — criteria
+        that reward absurdity, which is backwards for drama."""
+        from app.services.culturetoon_script import _build_judge_prompt
+        for tone in ("dramatic", "sad"):
+            prompt = _build_judge_prompt({"hook_line": "H", "tone": tone, "shots": _VALID_SHOTS})
+            assert "ESCALATION" not in prompt
+            assert "comedy critic" not in prompt
 
     def test_is_informative_tone_is_case_insensitive(self):
         from app.services.culturetoon_script import is_informative_tone
