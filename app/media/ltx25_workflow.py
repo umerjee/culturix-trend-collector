@@ -81,6 +81,19 @@ _MATTE_TOLERANCE = 100
 TARGET_WIDTH = 1280
 TARGET_HEIGHT = 704
 
+# MSR (Multiple Subject Reference) — see LTX25_MSR_ENABLED. Node ids/wiring
+# below are traced directly from LiconStudio/LTX-2.5-Multiple-Subject-
+# Reference's bundled LTX2.5-MSR-sample-workflow.json links array (not
+# re-derived from the plugin README's prose), mapped onto THIS repo's own
+# converted graph's real node ids (384=UNETLoader, 385/386=video/audio VAE,
+# 356=EmptyLTXVLatentVideo, 365=the single LTXVConditioning shared by both
+# passes, 377/340=LTXVConcatAVLatent base/upscale, 344/368=SamplerCustom
+# Advanced base/upscale, 367/369=LTXVSeparateAVLatent base/upscale,
+# 348=LTXVLatentUpsampler, 374=VAEDecodeTiled).
+LTX25_MSR_ENABLED = os.getenv("LTX25_MSR_ENABLED", "").lower() in ("1", "true", "yes")
+MSR_LORA_NAME = "LTX-2.5-Licon-MSR-V1.safetensors"
+MSR_MAX_REFERENCES = 5
+
 
 class LTX25WorkflowError(Exception):
     pass
@@ -119,19 +132,213 @@ def _strip_resize_node(workflow: dict) -> None:
         del workflow[node_id]
 
 
+def _apply_msr_graph_surgery(workflow: dict, reference_image_filenames: list,
+                              lora_strength: float = 1.0) -> None:
+    """Replaces this template's single-first-frame image conditioning
+    (LTXVImgToVideoInplace, one per pass) with MSR's per-reference
+    conditioning (ComfyUILTX25MSRICLoRALoader + one ComfyUILTX25MSR
+    MultiReferenceGuide per pass) — MSR is a substitute for that mechanism,
+    not an addition to it: the sample workflow this was traced from has no
+    LTXVImgToVideoInplace node at all, and its guide nodes take the EMPTY
+    video latent directly (see module-level comment above for exact node
+    ids this maps onto).
+
+    Deliberately leaves node 395 (LoadImage)/351 (ResizeImageMaskNode)/350
+    (LTXVPreprocess) untouched even though they become functionally unused
+    for identity conditioning: 350 also feeds 380 (TextGenerateLTX2Prompt),
+    the prompt-enhancer branch this workflow always disables via
+    PrimitiveBoolean — but ComfyUI still validates/executes every node
+    "feeding an output" regardless of a downstream switch's value (see this
+    module's MAIN_CLIP comment for the exact same gotcha already learned
+    once). Only 357/349 (LTXVImgToVideoInplace) are deleted, since rewiring
+    377/340 away from them leaves them with zero remaining consumers.
+    """
+    if not (2 <= len(reference_image_filenames) <= MSR_MAX_REFERENCES):
+        raise LTX25WorkflowError(
+            f"MSR needs 2-{MSR_MAX_REFERENCES} reference images, got {len(reference_image_filenames)}"
+        )
+
+    unet_ids = _nodes_of_class(workflow, "UNETLoader")
+    if len(unet_ids) != 1:
+        raise LTX25WorkflowError(f"Expected exactly one UNETLoader, found {len(unet_ids)}")
+    unet_id = unet_ids[0]
+
+    video_vae_ids = _nodes_of_class(workflow, "VAELoader")
+    video_vae_id = next(
+        (nid for nid in video_vae_ids if "audio" not in str(workflow[nid]["inputs"].get("vae_name", "")).lower()),
+        None,
+    )
+    if video_vae_id is None:
+        raise LTX25WorkflowError("Could not identify the video VAELoader (non-audio) for MSR wiring")
+
+    conditioning_ids = _nodes_of_class(workflow, "LTXVConditioning")
+    if len(conditioning_ids) != 1:
+        raise LTX25WorkflowError(f"Expected exactly one shared LTXVConditioning, found {len(conditioning_ids)}")
+    conditioning_id = conditioning_ids[0]
+
+    empty_latent_ids = _nodes_of_class(workflow, "EmptyLTXVLatentVideo")
+    if len(empty_latent_ids) != 1:
+        raise LTX25WorkflowError(f"Expected exactly one EmptyLTXVLatentVideo, found {len(empty_latent_ids)}")
+    empty_latent_id = empty_latent_ids[0]
+
+    upsampler_ids = _nodes_of_class(workflow, "LTXVLatentUpsampler")
+    if len(upsampler_ids) != 1:
+        raise LTX25WorkflowError(f"Expected exactly one LTXVLatentUpsampler, found {len(upsampler_ids)}")
+    upsampler_id = upsampler_ids[0]
+
+    img2video_ids = _nodes_of_class(workflow, "LTXVImgToVideoInplace")
+    base_img2video_id = next((nid for nid in img2video_ids if workflow[nid]["inputs"].get("strength") == 0.7), None)
+    upscale_img2video_id = next((nid for nid in img2video_ids if workflow[nid]["inputs"].get("strength") == 1), None)
+    if not base_img2video_id or not upscale_img2video_id:
+        raise LTX25WorkflowError("Could not identify base (strength 0.7) / upscale (strength 1) LTXVImgToVideoInplace nodes")
+
+    # The two LTXVConcatAVLatent nodes are distinguished by which
+    # LTXVImgToVideoInplace currently feeds their video_latent input —
+    # found before either gets rewired below.
+    concat_base_id = next(
+        nid for nid, n in workflow.items()
+        if n["class_type"] == "LTXVConcatAVLatent" and n["inputs"].get("video_latent") == [base_img2video_id, 0]
+    )
+    concat_upscale_id = next(
+        nid for nid, n in workflow.items()
+        if n["class_type"] == "LTXVConcatAVLatent" and n["inputs"].get("video_latent") == [upscale_img2video_id, 0]
+    )
+
+    # LTXVSeparateAVLatent feeding the upsampler is the base pass's; the one
+    # feeding VAEDecodeTiled is the upscale pass's.
+    separate_base_id = next(
+        nid for nid, n in workflow.items()
+        if n["class_type"] == "LTXVSeparateAVLatent" and n["inputs"].get("samples", None) is None
+        and any(
+            other["class_type"] == "LTXVLatentUpsampler" and other["inputs"].get("samples") == [nid, 0]
+            for other in workflow.values()
+        )
+    )
+    decode_ids = _nodes_of_class(workflow, "VAEDecodeTiled")
+    if len(decode_ids) != 1:
+        raise LTX25WorkflowError(f"Expected exactly one VAEDecodeTiled, found {len(decode_ids)}")
+    decode_id = decode_ids[0]
+    separate_upscale_id = next(
+        nid for nid, n in workflow.items()
+        if n["class_type"] == "LTXVSeparateAVLatent"
+        and workflow[decode_id]["inputs"].get("samples") == [nid, 0]
+    )
+
+    next_id = [max(int(nid) for nid in workflow if str(nid).isdigit()) + 1]
+
+    def _new_id() -> str:
+        node_id = str(next_id[0])
+        next_id[0] += 1
+        return node_id
+
+    lora_loader_id = _new_id()
+    workflow[lora_loader_id] = {
+        "class_type": "ComfyUILTX25MSRICLoRALoader",
+        "inputs": {
+            "model": [unet_id, 0],
+            "lora_name": MSR_LORA_NAME,
+            "strength_model": lora_strength,
+        },
+    }
+    for guider_id in _nodes_of_class(workflow, "LTXVDualCFGGuider"):
+        if workflow[guider_id]["inputs"].get("model") == [unet_id, 0]:
+            workflow[guider_id]["inputs"]["model"] = [lora_loader_id, 0]
+
+    ref_node_ids = []
+    for filename in reference_image_filenames:
+        ref_id = _new_id()
+        workflow[ref_id] = {"class_type": "LoadImage", "inputs": {"image": filename}}
+        ref_node_ids.append(ref_id)
+
+    def _reference_inputs() -> dict:
+        # Guide node input order: pic1, pic2, pic3, pic4, background —
+        # matches ComfyUI-LTX2.5-MSR's documented "stable reference order"
+        # (README's "Reference inputs are processed in this stable order").
+        slot_names = ["pic1", "pic2", "pic3", "pic4", "background"]
+        inputs = {}
+        for slot_name, ref_id in zip(slot_names, ref_node_ids):
+            inputs[slot_name] = [ref_id, 0]
+        return inputs
+
+    def _add_guide(latent_ref: list) -> str:
+        guide_id = _new_id()
+        workflow[guide_id] = {
+            "class_type": "ComfyUILTX25MSRMultiReferenceGuide",
+            "inputs": {
+                "positive": [conditioning_id, 0],
+                "negative": [conditioning_id, 1],
+                "vae": [video_vae_id, 0],
+                "latent": latent_ref,
+                "msr_parameters": [lora_loader_id, 1],
+                "strength": 1.0,
+                "reference_frames": 33,
+                "use_tiled_encode": False,
+                **_reference_inputs(),
+            },
+        }
+        return guide_id
+
+    def _add_crop(guide_id: str, latent_ref: list) -> str:
+        crop_id = _new_id()
+        workflow[crop_id] = {
+            "class_type": "LTXVCropGuides",
+            "inputs": {
+                "positive": [guide_id, 0],
+                "negative": [guide_id, 1],
+                "latent": latent_ref,
+            },
+        }
+        return crop_id
+
+    guide_base_id = _add_guide([empty_latent_id, 0])
+    crop_base_id = _add_crop(guide_base_id, [separate_base_id, 0])
+
+    guide_upscale_id = _add_guide([upsampler_id, 0])
+    crop_upscale_id = _add_crop(guide_upscale_id, [separate_upscale_id, 0])
+
+    # Rewire the base pass to condition on the MSR guide's latent (which
+    # carries the appended reference-slot frames) instead of the old
+    # single-image LTXVImgToVideoInplace output, and to resume from the
+    # crop's OUTPUT (reference slots stripped) rather than the raw
+    # separated latent, matching the sample workflow's exact ordering.
+    workflow[concat_base_id]["inputs"]["video_latent"] = [guide_base_id, 2]
+    workflow[upsampler_id]["inputs"]["samples"] = [crop_base_id, 2]
+
+    workflow[concat_upscale_id]["inputs"]["video_latent"] = [guide_upscale_id, 2]
+    workflow[decode_id]["inputs"]["samples"] = [crop_upscale_id, 2]
+
+    del workflow[base_img2video_id]
+    del workflow[upscale_img2video_id]
+
+
 def build_workflow(prompt_text: str, duration_seconds: int,
                    negative_prompt: Optional[str] = None,
                    seed: Optional[int] = None,
                    reference_image_filename: str = "reference.png",
                    video_cfg: Optional[float] = None,
                    audio_cfg: Optional[float] = None,
-                   image_strength: Optional[float] = None) -> dict:
+                   image_strength: Optional[float] = None,
+                   reference_image_filenames: Optional[list] = None,
+                   msr_lora_strength: float = 1.0) -> dict:
     """Returns a submit-ready copy of the LTX-2.5 graph.
 
     duration_seconds drives the template's own duration input (it derives
     frame count and audio length from it), so shots are NOT looped here the
     way the 2.3 path loops them — 2.5 renders the whole multi-shot scene in
     one generation.
+
+    reference_image_filenames (plural, only meaningful when
+    LTX25_MSR_ENABLED and len() >= 2) switches identity conditioning from
+    the single-first-frame-image mechanism to MSR's per-reference
+    conditioning — see _apply_msr_graph_surgery. When given,
+    reference_image_filename (singular) is ignored for identity purposes;
+    the single-LoadImage nodes it would otherwise set are left at their
+    template default, since MSR replaces what they fed (see that
+    function's docstring for exactly why those nodes are still left
+    wired into the graph rather than deleted). image_strength has no
+    effect in MSR mode (LTXVImgToVideoInplace, the node it targets, is
+    removed by the graph surgery) — silently a no-op, not an error, same
+    posture as the rest of this function's optional-override pattern.
 
     video_cfg/audio_cfg/image_strength are EXPERIMENTAL overrides, left at
     the official template's own defaults (both CFGs at 1, i.e. effectively
@@ -188,6 +395,12 @@ def build_workflow(prompt_text: str, duration_seconds: int,
 
     for node_id in _nodes_of_class(workflow, "LoadImage"):
         workflow[node_id]["inputs"]["image"] = reference_image_filename
+
+    # Runs AFTER the LoadImage loop above so the new per-reference
+    # LoadImage nodes it adds keep their own filenames — that loop only
+    # touches nodes present in the graph at the time it runs.
+    if LTX25_MSR_ENABLED and reference_image_filenames and len(reference_image_filenames) >= 2:
+        _apply_msr_graph_surgery(workflow, reference_image_filenames, msr_lora_strength)
 
     _strip_resize_node(workflow)
 

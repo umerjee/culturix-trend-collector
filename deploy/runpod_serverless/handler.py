@@ -228,6 +228,35 @@ def _download_output_bytes(history_entry: dict, prompt_id: str) -> bytes:
     return _fetch_file_bytes(best_file_info)
 
 
+def _upload_reference_images(images_base64: dict) -> None:
+    """MSR (multiple-subject-reference) counterpart to
+    _upload_reference_image — uploads each {filename: base64} pair under
+    its OWN distinct filename (not the shared overwrite=true "reference.png"
+    that function always uses) and does NOT touch any LoadImage node's
+    `image` field afterward. Unlike the single-reference path, the workflow
+    JSON already has each of its several LoadImage nodes pointed at the
+    correct one of these filenames (app.media.ltx25_workflow.build_workflow
+    sets them when it builds the graph) — _generate_single_shot's usual
+    "rewire every LoadImage node to the one uploaded filename" step would
+    be actively wrong here, overwriting N distinct per-character references
+    with a single filename and silently breaking multi-subject conditioning
+    without any error. Filenames are caller-controlled and expected to
+    already be distinct (pic1.png, pic2.png, ... background.png) — this
+    function does not invent or dedupe them."""
+    for filename, image_base64 in images_base64.items():
+        image_bytes = base64.b64decode(image_base64)
+        resp = httpx.post(
+            f"{_COMFYUI_URL}/upload/image",
+            files={"image": (filename, image_bytes, "image/png")},
+            data={"overwrite": "true"},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("name"):
+            raise RuntimeError(f"ComfyUI /upload/image returned no filename for {filename}: {data}")
+
+
 def _upload_reference_image(image_base64: str) -> str:
     """Uploads a reference photo to ComfyUI's own /upload/image endpoint so
     a LoadImage node in the workflow can reference it by filename —
@@ -276,18 +305,29 @@ def _is_transient_lora_load_error(exc: Exception) -> bool:
     return "LoraLoaderModelOnly" in text and "is invalid for input of size" in text
 
 
-def _generate_single_shot(workflow_json: dict, reference_image_base64: str = None) -> bytes:
-    """Uploads the shot's own reference image (if given), submits its
+def _generate_single_shot(workflow_json: dict, reference_image_base64: str = None,
+                           reference_images_base64: dict = None) -> bytes:
+    """Uploads the shot's own reference image(s) (if given), submits its
     workflow, waits for completion, and returns the raw (not yet
     faststart-remuxed) video bytes. Shared by both the legacy single-clip
     path and each iteration of the multi-shot loop in handler() below.
+
+    reference_images_base64 (MSR mode) and reference_image_base64 (classic
+    single-anchor mode) are mutually exclusive — the caller (app.services.
+    culturetoon_selfhosted_video) only ever builds a workflow shaped for
+    one or the other, matching which one it's given here. MSR mode skips
+    the "rewire every LoadImage node" step entirely — see
+    _upload_reference_images' own docstring for why that step would break
+    it.
 
     Retries the submit+wait step (not the reference-image upload, which
     doesn't fail this way) on the transient LoRA-load error above — a
     fresh prompt_id and a fresh read of the same file is enough to clear
     it, confirmed live 2026-09-01 against a file that had already failed
     twice on different tensors."""
-    if reference_image_base64:
+    if reference_images_base64:
+        _upload_reference_images(reference_images_base64)
+    elif reference_image_base64:
         uploaded_filename = _upload_reference_image(reference_image_base64)
         load_image_nodes = [
             node for node in workflow_json.values() if node.get("class_type") == "LoadImage"
@@ -598,7 +638,10 @@ def handler(event: dict) -> dict:
                     previous_frame_b64 = None
             video_bytes = shot_videos[0] if len(shot_videos) == 1 else _concat_videos(shot_videos)
         else:
-            video_bytes = _generate_single_shot(workflow_json, input_data.get("reference_image_base64"))
+            video_bytes = _generate_single_shot(
+                workflow_json, input_data.get("reference_image_base64"),
+                reference_images_base64=input_data.get("reference_images_base64"),
+            )
 
         narration_audio_base64 = input_data.get("narration_audio_base64")
         narration_text = input_data.get("narration_text")

@@ -52,6 +52,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
 RUN git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo.git custom_nodes/ComfyUI-LTXVideo \
     && pip install -r custom_nodes/ComfyUI-LTXVideo/requirements.txt
 
+# ComfyUI-LTX2.5-MSR custom node — adds the ComfyUILTX25MSRICLoRALoader
+# and ComfyUILTX25MSRMultiReferenceGuide node classes used by
+# app/media/ltx25_workflow.py's _apply_msr_graph_surgery (behind
+# LTX25_MSR_ENABLED). Apache-2.0, MIT-clean node package, no extra Python
+# deps per its own README (the LoRA weight file itself lives on the
+# Network Volume, not the image — same split as every other model here).
+RUN git clone --depth 1 https://github.com/liconstudio/ComfyUI-LTX2.5-MSR.git custom_nodes/ComfyUI-LTX2.5-MSR
+
 # kornia/pyramid_blending fix: ComfyUI-LTXVideo's __init__.py fails to
 # import entirely on a stock kornia install (`cannot import name 'pad' from
 # kornia.geometry.transform.pyramid`), which takes down EVERY LTXV node

@@ -99,6 +99,7 @@ def _extract_output_bytes(output: dict) -> bytes:
 
 def run_inference_job(endpoint_id: str, workflow_json: dict = None, timeout_seconds: int = 5400,
                        poll_interval: int = _POLL_INTERVAL, reference_image_bytes: bytes = None,
+                       reference_images: dict = None,
                        narration_audio_bytes: bytes = None,
                        shot_workflows: list = None, shot_reference_images: list = None,
                        shot_chain_from_previous: list = None,
@@ -143,6 +144,17 @@ def run_inference_job(endpoint_id: str, workflow_json: dict = None, timeout_seco
     that file's _upload_reference_image), since LoadImage reads from a
     local filename, not inline bytes or a URL.
 
+    reference_images (MSR / multi-subject-reference mode), when given, is
+    a {filename: bytes} dict — mutually exclusive with reference_image_bytes
+    (workflow_json is expected to already have its several LoadImage nodes
+    pointed at these exact filenames via app.media.ltx25_workflow.
+    build_workflow's reference_image_filenames param). Sent as
+    reference_images_base64 so the worker's _upload_reference_images can
+    upload each under its own distinct filename WITHOUT rewiring every
+    LoadImage node the way the single-reference path does — see that
+    function's docstring for why that would silently break multi-subject
+    conditioning.
+
     narration_audio_bytes, when given, is base64-encoded and sent the same
     way — the worker muxes it directly onto the finished video with ffmpeg
     (already installed there for the faststart remux) before returning, so
@@ -175,7 +187,12 @@ def run_inference_job(endpoint_id: str, workflow_json: dict = None, timeout_seco
             job_input["shot_chain_from_previous"] = list(shot_chain_from_previous)
     else:
         job_input["workflow"] = workflow_json
-        if reference_image_bytes is not None:
+        if reference_images is not None:
+            job_input["reference_images_base64"] = {
+                filename: base64.b64encode(image_bytes).decode("ascii")
+                for filename, image_bytes in reference_images.items()
+            }
+        elif reference_image_bytes is not None:
             job_input["reference_image_base64"] = base64.b64encode(reference_image_bytes).decode("ascii")
     if narration_audio_bytes is not None:
         job_input["narration_audio_base64"] = base64.b64encode(narration_audio_bytes).decode("ascii")

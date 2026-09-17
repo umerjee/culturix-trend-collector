@@ -648,7 +648,7 @@ def use_ltx25() -> bool:
 
 
 def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Optional[list] = None,
-                              continuation_anchor: bool = False) -> str:
+                              continuation_anchor: bool = False, msr_mode: bool = False) -> str:
     """One prompt describing a SEGMENT of the scene, cast included.
 
     2.5 renders a multi-shot scene in a single generation (native
@@ -675,7 +675,20 @@ def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Opt
     a separately chosen TTS voice — so getting this from the database is no
     longer cosmetic.
     """
-    positions = ["LEFT", "CENTRE", "RIGHT", "FAR RIGHT", "BACKGROUND"]
+    # MSR (Multiple Subject Reference, LTX25_MSR_ENABLED) conditions each
+    # cast member from their OWN separate reference image via the model's
+    # native attention — there is no single composited frame with a real
+    # spatial layout to describe, so LEFT/CENTRE/RIGHT language (accurate
+    # for the old side-by-side grid anchor) would be actively wrong here.
+    # "Image N" matches MSR's own documented prompting convention (the
+    # LoRA card: "use consistent labels such as Image 1, Image 2... specify
+    # which reference provides the character, object, clothing, or
+    # background") and its reference order (pic1..pic4, background).
+    positions = (
+        ["Image 1", "Image 2", "Image 3", "Image 4", "Background image"]
+        if msr_mode else
+        ["LEFT", "CENTRE", "RIGHT", "FAR RIGHT", "BACKGROUND"]
+    )
     parts = []
 
     # Identity comes FIRST, before setting or premise, and is explicitly tied
@@ -746,6 +759,13 @@ def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Opt
                 "people appearing in the shots below are NOT this reference image and have no "
                 "face anchor of their own — render them as ordinary, unremarkable background "
                 "people, distinct from the one anchored identity below:"
+            )
+        elif msr_mode:
+            parts.append(
+                f"You have been given {len(variants)} separate reference images, each labeled "
+                "below by its own image number — each is a face anchor for exactly one real "
+                "person, independent of the others. Use each ONLY to know what that one person "
+                "looks like, never as blocking or a starting pose for the scene:"
             )
         else:
             parts.append(
@@ -879,6 +899,23 @@ def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Opt
             "The reference image is where the scene physically was one instant ago, not a "
             "pose to hold. Keep moving immediately in a way that matches this segment's own "
             "shots below — do not freeze on the reference image's exact pose."
+        )
+    elif msr_mode:
+        # UNVALIDATED (no live render confirmed yet — see LTX25_MSR_ENABLED's
+        # own rollout plan): MSR references are independent images, not one
+        # composited frame, so the specific "frozen line-up" failure this
+        # branch's sibling below was written for (the model reading even
+        # spacing across a single grid as literal blocking) has no direct
+        # equivalent here — there's no grid to freeze on. Kept as its own
+        # branch rather than silently reusing the composite-anchor wording,
+        # since that wording describes a visual layout (a side-by-side
+        # portrait grid) that MSR mode never actually shows the model.
+        parts.append(
+            "Each reference image is a face anchor only, independent of the others — none of them "
+            "shows the scene's blocking or a pose to hold. From SHOT 1, only the characters named "
+            "in that shot's own blocking are on screen, positioned and moving as that blocking "
+            "describes — characters not named in a shot are not visible in it. Continuous natural "
+            "movement throughout, no frozen held poses."
         )
     else:
         # The composite anchor is three (or more) head-and-shoulders portraits evenly spaced
@@ -1241,6 +1278,35 @@ def _fetch_portrait_anchor(variant, backdrop: Optional[bytes]) -> bytes:
     return ltx25_workflow.build_composite_anchor(image_bytes, backdrop_bytes=backdrop)
 
 
+def _fetch_all_portraits(variants: list) -> dict:
+    """MSR counterpart to _fetch_portrait_anchor — every present cast
+    member's own RAW portrait bytes (no compositing, no backdrop matte;
+    MSR conditions each reference independently, not as one painted
+    canvas), keyed by the filename ltx25_workflow.build_workflow's
+    reference_image_filenames positional order expects (pic1.png,
+    pic2.png, pic3.png, pic4.png, background.png — MSR_MAX_REFERENCES=5).
+    A variant whose portrait fails to fetch is silently dropped (same
+    fail-open posture as _fetch_portrait_anchor above) rather than
+    aborting the whole segment over one bad URL."""
+    import httpx
+    from app.media.ltx25_workflow import MSR_MAX_REFERENCES
+
+    slot_filenames = ["pic1.png", "pic2.png", "pic3.png", "pic4.png", "background.png"]
+    images = {}
+    for variant, filename in zip(variants[:MSR_MAX_REFERENCES], slot_filenames):
+        image_url = getattr(variant, "image_url", None)
+        if not image_url:
+            continue
+        try:
+            images[filename] = httpx.get(image_url, timeout=30).content
+        except Exception:
+            logger.warning(
+                "Could not fetch %s's portrait for this MSR segment — dropping them from this reference set",
+                getattr(variant, "name", "?"), exc_info=True,
+            )
+    return images
+
+
 _COUNT_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
 
 
@@ -1405,6 +1471,7 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
 
     segment_videos = []
     current_anchor = None
+    current_msr_images = None
     previous_primary_id = None
     previous_scene_index = None
     for seg_index, segment_shots in enumerate(segments):
@@ -1419,6 +1486,11 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
         subject_only = _segment_is_subject_only(segment_shots)
         if subject_only:
             current_anchor = ltx25_workflow.build_backdrop_only_anchor(backdrop)
+            # A subject-only segment always uses the classic single-image
+            # mechanism (there's no cast to give MSR multiple references
+            # for) — reset explicitly so a stale MSR reference set from an
+            # earlier segment can't leak into this one's workflow build.
+            current_msr_images = None
             prompt = build_ltx25_scene_prompt(
                 script, [], background=background, shots=segment_shots,
                 continuation_anchor=False,
@@ -1436,25 +1508,62 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
                 or primary_id != previous_primary_id
                 or this_scene_index != previous_scene_index
             )
+            # MSR (LTX25_MSR_ENABLED) only applies to a fresh-anchor CUT with
+            # a real multi-character cast — a continuation segment already
+            # chains off a real rendered frame showing the right people (no
+            # synthetic portrait needed), and a single-cast script has
+            # nothing for MSR to add over the classic single-anchor path.
+            # Deliberately keeps the classic LTXVImgToVideoInplace mechanism
+            # for continuation, since _apply_msr_graph_surgery REMOVES that
+            # node — MSR and continuation-chaining are mutually exclusive
+            # per segment, not layered.
+            current_msr_images = None
             if is_cut:
-                current_anchor = _fetch_portrait_anchor(primary_variant, backdrop)
+                if ltx25_workflow.LTX25_MSR_ENABLED and len(variants) >= 2:
+                    current_msr_images = _fetch_all_portraits(variants)
+                    if len(current_msr_images) >= 2:
+                        current_anchor = None  # not used this segment; MSR conditions instead
+                    else:
+                        # Fewer than 2 portraits actually fetched (bad URLs) —
+                        # fall open to the classic single-anchor path rather
+                        # than submitting an MSR workflow with 0-1 references.
+                        current_msr_images = None
+                if current_msr_images is None:
+                    current_anchor = _fetch_portrait_anchor(primary_variant, backdrop)
             # Deterministic backstop for a script that still named 2+ cast
             # members in one shot's blocking/action/visual despite the
             # writer prompt forbidding it — see _sanitize_segment_shots'
-            # own docstring.
-            sanitized_shots = _sanitize_segment_shots(segment_shots, primary_variant, variants)
-            prompt = build_ltx25_scene_prompt(
-                script, [primary_variant], background=background, shots=sanitized_shots,
-                continuation_anchor=not is_cut,
-            )
+            # own docstring. Skipped for an MSR segment: the whole point of
+            # MSR is that a second/third named character now has a real
+            # identity anchor, so scrubbing their name would throw away
+            # exactly what MSR was added to make usable.
+            if current_msr_images:
+                sanitized_shots = segment_shots
+                prompt = build_ltx25_scene_prompt(
+                    script, variants, background=background, shots=sanitized_shots,
+                    continuation_anchor=False, msr_mode=True,
+                )
+            else:
+                sanitized_shots = _sanitize_segment_shots(segment_shots, primary_variant, variants)
+                prompt = build_ltx25_scene_prompt(
+                    script, [primary_variant], background=background, shots=sanitized_shots,
+                    continuation_anchor=not is_cut,
+                )
             previous_primary_id = primary_id
             previous_scene_index = this_scene_index
 
         segment_duration = sum(s.get("duration_seconds", 0) for s in segment_shots) or 5
-        workflow = ltx25_workflow.build_workflow(prompt, segment_duration)
+        if current_msr_images:
+            workflow = ltx25_workflow.build_workflow(
+                prompt, segment_duration, reference_image_filenames=list(current_msr_images.keys()),
+            )
+        else:
+            workflow = ltx25_workflow.build_workflow(prompt, segment_duration)
         segment_stats: dict = {}
         video_bytes = runpod_serverless_client.run_inference_job(
-            endpoint_id, workflow, reference_image_bytes=current_anchor,
+            endpoint_id, workflow,
+            reference_image_bytes=None if current_msr_images else current_anchor,
+            reference_images=current_msr_images,
             timeout_seconds=ltx25_timeout_seconds(segment_duration),
             stats=segment_stats,
         )
