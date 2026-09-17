@@ -11,20 +11,25 @@ down. If you read one section, read [Recurring failure patterns](#recurring-fail
 
 ---
 
-## 1. Three video paths, and which one runs
+## 1. Two video paths, and which one runs
+
+**Updated 2026-09-17: the LTX-2.3 self-hosted path and per-character LoRA
+training have been removed entirely** (`generate_toon_video_selfhosted`,
+`resolve_ready_lora`, `use_ltx25()`, `app/media/ltx_workflow.py`,
+`app/services/culturetoon_lora.py`, the training pod image, and the
+`lora_*` DB columns/UI are all gone — see git history around
+2026-09-17 if any of it is ever needed for reference). Self-hosted video
+is LTX-2.5 only now.
 
 | Path | Model | Entry point | When it runs |
 |---|---|---|---|
 | **Kling Omni** | Kling (hosted API) | `app/services/culturetoon_video.py` | provider `kling_omni` |
-| **Self-hosted LTX-2.3** | `ltx-2.3-22b-dev.safetensors` | `culturetoon_selfhosted_video.generate_toon_video_selfhosted` | provider `self_hosted`, `LTX_MODEL_VERSION` ≠ `2.5` |
-| **Self-hosted LTX-2.5** | `ltx-2.5-22b-distilled-*` | `culturetoon_selfhosted_video.generate_toon_video_ltx25` | provider `self_hosted`, **`LTX_MODEL_VERSION=2.5`** |
+| **Self-hosted LTX-2.5** | `ltx-2.5-22b-distilled-*` | `culturetoon_selfhosted_video.generate_toon_video_ltx25` | provider `self_hosted` |
 
-Both self-hosted paths run on the same RunPod Serverless endpoint. The
-switch is `use_ltx25()` and is read in **two** places — the interactive
-button (`app/routers/culturetoons.py::generate_toon_video`) and the
-scheduled batch (`culturetoon_selfhosted_batch.py`). Changing one without
-the other means manual and scheduled videos silently render on different
-models.
+Both `app/routers/culturetoons.py::generate_toon_video` (interactive
+button) and `culturetoon_selfhosted_batch.py` (scheduled batch) always
+call `generate_toon_video_ltx25` for the self-hosted path now — no more
+model-version switch to keep in sync between them.
 
 ### Why 2.5 replaced 2.3
 
@@ -256,21 +261,27 @@ itself, separately from the now-fixed visual/identity problem.
 ### Required for LTX-2.5 rendering
 | Variable | Value | Notes |
 |---|---|---|
-| `LTX_MODEL_VERSION` | `2.5` | Absent/other ⇒ the 2.3 path |
 | `RUNPOD_API_KEY` | — | |
 | `RUNPOD_SERVERLESS_ENDPOINT_ID` | `wq8vb0ozn2gon7` | endpoint `culturix-eu-nl-1` |
-| `RUNPOD_INFERENCE_NETWORK_VOLUME_ID` | `d65lm04dqr` | EU-NL-1, the volume the endpoint mounts |
+| `RUNPOD_INFERENCE_NETWORK_VOLUME_ID` | `d65lm04dqr` | EU-NL-1, the volume the endpoint mounts — model weights AND the MSR LoRA both live here |
 
-### Only used by 2.3 LoRA training
-`RUNPOD_NETWORK_VOLUME_ID` (`1zm4s72ecv`, EU-RO-1 — the **training/cache**
-volume, a different volume), `RUNPOD_S3_*`, `HF_TOKEN`,
-`LTX_TRAINING_CHECKPOINT_REPO/FILE`, `LTX_TRAINING_TEXT_ENCODER_REPO`,
-`LTX_TRAINING_VIDEO_VAE_FILE`, `LTX_TRAINING_AUDIO_VAE_FILE`.
+### MSR (Multiple Subject Reference), optional
+`LTX25_MSR_ENABLED=true` switches multi-character segments to MSR's
+independent per-reference conditioning instead of the single-primary-
+portrait anchor — see `app/media/ltx25_workflow.py`. **Off by default as
+of 2026-09-17**: the graph surgery and live-schema validation are
+confirmed correct, but a real end-to-end render showed a ~1s raw-
+reference-portrait leak at the tail of decoded output (root cause not
+yet found — ruled out a frame_rate-metadata theory, see
+`_add_crop`'s docstring in that file). Do not enable in production until
+that's resolved.
 
-> **`RUNPOD_NETWORK_VOLUME_ID` and `RUNPOD_INFERENCE_NETWORK_VOLUME_ID` are
-> two different volumes in two different datacenters.** Conflating them cost
-> three days: every trained LoRA landed on EU-RO-1 while inference read from
-> EU-NL-1, `lora_status` said `ready`, and nothing errored.
+### Removed 2026-09-17 (per-character LoRA training)
+`RUNPOD_NETWORK_VOLUME_ID`, `RUNPOD_S3_*`, `RUNPOD_TRAINING_*`,
+`LTX_TRAINING_*` — these pointed at the training/cache volume
+(`1zm4s72ecv`, EU-RO-1), which has been **deleted** along with the whole
+LoRA-training pipeline. If any of these are still set in Railway/`.env`,
+they're dead and safe to remove.
 
 ### Optional
 `LTX25_WORKFLOW_PATH`, `LTX_WORKFLOW_PATH`, `RUNPOD_ALLOCATION_MAX_RETRIES`,
@@ -447,15 +458,23 @@ killed a running 40GB download because cleanup sat in `finally`.
   validation so far was direct API calls.
 - **Identity drift beyond ~12s / 4 shots is CONFIRMED** (2026-09-03, frame-by-frame
   inspection of a 33s/5-shot/3-character render) — see section 2 above for what it
-  actually looks like and why prompt fixes alone didn't help.
-- **Aisha's LoRA is corrupt at source** (three fresh S3 downloads all failed
-  `safe_open`). Moot while on 2.5; needs retraining if 2.3 is ever revived.
+  actually looks like and why prompt fixes alone didn't help. MSR (see §3) fixes
+  the separate multi-character-in-one-frame problem, not this one — segments
+  still need to stay short and re-anchor, same as before.
+- **Aisha's LoRA is corrupt at source** — moot now: 2.3 and per-character LoRA
+  training are both fully removed (2026-09-17), so there's nothing to retrain.
 - **Background images** were generated from the old malformed Location
   descriptions. Only the text fields were regenerated. Matters for Kling,
   which uses `image_url` as a real `refer_image`; the self-hosted path never
   reads it.
-- **Chatterbox mux and last-frame chaining are dead code under 2.5**, kept
-  because the live 2.3 path still uses them.
+- **Last-frame chaining (`_extract_last_frame_png`/`_concat_video_segments`)
+  is NOT dead code under 2.5** — it's how `generate_toon_video_ltx25` chains
+  consecutive same-scene/same-speaker segments together. (An earlier version
+  of this doc claimed it was dead; that was wrong.) Chatterbox TTS is still
+  loaded worker-side (`deploy/runpod_serverless/handler.py::_get_chatterbox_model`)
+  as a narration fallback — whether `generate_toon_video_ltx25` still ever
+  exercises that path hasn't been re-verified since the 2.3/LoRA removal;
+  worth checking before assuming it's live or dead.
 - **`HF_TOKEN` was exposed in a pod's process list** during a download —
   worth rotating.
 - **No QA pass on the self-hosted path** (the Kling path has one).
@@ -474,12 +493,14 @@ do unnecessary work:
 What a character actually needs under 2.5 is **a portrait**
 (`CharacterVariant.image_url`) — which is what the API now enforces.
 
-**Resolved 2026-09-02.** `GET /api/culturetoons/config` reports the active
-renderer and what it requires; `ToonManager`, `CharacterVariantManager` and
-`GettingStartedChecklist` all read it. Under 2.5 the Generate button gates on
-a portrait, Step 2 shows an explicit ready/not-ready card, and the Kling +
-Expressions + LoRA controls are collapsed behind an "Advanced" disclosure
-(kept, because they remain correct and required for the Kling Omni path).
+**Resolved 2026-09-02**, then taken further 2026-09-17. `GET /api/culturetoons/config`
+reports the active renderer and what it requires; `ToonManager`,
+`CharacterVariantManager` and `GettingStartedChecklist` all read it. The
+Generate button gates on a portrait, and the Kling + Expressions controls
+are collapsed behind an "Advanced" disclosure (kept — still correct and
+required for the Kling Omni path). The LoRA training card itself is gone
+entirely now, not just collapsed, since 2.3/LoRA training no longer exist
+at all.
 
 ### Frontend deploys separately from the backend
 `culturix-web` deploys to **Vercel** (`culturix-web/vercel.json`); Railway
