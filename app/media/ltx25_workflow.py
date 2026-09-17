@@ -271,14 +271,46 @@ def _apply_msr_graph_surgery(workflow: dict, reference_image_filenames: list,
                 "latent": latent_ref,
                 "msr_parameters": [lora_loader_id, 1],
                 "strength": 1.0,
-                "reference_frames": 33,
+                # COMBO of strings, not an int -- ComfyUI's own validator
+                # rejects the int 33 with "reference_frames: 33 not in
+                # ['25', '33']" (confirmed live against the real endpoint's
+                # /object_info: options are declared as the strings
+                # ["25", "33"]).
+                "reference_frames": "33",
                 "use_tiled_encode": False,
+                # Required inputs even with use_tiled_encode=False --
+                # ComfyUI's schema validation doesn't make them conditional
+                # on that flag (confirmed live: "required_input_missing" for
+                # both without these). Values match the node's own declared
+                # defaults from /object_info.
+                "tile_size": 256,
+                "tile_overlap": 64,
                 **_reference_inputs(),
             },
         }
         return guide_id
 
     def _add_crop(guide_id: str, latent_ref: list) -> str:
+        # KNOWN UNRESOLVED ISSUE, confirmed live 2026-09-17 (real GPU
+        # renders, not simulated): the last ~1s of decoded MSR output
+        # shows a raw reference portrait bleeding through (a crossfade
+        # into e.g. Zara's plain studio-background reference image),
+        # confirmed present even directly off THIS crop's own output (a
+        # diagnostic that decoded straight from the base pass, bypassing
+        # the upscale stage entirely, still showed it). LTXVCropGuides
+        # itself does cap total output at exactly the requested frame
+        # count in both good and bad cases (ruling out "crop is a total
+        # no-op"), so the leak looks more like cross-attention bleed baked
+        # into the neighboring frames DURING sampling, near the
+        # guide-frame boundary, rather than a simple wiring mistake —
+        # tried re-stamping frame_rate onto the guide's output via a
+        # fresh LTXVConditioning node before crop (matching a structural
+        # difference spotted in the official MSR sample workflow's own
+        # upscale-pass wiring) and it made no measurable difference,
+        # so that specific theory is ruled out. Left as direct guide->crop
+        # wiring (simplest known-working structure) pending further
+        # investigation. LTX25_MSR_ENABLED stays off in production until
+        # this is resolved — see docs/culturix-video-pipeline.md.
         crop_id = _new_id()
         workflow[crop_id] = {
             "class_type": "LTXVCropGuides",
@@ -393,13 +425,27 @@ def build_workflow(prompt_text: str, duration_seconds: int,
         if node["class_type"] == "PrimitiveBoolean" and isinstance(node["inputs"].get("value"), bool):
             node["inputs"]["value"] = False
 
+    msr_mode = bool(LTX25_MSR_ENABLED and reference_image_filenames and len(reference_image_filenames) >= 2)
+
+    # In MSR mode this template's original single LoadImage node (id 395 in
+    # ltx25_image_to_video.api.json) is deliberately left in the graph (see
+    # _apply_msr_graph_surgery's docstring — it also feeds the always-off
+    # prompt-enhancer branch, so deleting it risks that inert-but-still-
+    # validated branch). ComfyUI validates it regardless of whether its
+    # output is used, and its default value "reference.png" is never
+    # actually uploaded in MSR mode (MSR uploads pic1.png/pic2.png/... —
+    # see _upload_reference_images), so it fails validation with "Invalid
+    # image file: reference.png" before execution even starts. Point it at
+    # a filename that MSR actually does upload instead.
     for node_id in _nodes_of_class(workflow, "LoadImage"):
-        workflow[node_id]["inputs"]["image"] = reference_image_filename
+        workflow[node_id]["inputs"]["image"] = (
+            reference_image_filenames[0] if msr_mode else reference_image_filename
+        )
 
     # Runs AFTER the LoadImage loop above so the new per-reference
     # LoadImage nodes it adds keep their own filenames — that loop only
     # touches nodes present in the graph at the time it runs.
-    if LTX25_MSR_ENABLED and reference_image_filenames and len(reference_image_filenames) >= 2:
+    if msr_mode:
         _apply_msr_graph_surgery(workflow, reference_image_filenames, msr_lora_strength)
 
     _strip_resize_node(workflow)
