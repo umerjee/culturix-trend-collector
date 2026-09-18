@@ -1091,6 +1091,15 @@ class TestWorldSourceGrounding:
         assert "inhabited since the Neolithic period" in prompt
         assert "Do NOT add specific facts from memory" in prompt
 
+    def test_hostless_prompt_forbids_people_in_subject_visuals(self, mocker):
+        # The renderer appends "No people in frame at all" to every subject shot, so a
+        # script whose visuals show soldiers or crowds contradicts its own render prompt.
+        from app.services.culturetoon_script import generate_world_script
+        client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_world_script(region_code="FR", region_label="France", subject_text="D-Day landings")
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "subject_visual must contain NO people" in prompt
+
     def test_no_source_facts_leaves_prompt_ungrounded_block_out(self, mocker):
         from app.services.culturetoon_script import _world_context
         assert "VERIFIED SOURCE MATERIAL" not in _world_context("France", "Carcassonne", "place")
