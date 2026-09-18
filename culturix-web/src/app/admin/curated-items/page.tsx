@@ -58,8 +58,20 @@ export default function CuratedItemsPage() {
   }
 
   async function decide(id: string, decision: string) {
+    if (decision === "include") {
+      await selectSubject(id);
+      return;
+    }
     await fetch(`/api/admin/curated-items/${id}/decision?decision=${decision}`, { method: "POST" });
     setItems((current) => current.map((item) => item.id === id ? { ...item, pipeline_decision: decision } : item));
+  }
+
+  async function selectSubject(id: string) {
+    setMessage("Starting script and cinematic planning...");
+    const res = await fetch(`/api/admin/curated-items/${id}/generate`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    setMessage(res.ok ? "World script and cinematic plan generation started. The draft will appear in World content when ready." : (data.detail || "Generation failed."));
+    if (res.ok) setItems((current) => current.map((item) => item.id === id ? { ...item, pipeline_decision: "include" } : item));
   }
 
   return <div className="max-w-6xl">

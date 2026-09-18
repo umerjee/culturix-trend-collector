@@ -1051,6 +1051,29 @@ class TestGenerateWorldScript:
         judge_prompt = _build_judge_prompt(result)
         assert "RELEVANCE" in judge_prompt  # informative's own distinguishing criterion
 
+    def test_world_duration_suggestion_is_bounded(self, mocker):
+        from app.services.culturetoon_script import suggest_world_duration
+        mocker.patch(
+            "app.services.culturetoon_script._call_llm_json",
+            return_value={"duration_seconds": 44, "beat_count": 8, "rationale": "Several beats."},
+        )
+
+        result = suggest_world_duration("The D-Day Landings", "A major historical event.", "history")
+
+        assert result == {"duration_seconds": 45, "beat_count": 5, "rationale": "Several beats."}
+
+    def test_world_duration_suggestion_falls_back_on_invalid_model_output(self, mocker):
+        from app.services.culturetoon_script import suggest_world_duration
+        mocker.patch(
+            "app.services.culturetoon_script._call_llm_json",
+            return_value={"duration_seconds": "bad", "beat_count": 2},
+        )
+
+        result = suggest_world_duration("Mount Fuji", "A mountain.", "place")
+
+        assert result["duration_seconds"] == 20
+        assert result["beat_count"] == 3
+
 
 class TestSuggestWorldSubjectsFromTrends:
     """suggest_world_subjects_from_trends — curator-review-only World

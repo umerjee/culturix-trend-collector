@@ -1632,6 +1632,38 @@ def select_thematic_host(session, category: Optional[str], tone: str):
     return variant
 
 
+def suggest_world_duration(subject_text: str, subject_summary: str = "",
+                           subject_category: Optional[str] = None) -> dict:
+    """Suggest a short-form duration and narrative beat count for a subject.
+
+    The recommendation is bounded to practical World Feature formats. It is
+    guidance for the script writer, not a license to pad a simple subject;
+    the final stored duration is still the sum of the generated shot timings.
+    """
+    fallback = {"duration_seconds": 20, "beat_count": 3, "rationale": "Standard subject explanation."}
+    prompt = f"""Choose the shortest useful short-form video duration for this factual World Feature.
+
+Subject: {subject_text}
+Summary: {subject_summary[:1200]}
+Category: {subject_category or 'custom'}
+
+Use 15 seconds for one clear reveal, 20-30 seconds for a normal explanation with context,
+35-45 seconds for a subject with several essential chronological beats, and 60 seconds only
+when the subject truly needs a compact mini-documentary. Do not pad simple subjects. Choose
+one duration from [15, 20, 30, 45, 60] and a beat_count from 1 to 5.
+
+Return ONLY valid JSON: {{"duration_seconds": int, "beat_count": int, "rationale": "one short sentence"}}"""
+    try:
+        result = _call_llm_json(prompt, temperature=0.2, max_tokens=180)
+        allowed = (15, 20, 30, 45, 60)
+        duration = min(allowed, key=lambda value: abs(value - int(result.get("duration_seconds", 20))))
+        beats = max(1, min(5, int(result.get("beat_count", 3))))
+        return {"duration_seconds": duration, "beat_count": beats, "rationale": str(result.get("rationale") or fallback["rationale"])}
+    except Exception:
+        logger.warning("World duration suggestion failed for %r; using %ss fallback", subject_text, fallback["duration_seconds"], exc_info=True)
+        return fallback
+
+
 def generate_world_script(region_code: str, region_label: str, subject_text: str,
                            subject_category: Optional[str] = None,
                            trends: Optional[list] = None, culture: Optional[dict] = None,

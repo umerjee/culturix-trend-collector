@@ -2952,6 +2952,85 @@ def decide_curated_item(item_id: str, decision: str):
         session.close()
 
 
+@app.post("/admin/curated-items/{item_id}/generate", dependencies=[Depends(require_admin_secret)])
+def generate_curated_world_feature(item_id: str):
+    """Generate a World script and cinematic shot plan for a selected subject."""
+    import threading
+    from app.db import SessionLocal
+    from app.models.curated_item import CuratedItem
+
+    session = SessionLocal()
+    try:
+        item = session.query(CuratedItem).filter_by(id=item_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Curated item not found")
+        if item.pipeline_decision == "exclude":
+            raise HTTPException(status_code=400, detail="Excluded subjects cannot be generated")
+        item.pipeline_decision = "include"
+        session.commit()
+        subject = {"id": str(item.id), "title": item.title, "summary": item.summary, "region": item.region, "category": item.category}
+    finally:
+        session.close()
+
+    def _run():
+        from app.db import SessionLocal as _SessionLocal
+        from app.models.character_brand import CharacterBrand
+        from app.models.toon import Toon
+        from app.models.toon_script import ToonScript
+        from app.models.trend import Trend
+        from app.services.culturetoon_script import generate_world_script, judge_script_comedy, select_thematic_host, suggest_world_duration
+
+        db = _SessionLocal()
+        try:
+            owner_id = os.getenv("SUPERADMIN_USER_ID")
+            brand = db.query(CharacterBrand).filter_by(name="World", user_id=owner_id).first() if owner_id else None
+            if not brand:
+                logging.error("World generation skipped: reserved World brand not found")
+                return
+            trends = []
+            if subject["region"]:
+                rows = db.query(Trend).filter(Trend.region == subject["region"]).order_by(Trend.collected_at.desc()).limit(8).all()
+                trends = [{"title": row.title, "content": row.content} for row in rows]
+            category_map = {"history": "custom", "archaeology": "place", "culture": "custom", "tech": "tech", "innovation": "tech", "geopolitical": "custom", "trending": "custom", "humor": "custom"}
+            category = category_map.get(subject["category"], "custom")
+            duration_plan = suggest_world_duration(subject["title"], subject["summary"], subject["category"])
+            host = select_thematic_host(db, category, "informative")
+            result = generate_world_script(
+                region_code=subject["region"] or "", region_label=subject["region"] or "World",
+                subject_text=subject["title"], subject_category=category, trends=trends,
+                culture=None, host_variant=host, tone="informative", num_shots=duration_plan["beat_count"],
+                target_duration_seconds=duration_plan["duration_seconds"],
+            )
+            script = ToonScript(
+                brand_id=brand.id, character_variant_id=host.id if host else None,
+                character_variant_ids=[str(host.id)] if host else None,
+                hook_line=result.get("hook_line"), tone="informative", shots=result.get("shots"),
+                total_duration_seconds=result.get("total_duration_seconds"),
+                comedy_judgment=judge_script_comedy(result), generation_source="ai",
+                status="approved", is_world_content=True, subject_region=subject["region"],
+                subject_text=subject["title"], subject_category=category,
+            )
+            db.add(script)
+            db.commit()
+            db.refresh(script)
+            db.add(Toon(
+                brand_id=brand.id, character_variant_id=host.id if host else None,
+                script_id=script.id, title=subject["title"], status="idea",
+                is_world_content=True, subject_region=subject["region"],
+                subject_text=subject["title"], subject_category=category,
+            ))
+            db.commit()
+            logging.info("World subject generated: item=%s script=%s", subject["id"], script.id)
+        except Exception:
+            db.rollback()
+            logging.exception("World subject generation failed for item=%s", subject["id"])
+        finally:
+            db.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "generating", "item_id": item_id, "message": "World script and cinematic plan generation started"}
+
+
 # ── User approval endpoints ────────────────────────────────────────────────────
 
 @app.get("/admin/users", dependencies=[Depends(require_admin_secret)])
