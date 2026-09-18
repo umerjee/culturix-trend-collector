@@ -27,6 +27,9 @@ export default function MarketingHeader({ transparent, rightSlot, showCta = true
             <Link href="/#products" className="hidden sm:inline text-sm text-gray-400 hover:text-white px-3 py-1.5 transition-colors">
               Products
             </Link>
+            <Link href="/world" className="hidden sm:inline text-sm text-gray-400 hover:text-white px-3 py-1.5 transition-colors">
+              World
+            </Link>
             <Link href="/signup" className="text-sm text-gray-400 hover:text-white px-3 py-1.5 transition-colors">
               Sign in
             </Link>
@@ -46,11 +49,16 @@ export default function MarketingHeader({ transparent, rightSlot, showCta = true
           <Zap className="h-5 w-5 text-primary-600" />
           <span className="font-bold text-lg tracking-tight">Culturix</span>
         </Link>
-        {rightSlot ?? (showCta && (
-          <Link href="/signup" className={buttonVariants({ variant: "primary", size: "sm" })}>
-            Get started free
+        <div className="flex items-center gap-4">
+          <Link href="/world" className="hidden sm:inline text-sm text-gray-500 hover:text-primary-600 transition-colors">
+            World
           </Link>
-        ))}
+          {rightSlot ?? (showCta && (
+            <Link href="/signup" className={buttonVariants({ variant: "primary", size: "sm" })}>
+              Get started free
+            </Link>
+          ))}
+        </div>
       </div>
     </header>
   );
