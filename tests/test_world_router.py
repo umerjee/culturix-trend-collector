@@ -208,7 +208,8 @@ class TestListWorldTrends:
         groups = {group["kind"]: group for group in result["groups"]}
         assert groups["cluster"]["title"] == "Football transfer news"
         assert groups["cluster"]["summary"] == "Coverage of a major player move."
-        assert groups["source"]["title"] == "Tiktok signals"
+        assert groups["source"]["title"].startswith("Tiktok:")
+        assert "Automatic grouping" in groups["source"]["summary"]
 
 
 class TestWorldTrendsCoverage:

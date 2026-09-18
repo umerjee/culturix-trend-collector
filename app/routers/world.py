@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException
 from typing import Optional
 from datetime import datetime
 import uuid as _uuid
+import re
 
 router = APIRouter(prefix="/world", tags=["world"])
 
@@ -146,6 +147,56 @@ def _serialize_digest_signal(t) -> dict:
     }
 
 
+_DIGEST_STOPWORDS = {
+    "the", "and", "for", "with", "from", "this", "that", "official", "video", "short",
+    "news", "live", "new", "how", "why", "you", "your", "are", "was", "has", "have",
+    "not", "will", "about", "into", "after", "over", "more", "what", "when", "where",
+    "all", "的", "و", "في", "من", "على", "عن", "هذا", "هذه", "مع", "إلى",
+}
+
+
+def _digest_topic_tokens(trend) -> set[str]:
+    text = f"{trend.title or ''} {(trend.content or '')[:180]}".lower()
+    return {
+        token for token in re.findall(r"[^\W_]{3,}", text, flags=re.UNICODE)
+        if token not in _DIGEST_STOPWORDS and not token.isdigit()
+    }
+
+
+def _add_source_digest_group(grouped: dict, trend) -> None:
+    """Group unclustered signals by repeated title/content vocabulary.
+
+    This is intentionally modest: it gives a reader a useful subject label
+    without pretending that keyword overlap is the same thing as semantic
+    or editorial interpretation. Persisted AI-labeled clusters remain the
+    preferred context whenever they exist.
+    """
+    tokens = _digest_topic_tokens(trend)
+    platform = trend.platform.replace("_", " ").title()
+    candidate = None
+    for group in grouped.values():
+        if group["kind"] != "source" or group["platforms"] != {trend.platform}:
+            continue
+        overlap = len(tokens & group["topic_tokens"])
+        if overlap >= 1 and overlap / max(1, len(tokens)) >= 0.2:
+            candidate = group
+            break
+    if candidate is None:
+        title = (trend.title or trend.content or "Untitled signal").strip()
+        candidate = {
+            "id": f"source:{trend.platform}:{len(grouped)}", "kind": "source",
+            "title": f"{platform}: {title[:72]}",
+            "summary": f"Automatic grouping of {platform} signals with overlapping topic words. Review the source examples below for the full context.",
+            "signal_count": 0, "platforms": {trend.platform}, "signals": [],
+            "momentum": None, "topic_tokens": set(tokens),
+        }
+        grouped[candidate["id"]] = candidate
+    candidate["signal_count"] += 1
+    candidate["topic_tokens"].update(tokens)
+    if len(candidate["signals"]) < 3:
+        candidate["signals"].append(_serialize_digest_signal(trend))
+
+
 @router.get("/trends/digest")
 def list_world_trend_digest(region: str, date_from: Optional[str] = None,
                             date_to: Optional[str] = None, limit: int = 8):
@@ -182,12 +233,8 @@ def list_world_trend_digest(region: str, date_from: Optional[str] = None,
                     "momentum": cluster.momentum,
                 })
             else:
-                key = f"source:{trend.platform}"
-                group = grouped.setdefault(key, {
-                    "id": key, "kind": "source", "title": f"{trend.platform.replace('_', ' ').title()} signals",
-                    "summary": "Recent source signals awaiting enough evidence for a shared theme.",
-                    "signal_count": 0, "platforms": set(), "signals": [], "momentum": None,
-                })
+                _add_source_digest_group(grouped, trend)
+                continue
             group["signal_count"] += 1
             group["platforms"].add(trend.platform)
             if len(group["signals"]) < 3:
@@ -196,6 +243,7 @@ def list_world_trend_digest(region: str, date_from: Optional[str] = None,
         result = sorted(grouped.values(), key=lambda group: (-group["signal_count"], group["title"]))[:limit]
         for group in result:
             group["platforms"] = sorted(group["platforms"])
+            group.pop("topic_tokens", None)
         return {"groups": result, "total_groups": len(grouped)}
     finally:
         session.close()

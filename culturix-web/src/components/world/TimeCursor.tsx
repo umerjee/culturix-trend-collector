@@ -211,7 +211,7 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
                     <div>
                       <div className="mb-2 flex flex-wrap items-center gap-2">
                         <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${group.kind === "cluster" ? "bg-purple-50 text-purple-600" : "bg-gray-100 text-gray-500"}`}>
-                          {group.kind === "cluster" ? "Theme" : "Source signals"}
+                          {group.kind === "cluster" ? "Theme" : "Automatic topic group"}
                         </span>
                         {group.momentum && <span className="text-[11px] font-semibold text-emerald-600">{group.momentum === "up" ? "Growing" : group.momentum === "down" ? "Cooling" : "Steady"}</span>}
                       </div>
