@@ -88,6 +88,42 @@ def list_world_regions():
         session.close()
 
 
+def _serialize_trend(t) -> dict:
+    return {
+        "id": t.id,
+        "platform": t.platform,
+        "title": t.title,
+        "content": (t.content or "")[:280],
+        "url": t.url,
+        "likes": t.likes,
+        "region": t.region,
+        "collected_at": t.collected_at.isoformat() if t.collected_at else None,
+    }
+
+
+@router.get("/trends")
+def list_world_trends(region: Optional[str] = None, limit: int = 20, offset: int = 0):
+    """Real trend data by region, separate from the generated-video Features
+    above — "we will be providing all trends and videos to users" (this
+    router's own name covers both). Same public/no-auth posture as the rest
+    of this file; every field here is already public social-platform
+    content (title/url/engagement counts), nothing account-scoped."""
+    from app.db import SessionLocal
+    from app.models.trend import Trend
+
+    limit = max(1, min(limit, 100))
+    session = SessionLocal()
+    try:
+        query = session.query(Trend)
+        if region:
+            query = query.filter(Trend.region == region.strip().upper())
+        total = query.count()
+        rows = query.order_by(Trend.collected_at.desc()).offset(offset).limit(limit).all()
+        return {"trends": [_serialize_trend(t) for t in rows], "total": total, "limit": limit, "offset": offset}
+    finally:
+        session.close()
+
+
 @router.get("/features/{feature_id}")
 def get_world_feature(feature_id: str):
     from app.db import SessionLocal

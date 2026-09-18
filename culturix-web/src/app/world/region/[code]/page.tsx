@@ -5,8 +5,9 @@ import enLocale from "i18n-iso-countries/langs/en.json";
 import MarketingHeader from "@/components/marketing/MarketingHeader";
 import MarketingFooter from "@/components/marketing/MarketingFooter";
 import FeatureCard from "@/components/world/FeatureCard";
+import TrendFeed from "@/components/world/TrendFeed";
 import { RAILWAY_API_BASE } from "@/lib/config/api";
-import type { WorldFeature } from "@/lib/worldTypes";
+import type { WorldFeature, WorldTrend } from "@/lib/worldTypes";
 
 countries.registerLocale(enLocale as any);
 
@@ -23,6 +24,19 @@ async function fetchFeatures(region: string): Promise<WorldFeature[]> {
   }
 }
 
+async function fetchTrends(region: string): Promise<WorldTrend[]> {
+  try {
+    const res = await fetch(`${RAILWAY_API_BASE}/world/trends?region=${encodeURIComponent(region)}&limit=12`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.trends) ? data.trends : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function generateMetadata({ params }: { params: { code: string } }) {
   const label = countries.getName(params.code.toUpperCase(), "en") || params.code.toUpperCase();
   return { title: `${label} — Culturix World` };
@@ -31,7 +45,7 @@ export async function generateMetadata({ params }: { params: { code: string } })
 export default async function WorldRegionPage({ params }: { params: { code: string } }) {
   const code = params.code.toUpperCase();
   const label = countries.getName(code, "en") || code;
-  const features = await fetchFeatures(code);
+  const [features, trends] = await Promise.all([fetchFeatures(code), fetchTrends(code)]);
 
   return (
     <div className="min-h-screen bg-white">
@@ -50,10 +64,17 @@ export default async function WorldRegionPage({ params }: { params: { code: stri
         {features.length === 0 ? (
           <p className="text-sm text-gray-400 py-10">Nothing published for {label} yet — check back soon.</p>
         ) : (
-          <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5">
+          <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5 mb-14">
             {features.map((f) => (
               <FeatureCard key={f.id} feature={f} />
             ))}
+          </section>
+        )}
+
+        {trends.length > 0 && (
+          <section>
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">Trending in {label}</h2>
+            <TrendFeed trends={trends} />
           </section>
         )}
       </main>

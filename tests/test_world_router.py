@@ -14,13 +14,14 @@ from sqlalchemy.orm import sessionmaker
 from app.db import Base
 from app.models.toon import Toon
 from app.models.toon_script import ToonScript
+from app.models.trend import Trend
 from app.routers import world
 
 
 @pytest.fixture
 def db(mocker):
     engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(bind=engine, tables=[Toon.__table__, ToonScript.__table__])
+    Base.metadata.create_all(bind=engine, tables=[Toon.__table__, ToonScript.__table__, Trend.__table__])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)
     return TestSessionLocal
@@ -114,3 +115,45 @@ class TestGetWorldFeature:
         with pytest.raises(HTTPException) as exc_info:
             world.get_world_feature("not-a-uuid")
         assert exc_info.value.status_code == 404
+
+
+def _make_trend(db, *, platform="tiktok", title="A trend", content="content text",
+                 region="IR", likes=10, collected_at=None):
+    session = db()
+    trend = Trend(platform=platform, title=title, content=content, region=region, likes=likes,
+                   collected_at=collected_at)
+    session.add(trend)
+    session.commit()
+    session.close()
+
+
+class TestListWorldTrends:
+    def test_filters_by_region(self, db):
+        _make_trend(db, region="IR", title="Iran trend")
+        _make_trend(db, region="JP", title="Japan trend")
+
+        result = world.list_world_trends(region="ir")  # lowercase input, stored uppercase
+        assert len(result["trends"]) == 1
+        assert result["trends"][0]["title"] == "Iran trend"
+
+    def test_no_region_returns_everything(self, db):
+        _make_trend(db, region="IR")
+        _make_trend(db, region="JP")
+        _make_trend(db, region=None)
+
+        result = world.list_world_trends()
+        assert result["total"] == 3
+
+    def test_content_is_truncated_to_280_chars(self, db):
+        _make_trend(db, content="x" * 500)
+        result = world.list_world_trends(region="IR")
+        assert len(result["trends"][0]["content"]) == 280
+
+    def test_ordered_most_recent_first(self, db):
+        from datetime import datetime, timedelta
+        now = datetime.utcnow()
+        _make_trend(db, title="older", collected_at=now - timedelta(hours=1))
+        _make_trend(db, title="newer", collected_at=now)
+
+        result = world.list_world_trends(region="IR")
+        assert result["trends"][0]["title"] == "newer"

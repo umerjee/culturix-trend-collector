@@ -11,6 +11,19 @@ export interface WorldFeature {
   hook_line?: string | null; // only present on the single-feature detail response
 }
 
+// Mirrors app/routers/world.py's _serialize_trend — real Trend rows,
+// separate from generated-video Features above.
+export interface WorldTrend {
+  id: number;
+  platform: string;
+  title: string | null;
+  content: string;
+  url: string | null;
+  likes: number | null;
+  region: string | null;
+  collected_at: string | null;
+}
+
 // One merged filter vocabulary covering both WHAT a Feature is about
 // (place/phenomenon/species/tech) and WHO it's most likely to resonate with
 // (genz, more audience tags to follow) — a single flat list of filter chips
