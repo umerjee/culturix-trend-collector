@@ -42,7 +42,7 @@ MAX_SUMMARY_WORDS = 60
 MAX_HEADLINES = 8
 
 # Bump when build_prompt changes so cached rows are rewritten instead of skipped.
-PROMPT_VERSION = 3
+PROMPT_VERSION = 4
 
 MOODS = ("celebratory", "playful", "curious", "tense", "somber", "angry", "neutral")
 ALIGNMENTS = ("aligned", "diverged", "unknown")
@@ -107,6 +107,39 @@ def pick_topics(rows) -> list[dict]:
 
 # ── gathering ───────────────────────────────────────────────────────────────
 
+def direction(ratio: float | None) -> str | None:
+    """busier | quieter | normal versus the recent daily average."""
+    if ratio is None:
+        return None
+    if ratio >= 1.25:
+        return "busier"
+    if ratio <= 0.8:
+        return "quieter"
+    return "normal"
+
+
+def compare_sentence(baseline: dict) -> str | None:
+    """One deterministic sentence on how the day compares with the region's usual,
+    from the measured ratios. The model is NOT asked to write this: given both
+    volume and likes-per-post it once wrote "busier than usual" on a day with
+    fewer posts, contradicting the stored label. None when there is nothing
+    notable or too little history."""
+    if not baseline.get("enough"):
+        return None
+    vol, eng = baseline.get("volume_dir"), baseline.get("engagement_dir")
+    if vol in (None, "normal") and eng in (None, "normal"):
+        return None
+    if vol == eng:
+        return f"Activity was {vol} than usual."
+    if vol in (None, "normal"):
+        return "Engagement per post was higher than usual." if eng == "busier" else "Engagement per post was lower than usual."
+    if eng in (None, "normal"):
+        return f"Post volume was {vol} than usual."
+    # volume and engagement pull in opposite directions
+    return ("Fewer posts than usual, but more engagement per post." if vol == "quieter"
+            else "More posts than usual, but less engagement per post.")
+
+
 def gather_baseline(session, region: str, day: date, signal_count: int, today_themes: list[str],
                     today_avg_likes: float | None) -> dict:
     """How today compares with this region's previous BASELINE_DAYS days."""
@@ -138,15 +171,8 @@ def gather_baseline(session, region: str, day: date, signal_count: int, today_th
     likes_vals = [float(l) for _, l in usable if l is not None]
     avg_likes = sum(likes_vals) / len(likes_vals) if likes_vals else None
 
-    def phrase(ratio: float | None, noun: str) -> str | None:
-        if ratio is None:
-            return None
-        if ratio >= 1.25:
-            return f"busier than usual: {noun} about {ratio:.1f}x the recent daily average"
-        if ratio <= 0.8:
-            return f"quieter than usual: {noun} about {ratio:.1f}x the recent daily average"
-        return f"{noun} in line with the recent daily average"
-
+    volume_ratio = signal_count / avg_count if avg_count else None
+    engagement_ratio = today_avg_likes / avg_likes if today_avg_likes and avg_likes else None
     prior_themes = {
         t for (t,) in session.query(Cluster.theme).join(Trend, Trend.cluster_id == Cluster.id)
         .filter(Trend.region == region, Trend.collected_at >= start, Trend.collected_at < end,
@@ -154,8 +180,9 @@ def gather_baseline(session, region: str, day: date, signal_count: int, today_th
     }
     return {
         "enough": True, "days": len(usable),
-        "volume": phrase(signal_count / avg_count if avg_count else None, "post volume"),
-        "engagement": phrase(today_avg_likes / avg_likes if today_avg_likes and avg_likes else None, "average likes"),
+        "volume_ratio": round(volume_ratio, 2) if volume_ratio else None,
+        "engagement_ratio": round(engagement_ratio, 2) if engagement_ratio else None,
+        "volume_dir": direction(volume_ratio), "engagement_dir": direction(engagement_ratio),
         "new_themes": [t for t in today_themes if t not in prior_themes][:3],
         "recent_moods": recent_moods,
     }
@@ -224,13 +251,10 @@ def build_prompt(inputs: dict) -> str:
     themes = ", ".join(inputs["themes"]) or "none detected"
 
     b = inputs["baseline"]
-    if b.get("enough"):
-        lines = [x for x in (b.get("volume"), b.get("engagement")) if x]
-        if b.get("new_themes"):
-            lines.append("themes new today (not seen in the past week): " + ", ".join(b["new_themes"]))
-        history = "; ".join(lines) or "nothing notable versus the past week"
+    if b.get("enough") and b.get("new_themes"):
+        history = "themes new today (not seen in the past week): " + ", ".join(b["new_themes"])
     else:
-        history = f"not enough history yet ({b.get('days', 0)} usable prior days), so make no comparison with usual"
+        history = "nothing notable"
     moods = ", ".join(f"{m['date'][5:]}: {m['mood']}" for m in b.get("recent_moods", [])[-5:]) or "none recorded yet"
 
     return f"""You write the daily brief for {country} on {day.isoformat()} for a public world-culture atlas.
@@ -246,17 +270,16 @@ THEMES detected: {themes}
 LIVE NEWS HEADLINES in {country} right now:
 {news}
 
-VERSUS THE PAST WEEK: {history}
+NEW VERSUS THE PAST WEEK: {history}
 RECENT DAILY MOODS: {moods}
 
-Write the brief in English: at most 3 short sentences and 50 words. Every sentence must end with a period.
+Write the brief in English: at most 2 short sentences and 45 words. Every sentence must end with a period.
 1. Calendar: if an event is today or within 3 days, say so in plain words ("Respect for the Aged Day is in
    3 days."). If there is none, do NOT mention the calendar at all.
 2. Name one or two CONCRETE subjects people engaged with (a person, show, sport, product, or event taken from
    the lists), never a vague category like "entertainment" or "a mix of content". Then, in the same sentence,
    say whether the news covers the same things or something different.
-3. Only if the lists above support it, add a separate short sentence on how the day compares with usual
-   ("Activity was busier than usual."). Never present the comparison as a consequence of the topics.
+Do NOT say how busy or quiet the day was compared with usual; that sentence is added separately.
 Rules: use only what is listed above. Do not invent events, causes, names, or numbers. Do not call anything
 viral or trending unless it appears in the lists. No emojis, hashtags, or quotation marks. If the posts are
 mostly noise, say so briefly instead of inventing a theme.
@@ -274,7 +297,7 @@ def _allowed_text(inputs: dict) -> str:
     parts = [inputs["day"].isoformat(), str(inputs["signal_count"])]
     parts += [t["title"] for t in inputs["topics"]] + inputs["themes"] + [h["title"] for h in inputs["headlines"]]
     parts += [f"{e['name']} {e['when']} {e['date']}" for e in inputs["events"]]
-    parts += [b.get("volume") or "", b.get("engagement") or "", " ".join(b.get("new_themes", []))]
+    parts += [" ".join(b.get("new_themes", []))]
     return " ".join(parts)
 
 
@@ -382,6 +405,8 @@ def generate_region_summary(session, region: str, day: date, force: bool = False
         written = _write_with_llm(inputs) if use_llm else None
         if written:
             text, feel = written[0], written[1]
+            comparison = compare_sentence(inputs["baseline"])
+            text = f"{text} {comparison}" if comparison else text
             source = "ai"
         else:
             text, source = template_summary(inputs), "template"

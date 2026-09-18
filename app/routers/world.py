@@ -124,14 +124,9 @@ def list_world_regions():
 
 
 def _vs_usual_label(baseline: Optional[dict]) -> Optional[str]:
-    """busier | quieter | normal, from the stored baseline comparison; None when
-    the region had too little history to compare."""
-    text = ((baseline or {}).get("volume") or "")
-    if text.startswith("busier"):
-        return "busier"
-    if text.startswith("quieter"):
-        return "quieter"
-    return "normal" if text else None
+    """busier | quieter | normal — post volume versus the region's recent daily
+    average; None when the region had too little history to compare."""
+    return (baseline or {}).get("volume_dir")
 
 
 @router.get("/regions/{code}/summary")

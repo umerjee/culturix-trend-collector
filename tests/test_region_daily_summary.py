@@ -82,20 +82,22 @@ class TestValidation:
 
 
 class TestPromptAndTemplate:
-    def test_prompt_includes_news_baseline_and_history_only_when_real(self):
+    def test_prompt_includes_news_and_history_but_not_the_comparison(self):
         inp = _inputs(
             headlines=[{"title": "Budget row in parliament", "source": "Le Monde"}],
-            baseline={"enough": True, "days": 5, "volume": "busier than usual: post volume about 1.4x the recent daily average",
-                      "engagement": None, "new_themes": ["Election"], "recent_moods": [{"date": "2026-09-17", "mood": "tense", "sentiment": -1}]},
+            baseline={"enough": True, "days": 5, "volume_dir": "busier", "engagement_dir": "quieter",
+                      "new_themes": ["Election"], "recent_moods": [{"date": "2026-09-17", "mood": "tense", "sentiment": -1}]},
         )
         prompt = rds.build_prompt(inp)
         assert "Budget row in parliament (Le Monde)" in prompt
-        assert "busier than usual" in prompt and "Election" in prompt and "09-17: tense" in prompt
+        assert "Election" in prompt and "09-17: tense" in prompt
+        assert "that sentence is added separately" in prompt
+        assert "busier" not in prompt.split("Do NOT say how busy")[0].split("NEW VERSUS")[1]  # no volume verdict handed to the model
 
     def test_thin_history_tells_the_model_not_to_compare(self):
         prompt = rds.build_prompt(_inputs())
-        assert "not enough history yet" in prompt and "make no comparison" in prompt
         assert "not available" in prompt  # no headlines
+        assert "NEW VERSUS THE PAST WEEK: nothing notable" in prompt
 
     def test_no_calendar_instruction_present(self):
         assert "do NOT mention the calendar" in rds.build_prompt(_inputs())
@@ -121,6 +123,29 @@ class TestPromptAndTemplate:
         assert a != rds.inputs_hash(_inputs())
 
 
+class TestComparison:
+    @pytest.mark.parametrize("vol,eng,expected", [
+        ("busier", "busier", "Activity was busier than usual."),
+        ("quieter", "quieter", "Activity was quieter than usual."),
+        ("quieter", "busier", "Fewer posts than usual, but more engagement per post."),
+        ("busier", "quieter", "More posts than usual, but less engagement per post."),
+        ("busier", "normal", "Post volume was busier than usual."),
+        ("normal", "quieter", "Engagement per post was lower than usual."),
+        ("normal", "busier", "Engagement per post was higher than usual."),
+        ("normal", "normal", None),
+        (None, None, None),
+    ])
+    def test_sentence_is_derived_from_the_measured_directions(self, vol, eng, expected):
+        assert rds.compare_sentence({"enough": True, "volume_dir": vol, "engagement_dir": eng}) == expected
+
+    def test_no_comparison_without_enough_history(self):
+        assert rds.compare_sentence({"enough": False, "volume_dir": "busier", "engagement_dir": "busier"}) is None
+
+    @pytest.mark.parametrize("ratio,expected", [(1.25, "busier"), (2.0, "busier"), (0.8, "quieter"), (0.3, "quieter"), (1.0, "normal"), (None, None)])
+    def test_direction_thresholds(self, ratio, expected):
+        assert rds.direction(ratio) == expected
+
+
 class TestGenerate:
     @pytest.fixture
     def env(self, mocker):
@@ -144,6 +169,13 @@ class TestGenerate:
         env.fetcher.assert_not_called()
         rds.generate_region_summary(env.session, "FR", datetime.utcnow().date(), news_fetcher=env.fetcher)
         env.fetcher.assert_called_once()
+
+    def test_the_comparison_sentence_is_appended_and_matches_the_label(self, env):
+        base = {"enough": True, "days": 5, "volume_dir": "quieter", "engagement_dir": "busier", "new_themes": [], "recent_moods": []}
+        env.gather.return_value = _inputs(baseline=base)
+        row = rds.generate_region_summary(env.session, "FR", DAY, news_fetcher=env.fetcher)
+        assert row.summary.endswith("Fewer posts than usual, but more engagement per post.")
+        assert world._vs_usual_label(row.baseline) == "quieter"
 
     def test_llm_failure_falls_back_to_the_template(self, env):
         env.llm.return_value = None
@@ -242,7 +274,7 @@ def _store(db, region="FR", day=DAY, **over):
     s.add(RegionDailySummary(region=region, summary_date=day, summary=over.pop("summary", "A brief."),
                              source="ai", signal_count=40, platforms=["tiktok"], news=["SECRET HEADLINE"],
                              calendar=[{"name": "Bastille Day"}], mood="playful", sentiment=1,
-                             alignment="diverged", baseline={"volume": "busier than usual: post volume about 1.4x"}, **over))
+                             alignment="diverged", baseline={"volume_dir": "busier"}, **over))
     s.commit()
     s.close()
 
@@ -289,6 +321,6 @@ class TestSummaryEndpoint:
         assert exc.value.status_code == 400
 
     def test_vs_usual_label(self):
-        assert world._vs_usual_label({"volume": "quieter than usual: x"}) == "quieter"
-        assert world._vs_usual_label({"volume": "post volume in line with the recent daily average"}) == "normal"
+        assert world._vs_usual_label({"volume_dir": "quieter"}) == "quieter"
+        assert world._vs_usual_label({"volume_dir": "normal"}) == "normal"
         assert world._vs_usual_label({"enough": False}) is None and world._vs_usual_label(None) is None
