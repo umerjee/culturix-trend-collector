@@ -59,26 +59,26 @@ export default function TrendsPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Filter by keyword or author…"
-          className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm bg-white min-w-[16rem]"
+          className="border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white w-full sm:w-auto sm:min-w-[16rem]"
         />
         <span className="text-sm text-gray-400 self-center">{filtered.length} of {trends.length} loaded</span>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-white rounded-xl border border-gray-100 overflow-x-auto">
+        <table className="w-full min-w-[640px] text-sm">
           <thead>
             <tr className="border-b border-gray-50 bg-gray-50">
-              <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Platform</th>
-              <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Content</th>
-              <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Engagement</th>
-              <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Collected</th>
+              <th className="text-left px-4 sm:px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Platform</th>
+              <th className="text-left px-4 sm:px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Content</th>
+              <th className="text-left px-4 sm:px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Engagement</th>
+              <th className="text-left px-4 sm:px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Collected</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
             {filtered.map((t) => (
               <tr key={t.id} className="hover:bg-gray-50">
-                <td className="px-6 py-3"><PlatformBadge platform={t.platform} /></td>
-                <td className="px-6 py-3 max-w-sm">
+                <td className="px-4 sm:px-6 py-3"><PlatformBadge platform={t.platform} /></td>
+                <td className="px-4 sm:px-6 py-3 max-w-sm">
                   {t.url ? (
                     <a href={t.url} target="_blank" rel="noreferrer" className="text-gray-800 hover:text-primary-600 line-clamp-2">
                       {t.content}
@@ -87,10 +87,10 @@ export default function TrendsPage() {
                     <span className="text-gray-800 line-clamp-2">{t.content}</span>
                   )}
                 </td>
-                <td className="px-6 py-3 text-gray-400 whitespace-nowrap text-xs">
+                <td className="px-4 sm:px-6 py-3 text-gray-400 whitespace-nowrap text-xs">
                   ♥ {(t.likes ?? 0).toLocaleString()} &middot; 💬 {(t.comments ?? 0).toLocaleString()}
                 </td>
-                <td className="px-6 py-3 text-gray-400 text-xs whitespace-nowrap">{fmt(t.collected_at)}</td>
+                <td className="px-4 sm:px-6 py-3 text-gray-400 text-xs whitespace-nowrap">{fmt(t.collected_at)}</td>
               </tr>
             ))}
           </tbody>

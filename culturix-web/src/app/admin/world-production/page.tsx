@@ -48,12 +48,12 @@ export default function WorldProductionPage() {
   }
 
   return <div className="max-w-6xl">
-    <div className="mb-8 flex items-start justify-between gap-4"><div><div className="flex items-center gap-2 text-primary-600 text-xs font-bold uppercase tracking-wider"><Film className="h-4 w-4" /> World production</div><h1 className="mt-2 text-2xl font-bold text-gray-900">World video drafts</h1><p className="mt-1 text-sm text-gray-500">Review each fact-checked script, then start the render. A finished render publishes to the public World page straight away; archive it to take it down.</p></div><button onClick={load} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700"><RefreshCw className="h-4 w-4" /> Refresh</button></div>
+    <div className="mb-6 sm:mb-8 flex flex-wrap items-start justify-between gap-3 sm:gap-4"><div><div className="flex items-center gap-2 text-primary-600 text-xs font-bold uppercase tracking-wider"><Film className="h-4 w-4" /> World production</div><h1 className="mt-2 text-2xl font-bold text-gray-900">World video drafts</h1><p className="mt-1 text-sm text-gray-500">Review each fact-checked script, then start the render. A finished render publishes to the public World page straight away; archive it to take it down.</p></div><button onClick={load} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700"><RefreshCw className="h-4 w-4" /> Refresh</button></div>
     {message && <p className="mb-5 rounded-lg bg-green-50 px-4 py-3 text-sm text-green-700">{message}</p>}
     {loading && drafts.length === 0 ? <p className="text-sm text-gray-400">Loading World drafts...</p> : drafts.length === 0 ? <p className="rounded-xl border border-dashed border-gray-200 p-8 text-sm text-gray-400">No World drafts yet. Select a subject in the Subject Library first.</p> : <div className="space-y-3">{drafts.map((draft) => {
       const unsupported = draft.grounding?.unsupported_claims?.length ?? 0;
-      return <article key={draft.id} className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm">
-        <div className="flex items-start justify-between gap-4">
+      return <article key={draft.id} className="rounded-xl border border-gray-100 bg-white p-4 sm:p-5 shadow-sm">
+        <div className="flex flex-wrap sm:flex-nowrap items-start justify-between gap-2 sm:gap-4">
           <div className="min-w-0">
             <div className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase text-gray-400"><span>{draft.subject_region || "global"}</span><span>{draft.subject_category || "subject"}</span><span>{STATUS_LABEL[draft.status] || draft.status}</span>{draft.has_host && <span>with host</span>}</div>
             <h2 className="mt-1 text-lg font-semibold text-gray-900">{draft.title || "Untitled World subject"}</h2>
@@ -76,9 +76,9 @@ export default function WorldProductionPage() {
         <div className="mt-4 flex flex-wrap items-center gap-2">
           {draft.final_video_url && <a href={draft.final_video_url} target="_blank" rel="noreferrer" className="text-sm font-semibold text-primary-600 hover:underline">Watch video</a>}
           {draft.status === "ready" && draft.publish_recommended === false && <span className="text-xs text-amber-700">Automatic QA did not recommend publishing this render.</span>}
-          {!draft.final_video_url && <button disabled={draft.status === "animating"} onClick={() => generateVideo(draft)} className="inline-flex items-center gap-1 rounded-md bg-primary-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"><Play className="h-3.5 w-3.5" /> {draft.status === "failed" ? "Retry render" : "Generate video"}</button>}
+          {!draft.final_video_url && <button disabled={draft.status === "animating"} onClick={() => generateVideo(draft)} className="inline-flex min-h-10 items-center gap-1 rounded-md bg-primary-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"><Play className="h-3.5 w-3.5" /> {draft.status === "failed" ? "Retry render" : "Generate video"}</button>}
           <span className="text-xs text-gray-400">{draft.status === "animating" ? "Rendering in progress" : ""}</span>
-          <button disabled={draft.status === "animating"} onClick={() => archive(draft)} className="ml-auto inline-flex items-center gap-1 rounded-md bg-gray-100 px-2.5 py-1.5 text-xs font-semibold text-gray-600 disabled:opacity-50"><Archive className="h-3.5 w-3.5" /> {draft.status === "ready" ? "Unpublish" : "Archive"}</button>
+          <button disabled={draft.status === "animating"} onClick={() => archive(draft)} className="ml-auto inline-flex min-h-10 items-center gap-1 rounded-md bg-gray-100 px-2.5 py-1.5 text-xs font-semibold text-gray-600 disabled:opacity-50"><Archive className="h-3.5 w-3.5" /> {draft.status === "ready" ? "Unpublish" : "Archive"}</button>
         </div>
       </article>;
     })}</div>}

@@ -12,12 +12,15 @@ const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://culturixcloud.com"
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: "Culturix — Daily Trend Intelligence for Content Creators & Brands",
+    default: "Culturix — Explore the world's culture, one short video at a time",
     template: "%s · Culturix",
   },
   description:
-    "Culturix turns today's cultural signals into tomorrow's content. AI-clustered trends from across the web, matched to your brand, delivered as 10 personalized content ideas every morning — with recurring-trend awareness so you know what's a real pattern versus a one-off spike.",
+    "Culturix World is an interactive map of history, heritage, technology and humor. Pick a country, slide through time, and watch short fact-checked videos built from real sources like Wikipedia and UNESCO and tied to what is trending there now. Also: daily trend-driven content ideas for creators and brands.",
   keywords: [
+    "world culture map",
+    "cultural heritage videos",
+    "UNESCO World Heritage videos",
     "trend intelligence",
     "content ideas AI",
     "social media trend detection",
@@ -44,9 +47,9 @@ export const metadata: Metadata = {
     canonical: "/",
   },
   openGraph: {
-    title: "Culturix — Daily Trend Intelligence for Content Creators & Brands",
+    title: "Culturix — Explore the world's culture, one short video at a time",
     description:
-      "10 AI-personalized content ideas every morning, built from real-time cultural signals across the web — with recurring-trend awareness baked in.",
+      "An interactive map of history, heritage, technology and humor. Short fact-checked videos built from real sources like Wikipedia and UNESCO, tied to what is trending in each country.",
     url: SITE_URL,
     siteName: "Culturix",
     type: "website",
@@ -54,9 +57,9 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Culturix — Daily Trend Intelligence for Content Creators & Brands",
+    title: "Culturix — Explore the world's culture, one short video at a time",
     description:
-      "10 AI-personalized content ideas every morning, built from real-time cultural signals across the web.",
+      "An interactive map of history, heritage, technology and humor. Short fact-checked videos built from real sources, tied to what is trending in each country.",
   },
 };
 

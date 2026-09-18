@@ -53,13 +53,13 @@ export default function HistoryPage() {
 
       <div className="grid lg:grid-cols-[1fr,1.2fr] gap-6 items-start lg:h-[calc(100vh-20rem)]">
         <div className="bg-white rounded-xl border border-gray-100 overflow-hidden lg:h-full lg:flex lg:flex-col">
-          <div className="px-6 py-4 border-b border-gray-50 flex items-center justify-between shrink-0">
+          <div className="px-4 sm:px-6 py-4 border-b border-gray-50 flex items-center justify-between shrink-0">
             <h2 className="font-semibold text-gray-900 text-sm">Trend themes</h2>
             <span className="text-xs text-gray-400">{trendHistory.length} tracked</span>
           </div>
           <ul className="divide-y divide-gray-50 overflow-y-auto lg:flex-1">
             {trendHistory.length === 0 && (
-              <li className="px-6 py-10 text-center text-sm text-gray-400">
+              <li className="px-4 sm:px-6 py-10 text-center text-sm text-gray-400">
                 No trend history yet — it accumulates as the daily pipeline runs.
               </li>
             )}
@@ -70,7 +70,7 @@ export default function HistoryPage() {
                 <li key={t.id}>
                   <button
                     onClick={() => selectTheme(t.id)}
-                    className={`w-full text-left px-6 py-3.5 transition-colors ${
+                    className={`w-full text-left px-4 sm:px-6 py-3.5 transition-colors ${
                       selectedThemeId === t.id ? "bg-primary-50" : "hover:bg-gray-50"
                     }`}
                   >
@@ -132,7 +132,7 @@ export default function HistoryPage() {
 
               <div>
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Occurrence log</p>
-                <div className="border border-gray-100 rounded-lg overflow-hidden max-h-56 overflow-y-auto">
+                <div className="border border-gray-100 rounded-lg overflow-x-auto max-h-56 overflow-y-auto">
                   <table className="w-full text-xs">
                     <thead className="bg-gray-50 sticky top-0">
                       <tr>

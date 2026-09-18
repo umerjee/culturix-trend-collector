@@ -56,7 +56,7 @@ export default function SearchPage() {
           <SearchSection title="Trends" count={matchedTrends.length}>
             <ul className="divide-y divide-gray-50">
               {matchedTrends.slice(0, 20).map((t) => (
-                <li key={t.id} className="flex items-center gap-3 px-6 py-3">
+                <li key={t.id} className="flex items-center gap-3 px-4 sm:px-6 py-3">
                   <PlatformBadge platform={t.platform} />
                   <span className="flex-1 text-sm text-gray-700 truncate">{t.content}</span>
                   <span className="text-xs text-gray-400 whitespace-nowrap">{fmt(t.collected_at)}</span>
@@ -68,7 +68,7 @@ export default function SearchPage() {
           <SearchSection title="Users" count={matchedUsers.length}>
             <ul className="divide-y divide-gray-50">
               {matchedUsers.slice(0, 20).map((u) => (
-                <li key={u.user_id} className="px-6 py-3">
+                <li key={u.user_id} className="px-4 sm:px-6 py-3">
                   <Link href="/admin/users" className="text-sm text-gray-700 hover:text-primary-600 font-mono">
                     {u.user_id.slice(0, 16)}…
                   </Link>
@@ -81,7 +81,7 @@ export default function SearchPage() {
           <SearchSection title="Personas" count={matchedPersonas.length}>
             <ul className="divide-y divide-gray-50">
               {matchedPersonas.slice(0, 20).map((p) => (
-                <li key={p.id} className="px-6 py-3">
+                <li key={p.id} className="px-4 sm:px-6 py-3">
                   <Link href={`/admin/personas/${p.id}`} className="text-sm text-gray-700 hover:text-primary-600 font-medium">
                     {p.name}
                   </Link>
@@ -94,7 +94,7 @@ export default function SearchPage() {
           <SearchSection title="Clusters" count={matchedClusters.length}>
             <ul className="divide-y divide-gray-50">
               {matchedClusters.slice(0, 20).map((c) => (
-                <li key={c.id} className="px-6 py-3">
+                <li key={c.id} className="px-4 sm:px-6 py-3">
                   <Link href={`/admin/clusters/${c.id}`} className="text-sm text-gray-700 hover:text-primary-600 font-medium">
                     {c.description || `Cluster ${c.label}`}
                   </Link>
@@ -112,7 +112,7 @@ function SearchSection({ title, count, children }: { title: string; count: numbe
   if (count === 0) return null;
   return (
     <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-      <div className="px-6 py-3 border-b border-gray-50 text-xs text-gray-400">
+      <div className="px-4 sm:px-6 py-3 border-b border-gray-50 text-xs text-gray-400">
         {title} — {count} result{count !== 1 ? "s" : ""}
       </div>
       {children}

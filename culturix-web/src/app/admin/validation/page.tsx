@@ -81,26 +81,26 @@ export default function ValidationPage() {
           <span className="text-sm text-gray-400 self-center">{filtered.length} entries</span>
         </div>
 
-        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="bg-white rounded-xl border border-gray-100 overflow-x-auto">
+          <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="border-b border-gray-50 bg-gray-50">
-                <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
-                <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Source</th>
-                <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Subject</th>
-                <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Reason</th>
-                <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Checked</th>
+                <th className="text-left px-4 sm:px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+                <th className="text-left px-4 sm:px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Source</th>
+                <th className="text-left px-4 sm:px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Subject</th>
+                <th className="text-left px-4 sm:px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Reason</th>
+                <th className="text-left px-4 sm:px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Checked</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-6 py-10 text-center text-sm text-gray-400">No validation records yet.</td>
+                  <td colSpan={5} className="px-4 sm:px-6 py-10 text-center text-sm text-gray-400">No validation records yet.</td>
                 </tr>
               )}
               {filtered.map((v) => (
                 <tr key={v.id} className="hover:bg-gray-50 align-top">
-                  <td className="px-6 py-3 whitespace-nowrap">
+                  <td className="px-4 sm:px-6 py-3 whitespace-nowrap">
                     {v.status === "approved" ? (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-emerald-50 text-emerald-700">
                         <CheckCircle className="h-3 w-3" /> Approved
@@ -111,10 +111,10 @@ export default function ValidationPage() {
                       </span>
                     )}
                   </td>
-                  <td className="px-6 py-3 text-gray-500 capitalize whitespace-nowrap">{v.source}</td>
-                  <td className="px-6 py-3 max-w-xs text-gray-800">{v.subject || "(untitled)"}</td>
-                  <td className="px-6 py-3 max-w-sm text-gray-500">{v.reason || "—"}</td>
-                  <td className="px-6 py-3 text-gray-400 text-xs whitespace-nowrap">{fmt(v.checked_at)}</td>
+                  <td className="px-4 sm:px-6 py-3 text-gray-500 capitalize whitespace-nowrap">{v.source}</td>
+                  <td className="px-4 sm:px-6 py-3 max-w-xs text-gray-800">{v.subject || "(untitled)"}</td>
+                  <td className="px-4 sm:px-6 py-3 max-w-sm text-gray-500">{v.reason || "—"}</td>
+                  <td className="px-4 sm:px-6 py-3 text-gray-400 text-xs whitespace-nowrap">{fmt(v.checked_at)}</td>
                 </tr>
               ))}
             </tbody>
@@ -138,27 +138,27 @@ export default function ValidationPage() {
       {checkLog.length > 0 && (
         <div>
           <h2 className="font-semibold text-gray-900 text-sm mb-3">Content check log</h2>
-          <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-            <table className="w-full text-sm">
+          <div className="bg-white rounded-xl border border-gray-100 overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm">
               <thead>
                 <tr className="border-b border-gray-50 bg-gray-50">
-                  <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Score change</th>
-                  <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Trend / Freshness / Persona</th>
-                  <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status change</th>
-                  <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Action</th>
-                  <th className="text-left px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Checked</th>
+                  <th className="text-left px-4 sm:px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Score change</th>
+                  <th className="text-left px-4 sm:px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Trend / Freshness / Persona</th>
+                  <th className="text-left px-4 sm:px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status change</th>
+                  <th className="text-left px-4 sm:px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Action</th>
+                  <th className="text-left px-4 sm:px-6 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Checked</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {checkLog.map((c) => (
                   <tr key={c.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-3 text-gray-700 whitespace-nowrap">{c.previous_score ?? "—"} → {c.new_score ?? "—"}</td>
-                    <td className="px-6 py-3 text-gray-500 whitespace-nowrap text-xs">
+                    <td className="px-4 sm:px-6 py-3 text-gray-700 whitespace-nowrap">{c.previous_score ?? "—"} → {c.new_score ?? "—"}</td>
+                    <td className="px-4 sm:px-6 py-3 text-gray-500 whitespace-nowrap text-xs">
                       {c.trend_score ?? "—"} / {c.freshness_score ?? "—"} / {c.persona_score ?? "—"}
                     </td>
-                    <td className="px-6 py-3 text-gray-500 whitespace-nowrap capitalize">{c.previous_status ?? "—"} → {c.new_status ?? "—"}</td>
-                    <td className="px-6 py-3 text-gray-500">{c.action_taken ?? "—"}</td>
-                    <td className="px-6 py-3 text-gray-400 text-xs whitespace-nowrap">{fmt(c.checked_at)}</td>
+                    <td className="px-4 sm:px-6 py-3 text-gray-500 whitespace-nowrap capitalize">{c.previous_status ?? "—"} → {c.new_status ?? "—"}</td>
+                    <td className="px-4 sm:px-6 py-3 text-gray-500">{c.action_taken ?? "—"}</td>
+                    <td className="px-4 sm:px-6 py-3 text-gray-400 text-xs whitespace-nowrap">{fmt(c.checked_at)}</td>
                   </tr>
                 ))}
               </tbody>

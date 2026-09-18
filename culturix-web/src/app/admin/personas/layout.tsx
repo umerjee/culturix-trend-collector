@@ -11,6 +11,8 @@ export default function PersonasLayout({ children }: { children: React.ReactNode
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [loading, setLoading] = useState(true);
   const pathname = usePathname();
+  // Phones/iPad portrait: show the list OR the detail, not both stacked.
+  const hasSelection = pathname !== "/admin/personas" && pathname !== "/admin/personas/";
 
   useEffect(() => {
     fetchAdminData<Persona[]>("personas").then(setPersonas).catch(() => setPersonas([])).finally(() => setLoading(false));
@@ -19,8 +21,8 @@ export default function PersonasLayout({ children }: { children: React.ReactNode
   return (
     <div className="space-y-4">
       <h1 className="font-bold text-gray-900 text-xl">Personas</h1>
-      <div className="grid lg:grid-cols-[1fr,1.1fr] gap-6 items-start lg:h-[calc(100vh-14rem)]">
-        <div className="grid sm:grid-cols-2 gap-4 lg:h-full lg:content-start lg:overflow-y-auto lg:pr-1">
+      <div className="grid lg:grid-cols-[1fr,1.1fr] gap-4 lg:gap-6 items-start lg:h-[calc(100vh-14rem)]">
+        <div className={`grid sm:grid-cols-2 gap-4 lg:h-full lg:content-start lg:overflow-y-auto lg:pr-1 ${hasSelection ? "hidden lg:grid" : ""}`}>
           {loading && <p className="text-gray-400 text-sm sm:col-span-2">Loading…</p>}
           {!loading && personas.length === 0 && (
             <p className="text-gray-400 text-sm sm:col-span-2">No personas yet — run the pipeline first.</p>
@@ -31,7 +33,7 @@ export default function PersonasLayout({ children }: { children: React.ReactNode
               <Link
                 key={p.id}
                 href={`/admin/personas/${p.id}`}
-                className={`text-left bg-white rounded-xl border p-6 space-y-3 transition-colors block ${
+                className={`text-left bg-white rounded-xl border p-4 sm:p-6 space-y-3 transition-colors block ${
                   active ? "border-primary-300 ring-1 ring-primary-100" : "border-gray-100 hover:border-gray-200"
                 }`}
               >
@@ -59,7 +61,8 @@ export default function PersonasLayout({ children }: { children: React.ReactNode
           })}
         </div>
 
-        <div className="bg-white rounded-xl border border-gray-100 p-6 lg:h-full lg:overflow-y-auto">
+        <div className={`bg-white rounded-xl border border-gray-100 p-4 sm:p-6 lg:h-full lg:overflow-y-auto ${hasSelection ? "" : "hidden lg:block"}`}>
+          <Link href="/admin/personas" className="lg:hidden mb-4 inline-flex min-h-11 items-center text-sm font-medium text-primary-600">← All personas</Link>
           {children}
         </div>
       </div>

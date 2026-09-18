@@ -156,13 +156,13 @@ export default function OverviewPage() {
 
       <div className="grid lg:grid-cols-2 gap-6">
         <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-50">
+          <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-gray-50">
             <h2 className="font-semibold text-gray-900 text-sm">Recent Trends</h2>
             <Link href="/admin/trends" className="text-xs text-primary-600 hover:underline">View all →</Link>
           </div>
           <ul className="divide-y divide-gray-50">
             {trends.map((t) => (
-              <li key={t.id} className="flex items-center gap-3 px-6 py-3">
+              <li key={t.id} className="flex items-center gap-3 px-4 sm:px-6 py-3">
                 <PlatformBadge platform={t.platform} />
                 <span className="flex-1 text-sm text-gray-700 truncate">{t.content}</span>
                 <span className="text-xs text-gray-400 whitespace-nowrap shrink-0">{fmt(t.collected_at)}</span>
@@ -172,14 +172,14 @@ export default function OverviewPage() {
         </div>
 
         <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-50">
+          <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-gray-50">
             <h2 className="font-semibold text-gray-900 text-sm">Top Clusters</h2>
             <Link href="/admin/clusters" className="text-xs text-primary-600 hover:underline">View all →</Link>
           </div>
-          {clusters.length === 0 && <p className="text-sm text-gray-400 px-6 py-8">No clusters yet — run the pipeline.</p>}
+          {clusters.length === 0 && <p className="text-sm text-gray-400 px-4 sm:px-6 py-8">No clusters yet — run the pipeline.</p>}
           <ul className="divide-y divide-gray-50">
             {clusters.map((c) => (
-              <li key={c.id} className="px-6 py-4">
+              <li key={c.id} className="px-4 sm:px-6 py-4">
                 <div className="flex items-start justify-between gap-4">
                   <p className="flex-1 min-w-0 font-semibold text-sm text-gray-900">{c.description || `Cluster ${c.label}`}</p>
                   <span className="text-xs text-gray-400 whitespace-nowrap shrink-0">{c.trend_count ?? 0} trends</span>
@@ -193,7 +193,7 @@ export default function OverviewPage() {
       {/* Integration health — previously invisible in the UI despite being
           checked daily by the scheduler (app/integration_health.py). */}
       <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-50">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-gray-50">
           <h2 className="font-semibold text-gray-900 text-sm flex items-center gap-1.5">
             <Activity className="h-4 w-4 text-gray-400" /> Integration health
           </h2>
@@ -206,14 +206,14 @@ export default function OverviewPage() {
           </button>
         </div>
         {healthCheckError && (
-          <p className="text-sm text-red-600 px-6 py-2 border-b border-gray-50">{healthCheckError}</p>
+          <p className="text-sm text-red-600 px-4 sm:px-6 py-2 border-b border-gray-50">{healthCheckError}</p>
         )}
         {health.length === 0 ? (
-          <p className="text-sm text-gray-400 px-6 py-8">No health checks recorded yet.</p>
+          <p className="text-sm text-gray-400 px-4 sm:px-6 py-8">No health checks recorded yet.</p>
         ) : (
           <ul className="divide-y divide-gray-50">
             {health.map((h) => (
-              <li key={h.integration} className="flex items-center gap-3 px-6 py-3">
+              <li key={h.integration} className="flex items-center gap-3 px-4 sm:px-6 py-3">
                 <span className="flex-1 text-sm text-gray-700 capitalize">{h.integration.replace(/_/g, " ")}</span>
                 {h.error && <span className="text-xs text-gray-400 truncate max-w-xs">{h.error}</span>}
                 <Badge variant={HEALTH_VARIANT[h.status] ?? "neutral"} className="capitalize shrink-0">{h.status}</Badge>
@@ -237,7 +237,7 @@ export default function OverviewPage() {
         );
         return (
           <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-            <div className="px-6 py-4 border-b border-gray-50 flex items-center justify-between gap-3 flex-wrap">
+            <div className="px-4 sm:px-6 py-4 border-b border-gray-50 flex items-center justify-between gap-3 flex-wrap">
               <h2 className="font-semibold text-gray-900 text-sm flex items-center gap-1.5">
                 <CalendarDays className="h-4 w-4 text-indigo-500" /> Upcoming events
               </h2>
@@ -265,11 +265,11 @@ export default function OverviewPage() {
               </div>
             </div>
             {filteredEvents.length === 0 ? (
-              <p className="px-6 py-6 text-sm text-gray-400">No events match this filter.</p>
+              <p className="px-4 sm:px-6 py-6 text-sm text-gray-400">No events match this filter.</p>
             ) : (
               <ul className="divide-y divide-gray-50 max-h-96 overflow-y-auto">
                 {filteredEvents.map((e) => (
-                  <li key={e.id} className="flex items-center gap-3 px-6 py-3">
+                  <li key={e.id} className="flex items-center gap-3 px-4 sm:px-6 py-3">
                     <span className={`text-[10px] font-medium uppercase tracking-wide px-2 py-0.5 rounded shrink-0 ${EVENT_CATEGORY_STYLE[e.category] ?? "bg-gray-100 text-gray-600"}`}>
                       {e.category}
                     </span>
@@ -289,14 +289,14 @@ export default function OverviewPage() {
       {/* High-velocity alerts — same visibility gap as integration health. */}
       {alerts.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-50">
+          <div className="px-4 sm:px-6 py-4 border-b border-gray-50">
             <h2 className="font-semibold text-gray-900 text-sm flex items-center gap-1.5">
               <AlertTriangle className="h-4 w-4 text-amber-500" /> High-velocity alerts
             </h2>
           </div>
           <ul className="divide-y divide-gray-50">
             {alerts.map((a) => (
-              <li key={a.id} className="flex items-center gap-3 px-6 py-3">
+              <li key={a.id} className="flex items-center gap-3 px-4 sm:px-6 py-3">
                 <PlatformBadge platform={a.platform} />
                 <span className="flex-1 text-sm text-gray-700 truncate">{a.description ?? a.external_id}</span>
                 <span className="text-xs text-gray-400 whitespace-nowrap shrink-0">
@@ -317,12 +317,12 @@ export default function OverviewPage() {
 
       {digests.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-50">
+          <div className="px-4 sm:px-6 py-4 border-b border-gray-50">
             <h2 className="font-semibold text-gray-900 text-sm">Recent Digests</h2>
           </div>
           <div className="divide-y divide-gray-50">
             {digests.map((d) => (
-              <div key={d.id} className="flex items-center gap-4 px-6 py-3 text-sm">
+              <div key={d.id} className="flex items-center gap-4 px-4 sm:px-6 py-3 text-sm">
                 <span className="text-gray-400 text-xs font-mono">{d.id.slice(0, 8)}…</span>
                 <span className="text-gray-600 flex-1">{fmt(d.generated_at)}</span>
                 <span className="text-gray-400">{d.cluster_count} clusters · {d.idea_count} ideas</span>

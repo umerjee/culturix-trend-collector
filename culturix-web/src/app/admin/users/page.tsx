@@ -102,7 +102,7 @@ export default function UsersPage() {
 
       {filtered.map((u) => (
         <div key={u.user_id} className={`bg-white rounded-xl border overflow-hidden ${!u.approved ? "border-amber-200" : "border-gray-100"}`}>
-          <div className="flex items-center gap-4 px-6 py-4 border-b border-gray-50 flex-wrap">
+          <div className="flex items-center gap-4 px-4 sm:px-6 py-4 border-b border-gray-50 flex-wrap">
             <span className="font-mono text-xs text-gray-400 shrink-0">{u.user_id.slice(0, 16)}…</span>
 
             {u.approved ? (
@@ -166,13 +166,13 @@ export default function UsersPage() {
           </div>
 
           {u.content_profiles.length === 0 ? (
-            <p className="px-6 py-3 text-xs text-gray-400 italic">No content profiles yet</p>
+            <p className="px-4 sm:px-6 py-3 text-xs text-gray-400 italic">No content profiles yet</p>
           ) : (
             <div className="divide-y divide-gray-50">
               {u.content_profiles.map((cp) => (
-                <div key={cp.id} className="flex items-center gap-3 px-6 py-3">
+                <div key={cp.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 sm:px-6 py-3">
                   <div className={`h-2 w-2 rounded-full shrink-0 ${cp.is_active ? "bg-green-400" : "bg-gray-300"}`} />
-                  <span className="text-sm font-medium text-gray-800 w-36 truncate">{cp.name}</span>
+                  <span className="text-sm font-medium text-gray-800 max-w-full sm:w-36 truncate">{cp.name}</span>
                   <span className="text-xs text-gray-500">{cp.industry_niche || <span className="italic text-gray-300">no niche</span>}</span>
                   <div className="flex gap-1 ml-2">
                     {cp.target_platforms.slice(0, 4).map((p) => (

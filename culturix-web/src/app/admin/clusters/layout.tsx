@@ -12,6 +12,8 @@ export default function ClustersLayout({ children }: { children: React.ReactNode
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [loading, setLoading] = useState(true);
   const pathname = usePathname();
+  // Phones/iPad portrait: show the list OR the detail, not both stacked.
+  const hasSelection = pathname !== "/admin/clusters" && pathname !== "/admin/clusters/";
 
   useEffect(() => {
     fetchAdminData<Cluster[]>("clusters").then(setClusters).catch(() => setClusters([])).finally(() => setLoading(false));
@@ -20,8 +22,8 @@ export default function ClustersLayout({ children }: { children: React.ReactNode
   return (
     <div className="space-y-4">
       <h1 className="font-bold text-gray-900 text-xl">Clusters</h1>
-      <div className="grid lg:grid-cols-[1fr,1.1fr] gap-6 items-start lg:h-[calc(100vh-14rem)]">
-        <div className="space-y-3 lg:h-full lg:overflow-y-auto lg:pr-1">
+      <div className="grid lg:grid-cols-[1fr,1.1fr] gap-4 lg:gap-6 items-start lg:h-[calc(100vh-14rem)]">
+        <div className={`space-y-3 lg:h-full lg:overflow-y-auto lg:pr-1 ${hasSelection ? "hidden lg:block" : ""}`}>
           {loading && <p className="text-gray-400 text-sm">Loading…</p>}
           {!loading && clusters.length === 0 && (
             <p className="text-gray-400 text-sm">No clusters yet — run the pipeline first.</p>
@@ -32,7 +34,7 @@ export default function ClustersLayout({ children }: { children: React.ReactNode
               <Link
                 key={c.id}
                 href={`/admin/clusters/${c.id}`}
-                className={`block w-full text-left bg-white rounded-xl border px-6 py-5 flex items-start justify-between gap-6 transition-colors ${
+                className={`block w-full text-left bg-white rounded-xl border px-4 sm:px-6 py-4 sm:py-5 flex items-start justify-between gap-3 sm:gap-6 transition-colors ${
                   active ? "border-primary-300 ring-1 ring-primary-100" : "border-gray-100 hover:border-gray-200"
                 }`}
               >
@@ -51,7 +53,8 @@ export default function ClustersLayout({ children }: { children: React.ReactNode
           })}
         </div>
 
-        <div className="bg-white rounded-xl border border-gray-100 p-6 lg:h-full lg:overflow-y-auto">
+        <div className={`bg-white rounded-xl border border-gray-100 p-4 sm:p-6 lg:h-full lg:overflow-y-auto ${hasSelection ? "" : "hidden lg:block"}`}>
+          <Link href="/admin/clusters" className="lg:hidden mb-4 inline-flex min-h-11 items-center text-sm font-medium text-primary-600">← All clusters</Link>
           {children}
         </div>
       </div>

@@ -1,7 +1,7 @@
 import { ImageResponse } from "next/og";
 
 export const runtime = "edge";
-export const alt = "Culturix — Daily Trend Intelligence for Content Creators & Brands";
+export const alt = "Culturix — Explore the world's culture, one short video at a time";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -52,7 +52,7 @@ export default function OpengraphImage() {
             lineHeight: 1.4,
           }}
         >
-          Daily trend intelligence — 10 AI-personalized content ideas every morning
+          Explore the world's culture, one short fact-checked video at a time
         </div>
       </div>
     ),
