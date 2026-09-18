@@ -55,7 +55,7 @@ export default async function WorldPage({
           </p>
         </div>
 
-        <section className="mb-10 rounded-2xl border border-gray-100 p-4 sm:p-6">
+        <section className="mb-10">
           <WorldMap />
         </section>
 
