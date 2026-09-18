@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, Text, JSON, ARRAY
+from sqlalchemy import Column, String, Integer, DateTime, Text, JSON, ARRAY, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -110,5 +110,21 @@ class ToonScript(Base):
 
     generation_source = Column(String(10), nullable=False, default="manual")  # manual|ai|ai_auto
     status = Column(String(12), nullable=False, default="draft")  # draft|approved|archived
+
+    # World Features — subject-centric public content, see
+    # app/services/culturetoon_script.py::generate_world_script. A World
+    # script has no source_type/source_id (those stay Persona/Cluster/idea-
+    # only); trend_source_* records the grounding Trend row instead, kept
+    # separate so the two "what grounded this script" concepts don't collide.
+    # character_variant_id above is already nullable and, for a World
+    # script, holds the OPTIONAL regional host (never a required cast).
+    is_world_content = Column(Boolean, nullable=False, default=False)
+    subject_region = Column(String(2), nullable=True, index=True)  # ISO-2, see region_codes.normalize_region
+    subject_text = Column(Text, nullable=True)
+    subject_category = Column(String(30), nullable=True, index=True)  # place|phenomenon|species|tech|custom
+    trend_source_id = Column(Integer, nullable=True)
+    trend_source_type = Column(String(10), nullable=True)
+    culture_id = Column(UUID(as_uuid=True), nullable=True)  # optional, same non-enforced-FK convention as CharacterVariant.culture_id
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

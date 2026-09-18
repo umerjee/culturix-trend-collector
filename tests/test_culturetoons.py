@@ -2342,6 +2342,64 @@ class TestToons:
         assert unchanged["status"] != "animating"
 
 
+class TestWorldContentToons:
+    """A World Feature (is_world_content=True) has no character, or at most
+    an optional regional host — POST /toons must allow character_variant_id
+    to be omitted for one of these, while still requiring it for an
+    ordinary character-driven script (unchanged behavior)."""
+
+    def _make_world_script(self, db, user_id, brand_id, character_variant_id=None):
+        session = db()
+        script = ToonScript(
+            brand_id=uuid.UUID(brand_id), character_variant_id=character_variant_id,
+            hook_line="H", tone="informative",
+            shots=[{"shot_number": 1, "duration_seconds": 6, "action": "aerial view", "shot_focus": "subject",
+                     "subject_visual": "the strait from above", "voiceover": True, "dialogue": "A vital waterway."}],
+            generation_source="ai", status="approved",
+            is_world_content=True, subject_region="IR", subject_text="The Strait of Hormuz",
+            subject_category="place",
+        )
+        session.add(script)
+        session.commit()
+        session.refresh(script)
+        script_id = str(script.id)
+        session.close()
+        return script_id
+
+    def test_create_toon_without_character_variant_id_for_world_script(self, db, user_id, brand_and_character):
+        brand, _character, _variant = brand_and_character
+        script_id = self._make_world_script(db, user_id, brand["id"])
+
+        toon = culturetoons.create_toon({
+            "user_id": user_id, "brand_id": brand["id"], "script_id": script_id,
+        })
+        assert toon["character_variant_id"] is None
+        assert toon["is_world_content"] is True
+        assert toon["subject_region"] == "IR"
+        assert toon["subject_text"] == "The Strait of Hormuz"
+        assert toon["subject_category"] == "place"
+
+    def test_create_toon_with_optional_host_for_world_script(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        script_id = self._make_world_script(db, user_id, brand["id"], character_variant_id=uuid.UUID(variant["id"]))
+
+        toon = culturetoons.create_toon({
+            "user_id": user_id, "brand_id": brand["id"], "script_id": script_id,
+            "character_variant_id": variant["id"],
+        })
+        assert toon["character_variant_id"] == variant["id"]
+        assert toon["is_world_content"] is True
+
+    def test_create_toon_still_requires_character_variant_id_for_ordinary_script(self, db, user_id, brand_and_character):
+        brand, _character, variant = brand_and_character
+        script = culturetoons.create_script({"user_id": user_id, "brand_id": brand["id"], "character_variant_id": variant["id"]})
+
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.create_toon({"user_id": user_id, "brand_id": brand["id"], "script_id": script["id"]})
+        assert exc_info.value.status_code == 400
+        assert "character_variant_id" in exc_info.value.detail
+
+
 class TestPublishToon:
     def _make_ready_toon(self, user_id, brand_id, variant_id):
         script = culturetoons.create_script({"user_id": user_id, "brand_id": brand_id, "character_variant_id": variant_id})

@@ -33,7 +33,10 @@ class Toon(Base):
     brand_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     episode_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     part_order = Column(Integer, nullable=True)
-    character_variant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    # Nullable: a World Feature (is_world_content=True) has no character at
+    # all, or at most an optional regional host — see ToonScript's own
+    # character_variant_id docstring for the same nullability rationale.
+    character_variant_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     script_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     background_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     title = Column(String(255), nullable=True)
@@ -73,6 +76,18 @@ class Toon(Base):
     # generated before this column existed. Purely for cost/debug
     # attribution — does not change how the toon is displayed/played.
     video_provider = Column(String(20), nullable=True)
+
+    # World Features — subject-centric public content (a place/phenomenon/
+    # species is the star, character is optional), distinct from ordinary
+    # character-driven Toons. is_world_content is the single flag the public
+    # /api/world/* routes filter on; the rest mirror ToonScript's own
+    # subject_* columns so a Toon can be queried/displayed without a join
+    # back to its script. See app/services/culturetoon_script.py::
+    # generate_world_script and app/routers/world.py.
+    is_world_content = Column(Boolean, nullable=False, default=False)
+    subject_region = Column(String(2), nullable=True, index=True)
+    subject_text = Column(Text, nullable=True)
+    subject_category = Column(String(30), nullable=True, index=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -732,8 +732,8 @@ class TestLTX25SubjectShots:
         prompt = build_ltx25_scene_prompt(self._script(mocker, [
             {"shot_number": 1, "speaker_variant_id": "z", "action": "leans in", "dialogue": "Hi"},
         ]), self._cast(mocker))
-        assert "exactly ONE of each" in prompt
-        assert "not a fixed seating arrangement" in prompt
+        assert "One of each on screen at a time" in prompt
+        assert "no duplicates or copies" in prompt
 
 
 class TestSpeechPacing:

@@ -336,8 +336,14 @@ def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Opt
         # somewhat useful — "Indian expat", "German middle aged man" — but never
         # written with voice in mind) only when the user hasn't set one.
         voice_text = (getattr(variant, "voice_description", None) or "").strip()
+        # Falls back to a short pointer at the appearance text just given,
+        # rather than restating the whole thing a second time — confirmed
+        # live 2026-09-17 that a 3-character MSR prompt was ~40% duplicated
+        # backstory (name+bio in the identity block, then the SAME bio
+        # again per voice line), diluting the shot's actual visual/action
+        # content the model needs to weight most heavily.
         if not voice_text and text:
-            voice_text = f"accent, vocal tone and speech pattern fitting being {text}"
+            voice_text = "matches their description above"
         if voice_text:
             if single_anchor:
                 voice_lines.append(f"{name}'s voice: {voice_text}" if name else f"Voice: {voice_text}")
@@ -362,11 +368,17 @@ def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Opt
                 "people, distinct from the one anchored identity below:"
             )
         elif msr_mode:
+            # Trimmed 2026-09-17 from a much longer restatement of the same
+            # rule (see this function's own history) — confirmed live the
+            # longer version contributed to a real production failure
+            # (prompt dilution, see the voice-fallback comment above): the
+            # model reproduced one reference image almost verbatim,
+            # including its plain studio background, instead of generating
+            # the described scene. Short, direct instructions for what's
+            # non-visual; the shots below carry the actual visual weight.
             parts.append(
-                f"You have been given {len(variants)} separate reference images, each labeled "
-                "below by its own image number — each is a face anchor for exactly one real "
-                "person, independent of the others. Use each ONLY to know what that one person "
-                "looks like, never as blocking or a starting pose for the scene:"
+                f"{len(variants)} reference images, each showing one person's identity only, "
+                "not pose or blocking:"
             )
         else:
             parts.append(
@@ -375,11 +387,7 @@ def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Opt
                 "what each of them looks like, never as the scene's blocking or starting pose:"
             )
         parts.extend(described)
-        parts.append(
-            "Voice is part of each character's fixed identity, exactly like their face — it "
-            "must match THEIR OWN description, not another character's, and never drift "
-            "mid-video:"
-        )
+        parts.append("Voice matches each character's own identity above, never drifts between characters:")
         parts.extend(voice_lines)
 
     # The script's OWN world comes next. An AI script now generates a
@@ -502,21 +510,15 @@ def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Opt
             "shots below — do not freeze on the reference image's exact pose."
         )
     elif msr_mode:
-        # UNVALIDATED (no live render confirmed yet — see LTX25_MSR_ENABLED's
-        # own rollout plan): MSR references are independent images, not one
-        # composited frame, so the specific "frozen line-up" failure this
-        # branch's sibling below was written for (the model reading even
-        # spacing across a single grid as literal blocking) has no direct
-        # equivalent here — there's no grid to freeze on. Kept as its own
-        # branch rather than silently reusing the composite-anchor wording,
-        # since that wording describes a visual layout (a side-by-side
-        # portrait grid) that MSR mode never actually shows the model.
+        # Trimmed 2026-09-17 (same dilution finding as the identity block
+        # above) — same rule, shorter statement of it. MSR references are
+        # independent images, not one composited frame, so the "frozen
+        # line-up" wording the composite-anchor branch below needs (the
+        # model reading even spacing across a single grid as literal
+        # blocking) has no equivalent here — there's no grid to freeze on.
         parts.append(
-            "Each reference image is a face anchor only, independent of the others — none of them "
-            "shows the scene's blocking or a pose to hold. From SHOT 1, only the characters named "
-            "in that shot's own blocking are on screen, positioned and moving as that blocking "
-            "describes — characters not named in a shot are not visible in it. Continuous natural "
-            "movement throughout, no frozen held poses."
+            "References show identity only, not pose or blocking. Only characters named in each "
+            "shot's blocking appear in it. Continuous natural movement, no frozen pose."
         )
     else:
         # The composite anchor is three (or more) head-and-shoulders portraits evenly spaced
@@ -541,12 +543,9 @@ def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Opt
     # is the prompt-side counterpart to the negative prompt's duplicate terms.
     cast_names = [n for n, _ in position_of.values() if n]
     if cast_names:
-        noun = "individual" if len(cast_names) == 1 else "individuals"
         parts.append(
-            f"The anchored cast is exactly {len(cast_names)} {noun}: {', '.join(cast_names)}. "
-            "There is exactly ONE of each of them on screen at any time — never two of the same "
-            "character in the same frame, never a copy or double of anyone in the background. "
-            "The reference image is a reference of who they are, not a fixed seating arrangement."
+            f"Cast: {', '.join(cast_names)}. One of each on screen at a time, no duplicates or "
+            "copies of anyone in the background."
         )
     return " ".join(p for p in parts if p)
 
@@ -1254,19 +1253,27 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
         cast_ids = [str(v) for v in (script.character_variant_ids or [])]
         if not cast_ids and script.character_variant_id:
             cast_ids = [str(script.character_variant_id)]
-        if not cast_ids:
+        if not cast_ids and toon.character_variant_id:
             cast_ids = [str(toon.character_variant_id)]
-        variants = session.query(CharacterVariant).filter(
-            CharacterVariant.id.in_([_uuid.UUID(v) for v in cast_ids])
-        ).all()
-        variants_by_id = {str(v.id): v for v in variants}
-        missing = [vid for vid in cast_ids if vid not in variants_by_id]
-        if missing:
-            raise ValueError(f"Character variant(s) not found: {missing}")
-        # Preserve script cast order (index 0 is the primary/visually-
-        # grounded cast member) rather than whatever order the DB query
-        # happened to return.
-        variants = [variants_by_id[vid] for vid in cast_ids]
+        # A World Feature (is_world_content=True) may have no host at all —
+        # cast_ids stays empty rather than falling back to a None id (which
+        # used to crash UUID(str(None)) below). Everything downstream
+        # (generate_toon_video_ltx25, build_ltx25_scene_prompt) already
+        # handles an empty variants list correctly for subject-only content.
+        if cast_ids:
+            variants = session.query(CharacterVariant).filter(
+                CharacterVariant.id.in_([_uuid.UUID(v) for v in cast_ids])
+            ).all()
+            variants_by_id = {str(v.id): v for v in variants}
+            missing = [vid for vid in cast_ids if vid not in variants_by_id]
+            if missing:
+                raise ValueError(f"Character variant(s) not found: {missing}")
+            # Preserve script cast order (index 0 is the primary/visually-
+            # grounded cast member) rather than whatever order the DB query
+            # happened to return.
+            variants = [variants_by_id[vid] for vid in cast_ids]
+        else:
+            variants = []
 
         endpoint_id = os.getenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "")
         if not endpoint_id:

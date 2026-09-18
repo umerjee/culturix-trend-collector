@@ -547,3 +547,65 @@ whole 2.5 UX for three deploys.
 > fallback direction is deliberate (it never hides genuinely-required setup),
 > but if the UI unexpectedly shows the old "isn't ready for either video path"
 > message, **check this endpoint first**.
+
+## 10. World Features — subject-centric public content (2026-09-18)
+
+A second, non-commercial content surface alongside ordinary character-driven
+CultureToons: a video whose star is a **subject** (a place, phenomenon, or
+species — the Strait of Hormuz, a solar eclipse, deep-sea animals), grounded
+in real region-filtered `Trend` rows and the `Culture` library, organized by
+world region, and browsable publicly at `/world` — no login required.
+Character is **optional** (a regional host/narrator), never the focus.
+
+Built almost entirely on infra that already existed for other reasons:
+- `build_backdrop_only_anchor`/empty-`variants` prompt building (§2/§5) were
+  already a real, exercised path for character-less *segments* inside an
+  ordinary toon (e.g. a shot devoted to an eclipse). World Features are the
+  first thing that exercises this for a **whole toon**, not just one segment.
+- `Trend.region` and the `Culture` model already existed, populated by the
+  trend collectors — just never read by script generation before this.
+
+**Data model**: `Toon`/`ToonScript` gained `is_world_content`,
+`subject_region`, `subject_text`, `subject_category` (plus
+`trend_source_id`/`trend_source_type`/`culture_id` on `ToonScript` only —
+see `app/models/toon_script.py`). `Toon.character_variant_id` went from
+`NOT NULL` to nullable — the one non-additive schema change in this feature
+(`ALTER COLUMN ... DROP NOT NULL`, not `ADD COLUMN IF NOT EXISTS` like every
+other migration in `app/main.py`'s `lifespan()`).
+
+**Script generation**: `generate_world_script()` in `culturetoon_script.py`,
+a new entry point (not a branch on `generate_toon_script`) — reuses
+`_build_prompt_from_context`/the tone-judge system unmodified, defaults
+`tone="informative"` (the writer's existing explainer-craft branch already
+matches this content: majority of shots `shot_focus="subject"`, character as
+narrator not performer). When there's no host at all, an explicit
+"NO CHARACTER" instruction is appended so the model doesn't invent an
+unnamed on-screen narrator to satisfy the craft guidance's cast-carries-
+the-structure language.
+
+**Orchestration is deliberately manual for v1** — `scripts/
+generate_world_feature.py`, an admin/ops CLI (region, subject, category
+curated by a human), not an end-user-facing generation flow. No automated
+"pick an interesting subject for region X" step exists.
+
+**Public API**: `app/routers/world.py` (`GET /world/features`, `/world/
+regions`, `/world/features/{id}`), deliberately mounted **without**
+`require_internal_secret` (unlike every route in `culturetoons_router`) —
+matching the one existing precedent for a genuinely public endpoint,
+`GET /regions`. `culturix-web`'s `/api/world/*` routes are thin proxies
+straight to these, same shape as `/api/regions`'s existing proxy.
+
+**Frontend**: public `/world`, `/world/region/[code]`, `/world/feature/[id]`
+under `culturix-web/src/app/world/` — outside `middleware.ts`'s protected-
+route list, no changes needed there. Map view uses `react-simple-maps` +
+`world-atlas`'s `countries-110m.json` (new dependencies — none existed
+before). That TopoJSON keys features by ISO **numeric** code, not the
+ISO-2 alpha code `Toon.subject_region` stores — bridged via
+`i18n-iso-countries`, not a hand-maintained table.
+
+**Known gap, same as noted in §9's "Culture library" coverage**: only 3
+seed `Culture` rows exist (Indian/Chinese/African) — most regions launch
+with no cultural-context depth in the prompt until someone backfills more
+via `POST /api/culturetoons/cultures`. Script generation treats `Culture`
+as fully optional, so this degrades gracefully rather than blocking
+generation.

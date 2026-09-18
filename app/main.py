@@ -328,6 +328,33 @@ async def lifespan(_):
             "ALTER TABLE character_variants DROP COLUMN IF EXISTS lora_preview_url",
             "ALTER TABLE character_variants DROP COLUMN IF EXISTS lora_preview_status",
             "ALTER TABLE character_variants DROP COLUMN IF EXISTS lora_preview_error",
+            # World Features — subject-centric public content (a place/
+            # phenomenon/species is the star, character optional). See
+            # Toon/ToonScript's own docstrings and
+            # app/services/culturetoon_script.py::generate_world_script.
+            # character_variant_id becomes optional at the Toon level too
+            # (ToonScript's was already nullable) — a World Feature may have
+            # no host at all.
+            "ALTER TABLE toons ALTER COLUMN character_variant_id DROP NOT NULL",
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS is_world_content BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS subject_region VARCHAR(2)",
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS subject_text TEXT",
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS subject_category VARCHAR(30)",
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS is_world_content BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS subject_region VARCHAR(2)",
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS subject_text TEXT",
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS subject_category VARCHAR(30)",
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS trend_source_id INTEGER",
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS trend_source_type VARCHAR(10)",
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS culture_id UUID",
+            # index=True on these columns only takes effect via create_all
+            # for a brand-new table — these tables already exist, so add the
+            # indexes explicitly (same reasoning as the character_brands
+            # DROP/CREATE INDEX pair above).
+            "CREATE INDEX IF NOT EXISTS ix_toons_subject_region ON toons (subject_region)",
+            "CREATE INDEX IF NOT EXISTS ix_toons_subject_category ON toons (subject_category)",
+            "CREATE INDEX IF NOT EXISTS ix_toon_scripts_subject_region ON toon_scripts (subject_region)",
+            "CREATE INDEX IF NOT EXISTS ix_toon_scripts_subject_category ON toon_scripts (subject_category)",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -382,6 +409,32 @@ async def lifespan(_):
                 ON CONFLICT (user_id) DO UPDATE SET plan = 'pro', approved = TRUE
             """), {"uid": _superadmin_id})
             _conn3.commit()
+
+        # Reserved system-owned CharacterBrand for World Features (public,
+        # subject-centric content — see Toon/ToonScript.is_world_content).
+        # Owned by the superadmin so all existing ownership-scoped helpers
+        # (_get_brand_owned etc.) keep working unmodified for admin-side
+        # writes; scripts/generate_world_feature.py looks this brand up by
+        # name rather than hardcoding an id.
+        from app.db import SessionLocal as _WorldSessionLocal
+        from app.models.character_brand import CharacterBrand as _WorldBrand
+        _world_session = _WorldSessionLocal()
+        try:
+            _existing_world_brand = _world_session.query(_WorldBrand).filter_by(
+                user_id=_superadmin_id, name="World"
+            ).first()
+            if not _existing_world_brand:
+                _world_session.add(_WorldBrand(
+                    user_id=_superadmin_id, name="World",
+                    description="Subject-centric public content — places, phenomena, "
+                                 "species — organized by world region. See docs/culturix-video-pipeline.md.",
+                ))
+                _world_session.commit()
+        except Exception:
+            logging.getLogger("culturix.startup").warning("World brand seeding failed, skipping", exc_info=True)
+            _world_session.rollback()
+        finally:
+            _world_session.close()
 
     # Seed the shared Culture library (idempotent — only inserts cultures
     # that don't already exist by name) with the cultures already in active
@@ -459,6 +512,12 @@ app.add_middleware(
 
 from app.routers.culturetoons import router as culturetoons_router
 app.include_router(culturetoons_router, dependencies=[Depends(require_internal_secret)])
+
+# Genuinely public (no end-user auth, no internal secret) — see world.py's
+# own module docstring for why this is deliberately NOT gated like
+# culturetoons_router above.
+from app.routers.world import router as world_router
+app.include_router(world_router)
 
 
 @app.get("/health")

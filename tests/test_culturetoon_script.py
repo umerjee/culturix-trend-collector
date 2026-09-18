@@ -986,6 +986,72 @@ class TestInformativeTones:
             assert t in TONE_OPTIONS
 
 
+class TestGenerateWorldScript:
+    """generate_world_script — subject-centric World Features (a place/
+    phenomenon/species is the star, character optional). See
+    app/models/toon.py's is_world_content docstring."""
+
+    def test_no_host_produces_empty_cast_and_no_character_guard(self, mocker):
+        from app.services.culturetoon_script import generate_world_script
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+
+        result = generate_world_script(
+            region_code="IR", region_label="Iran", subject_text="The Strait of Hormuz",
+            subject_category="place",
+        )
+        prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert result["tone"] == "informative"
+        assert "NO CHARACTER" in prompt
+        assert "Region: Iran" in prompt
+        assert "Subject: The Strait of Hormuz" in prompt
+        # No cast means no single-character/multi-character cast line at all.
+        assert "Write this specifically for the character" not in prompt
+
+    def test_host_variant_produces_a_real_single_character_cast_line(self, mocker):
+        from app.services.culturetoon_script import generate_world_script
+        host = mocker.Mock(); host.name = "Zara"; host.description = "curious host"; host.culture_tag = None
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+
+        generate_world_script(
+            region_code="JP", region_label="Japan", subject_text="Mount Fuji",
+            subject_category="place", host_variant=host,
+        )
+        prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "Write this specifically for the character 'Zara'" in prompt
+        assert "NO CHARACTER" not in prompt
+
+    def test_trends_are_included_for_factual_grounding(self, mocker):
+        from app.services.culturetoon_script import generate_world_script
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+
+        generate_world_script(
+            region_code="JP", region_label="Japan", subject_text="Mount Fuji",
+            trends=[{"title": "Mount Fuji pilgrimage season begins", "content": "Record visitor numbers this year"}],
+        )
+        prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "Mount Fuji pilgrimage season begins" in prompt
+
+    def test_culture_context_is_included_when_provided(self, mocker):
+        from app.services.culturetoon_script import generate_world_script
+        fake_client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+
+        generate_world_script(
+            region_code="CN", region_label="China", subject_text="The Great Wall",
+            culture={"name": "Chinese", "humor_sensitivity": "dry wit lands well",
+                     "positive_traits": ["disciplined", "pragmatic"]},
+        )
+        prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "dry wit lands well" in prompt
+
+    def test_defaults_to_the_informative_tone_and_judge_rubric(self, mocker):
+        from app.services.culturetoon_script import generate_world_script, _build_judge_prompt
+        _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        result = generate_world_script(region_code="IR", region_label="Iran", subject_text="The Strait of Hormuz")
+        assert result["tone"] == "informative"
+        judge_prompt = _build_judge_prompt(result)
+        assert "RELEVANCE" in judge_prompt  # informative's own distinguishing criterion
+
+
 class TestNarrationOverPerformance:
     """A live explainer put a black hole on a classroom TABLE as a glowing
     desk model and gave every shot to the presenter tripping over books. Two

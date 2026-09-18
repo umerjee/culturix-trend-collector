@@ -427,7 +427,7 @@ def _build_background_prompt(description: str, art_style_key: str) -> str:
 def _serialize_toon(t) -> dict:
     return {
         "id": str(t.id), "brand_id": str(t.brand_id),
-        "character_variant_id": str(t.character_variant_id),
+        "character_variant_id": str(t.character_variant_id) if t.character_variant_id else None,
         "script_id": str(t.script_id),
         "background_id": str(t.background_id) if t.background_id else None,
         "title": t.title, "final_video_url": t.final_video_url, "status": t.status,
@@ -439,6 +439,8 @@ def _serialize_toon(t) -> dict:
         "qa_results": t.qa_results, "publish_recommended": t.publish_recommended,
         "kling_task_id": t.kling_task_id, "generation_error": t.generation_error,
         "episode_id": str(t.episode_id) if t.episode_id else None, "part_order": t.part_order,
+        "is_world_content": t.is_world_content, "subject_region": t.subject_region,
+        "subject_text": t.subject_text, "subject_category": t.subject_category,
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
@@ -3407,24 +3409,34 @@ def create_toon(body: dict):
     user_id, brand_id = body.get("user_id"), body.get("brand_id")
     character_variant_id = body.get("character_variant_id")
     script_id = body.get("script_id")
-    if not user_id or not brand_id or not character_variant_id or not script_id:
-        raise HTTPException(status_code=400, detail="user_id, brand_id, character_variant_id and script_id are required")
+    if not user_id or not brand_id or not script_id:
+        raise HTTPException(status_code=400, detail="user_id, brand_id and script_id are required")
     session = SessionLocal()
     try:
         brand = _get_brand_owned(session, brand_id, user_id)
-        _get_variant_owned(session, character_variant_id, brand_id, user_id)
-        _get_script_owned(session, script_id, brand_id, user_id)
+        script = _get_script_owned(session, script_id, brand_id, user_id)
+        # character_variant_id is only optional for a World Feature script
+        # (is_world_content=True) — every ordinary character-driven script
+        # still requires one, same validation as before this branch existed.
+        if not character_variant_id and not script.is_world_content:
+            raise HTTPException(status_code=400, detail="character_variant_id is required")
+        if character_variant_id:
+            _get_variant_owned(session, character_variant_id, brand_id, user_id)
         background_id = body.get("background_id")
         if background_id:
             _get_background_owned(session, background_id, brand_id, user_id)
 
         toon = Toon(
             brand_id=brand.id,
-            character_variant_id=_uuid.UUID(character_variant_id),
+            character_variant_id=_uuid.UUID(character_variant_id) if character_variant_id else None,
             script_id=_uuid.UUID(script_id),
             background_id=_uuid.UUID(background_id) if background_id else None,
             title=body.get("title"),
             status="idea",
+            is_world_content=script.is_world_content,
+            subject_region=script.subject_region,
+            subject_text=script.subject_text,
+            subject_category=script.subject_category,
         )
         session.add(toon)
         session.commit()

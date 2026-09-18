@@ -1556,6 +1556,85 @@ def generate_toon_script_from_idea(idea: str, variants: Optional[list] = None, t
     return _call_llm_for_script(prompt, tone, variants, planned_scenes)
 
 
+def _world_context(region_label: str, subject_text: str, subject_category: Optional[str],
+                    trends: Optional[list] = None, culture: Optional[dict] = None) -> str:
+    """Builds the "context" string for generate_world_script, in the same
+    role _source_type_and_context plays for the Persona/Cluster path — the
+    thing a subject-centric World Feature is grounded in isn't a trending
+    Persona/Cluster, it's a real place/phenomenon/species plus (optionally)
+    real recent trend chatter about it and the region's cultural context.
+
+    trends: plain dicts ({"title": str, "content": str}), already fetched
+    and truncated by the caller (mirrors this module's existing convention
+    of callers pre-resolving DB rows before they reach a prompt builder —
+    see character_personalities/relationships/memories on
+    generate_toon_script). culture: a single serialized Culture dict (see
+    _culture_context) or None — reuses _culture_context verbatim rather
+    than re-deriving its formatting here."""
+    lines = [f"Region: {region_label}", f"Subject: {subject_text}"]
+    if subject_category:
+        lines.append(f"Category: {subject_category}")
+    if trends:
+        lines.append("Real, currently-trending chatter about this region/subject (for factual grounding, not to be quoted verbatim):")
+        for t in trends[:5]:
+            title = (t.get("title") or "").strip()
+            content = (t.get("content") or "").strip()
+            if title or content:
+                snippet = f"{title} — {content}" if title and content else (title or content)
+                lines.append(f"- {snippet[:220]}")
+    context = "\n".join(lines)
+    if culture:
+        context += "\n" + _culture_context([culture])
+    return context
+
+
+def generate_world_script(region_code: str, region_label: str, subject_text: str,
+                           subject_category: Optional[str] = None,
+                           trends: Optional[list] = None, culture: Optional[dict] = None,
+                           host_variant: Optional[object] = None,
+                           tone: str = "informative", num_shots: int = 4,
+                           target_duration_seconds: int = 20) -> dict:
+    """Generates a World Feature script — a subject-centric video (a place,
+    phenomenon, or species is the star) grounded in real region-filtered
+    Trend rows and (optionally) the shared Culture library, for the public
+    /world section. Same shape/contract as generate_toon_script_from_idea
+    (returns {"hook_line", "setting", "tone", "shots", "total_duration_seconds",
+    "scenes": None} — persistence is the caller's job, matching every other
+    generate_* function in this module).
+
+    host_variant: an OPTIONAL single CharacterVariant-like object acting as
+    a regional host/narrator — never a cast, never required. Passed through
+    to _cast_line exactly as generate_toon_script_from_idea would pass a
+    single-variant cast; None produces the same empty-cast prompt behavior
+    _cast_line already handles.
+
+    tone defaults to "informative" (not "funny") because a World Feature's
+    job is the same as this module's existing informative-tone branch in
+    _build_prompt_from_context: show the subject at real scale, character
+    (if any) as narrator, majority of shots shot_focus="subject" — this is
+    exactly the machinery already built and confirmed live for exactly this
+    kind of content (see that function's 2026-09-07 eclipse/hallucination
+    notes). Callers may still pass any other TONE_OPTIONS value if a World
+    Feature genuinely calls for a non-informative register."""
+    variants = [host_variant] if host_variant is not None else []
+    context = _world_context(region_label, subject_text, subject_category, trends, culture)
+    if not variants:
+        # cast_line is empty with no variants (see _cast_line), which on its
+        # own leaves the craft guidance's "use the cast to carry the
+        # structure" language dangling with nothing to point at — spell out
+        # explicitly that there is no character at all, so the model doesn't
+        # invent an unnamed on-screen narrator to satisfy that guidance.
+        context += (
+            "\n\nNO CHARACTER — this is pure subject footage with voiceover narration, nobody "
+            'on screen. Every shot must be shot_focus "subject", voiceover=true, dialogue is the '
+            "narration line (no on-screen speaker), expression and blocking null. Do not invent, "
+            "name, or describe any narrator/host appearing in frame."
+        )
+    prompt = _build_prompt_from_context("real-world region/subject", context, variants, tone,
+                                         num_shots, target_duration_seconds)
+    return _call_llm_for_script(prompt, tone, variants, planned_scenes=None)
+
+
 def generate_toon_script_continuing_episode(prior_parts_summary: str, idea: str, variants: Optional[list] = None,
                                              tone: str = "funny", num_shots: int = 4,
                                              target_duration_seconds: int = 12,
