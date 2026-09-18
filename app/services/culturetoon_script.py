@@ -1635,6 +1635,61 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
     return _call_llm_for_script(prompt, tone, variants, planned_scenes=None)
 
 
+def suggest_world_subjects_from_trends(region_label: str, trends: list, max_suggestions: int = 3) -> list[dict]:
+    """Proposes candidate World Feature subjects grounded in real trend
+    content for one region — curator-review-only, does NOT create or write
+    anything (matches generate_world_feature.py's own manual-curation
+    posture: a human still picks what actually gets made, this just cuts
+    down the time spent staring at raw trend rows trying to invent an
+    angle). Each candidate is filmable/concrete in the same style
+    generate_world_script's own subject_text expects (e.g. "The Strait of
+    Hormuz", not "Middle East geopolitics").
+
+    trends: plain dicts ({"title": str, "content": str}), same shape
+    generate_world_script's own `trends` param expects — the caller
+    resolves these from the DB first (see scripts/suggest_world_subjects.py),
+    same convention as every other generate_*/suggest_* function in this
+    module not touching the DB itself.
+
+    Returns [{"subject_text": str, "subject_category": str, "rationale": str}, ...],
+    or [] if there isn't enough real trend material to ground a suggestion
+    in (never invents a subject from nothing) or the LLM call fails."""
+    if len(trends) < 3:
+        return []
+
+    trend_lines = "\n".join(
+        f"- {(t.get('title') or '').strip()}: {(t.get('content') or '').strip()[:200]}"
+        for t in trends[:15] if (t.get("title") or t.get("content"))
+    )
+    prompt = f"""You are scouting subjects for a short-form video series about {region_label} — each video is
+about a real place, phenomenon, species, or piece of technology (never a character or celebrity),
+grounded in what's actually trending there right now.
+
+Real, currently-trending content from {region_label}:
+{trend_lines}
+
+Propose up to {max_suggestions} DISTINCT subject ideas this trending content genuinely points to —
+each one a concrete, filmable thing (a specific place, a specific phenomenon, a specific species or
+piece of technology), not an abstract topic or news event itself. A trend about a sports upset
+might point to the STADIUM or the SPORT'S HISTORY in that region, not to "the game" — the subject
+must be something a camera can actually show, that will still be true and interesting next year,
+not a one-off news event that will be stale by the time this could be produced.
+
+Do not force a suggestion if the trending content doesn't genuinely support one — fewer than
+{max_suggestions} distinct, well-grounded ideas is correct if that's what the real material gives you.
+
+Return ONLY valid JSON: {{"suggestions": [{{"subject_text": string, "subject_category": one of
+"place"/"phenomenon"/"species"/"tech"/"genz"/"custom", "rationale": string, one sentence naming
+which trend(s) above this connects to}}]}}"""
+
+    try:
+        parsed = _call_llm_json(prompt, temperature=0.6, max_tokens=600)
+    except ToonScriptGenerationError as exc:
+        logger.warning("World subject suggestion call failed for %s: %s", region_label, exc)
+        return []
+    return parsed.get("suggestions") or []
+
+
 def generate_toon_script_continuing_episode(prior_parts_summary: str, idea: str, variants: Optional[list] = None,
                                              tone: str = "funny", num_shots: int = 4,
                                              target_duration_seconds: int = 12,

@@ -3,11 +3,16 @@ no regeneration, just flips is_world_content=True and sets the subject_*
 fields on both the Toon and its ToonScript. See app/models/toon.py's
 is_world_content docstring.
 
-This is the bridge for "region-first Toons feed into World" — a Toon
-created through the ordinary character-first flow (any brand, not just the
-reserved "World" brand) can still be curated onto the public map once it's
-ready, same manual-curator posture as scripts/generate_world_feature.py
-(region/subject/category are picked by a human, not auto-published).
+DO NOT use this on the old character-first Toons (the ones made before the
+2026-09-18 region-first pivot — see docs/culturix-video-pipeline.md and the
+CultureToons dashboard's existing brand/character flow). Confirmed live
+2026-09-18: publishing one of these (a 3-character kitchen scene) to World
+was wrong, not because of a bad region tag, but because that whole
+generation approach was already judged not production-quality — publishing
+it just puts the same low-quality content on a second surface. This script
+is for Toons created under the NEW region-first approach once that exists
+(a region/subject drives the script, character is an optional thematic
+host) — there is currently no existing Toon in the DB that qualifies.
 
 Usage:
     python scripts/publish_toon_to_world.py \

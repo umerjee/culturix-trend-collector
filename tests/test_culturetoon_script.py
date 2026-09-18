@@ -1052,6 +1052,44 @@ class TestGenerateWorldScript:
         assert "RELEVANCE" in judge_prompt  # informative's own distinguishing criterion
 
 
+class TestSuggestWorldSubjectsFromTrends:
+    """suggest_world_subjects_from_trends — curator-review-only World
+    Feature subject suggestions grounded in real Trend data. Never writes
+    anything; the curator still runs generate_world_feature.py by hand."""
+
+    _TRENDS = [{"title": f"Trend {i}", "content": f"Real trending content {i}"} for i in range(5)]
+
+    def test_too_few_trends_returns_empty_without_calling_the_llm(self, mocker):
+        from app.services.culturetoon_script import suggest_world_subjects_from_trends
+        fake_client = _mock_qwen_response(mocker, {"suggestions": []})
+        result = suggest_world_subjects_from_trends("Japan", self._TRENDS[:2])
+        assert result == []
+        fake_client.chat.completions.create.assert_not_called()
+
+    def test_well_formed_response_parses(self, mocker):
+        from app.services.culturetoon_script import suggest_world_subjects_from_trends
+        _mock_qwen_response(mocker, {"suggestions": [
+            {"subject_text": "Mount Fuji", "subject_category": "place", "rationale": "Trend 2 mentions it"},
+        ]})
+        result = suggest_world_subjects_from_trends("Japan", self._TRENDS)
+        assert result == [{"subject_text": "Mount Fuji", "subject_category": "place", "rationale": "Trend 2 mentions it"}]
+
+    def test_prompt_grounds_in_the_real_trend_content(self, mocker):
+        from app.services.culturetoon_script import suggest_world_subjects_from_trends
+        fake_client = _mock_qwen_response(mocker, {"suggestions": []})
+        suggest_world_subjects_from_trends("Japan", self._TRENDS)
+        prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "Trend 2" in prompt
+        assert "Real trending content 2" in prompt
+        assert "never a character or celebrity" in prompt
+
+    def test_llm_failure_fails_open_to_empty_list(self, mocker):
+        from app.services.culturetoon_script import suggest_world_subjects_from_trends, ToonScriptGenerationError
+        mocker.patch("app.services.culturetoon_script._call_llm_json", side_effect=ToonScriptGenerationError("boom"))
+        result = suggest_world_subjects_from_trends("Japan", self._TRENDS)
+        assert result == []
+
+
 class TestNarrationOverPerformance:
     """A live explainer put a black hole on a classroom TABLE as a glowing
     desk model and gave every shot to the presenter tripping over books. Two
