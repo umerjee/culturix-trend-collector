@@ -71,6 +71,9 @@ export default function DailyBrief({ region, regionLabel, date, language, initia
       </div>
 
       <p className="mt-2 text-base leading-relaxed text-gray-800">{brief.summary}</p>
+      {brief.translation_failed && (
+        <p role="status" className="mt-1 text-xs text-amber-700">Translation is temporarily unavailable, so this is shown in English.</p>
+      )}
 
       {events.length > 0 && (
         <ul className="mt-3 flex flex-wrap gap-2">

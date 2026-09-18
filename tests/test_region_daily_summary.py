@@ -265,7 +265,9 @@ def db(mocker):
     Base.metadata.create_all(bind=engine, tables=[RegionDailySummary.__table__])
     Session = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", Session)
-    mocker.patch("app.language.translate_text", side_effect=lambda text, lang: text if lang == "en" else f"[{lang}] {text}")
+    from app.translation.service import TranslationResult
+    mocker.patch("app.translation.translate", side_effect=lambda text, target, **kw: TranslationResult(
+        text=f"[{target}] {text}", target=target, ok=True, translated=True))
     return Session
 
 

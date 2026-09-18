@@ -49,7 +49,17 @@ export interface WorldTrendDigestGroup {
   signals: Pick<WorldTrend, "id" | "platform" | "title" | "likes" | "url" | "collected_at">[];
 }
 
-export type WorldDigestLanguage = "en" | "fr" | "es";
+// Any code in app/translation/languages.py is accepted by the API; these are the
+// ones offered in the picker. Keep the codes in sync with that registry.
+export type WorldDigestLanguage = string;
+
+export const DIGEST_LANGUAGES: { code: string; label: string }[] = [
+  { code: "en", label: "English" }, { code: "fr", label: "Français" }, { code: "es", label: "Español" },
+  { code: "de", label: "Deutsch" }, { code: "it", label: "Italiano" }, { code: "pt", label: "Português" },
+  { code: "ar", label: "العربية" }, { code: "he", label: "עברית" }, { code: "hi", label: "हिन्दी" },
+  { code: "ja", label: "日本語" }, { code: "ko", label: "한국어" }, { code: "zh-CN", label: "中文（简体）" },
+  { code: "tr", label: "Türkçe" }, { code: "ru", label: "Русский" },
+];
 
 // Mirrors app/routers/world.py's get_region_summary — a short cached daily
 // brief for a country. `summary` is null when a region has no brief that day
@@ -68,6 +78,7 @@ export interface WorldRegionSummary {
   alignment: "aligned" | "diverged" | "unknown" | null;
   vs_usual: "busier" | "quieter" | "normal" | null;
   generated_at: string | null;
+  translation_failed?: boolean;
 }
 
 // One merged filter vocabulary covering both WHAT a Feature is about

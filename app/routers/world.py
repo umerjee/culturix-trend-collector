@@ -22,6 +22,14 @@ import re
 router = APIRouter(prefix="/world", tags=["world"])
 
 
+def _publicly_visible():
+    """SQL clause for a Feature a person has published. NULL is a Feature that
+    was live before the publish gate existed, so it stays public."""
+    from sqlalchemy import or_
+    from app.models.toon import Toon
+    return or_(Toon.world_published.is_(None), Toon.world_published.is_(True))
+
+
 def _serialize_feature(t) -> dict:
     return {
         "id": str(t.id),
@@ -50,6 +58,7 @@ def list_world_features(region: Optional[str] = None, category: Optional[str] = 
         query = session.query(Toon).filter(
             Toon.is_world_content.is_(True),
             Toon.status == "ready",
+            _publicly_visible(),
             Toon.final_video_url.isnot(None),
         )
         if region:
@@ -99,6 +108,7 @@ def list_world_regions():
             .filter(
                 Toon.is_world_content.is_(True),
                 Toon.status == "ready",
+                _publicly_visible(),
                 Toon.final_video_url.isnot(None),
                 Toon.subject_region.isnot(None),
             )
@@ -138,13 +148,13 @@ def get_region_summary(code: str, date: Optional[str] = None, lang: str = "en"):
     state for a region without enough data, not an error."""
     from app.db import SessionLocal
     from app.collectors.region_codes import region_name
-    from app.language import translate_text
+    from app.translation import normalize_language, translate
     from app.models.region_daily_summary import RegionDailySummary
 
     region = code.strip().upper()
     if len(region) != 2 or not region.isalpha():
         raise HTTPException(status_code=400, detail="Invalid region code")
-    lang = lang if lang in {"en", "fr", "es"} else "en"
+    lang = normalize_language(lang) or "en"
     wanted = _parse_date(date).date() if date else None
 
     session = SessionLocal()
@@ -160,9 +170,12 @@ def get_region_summary(code: str, date: Optional[str] = None, lang: str = "en"):
                  "mood": None, "sentiment": None, "alignment": None, "vs_usual": None, "generated_at": None}
         if not row:
             return empty
+        # Summaries are written in English; a failed translation is reported, not hidden.
+        translation = translate(row.summary, lang) if lang != "en" else None
         return {
             "region": region, "region_name": region_name(region), "date": row.summary_date.isoformat(),
-            "summary": translate_text(row.summary, lang), "source": row.source,
+            "summary": translation.text if translation else row.summary, "source": row.source,
+            "translation_failed": bool(translation and not translation.ok),
             "calendar": row.calendar or [], "signal_count": row.signal_count,
             "platforms": row.platforms or [],
             "mood": row.mood, "sentiment": row.sentiment, "alignment": row.alignment,
@@ -261,10 +274,10 @@ def list_world_trend_digest(region: str, date_from: Optional[str] = None,
     from app.db import SessionLocal
     from app.models.cluster import Cluster
     from app.models.trend import Trend
-    from app.language import translate_text
+    from app.translation import normalize_language, translate_many
 
     limit = max(1, min(limit, 20))
-    lang = lang if lang in {"en", "fr", "es"} else "en"
+    lang = normalize_language(lang) or "en"
     parsed_from, parsed_to = _parse_date(date_from), _parse_date(date_to)
     session = SessionLocal()
     try:
@@ -295,16 +308,28 @@ def list_world_trend_digest(region: str, date_from: Optional[str] = None,
                 group["signals"].append(_serialize_digest_signal(trend))
 
         result = sorted(grouped.values(), key=lambda group: (-group["signal_count"], group["title"]))[:limit]
+
+        # One batched, cached translation call for the whole digest (was one
+        # request per string on every page view, which trips Google's rate limit).
+        texts, slots = [], []
         for group in result:
-            group["title"] = translate_text(group["title"], lang)
-            group["summary"] = translate_text(
-                "Auto-grouped from similar signals." if group["kind"] == "source" else group["summary"], lang
-            )
+            texts.append(group["title"])
+            slots.append((group, "title"))
+            texts.append("Auto-grouped from similar signals." if group["kind"] == "source" else group["summary"])
+            slots.append((group, "summary"))
             for signal in group["signals"]:
-                signal["title"] = translate_text(signal["title"] or "Untitled signal", lang)
+                texts.append(signal["title"] or "Untitled signal")
+                slots.append((signal, "title"))
+        translations = translate_many(texts, lang)
+        for (target_dict, field), translation in zip(slots, translations):
+            target_dict[field] = translation.text
+        failed = sum(1 for t in translations if not t.ok)
+        for group in result:
             group["platforms"] = sorted(group["platforms"])
             group.pop("topic_tokens", None)
-        return {"groups": result, "total_groups": len(grouped)}
+        return {"groups": result, "total_groups": len(grouped),
+                # failed > 0: some text is shown untranslated because translation was unavailable
+                "translation": {"lang": lang, "failed": failed}}
     finally:
         session.close()
 
@@ -399,7 +424,8 @@ def get_world_feature(feature_id: str):
         except ValueError:
             raise HTTPException(status_code=404, detail="Feature not found")
         toon = session.query(Toon).filter_by(id=toon_uuid).first()
-        if not toon or not toon.is_world_content or toon.status != "ready" or not toon.final_video_url:
+        if (not toon or not toon.is_world_content or toon.status != "ready" or not toon.final_video_url
+                or toon.world_published is False):
             raise HTTPException(status_code=404, detail="Feature not found")
         script = session.query(ToonScript).filter_by(id=toon.script_id).first()
         result = _serialize_feature(toon)

@@ -94,6 +94,7 @@ def main() -> int:
             print("\n--dry-run: nothing written.")
             return 0
 
+        toon.world_published = True  # running this script is the manual publish decision
         for obj in (toon, script):
             obj.is_world_content = True
             obj.subject_region = region_code

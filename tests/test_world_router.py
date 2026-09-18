@@ -31,7 +31,7 @@ def db(mocker):
 def _make_toon(db, *, is_world_content=True, status="ready", final_video_url="https://cdn/x.mp4",
                subject_region="IR", subject_text="The Strait of Hormuz", subject_category="place",
                title="The Strait of Hormuz", hook_line="A vital chokepoint.",
-               era_label=None, era_year=None):
+               era_label=None, era_year=None, world_published=True):
     session = db()
     script = ToonScript(brand_id=uuid.uuid4(), hook_line=hook_line, generation_source="ai", status="approved")
     session.add(script)
@@ -41,14 +41,50 @@ def _make_toon(db, *, is_world_content=True, status="ready", final_video_url="ht
         brand_id=uuid.uuid4(), script_id=script.id, title=title, status=status,
         final_video_url=final_video_url, is_world_content=is_world_content,
         subject_region=subject_region, subject_text=subject_text, subject_category=subject_category,
-        era_label=era_label, era_year=era_year,
+        era_label=era_label, era_year=era_year, world_published=world_published,
     )
     session.add(toon)
     session.commit()
     session.refresh(toon)
     toon_id = str(toon.id)
+    if world_published is None:
+        # An ORM insert applies the column default for None; a Feature that was
+        # live before the gate existed has NULL from the ALTER, so set it directly.
+        session.query(Toon).filter_by(id=toon.id).update({"world_published": None})
+        session.commit()
     session.close()
     return toon_id
+
+
+class TestPublishGate:
+    """A finished render is not public until a person publishes it."""
+
+    def test_unpublished_renders_are_hidden_everywhere(self, db):
+        hidden = _make_toon(db, world_published=False, subject_region="FR")
+        assert world.list_world_features()["total"] == 0
+        assert world.list_world_regions()["regions"] == []
+        with pytest.raises(HTTPException) as exc:
+            world.get_world_feature(hidden)
+        assert exc.value.status_code == 404
+
+    def test_published_renders_are_visible(self, db):
+        shown = _make_toon(db, world_published=True, subject_region="FR")
+        assert world.list_world_features()["total"] == 1
+        assert [r["feature_count"] for r in world.list_world_regions()["regions"]] == [1]
+        assert world.get_world_feature(shown)["id"] == shown
+
+    def test_features_live_before_the_gate_existed_stay_public(self, db):
+        legacy = _make_toon(db, world_published=None)
+        assert world.list_world_features()["total"] == 1
+        assert world.get_world_feature(legacy)["id"] == legacy
+
+    def test_new_toons_default_to_unpublished(self, db):
+        session = db()
+        toon = Toon(brand_id=uuid.uuid4(), script_id=uuid.uuid4(), status="ready")
+        session.add(toon)
+        session.commit()
+        assert toon.world_published is False
+        session.close()
 
 
 class TestListWorldFeatures:
@@ -213,7 +249,9 @@ class TestListWorldTrends:
 
     def test_digest_accepts_supported_language(self, db, mocker):
         _make_trend(db, region="FR", title="football mondial", content="football mondial", likes=10)
-        mocker.patch("app.language.translate_text", side_effect=lambda text, lang: f"{text} [{lang}]")
+        from types import SimpleNamespace
+        mocker.patch("app.translation.translate_many", side_effect=lambda texts, lang: [
+            SimpleNamespace(text=f"{t} [{lang}]", ok=True) for t in texts])
 
         result = world.list_world_trend_digest(region="fr", lang="fr")
 

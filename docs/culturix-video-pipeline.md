@@ -630,7 +630,11 @@ Rules that came from real failures — keep them:
   suggestion at 20s rather than padding it. Overriding the duration re-derives beats (`BEATS_FOR_DURATION`) so a
   shot never exceeds the renderer's ~12s segment.
 - **No on-screen host by default** (subject footage + narration). A host is opt-in (`use_host`).
-- **A finished render is public immediately** (`/world/*` serves `status="ready"`). "Unpublish" archives it.
+- **A finished render is NOT public until a person publishes it** (`toons.world_published`, tri-state: NULL =
+  live before the gate existed and stays public, False = default for every new Toon, True = published). Admin ->
+  World Production -> Publish; Unpublish keeps the video; Archive retires the draft. **Starting a re-render
+  resets it to unpublished**, so a replaced video is always re-reviewed. `publish_toon_to_world.py` counts as
+  the manual publish decision.
 - `ingest()` releases its DB transaction before the slow LLM scoring calls (Supabase drops idle pooled
   connections mid-transaction) and never persists an item whose scoring failed — a neutral 50/100 would
   pollute the ranking; re-running retries it.

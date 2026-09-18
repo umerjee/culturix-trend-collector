@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Clock3, ExternalLink, Landmark, Pause, Play, Sparkles } from "lucide-react";
+import { DIGEST_LANGUAGES } from "@/lib/worldTypes";
 import type { WorldDigestLanguage, WorldFeature, WorldRegionSummary, WorldTrend, WorldTrendDigestGroup, WorldTrendsCoverage } from "@/lib/worldTypes";
 import TrendFeed from "@/components/world/TrendFeed";
 import FeatureCard from "@/components/world/FeatureCard";
@@ -61,6 +62,8 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
   const [trends, setTrends] = useState<WorldTrend[]>(initialTrends);
   const [digest, setDigest] = useState<WorldTrendDigestGroup[]>(initialDigest);
   const [digestLanguage, setDigestLanguage] = useState<WorldDigestLanguage>("en");
+  // > 0 when the translation service was unavailable and some text is shown untranslated.
+  const [translationFailed, setTranslationFailed] = useState(0);
   const [loadingTrends, setLoadingTrends] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [eraFeatures, setEraFeatures] = useState<WorldFeature[] | null>(null);
@@ -104,6 +107,7 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
     const digestRes = await fetch(`/api/world/trends/digest?${digestParams.toString()}`);
     const digestData = await digestRes.json().catch(() => ({}));
     setDigest(Array.isArray(digestData.groups) ? digestData.groups : []);
+    setTranslationFailed(Number(digestData.translation?.failed) || 0);
   }
 
   async function fetchTrendsAsOf(offset: number, language = digestLanguage) {
@@ -227,13 +231,16 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
               <div className="flex items-center gap-3">
                 <label className="sr-only" htmlFor="digest-language">Digest language</label>
                 <select id="digest-language" value={digestLanguage} onChange={(event) => changeDigestLanguage(event.target.value as WorldDigestLanguage)} className="rounded-full border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 outline-none focus:border-purple-400">
-                  <option value="en">English</option>
-                  <option value="fr">Français</option>
-                  <option value="es">Español</option>
+                  {DIGEST_LANGUAGES.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
                 </select>
                 <span className="hidden text-xs text-gray-400 sm:block">{digest.length} themes</span>
               </div>
             </div>
+            {translationFailed > 0 && digestLanguage !== "en" && (
+              <p role="status" className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                Translation is temporarily unavailable, so some text is shown in its original language. Try again in a few minutes.
+              </p>
+            )}
             <div className="grid gap-4 lg:grid-cols-2">
               {digest.map((group) => (
                 <article key={group.id} className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm">

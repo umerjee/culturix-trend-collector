@@ -55,6 +55,7 @@ async def lifespan(_):
     from app.models.runpod_orphan_kill import RunpodOrphanKill          # noqa: F401
     from app.models.curated_item import CuratedItem                    # noqa: F401
     from app.models.region_daily_summary import RegionDailySummary      # noqa: F401
+    from app.models.translation_cache import TranslationCache          # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -372,6 +373,7 @@ async def lifespan(_):
             "CREATE INDEX IF NOT EXISTS ix_toons_era_year ON toons (era_year)",
             "CREATE INDEX IF NOT EXISTS ix_toon_scripts_era_year ON toon_scripts (era_year)",
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS curated_item_id UUID",
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS world_published BOOLEAN",
             "CREATE INDEX IF NOT EXISTS ix_toons_curated_item_id ON toons (curated_item_id)",
             "ALTER TABLE curated_items ADD COLUMN IF NOT EXISTS source_url TEXT",
         ]:
@@ -603,24 +605,20 @@ def collect_twitter(region: str = "global"):
 
 @app.post("/process/translations", dependencies=[Depends(require_admin_secret)])
 def run_translations(limit: int = 1000):
+    """Re-translate the most recent trends. Batched and cached via app/translation;
+    a row whose translation failed is counted as failed and left as it was."""
     from app.db import SessionLocal
     from app.models.trend import Trend
-    from app.language import detect_language, translate_to_english_if_needed
+    from app.language import KEEP_LANGS, detect_language
+    from app.pipeline.nodes.translator import translate_rows
+    from app.translation import translate_many
 
     session = SessionLocal()
     try:
         trends = session.query(Trend).order_by(Trend.id.desc()).limit(limit).all()
-        updated = 0
-        for t in trends:
-            text = t.content or t.title or ""
-            if not text.strip():
-                continue
-            lang = detect_language(text)
-            t.language = lang
-            t.translated_content = translate_to_english_if_needed(text, lang)
-            updated += 1
+        counts = translate_rows(trends, translate_many, detect_language, KEEP_LANGS)
         session.commit()
-        return {"updated": updated}
+        return {"updated": counts["translated"] + counts["kept"], **counts}
     except Exception:
         session.rollback()
         raise
@@ -3068,6 +3066,7 @@ def list_world_production(limit: int = 100):
                 "source_type": source_label(item) if item else None,
                 "source_url": item.source_url if item else None,
                 "render_estimate": estimate_render(duration) if duration else None,
+                "published": bool(toon.status == "ready" and toon.final_video_url and toon.world_published is not False),
                 "generation_error": toon.generation_error,
                 "publish_recommended": toon.publish_recommended,
                 "qa_results": toon.qa_results,
@@ -3094,6 +3093,9 @@ def generate_world_production_video(toon_id: str, background_tasks: BackgroundTa
         brand = session.query(CharacterBrand).filter_by(id=toon.brand_id).first()
         toon.status = "animating"
         toon.generation_error = None
+        # A new render replaces the video, so whatever was reviewed before is
+        # gone: it must be published again by a person.
+        toon.world_published = False
         session.commit()
         background_tasks.add_task(generate_video_for_toon_selfhosted, user_id=str(brand.user_id) if brand else os.getenv("SUPERADMIN_USER_ID"), toon_id=toon_id)
         return {"status": "generating", "toon_id": toon_id}
@@ -3101,21 +3103,58 @@ def generate_world_production_video(toon_id: str, background_tasks: BackgroundTa
         session.close()
 
 
-@app.post("/admin/world-production/{toon_id}/unpublish", dependencies=[Depends(require_admin_secret)])
-def unpublish_world_production(toon_id: str):
-    """Archive a World draft/feature: it leaves the public /world API (which
-    only serves status='ready') and the production list, and frees its subject
-    to be regenerated."""
-    from app.db import SessionLocal
+def _world_toon_or_404(session, toon_id: str):
     from app.models.toon import Toon
+    toon = session.query(Toon).filter_by(id=toon_id, is_world_content=True).first()
+    if not toon:
+        raise HTTPException(status_code=404, detail="World draft not found")
+    return toon
+
+
+@app.post("/admin/world-production/{toon_id}/publish", dependencies=[Depends(require_admin_secret)])
+def publish_world_production(toon_id: str):
+    """Make a finished render visible on the public /world pages. Rendered
+    videos are never public until a person does this."""
+    from app.db import SessionLocal
     session = SessionLocal()
     try:
-        toon = session.query(Toon).filter_by(id=toon_id, is_world_content=True).first()
-        if not toon:
-            raise HTTPException(status_code=404, detail="World draft not found")
+        toon = _world_toon_or_404(session, toon_id)
+        if toon.status != "ready" or not toon.final_video_url:
+            raise HTTPException(status_code=409, detail="Only a finished render can be published")
+        toon.world_published = True
+        session.commit()
+        return {"status": "published", "toon_id": toon_id}
+    finally:
+        session.close()
+
+
+@app.post("/admin/world-production/{toon_id}/unpublish", dependencies=[Depends(require_admin_secret)])
+def unpublish_world_production(toon_id: str):
+    """Take a video off the public pages but keep it: it returns to 'rendered,
+    awaiting publish'. Use /archive to retire the draft entirely."""
+    from app.db import SessionLocal
+    session = SessionLocal()
+    try:
+        toon = _world_toon_or_404(session, toon_id)
+        toon.world_published = False
+        session.commit()
+        return {"status": "unpublished", "toon_id": toon_id}
+    finally:
+        session.close()
+
+
+@app.post("/admin/world-production/{toon_id}/archive", dependencies=[Depends(require_admin_secret)])
+def archive_world_production(toon_id: str):
+    """Retire a draft or feature: it leaves the public API and the production
+    list, and frees its subject to be regenerated."""
+    from app.db import SessionLocal
+    session = SessionLocal()
+    try:
+        toon = _world_toon_or_404(session, toon_id)
         if toon.status == "animating":
             raise HTTPException(status_code=409, detail="Cannot archive while a render is in progress")
         toon.status = "archived"
+        toon.world_published = False
         session.commit()
         return {"status": "archived", "toon_id": toon_id}
     finally:
