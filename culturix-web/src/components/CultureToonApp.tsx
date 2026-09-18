@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Plus, Loader2, ArrowRight } from "lucide-react";
 import type { CharacterBrand, Character, CharacterVariant, ToonBackground, ToonScript, Toon, ToonEpisode } from "@/lib/types";
 import CultureToonBrandForm from "@/components/CultureToonBrandForm";
@@ -9,6 +10,7 @@ import ConnectedAccountsPanel from "@/components/ConnectedAccountsPanel";
 
 interface Props {
   initialBrands: CharacterBrand[];
+  showWorldLibrary?: boolean;
 }
 
 interface BrandData {
@@ -30,9 +32,12 @@ async function _json<T>(url: string, fallback: T): Promise<T> {
   }
 }
 
-export default function CultureToonApp({ initialBrands }: Props) {
-  const [brands, setBrands] = useState(initialBrands);
-  const [selectedBrandId, setSelectedBrandId] = useState<string | null>(initialBrands[0]?.id ?? null);
+export default function CultureToonApp({ initialBrands, showWorldLibrary = false }: Props) {
+  // World is a system-owned persistence brand for subject-first Features, not
+  // a user-owned character account. Keep it out of this character workflow.
+  const toonBrands = initialBrands.filter((brand) => brand.name.toLowerCase() !== "world");
+  const [brands, setBrands] = useState(toonBrands);
+  const [selectedBrandId, setSelectedBrandId] = useState<string | null>(toonBrands[0]?.id ?? null);
   const [data, setData] = useState<BrandData | null>(null);
   const [loading, setLoading] = useState(false);
   const [showNewBrandForm, setShowNewBrandForm] = useState(false);
@@ -65,6 +70,12 @@ export default function CultureToonApp({ initialBrands }: Props) {
   if (brands.length === 0 || showNewBrandForm) {
     return (
       <div>
+        {showWorldLibrary && brands.length === 0 && !showNewBrandForm && (
+          <Link href="/admin/curated-items" className="mb-5 block rounded-2xl border border-purple-100 bg-purple-50/50 p-5 hover:border-purple-300 transition-colors">
+            <span className="text-sm font-semibold text-purple-700">World source library</span>
+            <span className="mt-1 block text-xs text-purple-600/80">Review real Wikipedia and UNESCO subjects for World Feature creation.</span>
+          </Link>
+        )}
         {brands.length > 0 && (
           <button onClick={() => setShowNewBrandForm(false)} className="text-sm text-gray-500 hover:text-gray-700 mb-3">
             ← Back to your brands
@@ -132,6 +143,11 @@ export default function CultureToonApp({ initialBrands }: Props) {
         >
           <Plus className="h-3.5 w-3.5" /> New brand
         </button>
+        {showWorldLibrary && (
+          <Link href="/admin/curated-items" className="inline-flex items-center gap-1 text-sm font-medium text-purple-600 hover:text-purple-800 rounded-lg px-3 py-1.5 border border-purple-200 bg-purple-50 transition-colors">
+            World source library
+          </Link>
+        )}
       </div>
 
       {loading || !data ? (

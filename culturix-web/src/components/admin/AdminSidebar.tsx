@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Zap, LayoutDashboard, TrendingUp, Layers, Users, Search, LogOut, History, ShieldCheck } from "lucide-react";
+import { Zap, LayoutDashboard, TrendingUp, Layers, Users, Search, LogOut, History, ShieldCheck, Database } from "lucide-react";
 import { fetchAdminData } from "@/lib/admin/fetchAdmin";
 import type { UserRecord } from "@/lib/admin/types";
 
@@ -14,6 +14,7 @@ const NAV: { href: string; icon: React.ReactNode; label: string }[] = [
   { href: "/admin/personas", icon: <Users className="h-4 w-4" />, label: "Personas" },
   { href: "/admin/history", icon: <History className="h-4 w-4" />, label: "History" },
   { href: "/admin/validation", icon: <ShieldCheck className="h-4 w-4" />, label: "Validation" },
+  { href: "/admin/curated-items", icon: <Database className="h-4 w-4" />, label: "Source library" },
   { href: "/admin/users", icon: <Users className="h-4 w-4" />, label: "Users" },
   { href: "/admin/search", icon: <Search className="h-4 w-4" />, label: "Search" },
 ];

@@ -42,7 +42,7 @@ export default async function CultureToonsPage() {
           </p>
         </div>
 
-        <CultureToonApp initialBrands={brands} />
+        <CultureToonApp initialBrands={brands} showWorldLibrary={isSuperAdmin} />
       </main>
     </>
   );

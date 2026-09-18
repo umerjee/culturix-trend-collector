@@ -2873,6 +2873,85 @@ def admin_collect():
     return {"status": "collecting"}
 
 
+@app.get("/admin/curated-items", dependencies=[Depends(require_admin_secret)])
+def list_curated_items(limit: int = 100, region: Optional[str] = None, decision: Optional[str] = None):
+    from app.db import SessionLocal
+    from app.models.curated_item import CuratedItem
+    session = SessionLocal()
+    try:
+        query = session.query(CuratedItem).order_by(CuratedItem.priority_score.desc().nullslast(), CuratedItem.created_at.desc())
+        if region:
+            query = query.filter(CuratedItem.region == region.strip().upper())
+        if decision:
+            query = query.filter(CuratedItem.pipeline_decision == decision)
+        rows = query.limit(max(1, min(limit, 200))).all()
+        return [{
+            "id": str(row.id), "source_type": row.source_type, "source_ref": row.source_ref,
+            "region": row.region, "title": row.title, "summary": row.summary,
+            "category": row.category, "priority_score": row.priority_score,
+            "challenge_notes": row.challenge_notes, "pipeline_decision": row.pipeline_decision,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        } for row in rows]
+    finally:
+        session.close()
+
+
+@app.post("/admin/curated-items/ingest", dependencies=[Depends(require_admin_secret)])
+def ingest_curated_source(payload: dict):
+    """Fetch a bounded real Wikipedia/UNESCO source batch for admin review."""
+    from app.collectors.unesco import fetch_unesco_sites
+    from app.collectors.wikipedia_extracts import fetch_wikipedia_extract
+    from app.db import SessionLocal
+    from app.services.culturix_ingestion import ingest
+
+    source_type = payload.get("source_type")
+    region = (payload.get("region") or "").strip().upper() or None
+    max_items = max(1, min(int(payload.get("max_items", 5)), 10))
+    session = SessionLocal()
+    try:
+        sources = []
+        if source_type == "wikipedia":
+            title = (payload.get("title") or "").strip()
+            if not title:
+                raise HTTPException(status_code=400, detail="Wikipedia title is required")
+            source = fetch_wikipedia_extract(title)
+            if source:
+                sources.append((source["title"], source["extract"]))
+        elif source_type == "unesco":
+            for site in fetch_unesco_sites(region, limit=max(1, min(int(payload.get("limit", 10)), 20))):
+                source_ref = str(site.get("id_no") or site.get("title") or "")
+                raw_text = "\n".join(value for value in (site.get("title"), site.get("description"), site.get("category")) if value)
+                if source_ref and raw_text:
+                    sources.append((source_ref, raw_text))
+        else:
+            raise HTTPException(status_code=400, detail="source_type must be wikipedia or unesco")
+
+        created = []
+        for source_ref, raw_text in sources:
+            created.extend(ingest(source_type, region, raw_text, session, max_items=max_items, source_ref=source_ref))
+        return {"sources_fetched": len(sources), "items_created": len(created)}
+    finally:
+        session.close()
+
+
+@app.post("/admin/curated-items/{item_id}/decision", dependencies=[Depends(require_admin_secret)])
+def decide_curated_item(item_id: str, decision: str):
+    from app.db import SessionLocal
+    from app.models.curated_item import CuratedItem
+    if decision not in {"include", "exclude", "store_for_later"}:
+        raise HTTPException(status_code=400, detail="Invalid decision")
+    session = SessionLocal()
+    try:
+        row = session.query(CuratedItem).filter_by(id=item_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Curated item not found")
+        row.pipeline_decision = decision
+        session.commit()
+        return {"id": str(row.id), "pipeline_decision": row.pipeline_decision}
+    finally:
+        session.close()
+
+
 # ── User approval endpoints ────────────────────────────────────────────────────
 
 @app.get("/admin/users", dependencies=[Depends(require_admin_secret)])
