@@ -28,6 +28,7 @@ export default function CuratedItemsPage() {
   const [unescoLimit, setUnescoLimit] = useState("5");
   const [continentFilter, setContinentFilter] = useState("");
   const [countryFilter, setCountryFilter] = useState("");
+  const [minimumPriority, setMinimumPriority] = useState("0");
 
   function load() { fetchAdminData<Item[]>("curated-items").then(setItems).catch(() => setItems([])); }
   useEffect(() => { load(); }, []);
@@ -39,6 +40,7 @@ export default function CuratedItemsPage() {
   const visibleItems = items.filter((item) => {
     if (countryFilter && item.region !== countryFilter) return false;
     if (continentFilter && (!item.region || COUNTRY_INFO[item.region]?.continent !== continentFilter)) return false;
+    if ((item.priority_score ?? 0) < Number(minimumPriority)) return false;
     return true;
   });
 
@@ -80,7 +82,13 @@ export default function CuratedItemsPage() {
       <select value={countryFilter} onChange={(e) => setCountryFilter(e.target.value)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700" aria-label="Filter by country">
         <option value="">All countries{continentFilter ? ` in ${continentFilter}` : ""}</option>{countries.map(([code, country]) => <option key={code} value={code}>{country.name}</option>)}
       </select>
-      {(continentFilter || countryFilter) && <button onClick={() => { setContinentFilter(""); setCountryFilter(""); }} className="px-2 py-2 text-xs font-medium text-primary-600 hover:text-primary-800">Clear filters</button>}
+      <select value={minimumPriority} onChange={(e) => setMinimumPriority(e.target.value)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700" aria-label="Filter by priority ranking">
+        <option value="0">All rankings</option>
+        <option value="90">Top ranked · 90+</option>
+        <option value="75">Strong · 75+</option>
+        <option value="60">Promising · 60+</option>
+      </select>
+      {(continentFilter || countryFilter || minimumPriority !== "0") && <button onClick={() => { setContinentFilter(""); setCountryFilter(""); setMinimumPriority("0"); }} className="px-2 py-2 text-xs font-medium text-primary-600 hover:text-primary-800">Clear filters</button>}
       <span className="ml-auto text-xs text-gray-400">{visibleItems.length} of {items.length} subjects</span>
     </div>
     <div className="space-y-3">{visibleItems.map((item) => <article key={item.id} className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm"><div className="flex items-start justify-between gap-4"><div><div className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase text-gray-400"><span>{item.source_type}</span><span>{item.region ? `${COUNTRY_INFO[item.region]?.name || item.region} (${item.region})` : "global"}</span><span>{item.category}</span>{item.created_at && <span>Fetched {new Date(item.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>}</div><h2 className="mt-1 text-base font-semibold text-gray-900">{item.title}</h2></div><span className="text-sm font-bold text-primary-600">{item.priority_score ?? "-"}/100</span></div><p className="mt-2 text-sm text-gray-600">{item.summary}</p>{item.challenge_notes && <p className="mt-2 text-xs text-gray-400">Review: {item.challenge_notes}</p>}<div className="mt-4 flex items-center gap-2"><button onClick={() => decide(item.id, "include")} className="inline-flex items-center gap-1 rounded-md bg-green-50 px-2.5 py-1.5 text-xs font-semibold text-green-700"><Check className="h-3.5 w-3.5" /> Select subject</button><button onClick={() => decide(item.id, "store_for_later")} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-700"><Clock3 className="h-3.5 w-3.5" /> Later</button><button onClick={() => decide(item.id, "exclude")} className="inline-flex items-center gap-1 rounded-md bg-gray-100 px-2.5 py-1.5 text-xs font-semibold text-gray-600"><X className="h-3.5 w-3.5" /> Exclude</button><span className="ml-auto text-xs text-gray-400">{item.pipeline_decision || "unreviewed"}</span></div></article>)}</div>
