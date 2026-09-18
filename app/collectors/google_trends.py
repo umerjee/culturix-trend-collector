@@ -18,31 +18,38 @@ from xml.etree import ElementTree
 
 import httpx
 
+from app.collectors.region_codes import SHARED_TARGET_REGIONS
+
 logger = logging.getLogger("culturix.collectors.google_trends")
 
 _BASE = "https://trends.google.com/trending/rss"
 _HEADERS = {"User-Agent": "culturix-trend-collector/1.0 (contact: umer.ali79@gmail.com)"}
 _NS = {"ht": "https://trends.google.com/trending/rss"}
 
-# A representative geo spread rather than every country Google Trends
-# supports — mirrors wikipedia.py's PROJECTS list's own reasoning
-# (geographic/cultural spread, not exhaustiveness). All real ISO-2 codes
-# that app.collectors.region_codes.normalize_region() passes through
-# unchanged. CN is included despite this app's own documented "CN is
-# permanently broken" gap (see app/regions.py's docstring) — that gap is
-# specifically about Xiaohongshu contributing zero CN-tagged rows, not a
-# Google Trends limitation; this may be the first collector to actually
-# produce real CN-region rows.
-DEFAULT_REGIONS = ["US", "GB", "FR", "DE", "IT", "PT", "CA", "AU", "CN"]
+# Widened 2026-09-18 to SHARED_TARGET_REGIONS (region_codes.py) — the geo=
+# param is a real, working, per-region signal with no proxy dependency (see
+# module docstring), so this is the trivial/safe end of the region-coverage
+# expansion (see that plan). CN was already included despite this app's own
+# documented "CN is permanently broken" gap (see app/regions.py's
+# docstring) — that gap is specifically about Xiaohongshu contributing zero
+# CN-tagged rows, not a Google Trends limitation.
+DEFAULT_REGIONS = list(SHARED_TARGET_REGIONS)
 
 # The RSS item's own <title> is a bare search query, in whatever language
 # is dominant for that region — unlike wikipedia.py's article titles, these
 # aren't reliably English even for "content", so this maps region -> the
 # query's likely language for Trend.language (the wrapper `content` sentence
 # built below is always English regardless, same as translated_content).
+# Falls back to "en" (see fetch below) for any region not listed here, so a
+# missing entry never breaks anything — just risks a mislabeled language.
 _REGION_TO_LANGUAGE = {
-    "US": "en", "GB": "en", "CA": "en", "AU": "en",
+    "US": "en", "GB": "en", "CA": "en", "AU": "en", "IN": "en", "NG": "en",
+    "ZA": "en", "PH": "en", "KE": "en",
     "FR": "fr", "DE": "de", "IT": "it", "PT": "pt", "CN": "zh",
+    "TR": "tr", "SA": "ar", "AE": "ar", "EG": "ar", "IL": "he",
+    "ID": "id", "TH": "th", "VN": "vi", "MY": "ms",
+    "MX": "es", "AR": "es", "CO": "es", "CL": "es", "ES": "es",
+    "PL": "pl", "UA": "uk", "PK": "ur", "JP": "ja", "KR": "ko", "BR": "pt",
 }
 
 

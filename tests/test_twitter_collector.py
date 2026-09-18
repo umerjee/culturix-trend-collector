@@ -101,3 +101,64 @@ class TestStoreTwitterTrends:
         inserted = store_twitter_trends()
 
         assert inserted == 0
+
+    def test_legacy_lowercase_names_still_resolve_correctly_via_proxy(self, twitter_db, monkeypatch, mocker):
+        """POST /collect/twitter (app/main.py) is a manual admin endpoint
+        that can still be called with a legacy full-name region — must
+        resolve via normalize_region, not get uppercased verbatim (which
+        would send trends24.in "INDIA" instead of "IN")."""
+        import app.collectors.twitter as tw
+        monkeypatch.delenv("APIFY_API_TOKEN", raising=False)
+        captured = {}
+
+        def fake_get(url, **kwargs):
+            captured["url"] = url
+            class R:
+                status_code = 200
+                text = "1.   [#Test](http://x)"
+            return R()
+
+        mocker.patch("httpx.get", fake_get)
+        tw._fetch_via_proxy("india")
+        assert "geo=IN" in captured["url"]
+
+
+class TestStoreTwitterTrendsApifyGeocoded:
+    def test_geocoded_sweep_runs_additively_and_tags_region(self, twitter_db, monkeypatch, mocker):
+        monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
+
+        def fake_collect(queries=None, max_items=200, geocode=None):
+            if geocode is None:
+                return [{"external_id": "broad-1", "content_text": "broad", "language": "en"}]
+            return [{"external_id": f"geo-{geocode}", "content_text": "regional", "language": "en"}]
+
+        mocker.patch("app.collectors.twitter._collect_via_apify", side_effect=fake_collect)
+        mocker.patch("app.collectors.twitter._fetch_via_proxy", return_value=[])
+        mocker.patch(
+            "app.collectors.twitter.TWITTER_APIFY_GEOCODES",
+            {"TR": (39.93, 32.85, "500km"), "MX": (19.43, -99.13, "600km")},
+        )
+
+        inserted = store_twitter_trends()
+
+        session = twitter_db()
+        broad = session.query(Trend).filter_by(external_id="broad-1").first()
+        regional = session.query(Trend).filter_by(platform="twitter", region="TR").all()
+        session.close()
+
+        assert inserted == 3  # 1 broad + 2 geocoded (TR, MX)
+        assert broad.region is None  # broad call still leaves region unset
+        assert len(regional) == 1
+
+    def test_geocoded_dedupes_by_external_id_across_regions(self, twitter_db, monkeypatch, mocker):
+        monkeypatch.setenv("APIFY_API_TOKEN", "test-token")
+        mocker.patch("app.collectors.twitter._collect_via_apify", return_value=[])
+        from app.collectors.twitter import _store_via_apify_geocoded
+
+        def same_signal(*a, **kw):
+            return [{"external_id": "dup-1", "content_text": "same tweet", "language": "en"}]
+
+        mocker.patch("app.collectors.twitter._collect_via_apify", side_effect=same_signal)
+        inserted = _store_via_apify_geocoded({"TR": (1, 1, "1km"), "MX": (2, 2, "1km")})
+
+        assert inserted == 1  # second region's identical external_id is a no-op

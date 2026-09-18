@@ -31,6 +31,36 @@ _ALIASES = {
 }
 
 
+# Shared target region list every collector's own *_REGIONS constant draws
+# from (see tiktok.py/youtube.py/google_trends.py/twitter.py) — added
+# 2026-09-18 after a DB audit found real coverage was only 13 countries
+# (Western/wealthy-skewed) and 28% of all trend rows had no region at all,
+# blocking World Features (see app/services/culturetoon_script.py::
+# generate_world_script) from having real grounding for most of the world.
+# Not every platform supports every one of these — each collector prunes
+# this list down to what's actually confirmed live for it (see each
+# collector's own *_REGIONS definition and comments).
+#
+# RU deliberately excluded: X/Twitter and most Western platforms this repo
+# collects from are blocked/degraded there, so calls would silently fail.
+SHARED_TARGET_REGIONS = [
+    # Existing 13 (already covered before this list existed)
+    "US", "GB", "FR", "DE", "IT", "ES", "PT", "CA", "AU", "JP", "KR", "IN", "BR",
+    # Middle East
+    "TR", "SA", "AE", "IL",
+    # Africa
+    "NG", "ZA", "EG", "KE",
+    # Southeast Asia
+    "ID", "PH", "TH", "VN", "MY",
+    # Latin America beyond Brazil
+    "MX", "AR", "CO", "CL",
+    # Eastern Europe
+    "PL", "UA",
+    # Extra Asia
+    "PK", "CN",
+]
+
+
 def normalize_region(raw: str | None) -> str | None:
     """Canonical form is an uppercase ISO-2-ish code (US, GB, IN, JP, KR, FR,
     DE, BR, CA, AU, CN) or None for platforms/fetches with no regional concept."""

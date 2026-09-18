@@ -6,7 +6,7 @@ import os
 from app.db import SessionLocal
 from app.models.trend import Trend
 from app.language import detect_language
-from app.collectors.region_codes import normalize_region
+from app.collectors.region_codes import normalize_region, SHARED_TARGET_REGIONS
 
 YOUTUBE_TRENDING_URL = "https://www.googleapis.com/youtube/v3/videos"
 
@@ -72,10 +72,13 @@ def fetch_youtube_trending(region="US", limit=30):
         return _fetch_via_scrape(limit)
 
 
-# IT/ES/PT added alongside FR/DE/GB so persona_mapper.py's "EU" target-region
-# mapping has real collectors actually tagging those countries, not just
-# filter-permission with nothing behind it — see that file's _REGION_LABEL_TO_CODES.
-YOUTUBE_REGIONS = ["US", "GB", "IN", "CA", "AU", "FR", "DE", "BR", "JP", "KR", "IT", "ES", "PT"]
+# Widened 2026-09-18 to SHARED_TARGET_REGIONS (region_codes.py) — YouTube's
+# official regionCode param supports ~100+ ISO codes with large quota
+# headroom, so this is the trivial/safe end of the region-coverage expansion
+# (see that plan). IT/ES/PT were already added alongside FR/DE/GB so
+# persona_mapper.py's "EU" target-region mapping had real collectors
+# actually tagging those countries — see that file's _REGION_LABEL_TO_CODES.
+YOUTUBE_REGIONS = list(SHARED_TARGET_REGIONS)
 
 
 def store_youtube_trends(region="US", limit=50):

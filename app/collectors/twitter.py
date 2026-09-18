@@ -16,7 +16,7 @@ import logging
 import os
 from datetime import datetime
 
-from app.collectors.region_codes import normalize_region
+from app.collectors.region_codes import normalize_region, SHARED_TARGET_REGIONS
 
 logger = logging.getLogger("culturix.collectors.twitter")
 
@@ -27,17 +27,48 @@ DEFAULT_QUERIES = [
 ]
 
 JINA_PROXY = "https://r.jina.ai/http://trends24.in/?geo={region}"
-# Widened to match TikTok/YouTube's regional coverage (both tag US/GB/FR,
-# YouTube also CA/AU) — Twitter was previously the dominant data source
-# (~half of all trends) yet only ever tagged us/uk, meaning a profile
-# targeting France/Canada/Australia alone (not "Global") could see every
-# Twitter-sourced cluster hard-excluded by persona_mapper.py's region
-# filter for having a resolved-but-non-matching region, on top of getting
-# none of Twitter's volume as region-unknown (fail-open) content either.
-TWITTER_REGIONS = ["us", "uk", "india", "japan", "france", "canada", "australia", "italy", "spain", "portugal", "global"]
+# Widened 2026-09-18 to SHARED_TARGET_REGIONS (region_codes.py) — switched
+# from lowercase country names to real ISO-2 codes to match that shared
+# list directly rather than hand-maintaining 30+ new name aliases; trends24.in
+# already expects ISO-2-shaped geo codes (see the old geo_map this replaced),
+# so this is a like-for-like simplification, not a behavior change for the
+# regions that already worked. "global" kept as a sentinel meaning "run every
+# region in this list", not a real trends24.in geo value.
+TWITTER_REGIONS = list(SHARED_TARGET_REGIONS) + ["global"]
 
 
-def _collect_via_apify(queries: list[str] | None = None, max_items: int = 200) -> list[dict]:
+# Additive, curated subset for the Apify geocode fix (see _store_via_apify_geocoded
+# below) — the actor's broad DEFAULT_QUERIES call stays untouched for volume; this
+# runs SEPARATELY, once per region, at real per-run Apify cost, so it's a smaller
+# curated list, not the full SHARED_TARGET_REGIONS. Picks the 12 regions with zero
+# Twitter coverage today (neither TikTok/YouTube already cover them well) that are
+# highest product value. Values are (lat, long, radius) — Twitter API's own
+# "lat,long,radiuskm" geocode convention — centered on each country's largest
+# population center, not a literal country-wide bounding circle (a real
+# simplification for large/elongated countries like Indonesia/Vietnam/Argentina;
+# still meaningfully better than zero regional signal).
+TWITTER_APIFY_GEOCODES: dict[str, tuple[float, float, str]] = {
+    "TR": (39.93, 32.85, "500km"),   # Ankara
+    "SA": (24.71, 46.68, "600km"),   # Riyadh
+    "AE": (25.20, 55.27, "150km"),   # Dubai
+    "ID": (-6.21, 106.85, "500km"),  # Jakarta
+    "PH": (14.60, 120.98, "400km"),  # Manila
+    "TH": (13.75, 100.50, "400km"),  # Bangkok
+    "VN": (21.03, 105.85, "500km"),  # Hanoi
+    "MX": (19.43, -99.13, "600km"),  # Mexico City
+    "AR": (-34.60, -58.38, "500km"), # Buenos Aires
+    "NG": (6.52, 3.38, "400km"),     # Lagos
+    "ZA": (-26.20, 28.05, "500km"),  # Johannesburg
+    "PL": (52.23, 21.01, "350km"),   # Warsaw
+}
+
+
+def _collect_via_apify(queries: list[str] | None = None, max_items: int = 200,
+                        geocode: str | None = None) -> list[dict]:
+    """geocode: optional "lat,long,radius" string — confirmed live against the
+    actor's real input schema (apify.com/apidojo/tweet-scraper/input-schema) that
+    it supports genuine geographic targeting, not just free-text search. None
+    (the default) keeps today's broad, region-agnostic behavior."""
     token = os.getenv("APIFY_API_TOKEN")
     if not token:
         return []
@@ -53,14 +84,15 @@ def _collect_via_apify(queries: list[str] | None = None, max_items: int = 200) -
     signals = []
 
     try:
-        run = client.actor("apidojo/tweet-scraper").call(
-            run_input={
-                "searchTerms": qrs,
-                "maxItems": max_items,
-                "sort": "Latest",
-                "lang": "",  # all languages
-            }
-        )
+        run_input = {
+            "searchTerms": qrs,
+            "maxItems": max_items,
+            "sort": "Latest",
+            "lang": "",  # all languages
+        }
+        if geocode:
+            run_input["geocode"] = geocode
+        run = client.actor("apidojo/tweet-scraper").call(run_input=run_input)
         if not run:
             logger.error("Twitter/Apify actor run returned no result")
             return []
@@ -83,12 +115,15 @@ def _collect_via_apify(queries: list[str] | None = None, max_items: int = 200) -
     return signals
 
 
-def _store_via_apify(queries: list[str] | None = None, max_items: int = 200) -> int:
+def _insert_apify_signals(signals: list[dict], region: str | None = None) -> int:
+    """Shared insert path for both _store_via_apify (region=None, broad/
+    volume call) and _store_via_apify_geocoded (region set, per-country
+    geocode call) — same row shape either way, only whether `region` gets
+    tagged differs."""
     from app.db import SessionLocal
     from app.models.trend import Trend
     from app.language import detect_language, translate_to_english_if_needed
 
-    signals = _collect_via_apify(queries, max_items)
     if not signals:
         return 0
 
@@ -118,9 +153,7 @@ def _store_via_apify(queries: list[str] | None = None, max_items: int = 200) -> 
                 comments=s.get("comments"),
                 views=s.get("views"),
                 raw_json=s,
-                # region left unset (NULL) — this actor's search results aren't
-                # tied to a single region/market the way tiktok.py/youtube.py's
-                # per-region charts are.
+                region=normalize_region(region) if region else None,
             )
             session.add(trend)
             inserted += 1
@@ -134,6 +167,29 @@ def _store_via_apify(queries: list[str] | None = None, max_items: int = 200) -> 
     return inserted
 
 
+def _store_via_apify(queries: list[str] | None = None, max_items: int = 200) -> int:
+    # region left unset (NULL) — this broad call's search results aren't
+    # tied to a single region/market the way tiktok.py/youtube.py's
+    # per-region charts (or _store_via_apify_geocoded below) are.
+    return _insert_apify_signals(_collect_via_apify(queries, max_items))
+
+
+def _store_via_apify_geocoded(regions: dict[str, tuple[float, float, str]] | None = None,
+                               max_items: int = 50) -> int:
+    """Additive fix for _store_via_apify's region gap (see that function's
+    comment) — one extra Apify actor run per region in `regions` (default
+    TWITTER_APIFY_GEOCODES, a deliberately small curated subset: this is a
+    real per-run cost multiplier, not a free list expansion like TikTok/
+    YouTube/Google Trends). Each run's results get tagged with the region
+    that produced them, unlike the broad call."""
+    total = 0
+    for region, (lat, lon, radius) in (regions or TWITTER_APIFY_GEOCODES).items():
+        geocode = f"{lat},{lon},{radius}"
+        signals = _collect_via_apify(max_items=max_items, geocode=geocode)
+        total += _insert_apify_signals(signals, region=region)
+    return total
+
+
 def _fetch_via_proxy(region: str = "US") -> list[str]:
     """Scrapes trends24.in through the Jina.ai markdown proxy — free, no API
     key. Returns trend names extracted from the markdown numbered list."""
@@ -141,13 +197,18 @@ def _fetch_via_proxy(region: str = "US") -> list[str]:
     import re
 
     try:
-        geo_map = {
-            "global": "US",  # trends24 doesn't use 'global' so use US as fallback
-            "us": "US", "uk": "GB", "india": "IN", "japan": "JP",
-            "france": "FR", "canada": "CA", "australia": "AU",
-            "italy": "IT", "spain": "ES", "portugal": "PT",
-        }
-        geo_code = geo_map.get(region.lower(), "US")
+        # TWITTER_REGIONS now holds real ISO-2 codes directly (see that
+        # constant's own comment), but POST /collect/twitter (app/main.py)
+        # is a manual admin endpoint that can still be called with a legacy
+        # lowercase full name (e.g. ?region=india) — normalize_region()
+        # already has the alias table for exactly that (uk->GB, india->IN,
+        # etc.), and passes a bare ISO-2 code through unchanged, so this
+        # handles both shapes correctly instead of the raw .upper() this
+        # replaced (which silently produced wrong trends24.in geo values
+        # like "INDIA" for legacy name input). "global" (and any unmapped
+        # input) normalizes to None -> falls back to US, matching the old
+        # geo_map's own default-to-US behavior.
+        geo_code = normalize_region(region) or "US"
 
         resp = httpx.get(JINA_PROXY.format(region=geo_code), timeout=20.0)
         if resp.status_code != 200:
@@ -217,14 +278,26 @@ def store_twitter_trends(region: str = "global") -> int:
     /collect/twitter route. Tries the Apify actor first (richer data: real
     tweet content, author, engagement) when APIFY_API_TOKEN is set; falls
     back to the free trends24.in proxy (bare trend names only) otherwise or
-    on failure. `region` only affects the proxy fallback — the Apify actor
-    searches fixed DEFAULT_QUERIES rather than per-region terms."""
+    on failure. `region` only affects the proxy fallback — the broad Apify
+    call searches fixed DEFAULT_QUERIES rather than per-region terms.
+
+    Also runs the geocoded Apify sweep (_store_via_apify_geocoded) as an
+    ADDITIVE step whenever Apify is configured, regardless of whether the
+    broad call found anything — this is the actual region-tagging fix for
+    Apify's dominant path (see _store_via_apify's own comment on why it
+    leaves region NULL), a real per-run cost on top of the broad call, not
+    a replacement for it."""
     if os.getenv("APIFY_API_TOKEN"):
         try:
             inserted = _store_via_apify()
-            if inserted > 0:
-                return inserted
         except Exception as e:
-            logger.warning("Apify path failed, falling back to proxy: %s", e)
+            logger.warning("Apify broad path failed: %s", e)
+            inserted = 0
+        try:
+            inserted += _store_via_apify_geocoded()
+        except Exception as e:
+            logger.warning("Apify geocoded path failed: %s", e)
+        if inserted > 0:
+            return inserted
 
     return _store_via_proxy(region)

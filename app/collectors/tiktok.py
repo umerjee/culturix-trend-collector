@@ -4,13 +4,18 @@ from datetime import datetime, timezone
 from app.db import SessionLocal
 from app.models.trend import Trend
 from app.language import detect_language
-from app.collectors.region_codes import normalize_region
+from app.collectors.region_codes import normalize_region, SHARED_TARGET_REGIONS
 
 TIKTOK_TRENDING_URL = "https://www.tikwm.com/api/feed/list/"
-# IT/ES/PT added alongside FR/DE/GB so persona_mapper.py's "EU" target-region
-# mapping has real collectors actually tagging those countries, not just
-# filter-permission with nothing behind it — see that file's _REGION_LABEL_TO_CODES.
-TIKTOK_REGIONS = ["US", "GB", "IN", "JP", "KR", "FR", "DE", "BR", "IT", "ES", "PT"]
+# Widened 2026-09-18 to SHARED_TARGET_REGIONS (region_codes.py) MINUS CN —
+# live-verified every other code against the real tikwm.com proxy (33/34
+# returned real data; CO and PL failed once each but were transient,
+# confirmed consistent on retry). CN consistently returned zero items on
+# repeated tries — expected: TikTok itself isn't available in mainland
+# China (Douyin is the separate domestic app/API), not a proxy gap. This
+# unofficial proxy's coverage could still drift in the future; re-verify
+# with a live spot-check before trusting a further expansion blindly.
+TIKTOK_REGIONS = [r for r in SHARED_TARGET_REGIONS if r != "CN"]
 
 
 def _cache_cover_image(item: dict, external_id: str) -> str | None:
