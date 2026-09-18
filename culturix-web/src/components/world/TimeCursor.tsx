@@ -9,12 +9,11 @@ import FeatureCard from "@/components/world/FeatureCard";
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 // Real per-region trend coverage in this app only goes back to when that
 // region's collector started (days_with_data below) — there is nothing in
-// `trends` before June 2026 at all. Below this many days of real coverage,
-// a day-granularity slider would be misleading (see the region-coverage
-// expansion's own findings: 16 regions got a single one-time burst on
-// 2026-09-18 and nothing before), so the recent zone shows a plain
-// "coverage just started" state instead of a near-empty scrubber.
-const MIN_DAYS_FOR_SCRUBBER = 3;
+// `trends` before June 2026 at all. A slider is still useful for a region
+// with two or more real collection dates; regions with only one date remain
+// in the "coverage just started" state instead of showing a misleading
+// zero-width scrubber.
+const MIN_DAYS_FOR_SCRUBBER = 2;
 
 // Explicit locale, not the runtime default — this component is server-
 // rendered for its initial HTML then hydrated client-side, and an implicit
