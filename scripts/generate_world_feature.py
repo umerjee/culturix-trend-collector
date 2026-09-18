@@ -94,6 +94,8 @@ def main() -> int:
                               "the region's real trend-platform mix suggest 'genz' when TikTok-dominated (falls back to "
                               "'place' with no strong signal) — see _suggest_category_from_trends.")
     parser.add_argument("--culture-name", default=None, help="Culture.name to attach for cultural context, if one already exists in the library (see POST /api/culturetoons/cultures)")
+    parser.add_argument("--era-label", default=None, help="Historical era this Feature is about, e.g. 'French Revolution' — separate from real trend data (there is none pre-June 2026); powers the World map time-cursor's historical zone")
+    parser.add_argument("--era-year", type=int, default=None, help="Representative year for --era-label, e.g. 1789 — used for sorting/filtering, required for the Feature to show up in an era-range query")
     parser.add_argument("--host-variant-id", default=None, help="Optional CharacterVariant UUID to use as an on-screen regional host/narrator — wins outright over auto-selection below")
     parser.add_argument("--no-host", action="store_true", help="Explicitly skip auto-selecting a thematic host — pure subject footage, no character. Without this flag, omitting --host-variant-id tries auto-selection first (see select_thematic_host).")
     parser.add_argument("--tone", default="informative", choices=["informative", "educational", "explainer", "inspirational",
@@ -207,6 +209,8 @@ def main() -> int:
             subject_text=args.subject,
             subject_category=category,
             culture_id=culture_row.id if args.culture_name and culture else None,
+            era_label=args.era_label,
+            era_year=args.era_year,
         )
         session.add(script)
         session.commit()
@@ -223,6 +227,8 @@ def main() -> int:
             subject_region=region_code,
             subject_text=args.subject,
             subject_category=category,
+            era_label=args.era_label,
+            era_year=args.era_year,
         )
         session.add(toon)
         session.commit()

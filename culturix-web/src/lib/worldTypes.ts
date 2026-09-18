@@ -7,8 +7,20 @@ export interface WorldFeature {
   subject_text: string | null;
   subject_category: string | null;
   final_video_url: string | null;
+  era_label: string | null;
+  era_year: number | null;
   created_at: string | null;
   hook_line?: string | null; // only present on the single-feature detail response
+}
+
+// Mirrors app/routers/world.py's get_world_trends_coverage — real
+// earliest/latest/day-count for one region's Trend rows, used to size
+// TimeCursor's "recent" zone honestly instead of a misleading fixed range.
+export interface WorldTrendsCoverage {
+  region: string;
+  earliest: string | null;
+  latest: string | null;
+  days_with_data: number;
 }
 
 // Mirrors app/routers/world.py's _serialize_trend — real Trend rows,

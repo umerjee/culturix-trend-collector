@@ -15,6 +15,7 @@ read-only and pre-filtered to is_world_content=True AND status='ready' —
 no ordinary user's private Toons are ever reachable through this router."""
 from fastapi import APIRouter, HTTPException
 from typing import Optional
+from datetime import datetime
 import uuid as _uuid
 
 router = APIRouter(prefix="/world", tags=["world"])
@@ -28,13 +29,17 @@ def _serialize_feature(t) -> dict:
         "subject_text": t.subject_text,
         "subject_category": t.subject_category,
         "final_video_url": t.final_video_url,
+        "era_label": t.era_label,
+        "era_year": t.era_year,
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
 
 
 @router.get("/features")
 def list_world_features(region: Optional[str] = None, category: Optional[str] = None,
-                         q: Optional[str] = None, limit: int = 24, offset: int = 0):
+                         q: Optional[str] = None, era_only: bool = False,
+                         era_year_min: Optional[int] = None,
+                         era_year_max: Optional[int] = None, limit: int = 24, offset: int = 0):
     from app.db import SessionLocal
     from app.models.toon import Toon
 
@@ -52,8 +57,21 @@ def list_world_features(region: Optional[str] = None, category: Optional[str] = 
             query = query.filter(Toon.subject_category == category.strip().lower())
         if q:
             query = query.filter(Toon.subject_text.ilike(f"%{q.strip()}%"))
+        if era_only or era_year_min is not None or era_year_max is not None:
+            # A Feature with no era_year at all isn't part of an era query —
+            # only era-tagged Features should show up once the cursor's
+            # historical zone is selected. era_only alone (no year bounds)
+            # means "every era-tagged Feature for this region," for
+            # TimeCursor's historical zone before any further year
+            # refinement exists — cleaner than a magic-number sentinel range.
+            query = query.filter(Toon.era_year.isnot(None))
+            if era_year_min is not None:
+                query = query.filter(Toon.era_year >= era_year_min)
+            if era_year_max is not None:
+                query = query.filter(Toon.era_year <= era_year_max)
         total = query.count()
-        rows = query.order_by(Toon.created_at.desc()).offset(offset).limit(limit).all()
+        order = Toon.era_year.asc() if (era_only or era_year_min is not None or era_year_max is not None) else Toon.created_at.desc()
+        rows = query.order_by(order).offset(offset).limit(limit).all()
         return {"features": [_serialize_feature(t) for t in rows], "total": total, "limit": limit, "offset": offset}
     finally:
         session.close()
@@ -101,25 +119,79 @@ def _serialize_trend(t) -> dict:
     }
 
 
+def _parse_date(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid date: {value!r} (expected ISO format, e.g. 2026-08-01)")
+
+
 @router.get("/trends")
-def list_world_trends(region: Optional[str] = None, limit: int = 20, offset: int = 0):
+def list_world_trends(region: Optional[str] = None, date_from: Optional[str] = None,
+                       date_to: Optional[str] = None, limit: int = 20, offset: int = 0):
     """Real trend data by region, separate from the generated-video Features
     above — "we will be providing all trends and videos to users" (this
     router's own name covers both). Same public/no-auth posture as the rest
     of this file; every field here is already public social-platform
-    content (title/url/engagement counts), nothing account-scoped."""
+    content (title/url/engagement counts), nothing account-scoped.
+
+    date_from/date_to: ISO date/datetime strings, filtering Trend.collected_at
+    — powers the World map's time-cursor "recent" zone (see GET /trends/coverage
+    for the real per-region bounds to size that control against)."""
     from app.db import SessionLocal
     from app.models.trend import Trend
 
     limit = max(1, min(limit, 100))
+    parsed_from, parsed_to = _parse_date(date_from), _parse_date(date_to)
     session = SessionLocal()
     try:
         query = session.query(Trend)
         if region:
             query = query.filter(Trend.region == region.strip().upper())
+        if parsed_from:
+            query = query.filter(Trend.collected_at >= parsed_from)
+        if parsed_to:
+            query = query.filter(Trend.collected_at <= parsed_to)
         total = query.count()
         rows = query.order_by(Trend.collected_at.desc()).offset(offset).limit(limit).all()
         return {"trends": [_serialize_trend(t) for t in rows], "total": total, "limit": limit, "offset": offset}
+    finally:
+        session.close()
+
+
+@router.get("/trends/coverage")
+def get_world_trends_coverage(region: str):
+    """Real earliest/latest collected_at + a day count for one region — lets
+    the frontend size the time-cursor's "recent" zone honestly instead of
+    presenting a multi-week scrubber for a region with a single day of data
+    (e.g. the 16 regions added in the 2026-09-18 coverage expansion) or a
+    region with nothing at all (e.g. IR, which has zero Trend rows as of
+    this writing despite having a published World Feature)."""
+    from app.db import SessionLocal
+    from app.models.trend import Trend
+    from sqlalchemy import func
+
+    session = SessionLocal()
+    try:
+        region_code = region.strip().upper()
+        earliest, latest = (
+            session.query(func.min(Trend.collected_at), func.max(Trend.collected_at))
+            .filter(Trend.region == region_code)
+            .first()
+        )
+        days_with_data = (
+            session.query(func.count(func.distinct(func.date(Trend.collected_at))))
+            .filter(Trend.region == region_code)
+            .scalar()
+        ) or 0
+        return {
+            "region": region_code,
+            "earliest": earliest.isoformat() if earliest else None,
+            "latest": latest.isoformat() if latest else None,
+            "days_with_data": days_with_data,
+        }
     finally:
         session.close()
 

@@ -5,9 +5,9 @@ import enLocale from "i18n-iso-countries/langs/en.json";
 import MarketingHeader from "@/components/marketing/MarketingHeader";
 import MarketingFooter from "@/components/marketing/MarketingFooter";
 import FeatureCard from "@/components/world/FeatureCard";
-import TrendFeed from "@/components/world/TrendFeed";
+import TimeCursor from "@/components/world/TimeCursor";
 import { RAILWAY_API_BASE } from "@/lib/config/api";
-import type { WorldFeature, WorldTrend } from "@/lib/worldTypes";
+import type { WorldFeature, WorldTrend, WorldTrendsCoverage } from "@/lib/worldTypes";
 
 countries.registerLocale(enLocale as any);
 
@@ -37,6 +37,19 @@ async function fetchTrends(region: string): Promise<WorldTrend[]> {
   }
 }
 
+async function fetchCoverage(region: string): Promise<WorldTrendsCoverage> {
+  const empty: WorldTrendsCoverage = { region, earliest: null, latest: null, days_with_data: 0 };
+  try {
+    const res = await fetch(`${RAILWAY_API_BASE}/world/trends/coverage?region=${encodeURIComponent(region)}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return empty;
+    return await res.json();
+  } catch {
+    return empty;
+  }
+}
+
 export async function generateMetadata({ params }: { params: { code: string } }) {
   const label = countries.getName(params.code.toUpperCase(), "en") || params.code.toUpperCase();
   return { title: `${label} — Culturix World` };
@@ -45,7 +58,7 @@ export async function generateMetadata({ params }: { params: { code: string } })
 export default async function WorldRegionPage({ params }: { params: { code: string } }) {
   const code = params.code.toUpperCase();
   const label = countries.getName(code, "en") || code;
-  const [features, trends] = await Promise.all([fetchFeatures(code), fetchTrends(code)]);
+  const [features, trends, coverage] = await Promise.all([fetchFeatures(code), fetchTrends(code), fetchCoverage(code)]);
 
   return (
     <div className="min-h-screen bg-white">
@@ -71,12 +84,7 @@ export default async function WorldRegionPage({ params }: { params: { code: stri
           </section>
         )}
 
-        {trends.length > 0 && (
-          <section>
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Trending in {label}</h2>
-            <TrendFeed trends={trends} />
-          </section>
-        )}
+        <TimeCursor region={code} regionLabel={label} coverage={coverage} initialTrends={trends} />
       </main>
 
       <MarketingFooter />

@@ -88,6 +88,14 @@ class Toon(Base):
     subject_region = Column(String(2), nullable=True, index=True)
     subject_text = Column(Text, nullable=True)
     subject_category = Column(String(30), nullable=True, index=True)
+    # Historical era tagging — separate from the real, scraped Trend data
+    # the World map's "recent" time-cursor zone scrubs through (nothing in
+    # `trends` predates June 2026). era_label is free text ("French
+    # Revolution"), era_year a representative year for sorting/filtering
+    # (e.g. 1789) — see app/routers/world.py's era_year_min/max filtering
+    # and scripts/generate_world_feature.py's --era-label/--era-year.
+    era_label = Column(Text, nullable=True)
+    era_year = Column(Integer, nullable=True, index=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

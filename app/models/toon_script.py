@@ -132,6 +132,10 @@ class ToonScript(Base):
     trend_source_id = Column(Integer, nullable=True)
     trend_source_type = Column(String(10), nullable=True)
     culture_id = Column(UUID(as_uuid=True), nullable=True)  # optional, same non-enforced-FK convention as CharacterVariant.culture_id
+    # Historical era tagging, mirrored on Toon — see that model's own
+    # era_label/era_year docstring.
+    era_label = Column(Text, nullable=True)
+    era_year = Column(Integer, nullable=True, index=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

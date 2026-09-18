@@ -36,8 +36,14 @@ export default function TrendFeed({ trends }: { trends: WorldTrend[] }) {
             )}
           </div>
           <div className="shrink-0 flex items-center gap-3 text-xs text-gray-400">
+            {/* Explicit locale on toLocaleString below — with no argument it
+                follows the runtime's default locale, which differs between
+                the Node server (this machine's system locale) and the
+                browser, producing different digit-group separators
+                ("4'929" vs "4,929") and breaking hydration. Confirmed live
+                via a real browser console error before this fix. */}
             {typeof t.likes === "number" && t.likes > 0 && (
-              <span className="flex items-center gap-1"><Heart className="h-3 w-3" /> {t.likes.toLocaleString()}</span>
+              <span className="flex items-center gap-1"><Heart className="h-3 w-3" /> {t.likes.toLocaleString("en-US")}</span>
             )}
             {t.url && (
               <a href={t.url} target="_blank" rel="noopener noreferrer" className="hover:text-purple-600">

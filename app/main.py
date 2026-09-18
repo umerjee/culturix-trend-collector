@@ -359,6 +359,16 @@ async def lifespan(_):
             # host for World Feature generation — see Character.thematic_role's
             # own docstring and app/services/culturetoon_script.py::select_thematic_host.
             "ALTER TABLE characters ADD COLUMN IF NOT EXISTS thematic_role VARCHAR(20)",
+            # Historical era tagging for World Features, separate from the
+            # real scraped Trend data the map's "recent" time-cursor zone
+            # scrubs through — see Toon/ToonScript's own era_label/era_year
+            # docstrings.
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS era_label TEXT",
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS era_year INTEGER",
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS era_label TEXT",
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS era_year INTEGER",
+            "CREATE INDEX IF NOT EXISTS ix_toons_era_year ON toons (era_year)",
+            "CREATE INDEX IF NOT EXISTS ix_toon_scripts_era_year ON toon_scripts (era_year)",
         ]:
             try:
                 _conn.execute(_text(_stmt))
