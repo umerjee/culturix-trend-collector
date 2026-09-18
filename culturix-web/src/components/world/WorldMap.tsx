@@ -25,6 +25,9 @@ const DEFAULT_POSITION = { coordinates: [0, 20] as [number, number], zoom: 1 };
 interface RegionCount {
   region: string;
   count: number;
+  feature_count: number;
+  trend_count: number;
+  trend_days: number;
 }
 
 // A handful of buckets is plenty here — World content is admin-curated one
@@ -46,7 +49,7 @@ function fillForCount(count: number): string {
 
 export default function WorldMap() {
   const router = useRouter();
-  const [regionCounts, setRegionCounts] = useState<Record<string, number>>({});
+  const [regionCounts, setRegionCounts] = useState<Record<string, RegionCount>>({});
   const [hovered, setHovered] = useState<{ code: string; x: number; y: number } | null>(null);
   const [position, setPosition] = useState(DEFAULT_POSITION);
 
@@ -54,8 +57,8 @@ export default function WorldMap() {
     fetch("/api/world/regions")
       .then((r) => (r.ok ? r.json() : { regions: [] }))
       .then((data: { regions: RegionCount[] }) => {
-        const map: Record<string, number> = {};
-        for (const r of data.regions || []) map[r.region] = r.count;
+        const map: Record<string, RegionCount> = {};
+        for (const r of data.regions || []) map[r.region] = r;
         setRegionCounts(map);
       })
       .catch(() => setRegionCounts({}));
@@ -90,8 +93,9 @@ export default function WorldMap() {
             {({ geographies }) =>
               geographies.map((geo) => {
                 const alpha2 = countries.numericToAlpha2(geo.id as string);
-                const count = alpha2 ? regionCounts[alpha2] || 0 : 0;
-                const hasContent = count > 0;
+                const stats = alpha2 ? regionCounts[alpha2] : undefined;
+                const activity = stats ? stats.feature_count + Math.min(stats.trend_count, 5) : 0;
+                const hasContent = Boolean(stats && (stats.feature_count > 0 || stats.trend_count > 0));
                 return (
                   <Geography
                     key={geo.rsmKey}
@@ -101,7 +105,7 @@ export default function WorldMap() {
                     onClick={() => hasContent && alpha2 && router.push(`/world/region/${alpha2}`)}
                     style={{
                       default: {
-                        fill: fillForCount(count),
+                        fill: fillForCount(activity),
                         stroke: "#ffffff",
                         strokeWidth: 0.5 / position.zoom,
                         outline: "none",
@@ -178,8 +182,8 @@ export default function WorldMap() {
           className="fixed z-50 rounded-lg bg-gray-900 text-white text-xs font-medium px-2.5 py-1.5 pointer-events-none shadow-lg"
           style={{ left: hovered.x + 12, top: hovered.y + 12 }}
         >
-          {countries.getName(hovered.code, "en") || hovered.code} — {regionCounts[hovered.code]} feature
-          {regionCounts[hovered.code] === 1 ? "" : "s"}
+          {countries.getName(hovered.code, "en") || hovered.code} — {regionCounts[hovered.code]?.feature_count || 0} feature{regionCounts[hovered.code]?.feature_count === 1 ? "" : "s"}
+          {regionCounts[hovered.code]?.trend_count ? ` · ${regionCounts[hovered.code].trend_count} trend${regionCounts[hovered.code].trend_count === 1 ? "" : "s"}` : ""}
         </div>
       )}
 

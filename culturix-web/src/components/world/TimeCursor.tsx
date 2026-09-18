@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Clock, Landmark } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, Clock3, Landmark, Pause, Play, Sparkles } from "lucide-react";
 import type { WorldFeature, WorldTrend, WorldTrendsCoverage } from "@/lib/worldTypes";
 import TrendFeed from "@/components/world/TrendFeed";
 import FeatureCard from "@/components/world/FeatureCard";
@@ -23,6 +23,21 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 
+function formatYear(year: number): string {
+  return year < 0 ? `${Math.abs(year)} BCE` : `${year} CE`;
+}
+
+function chooseYearStep(span: number): number {
+  if (span >= 1000) return 100;
+  if (span >= 100) return 10;
+  return 1;
+}
+
+function tickValues(min: number, max: number, count = 5): number[] {
+  if (min === max) return [min];
+  return Array.from({ length: count }, (_, index) => Math.round(min + ((max - min) * index) / (count - 1)));
+}
+
 interface Props {
   region: string;
   regionLabel: string;
@@ -42,8 +57,32 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
   const [dayOffset, setDayOffset] = useState(totalDays); // starts at "latest" (today)
   const [trends, setTrends] = useState<WorldTrend[]>(initialTrends);
   const [loadingTrends, setLoadingTrends] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [eraFeatures, setEraFeatures] = useState<WorldFeature[] | null>(null);
   const [loadingEra, setLoadingEra] = useState(false);
+  const eraBounds = useMemo(() => {
+    const years = (eraFeatures || []).map((feature) => feature.era_year).filter((year): year is number => year !== null);
+    if (years.length === 0) return null;
+    return { min: Math.min(...years), max: Math.max(...years) };
+  }, [eraFeatures]);
+  const eraStep = eraBounds ? chooseYearStep(eraBounds.max - eraBounds.min) : 1;
+  const [eraYear, setEraYear] = useState(0);
+
+  useEffect(() => {
+    if (!isPlaying || !hasScrubbableCoverage) return;
+    const timer = window.setInterval(() => {
+      setDayOffset((current) => {
+        const next = current >= totalDays ? 0 : current + 1;
+        fetchTrendsAsOf(next);
+        return next;
+      });
+    }, 1800);
+    return () => window.clearInterval(timer);
+  }, [isPlaying, hasScrubbableCoverage, totalDays]);
+
+  useEffect(() => {
+    if (eraBounds && eraYear === 0) setEraYear(eraBounds.max);
+  }, [eraBounds, eraYear]);
 
   const selectedDate = useMemo(() => {
     if (!coverage.earliest) return null;
@@ -76,65 +115,76 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
     }
   }
 
+  function selectRecent() {
+    setMode("recent");
+    setIsPlaying(false);
+  }
+
   function selectHistorical() {
     setMode("historical");
+    setIsPlaying(false);
     if (eraFeatures === null) loadEraFeatures();
   }
 
+  function selectEraYear(year: number) {
+    setEraYear(year);
+  }
+
+  const recentTicks = hasScrubbableCoverage && coverage.earliest && coverage.latest
+    ? tickValues(0, totalDays).map((offset) => ({ offset, label: formatDate(new Date(new Date(coverage.earliest!).getTime() + offset * MS_PER_DAY).toISOString()) }))
+    : [];
+  const eraTicks = eraBounds ? tickValues(eraBounds.min, eraBounds.max) : [];
+  const visibleEraFeatures = eraFeatures?.filter((feature) => {
+    if (feature.era_year === null || !eraBounds) return false;
+    const tolerance = Math.max(eraStep / 2, 1);
+    return Math.abs(feature.era_year - eraYear) <= tolerance;
+  }) || [];
+
   return (
     <div>
-      <div className="rounded-2xl border border-gray-100 p-4 sm:p-5 mb-6">
-        <div className="flex items-center gap-2 mb-3">
-          <Clock className="h-4 w-4 text-purple-500 shrink-0" />
-          {mode === "recent" && hasScrubbableCoverage && selectedDate ? (
-            <span className="text-sm font-medium text-gray-700">{formatDate(selectedDate.toISOString())}</span>
-          ) : mode === "recent" ? (
-            <span className="text-sm font-medium text-gray-400">
-              {coverage.days_with_data === 0 ? "No trend history yet for this region" : "Coverage just started — not enough days for a timeline yet"}
-            </span>
-          ) : (
-            <span className="text-sm font-medium text-gray-700">Historical eras</span>
-          )}
+      <div className="rounded-3xl border border-purple-100 bg-gradient-to-br from-white via-purple-50/40 to-fuchsia-50/70 p-4 sm:p-6 mb-6 shadow-sm shadow-purple-100/60">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.18em] text-purple-500">
+              <Sparkles className="h-3.5 w-3.5" /> Explore time
+            </div>
+            <div className="mt-1 flex items-center gap-2">
+              <span className="text-2xl font-semibold tracking-tight text-gray-900">
+                {mode === "recent" && hasScrubbableCoverage && selectedDate ? formatDate(selectedDate.toISOString()) : mode === "historical" && eraBounds ? formatYear(eraYear) : "No trend history yet"}
+              </span>
+              {mode === "recent" && hasScrubbableCoverage && (
+                <button type="button" aria-label={isPlaying ? "Pause timeline" : "Play timeline"} onClick={() => setIsPlaying((playing) => !playing)} className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-purple-600 text-white shadow-sm transition hover:scale-105 hover:bg-purple-700">
+                  {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="ml-0.5 h-3.5 w-3.5" />}
+                </button>
+              )}
+            </div>
+            <p className="mt-1 text-xs text-gray-500">
+              {mode === "recent" ? (hasScrubbableCoverage ? `${coverage.days_with_data} collection days of real trend history` : coverage.days_with_data === 0 ? "No trend history yet for this region" : "Coverage has just started") : eraBounds ? `Browse a ${eraStep >= 100 ? "century" : eraStep >= 10 ? "decade" : "year"} at a time` : "Historical content will appear here as it is curated"}
+            </p>
+          </div>
+
+          <div className="inline-flex w-fit rounded-full border border-purple-200 bg-white/80 p-1 text-xs font-semibold shadow-sm">
+            <button type="button" onClick={selectRecent} className={`rounded-full px-3 py-1.5 transition ${mode === "recent" ? "bg-purple-600 text-white shadow-sm" : "text-gray-500 hover:text-purple-700"}`}><Clock3 className="mr-1.5 inline h-3.5 w-3.5" />Recent</button>
+            <button type="button" onClick={selectHistorical} className={`rounded-full px-3 py-1.5 transition ${mode === "historical" ? "bg-purple-600 text-white shadow-sm" : "text-gray-500 hover:text-purple-700"}`}><Landmark className="mr-1.5 inline h-3.5 w-3.5" />Historical</button>
+          </div>
         </div>
 
-        {hasScrubbableCoverage && (
-          <input
-            type="range"
-            min={0}
-            max={totalDays}
-            step={1}
-            value={mode === "recent" ? dayOffset : totalDays}
-            onChange={(e) => {
-              const next = Number(e.target.value);
-              setMode("recent");
-              setDayOffset(next);
-              fetchTrendsAsOf(next);
-            }}
-            className="w-full accent-purple-600"
-          />
+        {mode === "recent" && hasScrubbableCoverage && (
+          <div className="mt-6">
+            <input type="range" min={0} max={totalDays} step={1} value={dayOffset} onChange={(e) => { const next = Number(e.target.value); setDayOffset(next); fetchTrendsAsOf(next); }} className="h-2 w-full cursor-pointer appearance-none rounded-full bg-purple-200 accent-purple-600" aria-label="Browse recent trend history" />
+            <div className="mt-2 flex justify-between gap-2 text-[10px] font-medium text-purple-400">
+              {recentTicks.map((tick) => <span key={tick.offset} className="text-center">{tick.label}</span>)}
+            </div>
+            <div className="mt-3 flex items-center justify-between text-[11px] text-gray-400"><button type="button" onClick={() => { setDayOffset(Math.max(0, dayOffset - 1)); fetchTrendsAsOf(Math.max(0, dayOffset - 1)); }} className="inline-flex items-center gap-1 hover:text-purple-600"><ChevronLeft className="h-3.5 w-3.5" />Earlier</button><span>Today</span><button type="button" onClick={() => { setDayOffset(Math.min(totalDays, dayOffset + 1)); fetchTrendsAsOf(Math.min(totalDays, dayOffset + 1)); }} className="inline-flex items-center gap-1 hover:text-purple-600">Later<ChevronRight className="h-3.5 w-3.5" /></button></div>
+          </div>
         )}
 
-        <div className="flex items-center justify-between mt-2 text-[11px] text-gray-400">
-          {hasScrubbableCoverage ? (
-            <>
-              <span>{formatDate(coverage.earliest!)}</span>
-              <span>Today</span>
-            </>
-          ) : (
-            <span />
-          )}
-          <button
-            type="button"
-            onClick={selectHistorical}
-            className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
-              mode === "historical"
-                ? "bg-purple-600 border-purple-600 text-white"
-                : "border-gray-200 text-gray-500 hover:border-purple-300 hover:text-purple-600"
-            }`}
-          >
-            <Landmark className="h-3 w-3" /> Historical eras
-          </button>
-        </div>
+        {mode === "historical" && eraBounds && (
+          <div className="mt-6">
+            <input type="range" min={eraBounds.min} max={eraBounds.max} step={eraStep} value={Math.min(eraBounds.max, Math.max(eraBounds.min, eraYear))} onChange={(e) => selectEraYear(Number(e.target.value))} className="h-2 w-full cursor-pointer appearance-none rounded-full bg-fuchsia-200 accent-fuchsia-600" aria-label="Browse historical eras" />
+            <div className="mt-2 flex justify-between gap-2 text-[10px] font-medium text-fuchsia-500">{eraTicks.map((tick) => <span key={tick} className="text-center">{formatYear(tick)}</span>)}</div>
+          </div>
+        )}
       </div>
 
       {mode === "recent" ? (
@@ -150,9 +200,9 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
         )
       ) : loadingEra ? (
         <p className="text-sm text-gray-400 py-6">Loading…</p>
-      ) : eraFeatures && eraFeatures.length > 0 ? (
+      ) : eraFeatures && visibleEraFeatures.length > 0 ? (
         <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5">
-          {eraFeatures.map((f) => (
+          {visibleEraFeatures.map((f) => (
             <FeatureCard key={f.id} feature={f} />
           ))}
         </section>

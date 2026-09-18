@@ -93,6 +93,17 @@ class TestListWorldRegions:
         regions = {r["region"]: r["count"] for r in result["regions"]}
         assert regions == {"IR": 2}
 
+    def test_includes_regions_with_trends_even_without_a_feature(self, db):
+        _make_trend(db, region="JP", title="Japan trend")
+
+        result = world.list_world_regions()
+
+        japan = next(region for region in result["regions"] if region["region"] == "JP")
+        assert japan["count"] == 0
+        assert japan["feature_count"] == 0
+        assert japan["trend_count"] == 1
+        assert japan["trend_days"] == 1
+
 
 class TestGetWorldFeature:
     def test_returns_feature_with_hook_line(self, db):

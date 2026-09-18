@@ -79,18 +79,21 @@ def list_world_features(region: Optional[str] = None, category: Optional[str] = 
 
 @router.get("/regions")
 def list_world_regions():
-    """Distinct regions that actually have ready World content, with a
-    count each — separate from the full target-region catalog served by
-    GET /regions (that one lists every region the product can be
-    configured for, regardless of whether any content exists there yet;
-    the map needs "has content", not the full catalog)."""
+    """Regions with either published Features or real trend history.
+
+    The map uses this combined surface so a country can be explored before
+    its first video is published. ``count`` remains the published Feature
+    count for backwards compatibility; the explicit trend fields describe
+    the separate data layer shown on a region page.
+    """
     from app.db import SessionLocal
+    from app.models.trend import Trend
     from app.models.toon import Toon
     from sqlalchemy import func
 
     session = SessionLocal()
     try:
-        rows = (
+        feature_rows = (
             session.query(Toon.subject_region, func.count(Toon.id))
             .filter(
                 Toon.is_world_content.is_(True),
@@ -101,7 +104,20 @@ def list_world_regions():
             .group_by(Toon.subject_region)
             .all()
         )
-        return {"regions": [{"region": r, "count": c} for r, c in rows]}
+        trend_rows = (
+            session.query(Trend.region, func.count(Trend.id), func.count(func.distinct(func.date(Trend.collected_at))))
+            .filter(Trend.region.isnot(None))
+            .group_by(Trend.region)
+            .all()
+        )
+        regions = {}
+        for region, count in feature_rows:
+            regions[region] = {"region": region, "count": count, "feature_count": count, "trend_count": 0, "trend_days": 0}
+        for region, count, days in trend_rows:
+            regions.setdefault(region, {"region": region, "count": 0, "feature_count": 0, "trend_count": 0, "trend_days": 0})
+            regions[region]["trend_count"] = count
+            regions[region]["trend_days"] = days
+        return {"regions": sorted(regions.values(), key=lambda item: item["region"])}
     finally:
         session.close()
 
