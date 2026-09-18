@@ -73,7 +73,7 @@ export default function CultureToonApp({ initialBrands, showWorldLibrary = false
         {showWorldLibrary && brands.length === 0 && !showNewBrandForm && (
           <Link href="/admin/curated-items" className="mb-5 block rounded-2xl border border-purple-100 bg-purple-50/50 p-5 hover:border-purple-300 transition-colors">
             <span className="text-sm font-semibold text-purple-700">World source library</span>
-            <span className="mt-1 block text-xs text-purple-600/80">Review real Wikipedia and UNESCO subjects for World Feature creation.</span>
+            <span className="mt-1 block text-xs text-purple-600/80">Choose the subject first; add an optional toon host afterward.</span>
           </Link>
         )}
         {brands.length > 0 && (
