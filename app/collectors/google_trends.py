@@ -49,7 +49,7 @@ _REGION_TO_LANGUAGE = {
     "TR": "tr", "SA": "ar", "AE": "ar", "EG": "ar", "IL": "he",
     "ID": "id", "TH": "th", "VN": "vi", "MY": "ms",
     "MX": "es", "AR": "es", "CO": "es", "CL": "es", "ES": "es",
-    "PL": "pl", "UA": "uk", "PK": "ur", "JP": "ja", "KR": "ko", "BR": "pt",
+    "PL": "pl", "UA": "uk", "PK": "ur", "JP": "ja", "KR": "ko", "BR": "pt", "IR": "fa",
 }
 
 

@@ -15,7 +15,10 @@ TIKTOK_TRENDING_URL = "https://www.tikwm.com/api/feed/list/"
 # China (Douyin is the separate domestic app/API), not a proxy gap. This
 # unofficial proxy's coverage could still drift in the future; re-verify
 # with a live spot-check before trusting a further expansion blindly.
-TIKTOK_REGIONS = [r for r in SHARED_TARGET_REGIONS if r != "CN"]
+# IR excluded alongside CN 2026-09-18 — live-verified consistently empty
+# (2/2 attempts) via the same tikwm.com proxy; TikTok isn't officially
+# available in Iran either.
+TIKTOK_REGIONS = [r for r in SHARED_TARGET_REGIONS if r not in ("CN", "IR")]
 
 
 def _cache_cover_image(item: dict, external_id: str) -> str | None:

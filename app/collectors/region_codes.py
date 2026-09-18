@@ -46,8 +46,13 @@ _ALIASES = {
 SHARED_TARGET_REGIONS = [
     # Existing 13 (already covered before this list existed)
     "US", "GB", "FR", "DE", "IT", "ES", "PT", "CA", "AU", "JP", "KR", "IN", "BR",
-    # Middle East
-    "TR", "SA", "AE", "IL",
+    # Middle East — IR added 2026-09-18, a real gap: the first-ever World
+    # Feature (the Strait of Hormuz) is about Iran, and Iran was missing
+    # from this list entirely, leaving that flagship content with zero real
+    # trend grounding behind it. Live-verified across YouTube/Google
+    # Trends/TikTok/the Twitter proxy before trusting it (see this list's
+    # own "not every platform supports every one of these" note above).
+    "TR", "SA", "AE", "IL", "IR",
     # Africa
     "NG", "ZA", "EG", "KE",
     # Southeast Asia

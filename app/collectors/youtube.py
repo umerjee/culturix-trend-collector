@@ -78,7 +78,10 @@ def fetch_youtube_trending(region="US", limit=30):
 # (see that plan). IT/ES/PT were already added alongside FR/DE/GB so
 # persona_mapper.py's "EU" target-region mapping had real collectors
 # actually tagging those countries — see that file's _REGION_LABEL_TO_CODES.
-YOUTUBE_REGIONS = list(SHARED_TARGET_REGIONS)
+# IR excluded 2026-09-18 — live-verified as a hard API-level rejection
+# ("invalidRegionCode", not a transient failure): YouTube's official
+# regionCode param doesn't recognize IR as valid at all.
+YOUTUBE_REGIONS = [r for r in SHARED_TARGET_REGIONS if r != "IR"]
 
 
 def store_youtube_trends(region="US", limit=50):
