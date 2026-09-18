@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Check, Clock3, Database, Download, X } from "lucide-react";
 import { fetchAdminData } from "@/lib/admin/fetchAdmin";
 
@@ -77,6 +78,7 @@ export default function CuratedItemsPage() {
   return <div className="max-w-6xl">
     <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
       <div><div className="flex items-center gap-2 text-primary-600 text-xs font-bold uppercase tracking-wider"><Database className="h-4 w-4" /> World subjects</div><h1 className="mt-2 text-2xl font-bold text-gray-900">Subject library</h1><p className="mt-1 text-sm text-gray-500">Select the real event, place, or idea first. A toon host is an optional treatment added after the subject is chosen.</p></div>
+      <Link href="/world" target="_blank" className="rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-sm font-semibold text-primary-700 hover:bg-primary-100">View World Content</Link>
       <div className="flex flex-wrap items-center justify-end gap-2">
         <input value={region} onChange={(e) => setRegion(e.target.value.toUpperCase())} maxLength={2} className="w-16 rounded-lg border border-gray-200 px-3 py-2 text-sm uppercase" aria-label="ISO region for fetching" title="ISO country code used for new fetches" />
         <input value={unescoLimit} onChange={(e) => setUnescoLimit(e.target.value)} type="number" min="1" max="10" className="w-20 rounded-lg border border-gray-200 px-3 py-2 text-sm" aria-label="UNESCO site count" title="UNESCO sites to fetch" />
