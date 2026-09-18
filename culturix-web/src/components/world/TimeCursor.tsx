@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Clock3, ExternalLink, Landmark, Pause, Play, Sparkles } from "lucide-react";
-import type { WorldFeature, WorldTrend, WorldTrendDigestGroup, WorldTrendsCoverage } from "@/lib/worldTypes";
+import type { WorldDigestLanguage, WorldFeature, WorldTrend, WorldTrendDigestGroup, WorldTrendsCoverage } from "@/lib/worldTypes";
 import TrendFeed from "@/components/world/TrendFeed";
 import FeatureCard from "@/components/world/FeatureCard";
 
@@ -58,6 +58,7 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
   const [dayOffset, setDayOffset] = useState(totalDays); // starts at "latest" (today)
   const [trends, setTrends] = useState<WorldTrend[]>(initialTrends);
   const [digest, setDigest] = useState<WorldTrendDigestGroup[]>(initialDigest);
+  const [digestLanguage, setDigestLanguage] = useState<WorldDigestLanguage>("en");
   const [loadingTrends, setLoadingTrends] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [eraFeatures, setEraFeatures] = useState<WorldFeature[] | null>(null);
@@ -91,7 +92,16 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
     return new Date(new Date(coverage.earliest).getTime() + dayOffset * MS_PER_DAY);
   }, [coverage.earliest, dayOffset]);
 
-  async function fetchTrendsAsOf(offset: number) {
+  async function fetchDigest(language: WorldDigestLanguage, params: URLSearchParams) {
+    const digestParams = new URLSearchParams(params);
+    digestParams.set("lang", language);
+    digestParams.set("limit", "8");
+    const digestRes = await fetch(`/api/world/trends/digest?${digestParams.toString()}`);
+    const digestData = await digestRes.json().catch(() => ({}));
+    setDigest(Array.isArray(digestData.groups) ? digestData.groups : []);
+  }
+
+  async function fetchTrendsAsOf(offset: number, language = digestLanguage) {
     if (!coverage.earliest) return;
     setLoadingTrends(true);
     try {
@@ -100,12 +110,17 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
       const res = await fetch(`/api/world/trends?${params.toString()}`);
       const data = await res.json().catch(() => ({}));
       setTrends(Array.isArray(data.trends) ? data.trends : []);
-      const digestRes = await fetch(`/api/world/trends/digest?${params.toString()}&limit=8`);
-      const digestData = await digestRes.json().catch(() => ({}));
-      setDigest(Array.isArray(digestData.groups) ? digestData.groups : []);
+      await fetchDigest(language, params);
     } finally {
       setLoadingTrends(false);
     }
+  }
+
+  function changeDigestLanguage(language: WorldDigestLanguage) {
+    setDigestLanguage(language);
+    const params = new URLSearchParams({ region, limit: "20" });
+    if (coverage.earliest && selectedDate) params.set("date_to", new Date(selectedDate.getTime() + MS_PER_DAY).toISOString());
+    fetchDigest(language, params);
   }
 
   async function loadEraFeatures() {
@@ -202,7 +217,15 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
                 <h2 className="text-lg font-semibold text-gray-900">What is moving in {regionLabel}</h2>
                 <p className="mt-1 text-sm text-gray-500">Themes first, with the original signals underneath for context.</p>
               </div>
-              <span className="hidden text-xs text-gray-400 sm:block">{digest.length} themes</span>
+              <div className="flex items-center gap-3">
+                <label className="sr-only" htmlFor="digest-language">Digest language</label>
+                <select id="digest-language" value={digestLanguage} onChange={(event) => changeDigestLanguage(event.target.value as WorldDigestLanguage)} className="rounded-full border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 outline-none focus:border-purple-400">
+                  <option value="en">English</option>
+                  <option value="fr">Français</option>
+                  <option value="es">Español</option>
+                </select>
+                <span className="hidden text-xs text-gray-400 sm:block">{digest.length} themes</span>
+              </div>
             </div>
             <div className="grid gap-4 lg:grid-cols-2">
               {digest.map((group) => (

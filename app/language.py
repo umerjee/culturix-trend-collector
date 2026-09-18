@@ -40,3 +40,17 @@ def translate_to_english_if_needed(text: str, source_lang: str) -> str:
     if source_lang in KEEP_LANGS:
         return text
     return translate_to_english(text)
+
+
+def translate_text(text: str, target_lang: str = "en") -> str:
+    """Translate short UI-facing source text, returning the original on failure."""
+    if not text or target_lang not in {"en", "fr", "es"}:
+        return text
+    if target_lang == "en":
+        return translate_to_english(text)
+    if not _translation_available:
+        return text
+    try:
+        return GoogleTranslator(source="auto", target=target_lang).translate(text)
+    except Exception:
+        return text

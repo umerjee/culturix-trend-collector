@@ -199,7 +199,8 @@ def _add_source_digest_group(grouped: dict, trend) -> None:
 
 @router.get("/trends/digest")
 def list_world_trend_digest(region: str, date_from: Optional[str] = None,
-                            date_to: Optional[str] = None, limit: int = 8):
+                            date_to: Optional[str] = None, limit: int = 8,
+                            lang: str = "en"):
     """Human-readable trend groups for a region.
 
     Persisted Cluster summaries are the interpretation layer when available.
@@ -209,8 +210,10 @@ def list_world_trend_digest(region: str, date_from: Optional[str] = None,
     from app.db import SessionLocal
     from app.models.cluster import Cluster
     from app.models.trend import Trend
+    from app.language import translate_text
 
     limit = max(1, min(limit, 20))
+    lang = lang if lang in {"en", "fr", "es"} else "en"
     parsed_from, parsed_to = _parse_date(date_from), _parse_date(date_to)
     session = SessionLocal()
     try:
@@ -242,6 +245,12 @@ def list_world_trend_digest(region: str, date_from: Optional[str] = None,
 
         result = sorted(grouped.values(), key=lambda group: (-group["signal_count"], group["title"]))[:limit]
         for group in result:
+            group["title"] = translate_text(group["title"], lang)
+            group["summary"] = translate_text(
+                "Auto-grouped from similar signals." if group["kind"] == "source" else group["summary"], lang
+            )
+            for signal in group["signals"]:
+                signal["title"] = translate_text(signal["title"] or "Untitled signal", lang)
             group["platforms"] = sorted(group["platforms"])
             group.pop("topic_tokens", None)
         return {"groups": result, "total_groups": len(grouped)}

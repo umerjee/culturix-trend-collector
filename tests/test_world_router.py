@@ -209,7 +209,15 @@ class TestListWorldTrends:
         assert groups["cluster"]["title"] == "Football transfer news"
         assert groups["cluster"]["summary"] == "Coverage of a major player move."
         assert groups["source"]["title"].startswith("Tiktok:")
-        assert "Automatic grouping" in groups["source"]["summary"]
+        assert groups["source"]["summary"] == "Auto-grouped from similar signals."
+
+    def test_digest_accepts_supported_language(self, db, mocker):
+        _make_trend(db, region="FR", title="football mondial", content="football mondial", likes=10)
+        mocker.patch("app.language.translate_text", side_effect=lambda text, lang: f"{text} [{lang}]")
+
+        result = world.list_world_trend_digest(region="fr", lang="fr")
+
+        assert result["groups"][0]["summary"] == "Auto-grouped from similar signals. [fr]"
 
 
 class TestWorldTrendsCoverage:

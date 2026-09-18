@@ -47,6 +47,8 @@ export interface WorldTrendDigestGroup {
   signals: Pick<WorldTrend, "id" | "platform" | "title" | "likes" | "url" | "collected_at">[];
 }
 
+export type WorldDigestLanguage = "en" | "fr" | "es";
+
 // One merged filter vocabulary covering both WHAT a Feature is about
 // (place/phenomenon/species/tech) and WHO it's most likely to resonate with
 // (genz, more audience tags to follow) — a single flat list of filter chips
