@@ -1,13 +1,7 @@
 import os, sys, datetime
 
-os.environ['DATABASE_URL'] = 'postgresql://postgres:gRFwohDiatCvgUOhdGmjrhaFXIFQjAYE@zephyr.proxy.rlwy.net:56811/railway'
-os.environ['VOYAGE_API_KEY'] = 'pa-ij3BM22kEQub9sg6gpGezoOzsPW7vjHd0SkoMPwwRM4'
-os.environ['TWITTER_BEARER_TOKEN'] = 'AAAAAAAAAAAAAAAAAAAAAHOa9wEAAAAAH2wDtp3wfazvSwm5%2BXFHhsudbKI%3DoqEcgzhgwBgc3vsIyFBfMDCj73aCLxKTzpr9euzaaVBRHwNMJP'
-os.environ['YOUTUBE_API_KEY'] = 'AIzaSyDMpzuh8_qu0A3QWMTeky8ehQ2_mJLUjzk'
-os.environ['ANTHROPIC_API_KEY'] = os.getenv('ANTHROPIC_API_KEY', '')
-os.environ['DEEPSEEK_API_KEY'] = 'sk-abc2c9e628b742579926863d6dcb92da'
-os.environ['QDRANT_URL'] = 'https://d897d30c-8b42-4cf6-9c44-74031d8408cf.eu-central-1-0.aws.cloud.qdrant.io'
-os.environ['QDRANT_API_KEY'] = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIiwic3ViamVjdCI6ImFwaS1rZXk6YjFjMTU1YjQtMTZmZi00MmE3LTk1NWUtOGI3ZjZiZDQ1OTdhIn0.IzLX0-qbgAzJiLJSpyR5jPDXfSSqXuMUqY3Zx0C9PUU'
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 import httpx
 from app.db import SessionLocal
