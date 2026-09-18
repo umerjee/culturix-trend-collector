@@ -81,6 +81,27 @@ def run_calendar_sync():
         logger.error("Calendar sync failed: %s", e)
 
 
+def run_region_summaries():
+    """Refreshes today's short daily brief per country (calendar + what people
+    engaged with) — app/services/region_daily_summary.py. Runs twice a day,
+    after the 07:00 and 19:00 collections, so the brief reflects the latest
+    data; each run overwrites today's row. Past days are left as history."""
+    logger.info("Region daily summaries starting...")
+    try:
+        from datetime import datetime
+        from app.db import SessionLocal
+        from app.services.region_daily_summary import generate_all_summaries
+
+        session = SessionLocal()
+        try:
+            counts = generate_all_summaries(session, datetime.utcnow().date(), force=True)
+            logger.info("Region daily summaries done: %s", counts)
+        finally:
+            session.close()
+    except Exception as e:
+        logger.error("Region daily summaries failed: %s", e)
+
+
 # On-demand RunPod Pods (as opposed to the production Serverless
 # endpoint, which isn't a "Pod" at all) only ever exist for known,
 # short-lived purposes now: CPU carrier pods reaching a Network Volume
@@ -650,6 +671,8 @@ def start():
     scheduler.add_job(run_daily_pipeline, CronTrigger(hour=7, minute=0), id="daily_pipeline")
     # Content Check — audit prior content for staleness once per day at 09:00 UTC
     scheduler.add_job(run_content_check, CronTrigger(hour=9, minute=0), id="content_check")
+    # Country daily briefs — after the 07:00 and 19:00 collections finish
+    scheduler.add_job(run_region_summaries, CronTrigger(hour="8,20", minute=15), id="region_summaries")
     # Post metrics refresh — re-fetch engagement for tracked/published posts, 10:00 UTC
     scheduler.add_job(run_post_metrics_refresh, CronTrigger(hour=10, minute=0), id="post_metrics_refresh")
     # Stage-and-notify (default) or auto-publish (dormant, ENABLE_DIRECT_PUBLISH=true

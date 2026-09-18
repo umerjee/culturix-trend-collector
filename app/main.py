@@ -54,6 +54,7 @@ async def lifespan(_):
     from app.models.calendar_event import CalendarEvent                # noqa: F401
     from app.models.runpod_orphan_kill import RunpodOrphanKill          # noqa: F401
     from app.models.curated_item import CuratedItem                    # noqa: F401
+    from app.models.region_daily_summary import RegionDailySummary      # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).

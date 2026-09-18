@@ -51,6 +51,25 @@ export interface WorldTrendDigestGroup {
 
 export type WorldDigestLanguage = "en" | "fr" | "es";
 
+// Mirrors app/routers/world.py's get_region_summary — a short cached daily
+// brief for a country. `summary` is null when a region has no brief that day
+// (a normal state, not an error).
+export interface WorldRegionSummary {
+  region: string;
+  region_name: string;
+  date: string | null;
+  summary: string | null;
+  source: "ai" | "template" | "calendar" | null;
+  calendar: { name: string; category: string; date: string; when: string; confirmed: boolean }[];
+  signal_count: number;
+  platforms: string[];
+  mood: string | null;
+  sentiment: number | null;
+  alignment: "aligned" | "diverged" | "unknown" | null;
+  vs_usual: "busier" | "quieter" | "normal" | null;
+  generated_at: string | null;
+}
+
 // One merged filter vocabulary covering both WHAT a Feature is about
 // (place/phenomenon/species/tech) and WHO it's most likely to resonate with
 // (genz, more audience tags to follow) — a single flat list of filter chips

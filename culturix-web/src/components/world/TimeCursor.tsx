@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Clock3, ExternalLink, Landmark, Pause, Play, Sparkles } from "lucide-react";
-import type { WorldDigestLanguage, WorldFeature, WorldTrend, WorldTrendDigestGroup, WorldTrendsCoverage } from "@/lib/worldTypes";
+import type { WorldDigestLanguage, WorldFeature, WorldRegionSummary, WorldTrend, WorldTrendDigestGroup, WorldTrendsCoverage } from "@/lib/worldTypes";
 import TrendFeed from "@/components/world/TrendFeed";
 import FeatureCard from "@/components/world/FeatureCard";
+import DailyBrief from "@/components/world/DailyBrief";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 // Real per-region trend coverage in this app only goes back to when that
@@ -44,9 +45,10 @@ interface Props {
   coverage: WorldTrendsCoverage;
   initialTrends: WorldTrend[];
   initialDigest: WorldTrendDigestGroup[];
+  initialBrief?: WorldRegionSummary | null;
 }
 
-export default function TimeCursor({ region, regionLabel, coverage, initialTrends, initialDigest }: Props) {
+export default function TimeCursor({ region, regionLabel, coverage, initialTrends, initialDigest, initialBrief = null }: Props) {
   const [mode, setMode] = useState<"recent" | "historical">("recent");
   const hasScrubbableCoverage = coverage.days_with_data >= MIN_DAYS_FOR_SCRUBBER && coverage.earliest && coverage.latest;
 
@@ -91,6 +93,9 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
     if (!coverage.earliest) return null;
     return new Date(new Date(coverage.earliest).getTime() + dayOffset * MS_PER_DAY);
   }, [coverage.earliest, dayOffset]);
+
+  // null = the latest brief; otherwise the scrubbed day's (UTC) date.
+  const briefDate = selectedDate && dayOffset < totalDays ? selectedDate.toISOString().slice(0, 10) : null;
 
   async function fetchDigest(language: WorldDigestLanguage, params: URLSearchParams) {
     const digestParams = new URLSearchParams(params);
@@ -206,6 +211,8 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
           </div>
         )}
       </div>
+
+      {mode === "recent" && <DailyBrief region={region} regionLabel={regionLabel} date={briefDate} language={digestLanguage} initial={initialBrief} />}
 
       {mode === "recent" ? (
         loadingTrends ? (
