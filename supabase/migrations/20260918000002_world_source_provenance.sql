@@ -1,5 +1,7 @@
--- Provenance for World Features: which curated source item produced a Toon,
--- and the public URL of that source (for attribution).
+-- Public source URL for a curated item (Wikipedia article / UNESCO list entry),
+-- shown as attribution on World Features produced from it.
+--
+-- Only curated_items lives in this database. toons.curated_item_id is part of
+-- the app's own schema, added by the idempotent ALTER list in app/main.py's
+-- lifespan() — this database has no `toons` table (see README.md here).
 ALTER TABLE curated_items ADD COLUMN IF NOT EXISTS source_url TEXT;
-ALTER TABLE toons ADD COLUMN IF NOT EXISTS curated_item_id UUID;
-CREATE INDEX IF NOT EXISTS ix_toons_curated_item_id ON toons (curated_item_id);
