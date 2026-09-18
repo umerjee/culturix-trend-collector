@@ -45,5 +45,19 @@ class Character(Base):
     # not by a DB constraint (this codebase has no migration framework for
     # cross-row constraints — see app/main.py's lifespan()).
     is_main = Column(Boolean, nullable=False, default=False)
+    # Added 2026-09-18 for region-first World Feature generation — a
+    # character's suitability as an OPTIONAL thematic host, independent of
+    # which brand owns them: "comedy" (general joke-cracking host, any
+    # subject) or a specialized explainer domain ("culture"/"tech"/"place"/
+    # "phenomenon"/"species"). NULL means "not tagged, not eligible as an
+    # auto-selected World host" — this does not affect the character's
+    # normal brand-scoped usage at all. Deliberately narrower than
+    # ToonScript.subject_category's vocabulary (no "genz"/"custom" here —
+    # those describe content audience/catch-all, not a character's own
+    # specialization); see select_thematic_host's category-to-role fallback
+    # in app/services/culturetoon_script.py. A different axis from is_main
+    # above (per-brand cast anchor) — a character can be is_main for their
+    # own brand AND separately eligible as a cross-brand World host.
+    thematic_role = Column(String(20), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

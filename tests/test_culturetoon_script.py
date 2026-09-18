@@ -1090,6 +1090,92 @@ class TestSuggestWorldSubjectsFromTrends:
         assert result == []
 
 
+class TestSelectThematicHost:
+    """select_thematic_host — auto-selects a cross-brand CharacterVariant to
+    host a World Feature, for callers that didn't pass an explicit
+    --host-variant-id. Region-first World Features are the whole point of
+    this mechanism (see Character.thematic_role's docstring)."""
+
+    @pytest.fixture
+    def db(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.db import Base
+        from app.models.character import Character
+        from app.models.character_variant import CharacterVariant
+
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine, tables=[Character.__table__, CharacterVariant.__table__])
+        return sessionmaker(bind=engine)()
+
+    def _make_character(self, db, *, name, thematic_role, brand_id=None, is_active=True):
+        import uuid
+        from app.models.character import Character
+        from app.models.character_variant import CharacterVariant
+
+        char = Character(brand_id=brand_id or uuid.uuid4(), name=name, thematic_role=thematic_role, is_active=is_active)
+        db.add(char)
+        db.commit()
+        db.refresh(char)
+        variant = CharacterVariant(character_id=char.id, name=name)
+        db.add(variant)
+        db.commit()
+        db.refresh(variant)
+        return char, variant
+
+    def test_funny_tone_selects_a_comedy_host(self, db):
+        from app.services.culturetoon_script import select_thematic_host
+        _char, variant = self._make_character(db, name="Kumar", thematic_role="comedy")
+
+        result = select_thematic_host(db, "place", "funny")
+        assert result.id == variant.id
+
+    def test_informative_tone_selects_the_matching_explainer_role(self, db):
+        from app.services.culturetoon_script import select_thematic_host
+        self._make_character(db, name="ComedyHost", thematic_role="comedy")
+        _char, tech_variant = self._make_character(db, name="TechHost", thematic_role="tech")
+
+        result = select_thematic_host(db, "tech", "informative")
+        assert result.id == tech_variant.id
+
+    def test_genz_category_falls_back_to_comedy(self, db):
+        from app.services.culturetoon_script import select_thematic_host
+        _char, comedy_variant = self._make_character(db, name="Kumar", thematic_role="comedy")
+
+        result = select_thematic_host(db, "genz", "informative")
+        assert result.id == comedy_variant.id
+
+    def test_custom_category_falls_back_to_comedy(self, db):
+        from app.services.culturetoon_script import select_thematic_host
+        _char, comedy_variant = self._make_character(db, name="Kumar", thematic_role="comedy")
+
+        result = select_thematic_host(db, "custom", "informative")
+        assert result.id == comedy_variant.id
+
+    def test_pool_is_cross_brand_not_scoped_to_one_brand(self, db):
+        import uuid
+        from app.services.culturetoon_script import select_thematic_host
+        other_brand_id = uuid.uuid4()
+        _char, variant = self._make_character(db, name="Kumar", thematic_role="comedy", brand_id=other_brand_id)
+
+        result = select_thematic_host(db, "place", "funny")
+        assert result.id == variant.id  # found despite belonging to an unrelated brand
+
+    def test_inactive_character_is_never_selected(self, db):
+        from app.services.culturetoon_script import select_thematic_host
+        self._make_character(db, name="RetiredHost", thematic_role="comedy", is_active=False)
+
+        result = select_thematic_host(db, "place", "funny")
+        assert result is None
+
+    def test_no_matching_role_returns_none(self, db):
+        from app.services.culturetoon_script import select_thematic_host
+        self._make_character(db, name="TechHost", thematic_role="tech")
+
+        result = select_thematic_host(db, "place", "informative")
+        assert result is None
+
+
 class TestNarrationOverPerformance:
     """A live explainer put a black hole on a classroom TABLE as a glowing
     desk model and gave every shot to the presenter tripping over books. Two

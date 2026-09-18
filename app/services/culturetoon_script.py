@@ -1588,6 +1588,50 @@ def _world_context(region_label: str, subject_text: str, subject_category: Optio
     return context
 
 
+# Character.thematic_role values that mean "explainer specialized in this
+# domain" — kept in sync manually with the model's own docstring
+# (app/models/character.py). Deliberately excludes subject_category's
+# "genz"/"custom" (those describe content audience/catch-all, not a
+# character's own specialization) — select_thematic_host below falls back
+# to "comedy" for those instead.
+_EXPLAINER_ROLES = {"culture", "tech", "place", "phenomenon", "species"}
+
+
+def select_thematic_host(session, category: Optional[str], tone: str):
+    """Auto-selects a CharacterVariant to host a World Feature, for callers
+    (scripts/generate_world_feature.py) that didn't pass an explicit
+    --host-variant-id. Characters are a shared cross-brand pool here — this
+    intentionally does NOT scope by brand_id, matching the existing
+    explicit-host-by-id flow, which already accepts any CharacterVariant
+    regardless of which brand owns it.
+
+    Desired role is "comedy" for a non-informative tone (funny/chaotic/
+    satiric/etc. — reuses is_informative_tone, the same split this module
+    already uses for the writer/judge prompts), else `category` itself when
+    it's one of the explainer domains, else "comedy" as the broadest
+    fallback (covers "genz"/"custom"/anything else) rather than finding no
+    host at all.
+
+    Returns None if no Character is tagged with the desired role yet (the
+    common case today — this is a fresh categorization layer, not a
+    migration, see Character.thematic_role's docstring) — callers already
+    treat a None host as "pure subject footage, voiceover narration," no
+    new fallback needed there."""
+    from app.models.character import Character
+    from app.models.character_variant import CharacterVariant
+
+    role = "comedy" if not is_informative_tone(tone) else (category if category in _EXPLAINER_ROLES else "comedy")
+
+    variant = (
+        session.query(CharacterVariant)
+        .join(Character, CharacterVariant.character_id == Character.id)
+        .filter(Character.thematic_role == role, Character.is_active.is_(True), CharacterVariant.is_active.is_(True))
+        .order_by(Character.updated_at.desc())
+        .first()
+    )
+    return variant
+
+
 def generate_world_script(region_code: str, region_label: str, subject_text: str,
                            subject_category: Optional[str] = None,
                            trends: Optional[list] = None, culture: Optional[dict] = None,

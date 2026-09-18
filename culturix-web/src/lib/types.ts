@@ -469,9 +469,18 @@ export interface Character {
   personality: CharacterPersonality | null;
   is_active: boolean;
   is_main: boolean;
+  thematic_role: ThematicRole | null;
   created_at: string | null;
   updated_at: string | null;
 }
+
+// A character's suitability as an optional cross-brand thematic host for
+// World Feature generation (see app/models/character.py's Character.thematic_role
+// docstring) — "comedy" is a general joke-cracking host for any subject,
+// the rest are explainer domains, matched to a World Feature's own
+// subject_category when picking a host automatically.
+export const THEMATIC_ROLES = ["comedy", "culture", "tech", "place", "phenomenon", "species"] as const;
+export type ThematicRole = (typeof THEMATIC_ROLES)[number];
 
 export type ElementStatus = "unregistered" | "pending" | "ready" | "failed";
 export type VoiceProvider = "kling" | "elevenlabs";

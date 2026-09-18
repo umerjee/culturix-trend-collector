@@ -44,7 +44,7 @@ from app.models.toon import Toon  # noqa: E402
 from app.models.toon_script import ToonScript  # noqa: E402
 from app.models.trend import Trend  # noqa: E402
 from app.collectors.region_codes import normalize_region  # noqa: E402
-from app.services.culturetoon_script import generate_world_script, judge_script_comedy  # noqa: E402
+from app.services.culturetoon_script import generate_world_script, judge_script_comedy, select_thematic_host  # noqa: E402
 
 
 # Platforms whose userbase skews meaningfully younger than the others this
@@ -94,7 +94,8 @@ def main() -> int:
                               "the region's real trend-platform mix suggest 'genz' when TikTok-dominated (falls back to "
                               "'place' with no strong signal) — see _suggest_category_from_trends.")
     parser.add_argument("--culture-name", default=None, help="Culture.name to attach for cultural context, if one already exists in the library (see POST /api/culturetoons/cultures)")
-    parser.add_argument("--host-variant-id", default=None, help="Optional CharacterVariant UUID to use as an on-screen regional host/narrator")
+    parser.add_argument("--host-variant-id", default=None, help="Optional CharacterVariant UUID to use as an on-screen regional host/narrator — wins outright over auto-selection below")
+    parser.add_argument("--no-host", action="store_true", help="Explicitly skip auto-selecting a thematic host — pure subject footage, no character. Without this flag, omitting --host-variant-id tries auto-selection first (see select_thematic_host).")
     parser.add_argument("--tone", default="informative", choices=["informative", "educational", "explainer", "inspirational",
                                                                     "funny", "dramatic", "satiric", "wholesome", "chaotic", "deadpan"])
     parser.add_argument("--num-shots", type=int, default=4)
@@ -164,9 +165,15 @@ def main() -> int:
             host_variant = session.query(CharacterVariant).filter_by(id=args.host_variant_id).first()
             if not host_variant:
                 raise SystemExit(f"--host-variant-id {args.host_variant_id} not found")
-            print(f"Host: {host_variant.name}")
+            print(f"Host: {host_variant.name} (explicit --host-variant-id)")
+        elif args.no_host:
+            print("Host: none (--no-host, pure subject footage, voiceover narration)")
         else:
-            print("Host: none (pure subject footage, voiceover narration)")
+            host_variant = select_thematic_host(session, category, args.tone)
+            if host_variant:
+                print(f"Host: {host_variant.name} (auto-selected thematic host)")
+            else:
+                print("Host: none (no character tagged with a fitting thematic_role yet — pure subject footage)")
 
         print(f"Generating script for subject: {args.subject!r} ({category}, tone={args.tone})...")
         result = generate_world_script(

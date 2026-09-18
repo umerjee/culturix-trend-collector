@@ -318,6 +318,14 @@ def _serialize_brand(b) -> dict:
     }
 
 
+# Duplicated from app/services/culturetoon_script.py's _EXPLAINER_ROLES + "comedy"
+# rather than imported — a router importing from a service module going the other
+# direction would be backwards, and this codebase already has precedent for small
+# duplicated constants over that kind of coupling (e.g. EXPRESSION_NAMES). See
+# Character.thematic_role's own docstring for what each value means.
+THEMATIC_ROLES = ["comedy", "culture", "tech", "place", "phenomenon", "species"]
+
+
 def _serialize_character(c) -> dict:
     return {
         "id": str(c.id), "brand_id": str(c.brand_id), "name": c.name,
@@ -326,6 +334,7 @@ def _serialize_character(c) -> dict:
         "previous_image_urls": c.previous_image_urls or [],
         "art_style": c.art_style, "personality": c.personality,
         "is_active": c.is_active, "is_main": c.is_main,
+        "thematic_role": c.thematic_role,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }
@@ -776,6 +785,9 @@ def create_character(body: dict):
         art_style = body.get("art_style") or DEFAULT_ART_STYLE
         if art_style not in ART_STYLES:
             raise HTTPException(status_code=400, detail=f"Unknown art_style: {art_style}")
+        thematic_role = body.get("thematic_role")
+        if thematic_role and thematic_role not in THEMATIC_ROLES:
+            raise HTTPException(status_code=400, detail=f"Unknown thematic_role: {thematic_role}")
         # The brand's first character automatically becomes its main
         # character — no user action required, since there's no one else
         # yet for "main" to mean anything relative to. Once a brand has a
@@ -798,7 +810,7 @@ def create_character(body: dict):
             session.query(Character).filter(Character.brand_id == brand.id).update({"is_main": False})
         character = Character(
             brand_id=brand.id, name=body["name"], description=body.get("description"),
-            art_style=art_style, is_main=is_main,
+            art_style=art_style, is_main=is_main, thematic_role=thematic_role,
         )
         session.add(character)
         session.commit()
@@ -887,6 +899,8 @@ def update_character(character_id: str, body: dict):
             raise HTTPException(status_code=400, detail=f"Unknown art_style: {body['art_style']}")
         if "personality" in body and body["personality"] is not None:
             _validate_personality(body["personality"])
+        if body.get("thematic_role") and body["thematic_role"] not in THEMATIC_ROLES:
+            raise HTTPException(status_code=400, detail=f"Unknown thematic_role: {body['thematic_role']}")
         if body.get("is_main"):
             # At most one main character per brand — reassigning clears the
             # flag on whichever character had it before, enforced here
@@ -895,7 +909,7 @@ def update_character(character_id: str, body: dict):
             session.query(Character).filter(
                 Character.brand_id == character.brand_id, Character.id != character.id,
             ).update({"is_main": False})
-        for field in ("name", "description", "is_active", "art_style", "personality", "is_main"):
+        for field in ("name", "description", "is_active", "art_style", "personality", "is_main", "thematic_role"):
             if field in body:
                 setattr(character, field, body[field])
         session.commit()

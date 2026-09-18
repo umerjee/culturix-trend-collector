@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Plus, Loader2, CheckCircle2, XCircle, Sparkles, ChevronDown, ChevronRight, Pencil, Trash2, Star, AlertTriangle } from "lucide-react";
-import type { Character, CharacterVariant, VoiceProvider, CharacterPersonality } from "@/lib/types";
+import type { Character, CharacterVariant, VoiceProvider, CharacterPersonality, ThematicRole } from "@/lib/types";
+import { THEMATIC_ROLES } from "@/lib/types";
 import { buildPersonalitySummary } from "@/lib/personalitySummary";
 import CharacterImageBuilder from "@/components/CharacterImageBuilder";
 import ExpressionUploadGrid from "@/components/ExpressionUploadGrid";
@@ -83,6 +84,8 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
   const [nameDraft, setNameDraft] = useState("");
   const [savingName, setSavingName] = useState(false);
   const [saveNameError, setSaveNameError] = useState<string | null>(null);
+  const [savingThematicRole, setSavingThematicRole] = useState(false);
+  const [saveThematicRoleError, setSaveThematicRoleError] = useState<string | null>(null);
   const [makeMainError, setMakeMainError] = useState<string | null>(null);
   const [archivingCharacter, setArchivingCharacter] = useState(false);
   const [archiveCharacterError, setArchiveCharacterError] = useState<string | null>(null);
@@ -391,6 +394,30 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
     }
   }
 
+  async function saveThematicRole(role: ThematicRole | null) {
+    if (!selectedCharacter) return;
+    setSavingThematicRole(true);
+    setSaveThematicRoleError(null);
+    try {
+      const res = await fetch(`/api/culturetoons/characters/${selectedCharacter.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brand_id: brandId, thematic_role: role }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCharacters((prev) => prev.map((c) => (c.id === selectedCharacter.id ? (data as Character) : c)));
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setSaveThematicRoleError(typeof data.detail === "string" ? data.detail : `Couldn't save thematic role (${res.status})`);
+      }
+    } catch {
+      setSaveThematicRoleError("Network error — check your connection and try again.");
+    } finally {
+      setSavingThematicRole(false);
+    }
+  }
+
   async function savePersonality() {
     if (!selectedCharacter) return;
     setSavingPersonality(true);
@@ -625,6 +652,28 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
             error={imageGenError}
             helperText="A reference photo is optional — with one, generation is grounded on your photo's likeness but always re-illustrated in the chosen style. Regenerate as many times as you like to refine it."
           />
+
+          <div className="rounded-xl border border-gray-100 mt-4 p-3">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <span className="text-xs font-semibold text-gray-700">World thematic role</span>
+              <InfoTooltip text="Optional. Tags this character as an available host for the region-first World Features pipeline — 'comedy' is a general joke-cracking host for any subject, the others are explainer domains. A World Feature can auto-select a fitting host from any brand's tagged characters; this never affects how the character is used in this brand's own scripts." />
+              {savingThematicRole && <Loader2 className="h-3.5 w-3.5 text-gray-400 animate-spin" />}
+            </div>
+            <select
+              value={selectedCharacter.thematic_role ?? ""}
+              onChange={(e) => saveThematicRole(e.target.value ? (e.target.value as ThematicRole) : null)}
+              disabled={savingThematicRole}
+              className="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:opacity-60"
+            >
+              <option value="">None — not a World host</option>
+              {THEMATIC_ROLES.map((role) => (
+                <option key={role} value={role}>
+                  {role === "comedy" ? "Comedy host (any subject)" : `Explainer — ${role}`}
+                </option>
+              ))}
+            </select>
+            {saveThematicRoleError && <p className="text-[11px] text-red-500 mt-1.5">{saveThematicRoleError}</p>}
+          </div>
 
           <div className="rounded-xl border border-gray-100 mt-4">
             <button

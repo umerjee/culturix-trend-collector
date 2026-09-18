@@ -355,6 +355,10 @@ async def lifespan(_):
             "CREATE INDEX IF NOT EXISTS ix_toons_subject_category ON toons (subject_category)",
             "CREATE INDEX IF NOT EXISTS ix_toon_scripts_subject_region ON toon_scripts (subject_region)",
             "CREATE INDEX IF NOT EXISTS ix_toon_scripts_subject_category ON toon_scripts (subject_category)",
+            # A character's suitability as an optional cross-brand thematic
+            # host for World Feature generation — see Character.thematic_role's
+            # own docstring and app/services/culturetoon_script.py::select_thematic_host.
+            "ALTER TABLE characters ADD COLUMN IF NOT EXISTS thematic_role VARCHAR(20)",
         ]:
             try:
                 _conn.execute(_text(_stmt))
