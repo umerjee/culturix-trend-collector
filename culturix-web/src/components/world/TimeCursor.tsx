@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Clock3, Landmark, Pause, Play, Sparkles } from "lucide-react";
-import type { WorldFeature, WorldTrend, WorldTrendsCoverage } from "@/lib/worldTypes";
+import { ChevronLeft, ChevronRight, Clock3, ExternalLink, Landmark, Pause, Play, Sparkles } from "lucide-react";
+import type { WorldFeature, WorldTrend, WorldTrendDigestGroup, WorldTrendsCoverage } from "@/lib/worldTypes";
 import TrendFeed from "@/components/world/TrendFeed";
 import FeatureCard from "@/components/world/FeatureCard";
 
@@ -43,9 +43,10 @@ interface Props {
   regionLabel: string;
   coverage: WorldTrendsCoverage;
   initialTrends: WorldTrend[];
+  initialDigest: WorldTrendDigestGroup[];
 }
 
-export default function TimeCursor({ region, regionLabel, coverage, initialTrends }: Props) {
+export default function TimeCursor({ region, regionLabel, coverage, initialTrends, initialDigest }: Props) {
   const [mode, setMode] = useState<"recent" | "historical">("recent");
   const hasScrubbableCoverage = coverage.days_with_data >= MIN_DAYS_FOR_SCRUBBER && coverage.earliest && coverage.latest;
 
@@ -56,6 +57,7 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
 
   const [dayOffset, setDayOffset] = useState(totalDays); // starts at "latest" (today)
   const [trends, setTrends] = useState<WorldTrend[]>(initialTrends);
+  const [digest, setDigest] = useState<WorldTrendDigestGroup[]>(initialDigest);
   const [loadingTrends, setLoadingTrends] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [eraFeatures, setEraFeatures] = useState<WorldFeature[] | null>(null);
@@ -98,6 +100,9 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
       const res = await fetch(`/api/world/trends?${params.toString()}`);
       const data = await res.json().catch(() => ({}));
       setTrends(Array.isArray(data.trends) ? data.trends : []);
+      const digestRes = await fetch(`/api/world/trends/digest?${params.toString()}&limit=8`);
+      const digestData = await digestRes.json().catch(() => ({}));
+      setDigest(Array.isArray(digestData.groups) ? digestData.groups : []);
     } finally {
       setLoadingTrends(false);
     }
@@ -190,10 +195,47 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
       {mode === "recent" ? (
         loadingTrends ? (
           <p className="text-sm text-gray-400 py-6">Loading…</p>
-        ) : trends.length > 0 ? (
+        ) : digest.length > 0 ? (
           <section>
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Trending in {regionLabel}</h2>
-            <TrendFeed trends={trends} />
+            <div className="mb-5 flex items-end justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">What is moving in {regionLabel}</h2>
+                <p className="mt-1 text-sm text-gray-500">Themes first, with the original signals underneath for context.</p>
+              </div>
+              <span className="hidden text-xs text-gray-400 sm:block">{digest.length} themes</span>
+            </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+              {digest.map((group) => (
+                <article key={group.id} className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="mb-2 flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${group.kind === "cluster" ? "bg-purple-50 text-purple-600" : "bg-gray-100 text-gray-500"}`}>
+                          {group.kind === "cluster" ? "Theme" : "Source signals"}
+                        </span>
+                        {group.momentum && <span className="text-[11px] font-semibold text-emerald-600">{group.momentum === "up" ? "Growing" : group.momentum === "down" ? "Cooling" : "Steady"}</span>}
+                      </div>
+                      <h3 className="text-base font-semibold text-gray-900">{group.title}</h3>
+                    </div>
+                    <span className="shrink-0 text-xs text-gray-400">{group.signal_count} signals</span>
+                  </div>
+                  <p className="mt-2 text-sm leading-relaxed text-gray-600">{group.summary}</p>
+                  <div className="mt-4 space-y-2 border-t border-gray-100 pt-3">
+                    {group.signals.map((signal) => (
+                      <div key={`${signal.platform}-${signal.id}`} className="flex items-center gap-2 text-xs text-gray-500">
+                        <span className="font-semibold text-gray-700">{signal.platform.replace("_", " ")}</span>
+                        <span className="min-w-0 flex-1 truncate">{signal.title || "Untitled signal"}</span>
+                        {signal.url && <a href={signal.url} target="_blank" rel="noopener noreferrer" aria-label="Open source signal" className="text-gray-400 hover:text-purple-600"><ExternalLink className="h-3 w-3" /></a>}
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+            <details className="mt-6 rounded-xl border border-gray-100 bg-gray-50/60 p-4">
+              <summary className="cursor-pointer text-sm font-medium text-gray-600">Show raw source feed ({trends.length})</summary>
+              <div className="mt-4"><TrendFeed trends={trends} /></div>
+            </details>
           </section>
         ) : (
           <p className="text-sm text-gray-400 py-6">Nothing trending in {regionLabel} for this date.</p>

@@ -135,6 +135,72 @@ def _serialize_trend(t) -> dict:
     }
 
 
+def _serialize_digest_signal(t) -> dict:
+    return {
+        "id": t.id,
+        "platform": t.platform,
+        "title": t.title,
+        "likes": t.likes,
+        "url": t.url,
+        "collected_at": t.collected_at.isoformat() if t.collected_at else None,
+    }
+
+
+@router.get("/trends/digest")
+def list_world_trend_digest(region: str, date_from: Optional[str] = None,
+                            date_to: Optional[str] = None, limit: int = 8):
+    """Human-readable trend groups for a region.
+
+    Persisted Cluster summaries are the interpretation layer when available.
+    Signals without a persisted cluster stay visibly labeled as source
+    signals, grouped by platform rather than pretending a theme was inferred.
+    """
+    from app.db import SessionLocal
+    from app.models.cluster import Cluster
+    from app.models.trend import Trend
+
+    limit = max(1, min(limit, 20))
+    parsed_from, parsed_to = _parse_date(date_from), _parse_date(date_to)
+    session = SessionLocal()
+    try:
+        query = session.query(Trend, Cluster).outerjoin(Cluster, Trend.cluster_id == Cluster.id)
+        query = query.filter(Trend.region == region.strip().upper())
+        if parsed_from:
+            query = query.filter(Trend.collected_at >= parsed_from)
+        if parsed_to:
+            query = query.filter(Trend.collected_at <= parsed_to)
+        rows = query.order_by(Trend.likes.desc().nullslast(), Trend.collected_at.desc()).limit(400).all()
+
+        grouped = {}
+        for trend, cluster in rows:
+            if cluster:
+                key = f"cluster:{cluster.id}"
+                group = grouped.setdefault(key, {
+                    "id": key, "kind": "cluster", "title": cluster.theme or "Emerging trend",
+                    "summary": cluster.summary or "A recurring pattern across collected signals.",
+                    "signal_count": 0, "platforms": set(), "signals": [],
+                    "momentum": cluster.momentum,
+                })
+            else:
+                key = f"source:{trend.platform}"
+                group = grouped.setdefault(key, {
+                    "id": key, "kind": "source", "title": f"{trend.platform.replace('_', ' ').title()} signals",
+                    "summary": "Recent source signals awaiting enough evidence for a shared theme.",
+                    "signal_count": 0, "platforms": set(), "signals": [], "momentum": None,
+                })
+            group["signal_count"] += 1
+            group["platforms"].add(trend.platform)
+            if len(group["signals"]) < 3:
+                group["signals"].append(_serialize_digest_signal(trend))
+
+        result = sorted(grouped.values(), key=lambda group: (-group["signal_count"], group["title"]))[:limit]
+        for group in result:
+            group["platforms"] = sorted(group["platforms"])
+        return {"groups": result, "total_groups": len(grouped)}
+    finally:
+        session.close()
+
+
 def _parse_date(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None

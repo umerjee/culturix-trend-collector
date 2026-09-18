@@ -36,6 +36,17 @@ export interface WorldTrend {
   collected_at: string | null;
 }
 
+export interface WorldTrendDigestGroup {
+  id: string;
+  kind: "cluster" | "source";
+  title: string;
+  summary: string;
+  signal_count: number;
+  platforms: string[];
+  momentum: "up" | "down" | "neutral" | null;
+  signals: Pick<WorldTrend, "id" | "platform" | "title" | "likes" | "url" | "collected_at">[];
+}
+
 // One merged filter vocabulary covering both WHAT a Feature is about
 // (place/phenomenon/species/tech) and WHO it's most likely to resonate with
 // (genz, more audience tags to follow) — a single flat list of filter chips

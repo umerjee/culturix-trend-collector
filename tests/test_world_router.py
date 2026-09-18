@@ -15,13 +15,14 @@ from app.db import Base
 from app.models.toon import Toon
 from app.models.toon_script import ToonScript
 from app.models.trend import Trend
+from app.models.cluster import Cluster
 from app.routers import world
 
 
 @pytest.fixture
 def db(mocker):
     engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(bind=engine, tables=[Toon.__table__, ToonScript.__table__, Trend.__table__])
+    Base.metadata.create_all(bind=engine, tables=[Toon.__table__, ToonScript.__table__, Trend.__table__, Cluster.__table__])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)
     return TestSessionLocal
@@ -189,6 +190,25 @@ class TestListWorldTrends:
         with pytest.raises(HTTPException) as exc_info:
             world.list_world_trends(region="IR", date_from="not-a-date")
         assert exc_info.value.status_code == 400
+
+    def test_digest_prefers_cluster_context_and_labels_unclustered_sources(self, db):
+        from app.models.cluster import Cluster
+        session = db()
+        cluster = Cluster(label=1, theme="Football transfer news", summary="Coverage of a major player move.", size=2)
+        session.add(cluster)
+        session.commit()
+        clustered = Trend(platform="twitter", title="Player joins new club", content="news", region="GB", likes=100, cluster_id=cluster.id)
+        unclustered = Trend(platform="tiktok", title="A dance sound", content="sound", region="GB", likes=50)
+        session.add_all([clustered, unclustered])
+        session.commit()
+        session.close()
+
+        result = world.list_world_trend_digest(region="gb")
+
+        groups = {group["kind"]: group for group in result["groups"]}
+        assert groups["cluster"]["title"] == "Football transfer news"
+        assert groups["cluster"]["summary"] == "Coverage of a major player move."
+        assert groups["source"]["title"] == "Tiktok signals"
 
 
 class TestWorldTrendsCoverage:
