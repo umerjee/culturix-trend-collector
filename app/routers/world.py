@@ -353,6 +353,14 @@ def get_world_feature(feature_id: str):
         script = session.query(ToonScript).filter_by(id=toon.script_id).first()
         result = _serialize_feature(toon)
         result["hook_line"] = script.hook_line if script else None
+        result["duration_seconds"] = script.total_duration_seconds if script else None
+        result["source"] = None
+        if toon.curated_item_id:
+            from app.models.curated_item import CuratedItem
+            from app.services.world_production import source_label
+            item = session.query(CuratedItem).filter_by(id=toon.curated_item_id).first()
+            if item and item.source_url:
+                result["source"] = {"label": source_label(item), "url": item.source_url}
         return result
     finally:
         session.close()

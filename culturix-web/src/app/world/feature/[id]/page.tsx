@@ -58,6 +58,14 @@ export default async function WorldFeaturePage({ params }: { params: { id: strin
         </div>
         <h1 className="text-2xl font-bold text-gray-900 mb-2">{feature.title || feature.subject_text}</h1>
         {feature.hook_line && <p className="text-gray-500 leading-relaxed">{feature.hook_line}</p>}
+        {feature.source && (
+          <p className="mt-6 text-xs text-gray-400">
+            Source:{" "}
+            <a href={feature.source.url} target="_blank" rel="noopener noreferrer" className="text-purple-600 hover:underline">
+              {feature.source.label}
+            </a>
+          </p>
+        )}
       </main>
 
       <MarketingFooter />

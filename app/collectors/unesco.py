@@ -51,3 +51,19 @@ def fetch_unesco_sites(region_code: str | None = None, limit: int = 20) -> list[
             "url": f"https://whc.unesco.org/en/list/{r['id_no']}" if r.get("id_no") else None,
         })
     return sites
+
+
+def unesco_source_text(site: dict, enrich: bool = True) -> str:
+    """Raw text for one site: UNESCO's own name/description/category, plus —
+    when a confidently-matching article exists — the Wikipedia article body.
+    UNESCO's description is ~500 characters, too thin for a video to hook on;
+    the Wikipedia text supplies the concrete detail. Sections are labeled so
+    the provenance of every fact stays auditable in the stored raw_text."""
+    parts = [v for v in (site.get("title"), site.get("description"), site.get("category")) if v]
+    text = "\n".join(parts)
+    if enrich and site.get("title"):
+        from app.collectors.wikipedia_extracts import find_wikipedia_article
+        article = find_wikipedia_article(site["title"])
+        if article:
+            text += f"\n\nWikipedia article \"{article['title']}\" ({article.get('url')}):\n{article['extract']}"
+    return text

@@ -13,23 +13,28 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Titles come straight from Wikipedia/UNESCO and can contain any Unicode
+# (macrons, CJK, accents); Windows' default cp1252 console crashes on them.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 from dotenv import load_dotenv
 
 load_dotenv(".env")
 
-from app.collectors.unesco import fetch_unesco_sites
+from app.collectors.unesco import fetch_unesco_sites, unesco_source_text
 from app.collectors.wikipedia_extracts import fetch_wikipedia_extract
 from app.db import SessionLocal
 from app.services.culturix_ingestion import ingest
 
 
 def _ingest_wikipedia(session, title: str, region: str | None, max_items: int) -> int:
-    source = fetch_wikipedia_extract(title)
+    source = fetch_wikipedia_extract(title, full_text=True)
     if not source:
         print(f"No Wikipedia extract found for {title!r}.")
         return 0
     rows = ingest("wikipedia", region, source["extract"], session, max_items=max_items,
-                  source_ref=source["title"])
+                  source_ref=source["title"], source_url=source.get("url"))
     print(f"Wikipedia {source['title']!r}: created {len(rows)} curated item(s).")
     return len(rows)
 
@@ -39,12 +44,11 @@ def _ingest_unesco(session, region: str | None, limit: int, max_items: int) -> i
     total = 0
     for site in sites:
         source_ref = str(site.get("id_no") or site.get("title") or "")
-        raw_text = "\n".join(
-            value for value in (site.get("title"), site.get("description"), site.get("category")) if value
-        )
+        raw_text = unesco_source_text(site)
         if not source_ref or not raw_text:
             continue
-        rows = ingest("unesco", region, raw_text, session, max_items=max_items, source_ref=source_ref)
+        rows = ingest("unesco", region, raw_text, session, max_items=max_items, source_ref=source_ref,
+                      source_url=site.get("url"))
         total += len(rows)
     print(f"UNESCO {region or 'all regions'}: created {total} curated item(s) from {len(sites)} site(s).")
     return total

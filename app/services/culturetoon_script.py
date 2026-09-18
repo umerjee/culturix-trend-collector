@@ -1557,7 +1557,9 @@ def generate_toon_script_from_idea(idea: str, variants: Optional[list] = None, t
 
 
 def _world_context(region_label: str, subject_text: str, subject_category: Optional[str],
-                    trends: Optional[list] = None, culture: Optional[dict] = None) -> str:
+                    trends: Optional[list] = None, culture: Optional[dict] = None,
+                    source_facts: Optional[str] = None, source_label: Optional[str] = None,
+                    avoid_claims: Optional[list] = None) -> str:
     """Builds the "context" string for generate_world_script, in the same
     role _source_type_and_context plays for the Persona/Cluster path — the
     thing a subject-centric World Feature is grounded in isn't a trending
@@ -1583,6 +1585,31 @@ def _world_context(region_label: str, subject_text: str, subject_category: Optio
                 snippet = f"{title} — {content}" if title and content else (title or content)
                 lines.append(f"- {snippet[:220]}")
     context = "\n".join(lines)
+    if source_facts:
+        # The curated Wikipedia/UNESCO text is the ONLY licence to state a
+        # specific fact — without it the model fills gaps from memory and
+        # invents dates/figures (the "prompt invents data the source already
+        # has" failure documented in docs/culturix-video-pipeline.md).
+        context += (
+            f"\n\nVERIFIED SOURCE MATERIAL ({source_label or 'curated source'}) — the ONLY source of "
+            "factual claims for this video:\n"
+            f"{source_facts.strip()[:5000]}\n"
+            "FACT RULES: every date, number, name, and claim in the script must come from this "
+            "material. Do NOT add specific facts from memory. If the material is thin, write a "
+            "shorter, simpler script rather than padding it with invented detail.\n"
+            "NARRATION CRAFT: this is a short-form video, not a guidebook. (1) The FIRST narration line "
+            "is the hook — open on the single most striking concrete fact in the material, stated "
+            "plainly; never start with 'Welcome to', 'Explore', 'Discover' or 'Nestled'. (2) One idea "
+            "per shot; the last shot lands a payoff that makes the viewer see the subject differently, "
+            "not a summary. (3) Pace for speech: at most ~2.4 spoken words per second of each shot's "
+            "duration. (4) Every subject_visual is a concrete, filmable real-world scene (light, "
+            "scale, motion, camera move) — no text overlays, maps-with-labels or infographics."
+        )
+    if avoid_claims:
+        context += (
+            "\n\nA previous draft made these UNSUPPORTED claims — do not repeat them:\n"
+            + "\n".join(f"- {c}" for c in avoid_claims[:6])
+        )
     if culture:
         context += "\n" + _culture_context([culture])
     return context
@@ -1669,7 +1696,9 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
                            trends: Optional[list] = None, culture: Optional[dict] = None,
                            host_variant: Optional[object] = None,
                            tone: str = "informative", num_shots: int = 4,
-                           target_duration_seconds: int = 20) -> dict:
+                           target_duration_seconds: int = 20,
+                           source_facts: Optional[str] = None, source_label: Optional[str] = None,
+                           avoid_claims: Optional[list] = None) -> dict:
     """Generates a World Feature script — a subject-centric video (a place,
     phenomenon, or species is the star) grounded in real region-filtered
     Trend rows and (optionally) the shared Culture library, for the public
@@ -1693,7 +1722,8 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
     notes). Callers may still pass any other TONE_OPTIONS value if a World
     Feature genuinely calls for a non-informative register."""
     variants = [host_variant] if host_variant is not None else []
-    context = _world_context(region_label, subject_text, subject_category, trends, culture)
+    context = _world_context(region_label, subject_text, subject_category, trends, culture,
+                             source_facts=source_facts, source_label=source_label, avoid_claims=avoid_claims)
     if not variants:
         # cast_line is empty with no variants (see _cast_line), which on its
         # own leaves the craft guidance's "use the cast to carry the
@@ -1711,59 +1741,32 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
     return _call_llm_for_script(prompt, tone, variants, planned_scenes=None)
 
 
-def suggest_world_subjects_from_trends(region_label: str, trends: list, max_suggestions: int = 3) -> list[dict]:
-    """Proposes candidate World Feature subjects grounded in real trend
-    content for one region — curator-review-only, does NOT create or write
-    anything (matches generate_world_feature.py's own manual-curation
-    posture: a human still picks what actually gets made, this just cuts
-    down the time spent staring at raw trend rows trying to invent an
-    angle). Each candidate is filmable/concrete in the same style
-    generate_world_script's own subject_text expects (e.g. "The Strait of
-    Hormuz", not "Middle East geopolitics").
+def judge_world_grounding(script_result: dict, source_facts: str) -> dict:
+    """Fact-checks a World script against its verified source material via a
+    SEPARATE LLM call (a fresh critic, same posture as judge_script_comedy).
+    The tone judge scores craft, not accuracy — this is the accuracy gate.
+    Returns {"grounded": bool|None, "unsupported_claims": [str], "judge_failed": bool};
+    fails open (grounded=None) so a broken judge never blocks a draft."""
+    prompt = f"""You are a strict fact-checker for a short educational video.
 
-    trends: plain dicts ({"title": str, "content": str}), same shape
-    generate_world_script's own `trends` param expects — the caller
-    resolves these from the DB first (see scripts/suggest_world_subjects.py),
-    same convention as every other generate_*/suggest_* function in this
-    module not touching the DB itself.
+VERIFIED SOURCE MATERIAL:
+{source_facts.strip()[:5000]}
 
-    Returns [{"subject_text": str, "subject_category": str, "rationale": str}, ...],
-    or [] if there isn't enough real trend material to ground a suggestion
-    in (never invents a subject from nothing) or the LLM call fails."""
-    if len(trends) < 3:
-        return []
+SCRIPT:
+{_format_script_for_prompt(script_result)}
 
-    trend_lines = "\n".join(
-        f"- {(t.get('title') or '').strip()}: {(t.get('content') or '').strip()[:200]}"
-        for t in trends[:15] if (t.get("title") or t.get("content"))
-    )
-    prompt = f"""You are scouting subjects for a short-form video series about {region_label} — each video is
-about a real place, phenomenon, species, or piece of technology (never a character or celebrity),
-grounded in what's actually trending there right now.
+List every specific factual claim in the script (dates, numbers, names, causes, superlatives) that is
+NOT supported by the source material above. General framing and transitions are fine; only flag concrete
+claims the source does not back up.
 
-Real, currently-trending content from {region_label}:
-{trend_lines}
-
-Propose up to {max_suggestions} DISTINCT subject ideas this trending content genuinely points to —
-each one a concrete, filmable thing (a specific place, a specific phenomenon, a specific species or
-piece of technology), not an abstract topic or news event itself. A trend about a sports upset
-might point to the STADIUM or the SPORT'S HISTORY in that region, not to "the game" — the subject
-must be something a camera can actually show, that will still be true and interesting next year,
-not a one-off news event that will be stale by the time this could be produced.
-
-Do not force a suggestion if the trending content doesn't genuinely support one — fewer than
-{max_suggestions} distinct, well-grounded ideas is correct if that's what the real material gives you.
-
-Return ONLY valid JSON: {{"suggestions": [{{"subject_text": string, "subject_category": one of
-"place"/"phenomenon"/"species"/"tech"/"genz"/"custom", "rationale": string, one sentence naming
-which trend(s) above this connects to}}]}}"""
-
+Return ONLY valid JSON: {{"unsupported_claims": [string], "grounded": boolean (true only if the list is empty)}}"""
     try:
-        parsed = _call_llm_json(prompt, temperature=0.6, max_tokens=600)
+        parsed = _call_llm_json(prompt, temperature=0.1, max_tokens=500)
     except ToonScriptGenerationError as exc:
-        logger.warning("World subject suggestion call failed for %s: %s", region_label, exc)
-        return []
-    return parsed.get("suggestions") or []
+        logger.warning("Grounding judge call failed, leaving draft unchecked: %s", exc)
+        return {"grounded": None, "unsupported_claims": [], "judge_failed": True}
+    claims = [str(c) for c in (parsed.get("unsupported_claims") or []) if c]
+    return {"grounded": not claims, "unsupported_claims": claims, "judge_failed": False}
 
 
 def generate_toon_script_continuing_episode(prior_parts_summary: str, idea: str, variants: Optional[list] = None,

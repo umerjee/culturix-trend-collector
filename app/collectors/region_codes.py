@@ -76,3 +76,23 @@ def normalize_region(raw: str | None) -> str | None:
         return _ALIASES[key]
     stripped = raw.strip()
     return stripped.upper() if len(stripped) <= 3 else None
+
+
+REGION_NAMES = {
+    "US": "the United States", "GB": "the United Kingdom", "FR": "France", "DE": "Germany",
+    "IT": "Italy", "ES": "Spain", "PT": "Portugal", "CA": "Canada", "AU": "Australia",
+    "JP": "Japan", "KR": "South Korea", "IN": "India", "BR": "Brazil", "TR": "Turkey",
+    "SA": "Saudi Arabia", "AE": "the UAE", "IL": "Israel", "IR": "Iran", "NG": "Nigeria",
+    "ZA": "South Africa", "EG": "Egypt", "KE": "Kenya", "ID": "Indonesia", "PH": "the Philippines",
+    "TH": "Thailand", "VN": "Vietnam", "MY": "Malaysia", "MX": "Mexico", "AR": "Argentina",
+    "CO": "Colombia", "CL": "Chile", "PL": "Poland", "UA": "Ukraine", "PK": "Pakistan",
+    "CN": "China", "GR": "Greece",
+}
+
+
+def region_name(code: str | None) -> str:
+    """Human-readable region label for prompts and UI; falls back to the bare
+    code (or "the world" for a region-less subject) rather than raising."""
+    if not code:
+        return "the world"
+    return REGION_NAMES.get(code.strip().upper(), code.strip().upper())

@@ -18,11 +18,16 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Titles come straight from Wikipedia/UNESCO and can contain any Unicode
+# (macrons, CJK, accents); Windows' default cp1252 console crashes on them.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 from dotenv import load_dotenv
 
 load_dotenv(".env")
 
-from app.collectors.unesco import fetch_unesco_sites
+from app.collectors.unesco import fetch_unesco_sites, unesco_source_text
 from app.collectors.wikipedia_extracts import fetch_wikipedia_extract
 from app.db import SessionLocal
 from app.services.culturix_ingestion import ingest
@@ -56,14 +61,14 @@ COUNTRIES = {
 def ingest_wikipedia(region: str, country: str, max_items: int) -> int:
     # These stable country-history pages give each region one broad,
     # encyclopedic source without guessing an article from search results.
-    source = fetch_wikipedia_extract(f"History of {country}")
+    source = fetch_wikipedia_extract(f"History of {country}", full_text=True)
     if not source:
         logger.warning("Wikipedia source unavailable: %s", country)
         return 0
     session = SessionLocal()
     try:
         rows = ingest("wikipedia", region, source["extract"], session,
-                      max_items=max_items, source_ref=source["title"])
+                      max_items=max_items, source_ref=source["title"], source_url=source.get("url"))
     finally:
         session.close()
     return len(rows)
@@ -73,15 +78,14 @@ def ingest_unesco(region: str, limit: int, max_items: int) -> int:
     created = 0
     for site in fetch_unesco_sites(region, limit=limit):
         source_ref = str(site.get("id_no") or site.get("title") or "")
-        raw_text = "\n".join(
-            value for value in (site.get("title"), site.get("description"), site.get("category")) if value
-        )
+        raw_text = unesco_source_text(site)
         if not source_ref or not raw_text:
             continue
         session = SessionLocal()
         try:
             created += len(ingest("unesco", region, raw_text, session,
-                                  max_items=max_items, source_ref=source_ref))
+                                  max_items=max_items, source_ref=source_ref,
+                                  source_url=site.get("url")))
         finally:
             session.close()
     return created

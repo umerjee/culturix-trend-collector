@@ -96,6 +96,10 @@ class Toon(Base):
     # and scripts/generate_world_feature.py's --era-label/--era-year.
     era_label = Column(Text, nullable=True)
     era_year = Column(Integer, nullable=True, index=True)
+    # Provenance — the CuratedItem (real Wikipedia/UNESCO source) this World
+    # Feature was produced from. Powers duplicate-draft protection and the
+    # public source attribution; NULL for hand-made World Features.
+    curated_item_id = Column(UUID(as_uuid=True), nullable=True, index=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

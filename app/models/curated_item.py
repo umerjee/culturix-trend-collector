@@ -29,6 +29,9 @@ class CuratedItem(Base):
     source_type = Column(String(20), nullable=False, index=True)  # wikipedia|unesco|trend
     source_ref = Column(String(200), nullable=True, index=True)
     region = Column(String(2), nullable=True, index=True)  # ISO-2, see app.collectors.region_codes
+    # Public page for the source (Wikipedia article / UNESCO list entry) —
+    # shown as attribution on any World Feature produced from this item.
+    source_url = Column(Text, nullable=True)
 
     title = Column(Text, nullable=False)
     summary = Column(Text, nullable=False)

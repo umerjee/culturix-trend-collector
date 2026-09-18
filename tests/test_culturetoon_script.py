@@ -1075,42 +1075,51 @@ class TestGenerateWorldScript:
         assert result["beat_count"] == 3
 
 
-class TestSuggestWorldSubjectsFromTrends:
-    """suggest_world_subjects_from_trends — curator-review-only World
-    Feature subject suggestions grounded in real Trend data. Never writes
-    anything; the curator still runs generate_world_feature.py by hand."""
+class TestWorldSourceGrounding:
+    """A World script must be grounded in the curated Wikipedia/UNESCO text,
+    and fact-checked against it by a separate judge call."""
 
-    _TRENDS = [{"title": f"Trend {i}", "content": f"Real trending content {i}"} for i in range(5)]
+    def test_source_facts_reach_the_writer_prompt(self, mocker):
+        from app.services.culturetoon_script import generate_world_script
+        client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_world_script(
+            region_code="FR", region_label="France", subject_text="Carcassonne",
+            source_facts="Carcassonne was inhabited since the Neolithic period.", source_label="UNESCO",
+        )
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "VERIFIED SOURCE MATERIAL (UNESCO)" in prompt
+        assert "inhabited since the Neolithic period" in prompt
+        assert "Do NOT add specific facts from memory" in prompt
 
-    def test_too_few_trends_returns_empty_without_calling_the_llm(self, mocker):
-        from app.services.culturetoon_script import suggest_world_subjects_from_trends
-        fake_client = _mock_qwen_response(mocker, {"suggestions": []})
-        result = suggest_world_subjects_from_trends("Japan", self._TRENDS[:2])
-        assert result == []
-        fake_client.chat.completions.create.assert_not_called()
+    def test_no_source_facts_leaves_prompt_ungrounded_block_out(self, mocker):
+        from app.services.culturetoon_script import _world_context
+        assert "VERIFIED SOURCE MATERIAL" not in _world_context("France", "Carcassonne", "place")
 
-    def test_well_formed_response_parses(self, mocker):
-        from app.services.culturetoon_script import suggest_world_subjects_from_trends
-        _mock_qwen_response(mocker, {"suggestions": [
-            {"subject_text": "Mount Fuji", "subject_category": "place", "rationale": "Trend 2 mentions it"},
-        ]})
-        result = suggest_world_subjects_from_trends("Japan", self._TRENDS)
-        assert result == [{"subject_text": "Mount Fuji", "subject_category": "place", "rationale": "Trend 2 mentions it"}]
+    def test_avoid_claims_are_fed_back_into_the_prompt(self):
+        from app.services.culturetoon_script import _world_context
+        ctx = _world_context("France", "Carcassonne", "place", source_facts="x", avoid_claims=["built in 1066"])
+        assert "built in 1066" in ctx
 
-    def test_prompt_grounds_in_the_real_trend_content(self, mocker):
-        from app.services.culturetoon_script import suggest_world_subjects_from_trends
-        fake_client = _mock_qwen_response(mocker, {"suggestions": []})
-        suggest_world_subjects_from_trends("Japan", self._TRENDS)
-        prompt = fake_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
-        assert "Trend 2" in prompt
-        assert "Real trending content 2" in prompt
-        assert "never a character or celebrity" in prompt
+    def test_grounding_judge_flags_unsupported_claims(self, mocker):
+        from app.services.culturetoon_script import judge_world_grounding
+        mocker.patch(
+            "app.services.culturetoon_script._call_llm_json",
+            return_value={"unsupported_claims": ["Built in 1066"], "grounded": True},
+        )
+        result = judge_world_grounding({"tone": "informative", "hook_line": "H", "shots": _VALID_SHOTS}, "facts")
+        # grounded is derived from the claim list, never trusted from the model
+        assert result == {"grounded": False, "unsupported_claims": ["Built in 1066"], "judge_failed": False}
 
-    def test_llm_failure_fails_open_to_empty_list(self, mocker):
-        from app.services.culturetoon_script import suggest_world_subjects_from_trends, ToonScriptGenerationError
+    def test_grounding_judge_passes_when_no_claims(self, mocker):
+        from app.services.culturetoon_script import judge_world_grounding
+        mocker.patch("app.services.culturetoon_script._call_llm_json", return_value={"unsupported_claims": []})
+        assert judge_world_grounding({"tone": "informative", "shots": _VALID_SHOTS}, "facts")["grounded"] is True
+
+    def test_grounding_judge_fails_open(self, mocker):
+        from app.services.culturetoon_script import judge_world_grounding, ToonScriptGenerationError
         mocker.patch("app.services.culturetoon_script._call_llm_json", side_effect=ToonScriptGenerationError("boom"))
-        result = suggest_world_subjects_from_trends("Japan", self._TRENDS)
-        assert result == []
+        result = judge_world_grounding({"tone": "informative", "shots": _VALID_SHOTS}, "facts")
+        assert result["grounded"] is None and result["judge_failed"] is True
 
 
 class TestSelectThematicHost:

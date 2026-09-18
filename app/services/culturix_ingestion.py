@@ -20,6 +20,7 @@ LLM-decided — the weighting formula is fixed, not a judgment call.
 import json
 import logging
 import os
+import time
 from datetime import datetime, timedelta
 
 logger = logging.getLogger("culturix.services.culturix_ingestion")
@@ -76,24 +77,32 @@ def _call_llm_json(prompt: str, temperature: float = 0.4, max_tokens: int = 1200
     call as culturetoon_script.py's own _call_llm_json — duplicated rather
     than imported, matching this codebase's established convention of small
     duplicated helpers over cross-module coupling (see e.g. EXPRESSION_NAMES
-    in that same module). Raises IngestionError on any failure."""
-    try:
-        if os.getenv("QWEN_API_KEY"):
-            response = _get_qwen_client().chat.completions.create(
-                model="qwen-max", messages=[{"role": "user", "content": prompt}], temperature=temperature,
-            )
-            raw = response.choices[0].message.content
-        else:
-            message = _get_claude_client().messages.create(
-                model="claude-haiku-4-5-20251001", max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw = message.content[0].text
-        return _parse(raw)
-    except json.JSONDecodeError as exc:
-        raise IngestionError(f"Model returned invalid JSON: {exc}") from exc
-    except Exception as exc:
-        raise IngestionError(str(exc)) from exc
+    in that same module). One retry on a transient transport failure (a live
+    run hit a one-off "Connection error"); malformed JSON is not retried.
+    Raises IngestionError on any failure."""
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            if os.getenv("QWEN_API_KEY"):
+                response = _get_qwen_client().chat.completions.create(
+                    model="qwen-max", messages=[{"role": "user", "content": prompt}], temperature=temperature,
+                )
+                raw = response.choices[0].message.content
+            else:
+                message = _get_claude_client().messages.create(
+                    model="claude-haiku-4-5-20251001", max_tokens=max_tokens,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                raw = message.content[0].text
+            return _parse(raw)
+        except json.JSONDecodeError as exc:
+            raise IngestionError(f"Model returned invalid JSON: {exc}") from exc
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 0:
+                logger.warning("LLM call failed (%s); retrying once", exc)
+                time.sleep(1.5)
+    raise IngestionError(str(last_exc)) from last_exc
 
 
 def extract_items(source_type: str, region: str | None, raw_text: str, max_items: int = 5) -> list[dict]:
@@ -174,7 +183,8 @@ Return ONLY valid JSON: {{"recency_score": int, "popularity_score": int, "cultur
         parsed = _call_llm_json(prompt, temperature=0.4, max_tokens=500)
     except IngestionError as exc:
         logger.warning("Scoring failed for item %r: %s", item.get("title"), exc)
-        return {**_NEUTRAL_SCORES, "challenge_notes": f"Scoring failed: {exc}", "pipeline_decision": "store_for_later"}
+        return {**_NEUTRAL_SCORES, "challenge_notes": f"Scoring failed: {exc}", "pipeline_decision": "store_for_later",
+                "scoring_failed": True}
 
     result = dict(_NEUTRAL_SCORES)
     for key in _NEUTRAL_SCORES:
@@ -201,7 +211,7 @@ def compute_priority_score(scores: dict) -> int:
 
 
 def ingest(source_type: str, region: str | None, raw_text: str, session, max_items: int = 5,
-           source_ref: str | None = None) -> list:
+           source_ref: str | None = None, source_url: str | None = None) -> list:
     """Runs the full extract -> score+challenge -> priority -> lifecycle
     pipeline over one raw text and persists the results as CuratedItem
     rows, deduped by (source_type, source_ref). When an upstream source
@@ -214,18 +224,39 @@ def ingest(source_type: str, region: str | None, raw_text: str, session, max_ite
     from app.models.curated_item import CuratedItem
 
     items = extract_items(source_type, region, raw_text, max_items=max_items)
-    created = []
-    for item in items:
-        stable_ref = f"{source_ref}:{item['title']}" if source_ref else item["title"]
-        exists = session.query(CuratedItem).filter_by(source_type=source_type, source_ref=stable_ref).first()
-        if exists:
+    if not items:
+        return []
+
+    def _stable_ref(item: dict) -> str:
+        # source_ref is VARCHAR(200) — an over-long title must not fail the insert.
+        return (f"{source_ref}:{item['title']}" if source_ref else item["title"])[:200]
+
+    refs = [_stable_ref(i) for i in items]
+    existing = {
+        r[0] for r in session.query(CuratedItem.source_ref)
+        .filter(CuratedItem.source_type == source_type, CuratedItem.source_ref.in_(refs)).all()
+    }
+    # End the read transaction now: the scoring calls below are slow, and a
+    # connection held idle inside an open transaction is dropped by Supabase's
+    # pooler (a live run failed on commit with "server closed the connection
+    # unexpectedly"). The insert phase then checks out a fresh connection.
+    session.rollback()
+
+    rows = []
+    for item, stable_ref in zip(items, refs):
+        if stable_ref in existing:
             continue
         scores = score_and_challenge(item)
+        if scores.get("scoring_failed"):
+            # An unscored item is not curated — persisting neutral 50s would
+            # pollute the ranking, and skipping it lets a re-run retry it.
+            logger.warning("Skipping %r: scoring failed, not persisted", item["title"])
+            continue
         priority = compute_priority_score(scores)
         profile = DURATION_PROFILES[item["category"]]
         now = datetime.utcnow()
-        row = CuratedItem(
-            source_type=source_type, source_ref=stable_ref, region=region,
+        rows.append(CuratedItem(
+            source_type=source_type, source_ref=stable_ref, region=region, source_url=source_url,
             title=item["title"], summary=item["summary"], raw_text=raw_text[:6000],
             category=item["category"],
             recency_score=scores["recency_score"], popularity_score=scores["popularity_score"],
@@ -235,11 +266,10 @@ def ingest(source_type: str, region: str | None, raw_text: str, session, max_ite
             lifespan_days=profile["lifespan_days"], refresh_frequency_days=profile["refresh_frequency_days"],
             decay_rate=profile["decay_rate"], auto_archive=profile["auto_archive"],
             expires_at=now + timedelta(days=profile["lifespan_days"]),
-        )
-        session.add(row)
-        created.append(row)
-    if created:
+        ))
+    if rows:
+        session.add_all(rows)
         session.commit()
-        for row in created:
+        for row in rows:
             session.refresh(row)
-    return created
+    return rows

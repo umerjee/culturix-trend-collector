@@ -370,6 +370,9 @@ async def lifespan(_):
             "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS era_year INTEGER",
             "CREATE INDEX IF NOT EXISTS ix_toons_era_year ON toons (era_year)",
             "CREATE INDEX IF NOT EXISTS ix_toon_scripts_era_year ON toon_scripts (era_year)",
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS curated_item_id UUID",
+            "CREATE INDEX IF NOT EXISTS ix_toons_curated_item_id ON toons (curated_item_id)",
+            "ALTER TABLE curated_items ADD COLUMN IF NOT EXISTS source_url TEXT",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -2890,6 +2893,7 @@ def list_curated_items(limit: int = 100, region: Optional[str] = None, decision:
             "region": row.region, "title": row.title, "summary": row.summary,
             "category": row.category, "priority_score": row.priority_score,
             "challenge_notes": row.challenge_notes, "pipeline_decision": row.pipeline_decision,
+            "source_url": row.source_url,
             "created_at": row.created_at.isoformat() if row.created_at else None,
         } for row in rows]
     finally:
@@ -2899,7 +2903,7 @@ def list_curated_items(limit: int = 100, region: Optional[str] = None, decision:
 @app.post("/admin/curated-items/ingest", dependencies=[Depends(require_admin_secret)])
 def ingest_curated_source(payload: dict):
     """Fetch a bounded real Wikipedia/UNESCO source batch for admin review."""
-    from app.collectors.unesco import fetch_unesco_sites
+    from app.collectors.unesco import fetch_unesco_sites, unesco_source_text
     from app.collectors.wikipedia_extracts import fetch_wikipedia_extract
     from app.db import SessionLocal
     from app.services.culturix_ingestion import ingest
@@ -2909,26 +2913,27 @@ def ingest_curated_source(payload: dict):
     max_items = max(1, min(int(payload.get("max_items", 5)), 10))
     session = SessionLocal()
     try:
-        sources = []
+        sources = []  # (source_ref, raw_text, source_url)
         if source_type == "wikipedia":
             title = (payload.get("title") or "").strip()
             if not title:
                 raise HTTPException(status_code=400, detail="Wikipedia title is required")
-            source = fetch_wikipedia_extract(title)
+            source = fetch_wikipedia_extract(title, full_text=True)
             if source:
-                sources.append((source["title"], source["extract"]))
+                sources.append((source["title"], source["extract"], source.get("url")))
         elif source_type == "unesco":
             for site in fetch_unesco_sites(region, limit=max(1, min(int(payload.get("limit", 10)), 20))):
                 source_ref = str(site.get("id_no") or site.get("title") or "")
-                raw_text = "\n".join(value for value in (site.get("title"), site.get("description"), site.get("category")) if value)
+                raw_text = unesco_source_text(site)
                 if source_ref and raw_text:
-                    sources.append((source_ref, raw_text))
+                    sources.append((source_ref, raw_text, site.get("url")))
         else:
             raise HTTPException(status_code=400, detail="source_type must be wikipedia or unesco")
 
         created = []
-        for source_ref, raw_text in sources:
-            created.extend(ingest(source_type, region, raw_text, session, max_items=max_items, source_ref=source_ref))
+        for source_ref, raw_text, source_url in sources:
+            created.extend(ingest(source_type, region, raw_text, session, max_items=max_items,
+                                  source_ref=source_ref, source_url=source_url))
         return {"sources_fetched": len(sources), "items_created": len(created)}
     finally:
         session.close()
@@ -2952,12 +2957,42 @@ def decide_curated_item(item_id: str, decision: str):
         session.close()
 
 
+@app.get("/admin/curated-items/{item_id}/plan", dependencies=[Depends(require_admin_secret)])
+def plan_curated_world_feature(item_id: str):
+    """Suggested duration/beats (with reasoning and render-cost estimates) so a
+    curator can accept or override before any script is generated."""
+    from app.db import SessionLocal
+    from app.models.curated_item import CuratedItem
+    from app.services.world_production import plan_world_video, find_live_draft
+
+    session = SessionLocal()
+    try:
+        item = session.query(CuratedItem).filter_by(id=item_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Curated item not found")
+        plan = plan_world_video(item)
+        plan["existing_draft"] = bool(find_live_draft(session, item.id))
+        return plan
+    finally:
+        session.close()
+
+
 @app.post("/admin/curated-items/{item_id}/generate", dependencies=[Depends(require_admin_secret)])
-def generate_curated_world_feature(item_id: str):
-    """Generate a World script and cinematic shot plan for a selected subject."""
+def generate_curated_world_feature(item_id: str, payload: Optional[dict] = None):
+    """Generate a fact-checked World script for a selected subject. Optional
+    body: {duration_seconds, beat_count, use_host}. Does not start the paid
+    render — that is a separate action on the World Production page."""
     import threading
     from app.db import SessionLocal
     from app.models.curated_item import CuratedItem
+    from app.services.world_production import ALLOWED_DURATIONS, find_live_draft
+
+    payload = payload or {}
+    duration = payload.get("duration_seconds")
+    if duration is not None and duration not in ALLOWED_DURATIONS:
+        raise HTTPException(status_code=400, detail=f"duration_seconds must be one of {list(ALLOWED_DURATIONS)}")
+    beats = payload.get("beat_count")
+    use_host = bool(payload.get("use_host", False))
 
     session = SessionLocal()
     try:
@@ -2966,95 +3001,78 @@ def generate_curated_world_feature(item_id: str):
             raise HTTPException(status_code=404, detail="Curated item not found")
         if item.pipeline_decision == "exclude":
             raise HTTPException(status_code=400, detail="Excluded subjects cannot be generated")
+        if find_live_draft(session, item.id):
+            raise HTTPException(status_code=409, detail="A World draft already exists for this subject. Archive it first to regenerate.")
         item.pipeline_decision = "include"
         session.commit()
-        subject = {"id": str(item.id), "title": item.title, "summary": item.summary, "region": item.region, "category": item.category}
     finally:
         session.close()
 
     def _run():
         from app.db import SessionLocal as _SessionLocal
-        from app.models.character_brand import CharacterBrand
-        from app.models.toon import Toon
-        from app.models.toon_script import ToonScript
-        from app.models.trend import Trend
-        from app.services.culturetoon_script import generate_world_script, judge_script_comedy, select_thematic_host, suggest_world_duration
+        from app.services.world_production import generate_world_draft
 
         db = _SessionLocal()
         try:
-            owner_id = os.getenv("SUPERADMIN_USER_ID")
-            brand = db.query(CharacterBrand).filter_by(name="World", user_id=owner_id).first() if owner_id else None
-            if not brand:
-                logging.error("World generation skipped: reserved World brand not found")
-                return
-            trends = []
-            if subject["region"]:
-                rows = db.query(Trend).filter(Trend.region == subject["region"]).order_by(Trend.collected_at.desc()).limit(8).all()
-                trends = [{"title": row.title, "content": row.content} for row in rows]
-            category_map = {"history": "custom", "archaeology": "place", "culture": "custom", "tech": "tech", "innovation": "tech", "geopolitical": "custom", "trending": "custom", "humor": "custom"}
-            category = category_map.get(subject["category"], "custom")
-            duration_plan = suggest_world_duration(subject["title"], subject["summary"], subject["category"])
-            host = select_thematic_host(db, category, "informative")
-            result = generate_world_script(
-                region_code=subject["region"] or "", region_label=subject["region"] or "World",
-                subject_text=subject["title"], subject_category=category, trends=trends,
-                culture=None, host_variant=host, tone="informative", num_shots=duration_plan["beat_count"],
-                target_duration_seconds=duration_plan["duration_seconds"],
-            )
-            script = ToonScript(
-                brand_id=brand.id, character_variant_id=host.id if host else None,
-                character_variant_ids=[str(host.id)] if host else None,
-                hook_line=result.get("hook_line"), tone="informative", shots=result.get("shots"),
-                total_duration_seconds=result.get("total_duration_seconds"),
-                comedy_judgment=judge_script_comedy(result), generation_source="ai",
-                status="approved", is_world_content=True, subject_region=subject["region"],
-                subject_text=subject["title"], subject_category=category,
-            )
-            db.add(script)
-            db.commit()
-            db.refresh(script)
-            db.add(Toon(
-                brand_id=brand.id, character_variant_id=host.id if host else None,
-                script_id=script.id, title=subject["title"], status="idea",
-                is_world_content=True, subject_region=subject["region"],
-                subject_text=subject["title"], subject_category=category,
-            ))
-            db.commit()
-            logging.info("World subject generated: item=%s script=%s", subject["id"], script.id)
+            db_item = db.query(CuratedItem).filter_by(id=item_id).first()
+            result = generate_world_draft(db, db_item, duration_seconds=duration, beat_count=beats, use_host=use_host)
+            logging.info("World draft generated: item=%s toon=%s grounded=%s", item_id, result.get("toon_id"),
+                         result["grounding"].get("grounded"))
         except Exception:
             db.rollback()
-            logging.exception("World subject generation failed for item=%s", subject["id"])
+            logging.exception("World draft generation failed for item=%s", item_id)
         finally:
             db.close()
 
     threading.Thread(target=_run, daemon=True).start()
-    return {"status": "generating", "item_id": item_id, "message": "World script and cinematic plan generation started"}
+    return {"status": "generating", "item_id": item_id, "message": "World script generation started"}
 
 
 @app.get("/admin/world-production", dependencies=[Depends(require_admin_secret)])
 def list_world_production(limit: int = 100):
     from app.db import SessionLocal
+    from app.models.curated_item import CuratedItem
     from app.models.toon import Toon
     from app.models.toon_script import ToonScript
+    from app.services.world_production import estimate_render, source_label
     session = SessionLocal()
     try:
         rows = (
             session.query(Toon, ToonScript)
             .join(ToonScript, Toon.script_id == ToonScript.id)
-            .filter(Toon.is_world_content.is_(True))
+            .filter(Toon.is_world_content.is_(True), Toon.status != "archived")
             .order_by(Toon.created_at.desc())
             .limit(max(1, min(limit, 200)))
             .all()
         )
-        return [{
-            "id": str(toon.id), "title": toon.title, "status": toon.status,
-            "final_video_url": toon.final_video_url, "raw_video_url": toon.raw_video_url,
-            "subject_region": toon.subject_region, "subject_category": toon.subject_category,
-            "subject_text": toon.subject_text, "script_id": str(script.id),
-            "duration_seconds": script.total_duration_seconds,
-            "shot_count": len(script.shots or []),
-            "created_at": toon.created_at.isoformat() if toon.created_at else None,
-        } for toon, script in rows]
+        item_ids = [t.curated_item_id for t, _ in rows if t.curated_item_id]
+        items = {i.id: i for i in session.query(CuratedItem).filter(CuratedItem.id.in_(item_ids)).all()} if item_ids else {}
+        out = []
+        for toon, script in rows:
+            item = items.get(toon.curated_item_id)
+            judgment = script.comedy_judgment or {}
+            duration = script.total_duration_seconds
+            out.append({
+                "id": str(toon.id), "title": toon.title, "status": toon.status,
+                "final_video_url": toon.final_video_url, "raw_video_url": toon.raw_video_url,
+                "subject_region": toon.subject_region, "subject_category": toon.subject_category,
+                "subject_text": toon.subject_text, "script_id": str(script.id),
+                "duration_seconds": duration,
+                "shot_count": len(script.shots or []),
+                "hook_line": script.hook_line,
+                "narration": [s.get("dialogue") for s in (script.shots or []) if s.get("dialogue")],
+                "grounding": judgment.get("grounding"),
+                "craft_score": judgment.get("comedy_score"),
+                "has_host": bool(script.character_variant_id),
+                "source_type": source_label(item) if item else None,
+                "source_url": item.source_url if item else None,
+                "render_estimate": estimate_render(duration) if duration else None,
+                "generation_error": toon.generation_error,
+                "publish_recommended": toon.publish_recommended,
+                "qa_results": toon.qa_results,
+                "created_at": toon.created_at.isoformat() if toon.created_at else None,
+            })
+        return out
     finally:
         session.close()
 
@@ -3070,11 +3088,35 @@ def generate_world_production_video(toon_id: str, background_tasks: BackgroundTa
         toon = session.query(Toon).filter_by(id=toon_id, is_world_content=True).first()
         if not toon:
             raise HTTPException(status_code=404, detail="World draft not found")
+        if toon.status == "animating":
+            raise HTTPException(status_code=409, detail="A render is already in progress for this draft")
         brand = session.query(CharacterBrand).filter_by(id=toon.brand_id).first()
         toon.status = "animating"
+        toon.generation_error = None
         session.commit()
         background_tasks.add_task(generate_video_for_toon_selfhosted, user_id=str(brand.user_id) if brand else os.getenv("SUPERADMIN_USER_ID"), toon_id=toon_id)
         return {"status": "generating", "toon_id": toon_id}
+    finally:
+        session.close()
+
+
+@app.post("/admin/world-production/{toon_id}/unpublish", dependencies=[Depends(require_admin_secret)])
+def unpublish_world_production(toon_id: str):
+    """Archive a World draft/feature: it leaves the public /world API (which
+    only serves status='ready') and the production list, and frees its subject
+    to be regenerated."""
+    from app.db import SessionLocal
+    from app.models.toon import Toon
+    session = SessionLocal()
+    try:
+        toon = session.query(Toon).filter_by(id=toon_id, is_world_content=True).first()
+        if not toon:
+            raise HTTPException(status_code=404, detail="World draft not found")
+        if toon.status == "animating":
+            raise HTTPException(status_code=409, detail="Cannot archive while a render is in progress")
+        toon.status = "archived"
+        session.commit()
+        return {"status": "archived", "toon_id": toon_id}
     finally:
         session.close()
 

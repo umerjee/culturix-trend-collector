@@ -609,3 +609,30 @@ with no cultural-context depth in the prompt until someone backfills more
 via `POST /api/culturetoons/cultures`. Script generation treats `Culture`
 as fully optional, so this degrades gracefully rather than blocking
 generation.
+
+## World Feature production (Wikipedia / UNESCO → video)
+
+Flow: **ingest** (`scripts/ingest_and_score.py`, `scripts/bulk_ingest_world_subjects.py`, or Admin → Subject
+Library) → curator picks a subject → **plan** (`GET /admin/curated-items/{id}/plan`: suggested duration, beats,
+reasoning, render-cost estimate) → **script** (`app/services/world_production.py::generate_world_draft`) →
+**render** (Admin → World Production → Generate video, the only paid step) → publishes when `status="ready"`.
+
+Rules that came from real failures — keep them:
+- **The curated source text must reach the script prompt.** `generate_world_script(source_facts=...)` puts it in
+  a `VERIFIED SOURCE MATERIAL` block; passing only the title makes the model invent dates and figures.
+- **Every script is fact-checked** (`judge_world_grounding`, a separate LLM call) and revised once if it makes
+  claims the source doesn't back. The result is stored in `toon_scripts.comedy_judgment["grounding"]` and shown
+  on the World Production page. It is advisory: the curator decides.
+- **UNESCO descriptions are ~500 characters — too thin to hook on.** `unesco_source_text()` appends the matching
+  Wikipedia article, only when a search hit shares a significant word with the site name (a wrong-article match
+  would be "fact-checked" as supported). No confident match → UNESCO text alone.
+- **Duration is visible and overridable before generating** (15/20/30/45/60s). A thin source caps the
+  suggestion at 20s rather than padding it. Overriding the duration re-derives beats (`BEATS_FOR_DURATION`) so a
+  shot never exceeds the renderer's ~12s segment.
+- **No on-screen host by default** (subject footage + narration). A host is opt-in (`use_host`).
+- **A finished render is public immediately** (`/world/*` serves `status="ready"`). "Unpublish" archives it.
+- `ingest()` releases its DB transaction before the slow LLM scoring calls (Supabase drops idle pooled
+  connections mid-transaction) and never persists an item whose scoring failed — a neutral 50/100 would
+  pollute the ranking; re-running retries it.
+- Provenance: `toons.curated_item_id` (duplicate-draft guard, public attribution) and
+  `curated_items.source_url`. Rows ingested before those columns existed: `scripts/backfill_curated_source_urls.py`.
