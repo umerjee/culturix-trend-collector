@@ -7,7 +7,7 @@ export async function GET(req: Request) {
   try {
     const res = await fetch(`${RAILWAY_API_BASE}/world/trends/digest${search}`, {
       cache: "no-store",
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(30000),
     });
     const data = await res.json().catch(() => ({}));
     return NextResponse.json(data, { status: res.status });

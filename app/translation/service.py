@@ -20,6 +20,7 @@ Guarantees:
 """
 import hashlib
 import logging
+import os
 import re
 from dataclasses import dataclass
 
@@ -28,7 +29,12 @@ from app.translation.languages import base_language, normalize_language
 
 logger = logging.getLogger("culturix.translation")
 
-DEFAULT_ENGINE = "google"
+# Default order: the free engine first, the LLM only for what it could not do.
+ENGINE_CHAIN = ("google", "llm")
+# Ceiling on texts sent to the (paid) LLM in one call, so a Google outage during a
+# large ingestion run cannot produce an unbounded bill. The rest are reported as
+# failed and retried by the next run.
+LLM_MAX_TEXTS = int(os.getenv("TRANSLATION_LLM_MAX_TEXTS", "1500"))
 # Language detection is unreliable on short strings; only trust it to skip a
 # request when there is enough text.
 _MIN_CHARS_TO_TRUST_DETECTION = 40
@@ -81,8 +87,9 @@ def _already_in_target(text: str, target: str, source: str) -> bool:
 
 # ── cache ───────────────────────────────────────────────────────────────────
 
-def _cache_get(hashes: list[str], target: str, engine: str) -> dict[str, tuple[str, str | None]]:
-    """{hash: (translated_text, source_lang)} for what is cached; {} on any DB problem."""
+def _cache_get(hashes: list[str], target: str, chain: tuple[str, ...]) -> dict[str, tuple[str, str | None, str]]:
+    """{hash: (translated_text, source_lang, engine)} for what is cached under any
+    engine in `chain` (earlier engines win); {} on any DB problem."""
     if not hashes:
         return {}
     try:
@@ -92,8 +99,11 @@ def _cache_get(hashes: list[str], target: str, engine: str) -> dict[str, tuple[s
         try:
             rows = session.query(TranslationCache).filter(
                 TranslationCache.text_hash.in_(hashes), TranslationCache.target_lang == target,
-                TranslationCache.engine == engine).all()
-            return {r.text_hash: (r.translated_text, r.source_lang) for r in rows}
+                TranslationCache.engine.in_(chain)).all()
+            found: dict[str, tuple[str, str | None, str]] = {}
+            for r in sorted(rows, key=lambda r: chain.index(r.engine), reverse=True):  # best engine last -> wins
+                found[r.text_hash] = (r.translated_text, r.source_lang, r.engine)
+            return found
         finally:
             session.close()
     except Exception:
@@ -126,9 +136,14 @@ def _cache_put(entries: list[tuple[str, str, int]], target: str, engine: str, so
 
 # ── public API ──────────────────────────────────────────────────────────────
 
+def _chain_for(engine: str | None) -> tuple[str, ...]:
+    return ENGINE_CHAIN if engine in (None, "auto") else (engine,)
+
+
 def translate_many(texts: list[str], target: str, source: str = "auto",
-                   engine: str = DEFAULT_ENGINE) -> list[TranslationResult]:
-    """Translate several texts into `target`; result i corresponds to texts[i]."""
+                   engine: str | None = None) -> list[TranslationResult]:
+    """Translate several texts into `target`; result i corresponds to texts[i].
+    `engine` None/"auto" tries Google then the LLM; "google" or "llm" forces one."""
     canonical = normalize_language(target)
     if canonical is None:
         return [TranslationResult(text=t, target=target, ok=False, translated=False,
@@ -149,53 +164,84 @@ def translate_many(texts: list[str], target: str, source: str = "auto",
 
     unique = list(pending)
     hashes = {t: _hash(t) for t in unique}
-    cached = _cache_get(list(hashes.values()), canonical, engine)
+    chain = _chain_for(engine)
+    cached = _cache_get(list(hashes.values()), canonical, chain)
     misses = []
     for text in unique:
         hit = cached.get(hashes[text])
         if hit:
             for i in pending[text]:
                 results[i] = TranslationResult(text=hit[0], target=canonical, ok=True, translated=True,
-                                               cached=True, engine=engine, source=hit[1])
+                                               cached=True, engine=hit[2], source=hit[1])
         else:
             misses.append(text)
 
     if misses:
-        outcome = _translate_misses(misses, hashes, canonical, src, engine)
+        outcome = _translate_misses(misses, hashes, canonical, src, chain)
         for text, result in zip(misses, outcome):
             for i in pending[text]:
                 results[i] = result
     return results  # type: ignore[return-value]
 
 
-def _translate_misses(misses: list[str], hashes: dict[str, str], target: str, source: str,
-                      engine_name: str) -> list[TranslationResult]:
+def _run_engine(engine_name: str, texts: list[str], hashes: dict[str, str], target: str,
+                source: str) -> list[TranslationResult]:
+    """One engine over `texts`: a result per text, successes cached, failures flagged."""
+    def failed(error: str, subset: list[str] | None = None) -> list[TranslationResult]:
+        return [TranslationResult(text=t, target=target, ok=False, translated=False, engine=engine_name,
+                                  error=error) for t in (subset if subset is not None else texts)]
+
     engine = get_engine(engine_name)
+    send, over_cap = texts, []
+    if engine_name == "llm" and len(texts) > LLM_MAX_TEXTS:
+        send, over_cap = texts[:LLM_MAX_TEXTS], texts[LLM_MAX_TEXTS:]
+        logger.warning("LLM translation capped at %d of %d texts", LLM_MAX_TEXTS, len(texts))
     try:
-        translated = engine.translate_batch(misses, target, source)
+        translated = engine.translate_batch(send, target, source)
     except EngineError as exc:
         kind = "unavailable" if isinstance(exc, EngineUnavailable) else "failed"
-        logger.warning("Translation %s for %d text(s) -> %s: %s", kind, len(misses), target, exc)
-        return [TranslationResult(text=t, target=target, ok=False, translated=False, engine=engine_name,
-                                  error=str(exc)) for t in misses]
+        logger.warning("Translation (%s) %s for %d text(s) -> %s: %s", engine_name, kind, len(send), target, exc)
+        return failed(str(exc)) if not over_cap else failed(str(exc), send) + failed("LLM fallback limit reached", over_cap)
     except Exception as exc:  # an engine bug must not break a page view
-        logger.exception("Unexpected translation error")
-        return [TranslationResult(text=t, target=target, ok=False, translated=False, engine=engine_name,
-                                  error=f"{type(exc).__name__}: {exc}"[:200]) for t in misses]
+        logger.exception("Unexpected translation error (%s)", engine_name)
+        return failed(f"{type(exc).__name__}: {exc}"[:200])
 
     results, to_cache = [], []
-    for original, output in zip(misses, translated):
+    for original, output in zip(send, translated):
         if not output or not output.strip():
             results.append(TranslationResult(text=original, target=target, ok=False, translated=False,
                                              engine=engine_name, error="Empty translation"))
             continue
-        src_lang = None if source == "auto" else source
-        results.append(TranslationResult(text=output, target=target, ok=True, translated=True,
-                                         engine=engine_name, source=src_lang))
+        results.append(TranslationResult(text=output, target=target, ok=True, translated=True, engine=engine_name,
+                                         source=None if source == "auto" else source))
         to_cache.append((hashes[original], output, len(original)))
     _cache_put(to_cache, target, engine_name, None if source == "auto" else source)
-    return results
+    return results + failed("LLM fallback limit reached", over_cap) if over_cap else results
 
 
-def translate(text: str, target: str, source: str = "auto", engine: str = DEFAULT_ENGINE) -> TranslationResult:
+def _translate_misses(misses: list[str], hashes: dict[str, str], target: str, source: str,
+                      chain: tuple[str, ...]) -> list[TranslationResult]:
+    """Run the engine chain: each engine only sees what the previous ones failed on."""
+    final: dict[str, TranslationResult] = {}
+    errors: dict[str, list[str]] = {}
+    remaining = list(misses)
+    for name in chain:
+        if not remaining:
+            break
+        outcome = _run_engine(name, remaining, hashes, target, source)
+        still = []
+        for text, result in zip(remaining, outcome):
+            if result.ok:
+                final[text] = result
+            else:
+                errors.setdefault(text, []).append(f"{name}: {result.error}")
+                still.append(text)
+        remaining = still
+    for text in remaining:
+        final[text] = TranslationResult(text=text, target=target, ok=False, translated=False,
+                                        engine=chain[-1], error="; ".join(errors.get(text, []))[:300])
+    return [final[t] for t in misses]
+
+
+def translate(text: str, target: str, source: str = "auto", engine: str | None = None) -> TranslationResult:
     return translate_many([text], target, source, engine)[0]
