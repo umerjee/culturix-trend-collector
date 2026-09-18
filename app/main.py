@@ -3031,6 +3031,54 @@ def generate_curated_world_feature(item_id: str):
     return {"status": "generating", "item_id": item_id, "message": "World script and cinematic plan generation started"}
 
 
+@app.get("/admin/world-production", dependencies=[Depends(require_admin_secret)])
+def list_world_production(limit: int = 100):
+    from app.db import SessionLocal
+    from app.models.toon import Toon
+    from app.models.toon_script import ToonScript
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(Toon, ToonScript)
+            .join(ToonScript, Toon.script_id == ToonScript.id)
+            .filter(Toon.is_world_content.is_(True))
+            .order_by(Toon.created_at.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+        return [{
+            "id": str(toon.id), "title": toon.title, "status": toon.status,
+            "final_video_url": toon.final_video_url, "raw_video_url": toon.raw_video_url,
+            "subject_region": toon.subject_region, "subject_category": toon.subject_category,
+            "subject_text": toon.subject_text, "script_id": str(script.id),
+            "duration_seconds": script.total_duration_seconds,
+            "shot_count": len(script.shots or []),
+            "created_at": toon.created_at.isoformat() if toon.created_at else None,
+        } for toon, script in rows]
+    finally:
+        session.close()
+
+
+@app.post("/admin/world-production/{toon_id}/generate-video", dependencies=[Depends(require_admin_secret)])
+def generate_world_production_video(toon_id: str, background_tasks: BackgroundTasks):
+    from app.db import SessionLocal
+    from app.models.character_brand import CharacterBrand
+    from app.models.toon import Toon
+    from app.services.culturetoon_selfhosted_video import generate_video_for_toon_selfhosted
+    session = SessionLocal()
+    try:
+        toon = session.query(Toon).filter_by(id=toon_id, is_world_content=True).first()
+        if not toon:
+            raise HTTPException(status_code=404, detail="World draft not found")
+        brand = session.query(CharacterBrand).filter_by(id=toon.brand_id).first()
+        toon.status = "animating"
+        session.commit()
+        background_tasks.add_task(generate_video_for_toon_selfhosted, user_id=str(brand.user_id) if brand else os.getenv("SUPERADMIN_USER_ID"), toon_id=toon_id)
+        return {"status": "generating", "toon_id": toon_id}
+    finally:
+        session.close()
+
+
 # ── User approval endpoints ────────────────────────────────────────────────────
 
 @app.get("/admin/users", dependencies=[Depends(require_admin_secret)])
