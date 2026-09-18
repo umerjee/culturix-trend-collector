@@ -47,6 +47,31 @@ from app.collectors.region_codes import normalize_region  # noqa: E402
 from app.services.culturetoon_script import generate_world_script, judge_script_comedy  # noqa: E402
 
 
+# Platforms whose userbase skews meaningfully younger than the others this
+# app collects from (Reddit/Twitter/YouTube/Google Trends/Xiaohongshu) —
+# TikTok is the one clear, real, already-collected signal for "this trend
+# data leans Gen-Z," not a fabricated demographic field. A real signal from
+# real Trend rows, not a guess — see app/collectors/*.py for what each
+# collector tags Trend.platform as.
+_YOUNG_SKEWING_PLATFORMS = {"tiktok"}
+
+
+def _suggest_category_from_trends(trend_rows: list) -> "str | None":
+    """Suggests 'genz' when the region's own grounding trends (the same
+    rows generate_world_script uses for factual context) are TikTok-
+    dominated. Returns None — no suggestion — when there isn't enough
+    signal (too few rows, or no clear platform majority), so a low-
+    confidence guess never overrides the admin's own judgment silently;
+    see main()'s explicit-vs-default handling below."""
+    if len(trend_rows) < 3:
+        return None
+    young = sum(1 for t in trend_rows if (t.platform or "").lower() in _YOUNG_SKEWING_PLATFORMS)
+    share = young / len(trend_rows)
+    if share >= 0.5:
+        return "genz"
+    return None
+
+
 def _serialize_culture(c: Culture) -> dict:
     return {
         "name": c.name,
@@ -62,7 +87,12 @@ def main() -> int:
     parser.add_argument("--region", required=True, help="ISO-2 region code (matched against Trend.region), may be blank for a subject with no strong single-country tie")
     parser.add_argument("--region-label", required=True, help="Human-readable region name for the prompt/display, e.g. 'Iran' or 'The Pacific Ocean'")
     parser.add_argument("--subject", required=True, help="The subject itself, e.g. 'The Strait of Hormuz', 'A solar eclipse', 'Deep-sea bioluminescent creatures'")
-    parser.add_argument("--category", default="place", choices=["place", "phenomenon", "species", "tech", "custom"])
+    parser.add_argument("--category", default=None, choices=["place", "phenomenon", "species", "tech", "genz", "custom"],
+                         help="One merged filter tag covering both what the Feature is about (place/phenomenon/species/tech) "
+                              "and who it's likely to resonate with (genz) — a curation/discovery tag only, does not change "
+                              "how the script is written (always tone=informative unless --tone overrides it). Omit to let "
+                              "the region's real trend-platform mix suggest 'genz' when TikTok-dominated (falls back to "
+                              "'place' with no strong signal) — see _suggest_category_from_trends.")
     parser.add_argument("--culture-name", default=None, help="Culture.name to attach for cultural context, if one already exists in the library (see POST /api/culturetoons/cultures)")
     parser.add_argument("--host-variant-id", default=None, help="Optional CharacterVariant UUID to use as an on-screen regional host/narrator")
     parser.add_argument("--tone", default="informative", choices=["informative", "educational", "explainer", "inspirational",
@@ -100,6 +130,7 @@ def main() -> int:
             print(f"Created reserved 'World' CharacterBrand: {world_brand.id}")
 
         trends = []
+        trend_rows = []
         if region_code:
             trend_rows = (
                 session.query(Trend)
@@ -110,6 +141,15 @@ def main() -> int:
             )
             trends = [{"title": t.title, "content": t.content} for t in trend_rows]
         print(f"Grounding trends for region={region_code or '(none)'}: {len(trends)} found")
+
+        suggested_category = _suggest_category_from_trends(trend_rows)
+        if args.category:
+            category = args.category
+            if suggested_category and suggested_category != category:
+                print(f"Note: trend platform mix suggests category '{suggested_category}', using your explicit --category '{category}' instead")
+        else:
+            category = suggested_category or "place"
+            print(f"No --category given — {'trend-signal suggestion' if suggested_category else 'no strong platform signal, defaulting'}: {category}")
 
         culture = None
         if args.culture_name:
@@ -128,10 +168,10 @@ def main() -> int:
         else:
             print("Host: none (pure subject footage, voiceover narration)")
 
-        print(f"Generating script for subject: {args.subject!r} ({args.category}, tone={args.tone})...")
+        print(f"Generating script for subject: {args.subject!r} ({category}, tone={args.tone})...")
         result = generate_world_script(
             region_code=region_code or "", region_label=args.region_label,
-            subject_text=args.subject, subject_category=args.category,
+            subject_text=args.subject, subject_category=category,
             trends=trends, culture=culture, host_variant=host_variant,
             tone=args.tone, num_shots=args.num_shots, target_duration_seconds=args.duration,
         )
@@ -158,7 +198,7 @@ def main() -> int:
             is_world_content=True,
             subject_region=region_code,
             subject_text=args.subject,
-            subject_category=args.category,
+            subject_category=category,
             culture_id=culture_row.id if args.culture_name and culture else None,
         )
         session.add(script)
@@ -175,7 +215,7 @@ def main() -> int:
             is_world_content=True,
             subject_region=region_code,
             subject_text=args.subject,
-            subject_category=args.category,
+            subject_category=category,
         )
         session.add(toon)
         session.commit()

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Landmark, Sparkles, Fish, Cpu, LayoutGrid } from "lucide-react";
+import { Landmark, Sparkles, Fish, Cpu, Flame, LayoutGrid } from "lucide-react";
 import { CATEGORY_LABELS } from "@/lib/worldTypes";
 
 const CATEGORY_ICONS: Record<string, typeof Landmark> = {
@@ -7,12 +7,13 @@ const CATEGORY_ICONS: Record<string, typeof Landmark> = {
   phenomenon: Sparkles,
   species: Fish,
   tech: Cpu,
+  genz: Flame,
   custom: LayoutGrid,
 };
 
 export default function CategoryGrid() {
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
       {Object.entries(CATEGORY_LABELS).map(([key, label]) => {
         const Icon = CATEGORY_ICONS[key] || LayoutGrid;
         return (

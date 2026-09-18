@@ -121,7 +121,14 @@ class ToonScript(Base):
     is_world_content = Column(Boolean, nullable=False, default=False)
     subject_region = Column(String(2), nullable=True, index=True)  # ISO-2, see region_codes.normalize_region
     subject_text = Column(Text, nullable=True)
-    subject_category = Column(String(30), nullable=True, index=True)  # place|phenomenon|species|tech|custom
+    # Free text, not a DB enum — one merged filter tag covering both WHAT a
+    # Feature is about (place|phenomenon|species|tech) and WHO it's likely
+    # to resonate with (genz, more to follow) — a single flat vocabulary for
+    # the map/grid filter chips, not two separate dimensions. Purely a
+    # curation/discovery tag; does not change tone/how the script is
+    # written. See scripts/generate_world_feature.py --category and
+    # culturix-web/src/lib/worldTypes.ts's CATEGORY_LABELS.
+    subject_category = Column(String(30), nullable=True, index=True)
     trend_source_id = Column(Integer, nullable=True)
     trend_source_type = Column(String(10), nullable=True)
     culture_id = Column(UUID(as_uuid=True), nullable=True)  # optional, same non-enforced-FK convention as CharacterVariant.culture_id
