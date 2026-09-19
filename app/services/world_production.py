@@ -133,7 +133,8 @@ def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_
     from app.models.toon_script import ToonScript
     from app.models.trend import Trend
     from app.services.culturetoon_script import (
-        generate_world_script, judge_script_comedy, judge_world_grounding, select_thematic_host,
+        check_world_visuals, generate_world_script, judge_script_comedy, judge_world_grounding,
+        normalize_world_people, select_thematic_host,
     )
 
     if persist and find_live_draft(db, item.id):
@@ -159,28 +160,41 @@ def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_
     facts = build_source_facts(item)
     label = source_label(item)
 
-    def _write(avoid=None):
+    def _write(avoid=None, fixes=None):
         return generate_world_script(
             region_code=item.region or "", region_label=region_name(item.region),
             subject_text=item.title, subject_category=category, trends=trends,
             culture=None, host_variant=host, tone="informative", num_shots=beat_count,
             target_duration_seconds=duration_seconds, source_facts=facts, source_label=label,
-            avoid_claims=avoid,
+            avoid_claims=avoid, visual_fixes=fixes,
         )
 
     result = _write()
+    # The renderer says "no people in frame" unless a shot has people="distant": a visual that
+    # shows people without it contradicts its own render prompt. One rewrite, then normalize.
+    problems = check_world_visuals(result.get("shots"))
+    if problems:
+        logger.info("World draft %r broke the people rule in %d shot(s); revising once", item.title, len(problems))
+        revised = _write(fixes=problems)
+        if len(check_world_visuals(revised.get("shots"))) <= len(problems):
+            result = revised
+    result["shots"], visual_warnings = normalize_world_people(result.get("shots"))
+
     grounding = judge_world_grounding(result, facts)
     if grounding["unsupported_claims"]:
         logger.info("World draft %r had %d unsupported claim(s); revising once", item.title,
                     len(grounding["unsupported_claims"]))
-        revised = _write(avoid=grounding["unsupported_claims"])
+        revised = _write(avoid=grounding["unsupported_claims"], fixes=check_world_visuals(result.get("shots")) or None)
+        revised["shots"], revised_warnings = normalize_world_people(revised.get("shots"))
         revised_grounding = judge_world_grounding(revised, facts)
         if len(revised_grounding["unsupported_claims"]) <= len(grounding["unsupported_claims"]):
-            result, grounding = revised, revised_grounding
+            result, grounding, visual_warnings = revised, revised_grounding, revised_warnings
 
     judgment = judge_script_comedy(result)
     judgment["grounding"] = grounding
     judgment["duration_plan"] = {"duration_seconds": duration_seconds, "beat_count": beat_count}
+    if visual_warnings:
+        judgment["visual_warnings"] = visual_warnings
 
     summary = {
         "title": item.title, "duration_seconds": result.get("total_duration_seconds"),

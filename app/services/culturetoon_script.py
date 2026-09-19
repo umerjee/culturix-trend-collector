@@ -14,6 +14,7 @@ app/media/kling_omni.py / app/services/culturetoon_element.py).
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 from itertools import zip_longest
 from typing import Optional
@@ -946,7 +947,8 @@ Return ONLY valid JSON with exactly these keys:
   location (string), visual (string), lighting (string), blocking (string), action (string),
   shot_focus (string), subject_visual (string or null), voiceover (boolean),
   expression (string or null), dialogue (string or null),
-  dialogue_delivery (string or null), shot_type (string), camera_movement (string or null){scene_index_key}{speaker_key}
+  dialogue_delivery (string or null), shot_type (string), camera_movement (string or null),
+  people (string: "none", or "distant" only where the PEOPLE rule in the context allows it; otherwise always "none"){scene_index_key}{speaker_key}
 
 Return ONLY the JSON object, no other text."""
 
@@ -1559,7 +1561,7 @@ def generate_toon_script_from_idea(idea: str, variants: Optional[list] = None, t
 def _world_context(region_label: str, subject_text: str, subject_category: Optional[str],
                     trends: Optional[list] = None, culture: Optional[dict] = None,
                     source_facts: Optional[str] = None, source_label: Optional[str] = None,
-                    avoid_claims: Optional[list] = None) -> str:
+                    avoid_claims: Optional[list] = None, visual_fixes: Optional[list] = None) -> str:
     """Builds the "context" string for generate_world_script, in the same
     role _source_type_and_context plays for the Persona/Cluster path — the
     thing a subject-centric World Feature is grounded in isn't a trending
@@ -1610,6 +1612,11 @@ def _world_context(region_label: str, subject_text: str, subject_category: Optio
             "\n\nA previous draft made these UNSUPPORTED claims — do not repeat them:\n"
             + "\n".join(f"- {c}" for c in avoid_claims[:6])
         )
+    if visual_fixes:
+        context += (
+            "\n\nYour previous draft broke the PEOPLE rule. Fix exactly these and change nothing else:\n"
+            + "\n".join(f"- {f}" for f in visual_fixes[:6])
+        )
     if culture:
         context += "\n" + _culture_context([culture])
     return context
@@ -1659,6 +1666,58 @@ def select_thematic_host(session, category: Optional[str], tone: str):
     return variant
 
 
+_PEOPLE_WORDS = re.compile(
+    r"\b(soldiers?|troops?|infantry(?:men)?|paratroopers?|marines?|sailors?|airmen|men|women|people|persons?|"
+    r"crowds?|civilians?|children|figures?|crews?|teams?|faces?|hands?)\b", re.IGNORECASE)
+_FACE_WORDS = re.compile(r"\b(faces?|facial|close-?ups?|eyes|expressions?)\b", re.IGNORECASE)
+
+
+def check_world_visuals(shots: Optional[list]) -> list[str]:
+    """Problems in a hostless World script's subject shots against the PEOPLE rule: the
+    renderer says "no people in frame" unless a shot has people="distant", so a visual that
+    shows people without it contradicts its own render prompt, and a "distant" shot must not
+    ask for faces or close-ups. [] when the visuals are consistent."""
+    problems = []
+    for shot in shots or []:
+        if (shot.get("shot_focus") or "").strip().lower() != "subject":
+            continue
+        visual = shot.get("subject_visual") or ""
+        people = (shot.get("people") or "none").strip().lower()
+        number = shot.get("shot_number")
+        if people == "distant":
+            if _FACE_WORDS.search(visual):
+                problems.append(f'Shot {number}: people is "distant" but the visual mentions faces, eyes or a '
+                                "close-up. Show only small, distant, faceless figures in a wide shot.")
+        elif _PEOPLE_WORDS.search(visual):
+            problems.append(f'Shot {number}: the visual shows people but "people" is "none". Either set '
+                            '"people" to "distant" and show them only as small faceless figures in a wide '
+                            "shot, or remove every person from the visual.")
+    return problems
+
+
+def normalize_world_people(shots: Optional[list]) -> tuple[list, list[str]]:
+    """Make each subject shot's `people` value consistent with its visual, so the render prompt
+    never contradicts itself. Unknown values become "none"; a visual that shows people gets
+    "distant". Returns (shots, warnings) — warnings list anything that could not be fixed."""
+    warnings = []
+    out = []
+    for shot in shots or []:
+        shot = dict(shot)
+        if (shot.get("shot_focus") or "").strip().lower() == "subject":
+            people = (shot.get("people") or "none").strip().lower()
+            visual = shot.get("subject_visual") or ""
+            if people not in ("none", "distant"):
+                people = "none"
+            if people == "none" and _PEOPLE_WORDS.search(visual):
+                people = "distant"
+                warnings.append(f"Shot {shot.get('shot_number')}: visual shows people; people set to distant")
+            if people == "distant" and _FACE_WORDS.search(visual):
+                warnings.append(f"Shot {shot.get('shot_number')}: distant shot still mentions faces or a close-up")
+            shot["people"] = people
+        out.append(shot)
+    return out, warnings
+
+
 def suggest_world_duration(subject_text: str, subject_summary: str = "",
                            subject_category: Optional[str] = None) -> dict:
     """Suggest a short-form duration and narrative beat count for a subject.
@@ -1698,7 +1757,8 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
                            tone: str = "informative", num_shots: int = 4,
                            target_duration_seconds: int = 20,
                            source_facts: Optional[str] = None, source_label: Optional[str] = None,
-                           avoid_claims: Optional[list] = None) -> dict:
+                           avoid_claims: Optional[list] = None,
+                           visual_fixes: Optional[list] = None) -> dict:
     """Generates a World Feature script — a subject-centric video (a place,
     phenomenon, or species is the star) grounded in real region-filtered
     Trend rows and (optionally) the shared Culture library, for the public
@@ -1723,7 +1783,8 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
     Feature genuinely calls for a non-informative register."""
     variants = [host_variant] if host_variant is not None else []
     context = _world_context(region_label, subject_text, subject_category, trends, culture,
-                             source_facts=source_facts, source_label=source_label, avoid_claims=avoid_claims)
+                             source_facts=source_facts, source_label=source_label, avoid_claims=avoid_claims,
+                             visual_fixes=visual_fixes)
     if not variants:
         # cast_line is empty with no variants (see _cast_line), which on its
         # own leaves the craft guidance's "use the cast to carry the

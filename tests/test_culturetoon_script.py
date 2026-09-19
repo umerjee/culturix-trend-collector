@@ -1381,3 +1381,61 @@ class TestRenderCostEstimate:
         """The real 40s render cost $0.90; the estimate must land near it."""
         from app.services.culturetoon_usage import estimated_render_cost
         assert 0.80 <= float(estimated_render_cost(40)) <= 1.00
+
+
+class TestWorldPeopleRule:
+    """The renderer says "no people in frame" unless a shot has people="distant"."""
+
+    @staticmethod
+    def _shot(visual, people=None, focus="subject", n=1):
+        shot = {"shot_number": n, "shot_focus": focus, "subject_visual": visual}
+        if people is not None:
+            shot["people"] = people
+        return shot
+
+    def test_a_people_visual_without_the_flag_is_a_problem(self):
+        from app.services.culturetoon_script import check_world_visuals
+        problems = check_world_visuals([self._shot("Soldiers advancing up the beach")])
+        assert len(problems) == 1 and "Shot 1" in problems[0] and '"people" is "none"' in problems[0]
+
+    def test_an_empty_landscape_is_fine(self):
+        from app.services.culturetoon_script import check_world_visuals
+        assert check_world_visuals([self._shot("Waves breaking on an empty beach with wooden stakes")]) == []
+
+    def test_distant_people_are_fine_but_not_faces_or_close_ups(self):
+        from app.services.culturetoon_script import check_world_visuals
+        assert check_world_visuals([self._shot("Small figures wading ashore in a wide shot", "distant")]) == []
+        bad = check_world_visuals([self._shot("Close-up of the determined faces of the soldiers", "distant")])
+        assert len(bad) == 1 and "faces" in bad[0]
+
+    def test_character_shots_are_not_checked(self):
+        from app.services.culturetoon_script import check_world_visuals
+        assert check_world_visuals([self._shot("A man talking to camera", focus="character")]) == []
+
+    def test_normalize_flags_people_visuals_and_coerces_unknown_values(self):
+        from app.services.culturetoon_script import normalize_world_people
+        shots, warnings = normalize_world_people([
+            self._shot("Soldiers on the beach", n=1), self._shot("An empty beach", "crowd", n=2),
+            self._shot("A ship at sea", "none", n=3), self._shot("Faces of soldiers", "distant", n=4),
+        ])
+        assert [s["people"] for s in shots] == ["distant", "none", "none", "distant"]
+        assert any("Shot 1" in w and "set to distant" in w for w in warnings)
+        assert any("Shot 4" in w and "faces" in w for w in warnings)
+
+    def test_normalize_does_not_mutate_its_input_or_touch_character_shots(self):
+        from app.services.culturetoon_script import normalize_world_people
+        original = [self._shot("A man talking", focus="character")]
+        shots, warnings = normalize_world_people(original)
+        assert "people" not in shots[0] and "people" not in original[0] and warnings == []
+
+    def test_schema_lists_people_so_the_model_emits_it(self, mocker):
+        from app.services.culturetoon_script import generate_world_script
+        client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_world_script(region_code="FR", region_label="France", subject_text="D-Day landings")
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert 'people (string: "none"' in prompt
+
+    def test_visual_fixes_reach_the_prompt(self):
+        from app.services.culturetoon_script import _world_context
+        ctx = _world_context("France", "D-Day", "custom", visual_fixes=["Shot 2: shows faces"])
+        assert "broke the PEOPLE rule" in ctx and "Shot 2: shows faces" in ctx

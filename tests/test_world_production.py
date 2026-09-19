@@ -88,6 +88,33 @@ class TestGenerateDraft:
         result = wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, use_host=True, persist=False)
         assert llm.host.call_count == 1 and result["host"] is True
 
+    def test_a_people_visual_without_the_flag_is_rewritten_once_with_the_problems(self, llm, mocker):
+        bad = {"hook_line": "H", "total_duration_seconds": 30, "shots": [
+            {"shot_number": 1, "shot_focus": "subject", "subject_visual": "Soldiers advancing", "dialogue": "x"}]}
+        good = {"hook_line": "H", "total_duration_seconds": 30, "shots": [
+            {"shot_number": 1, "shot_focus": "subject", "subject_visual": "Small figures on a wide beach",
+             "people": "distant", "dialogue": "x"}]}
+        llm.write.side_effect = [bad, good]
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False)
+        assert llm.write.call_count == 2
+        assert "Shot 1" in llm.write.call_args.kwargs["visual_fixes"][0]
+        assert "visual_warnings" not in result["judgment"]
+
+    def test_still_broken_after_the_rewrite_is_forced_to_distant_and_warned(self, llm):
+        bad = {"hook_line": "H", "total_duration_seconds": 30, "shots": [
+            {"shot_number": 1, "shot_focus": "subject", "subject_visual": "Soldiers advancing", "dialogue": "x"}]}
+        llm.write.side_effect = [bad, bad]
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False)
+        assert llm.write.call_count == 2
+        assert result["judgment"]["visual_warnings"] and "set to distant" in result["judgment"]["visual_warnings"][0]
+
+    def test_consistent_visuals_are_not_rewritten(self, llm):
+        ok = {"hook_line": "H", "total_duration_seconds": 30, "shots": [
+            {"shot_number": 1, "shot_focus": "subject", "subject_visual": "An empty beach", "dialogue": "x"}]}
+        llm.write.side_effect = [ok]
+        wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False)
+        assert llm.write.call_count == 1
+
     def test_grounded_draft_is_written_once(self, llm):
         wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False)
         assert llm.write.call_count == 1
