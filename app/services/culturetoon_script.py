@@ -1735,11 +1735,13 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
             'on screen. Every shot must be shot_focus "subject", voiceover=true, dialogue is the '
             "narration line (no on-screen speaker), expression and blocking null. Do not invent, "
             "name, or describe any narrator/host appearing in frame. "
-            "EVERY subject_visual must contain NO people, faces or bodies: the renderer adds \"no people "
-            "in frame\" to every subject shot, so a visual that shows soldiers, crowds or hands "
-            "contradicts it and confuses the render. Show the subject through landscape, structures, "
-            "objects, vehicles, ships, aircraft, weather, light and camera movement; for an event with "
-            "people in it, show the place, the equipment and the traces they left."
+            "PEOPLE: every shot has a \"people\" field. The default is \"none\": the renderer then adds "
+            "\"no people in frame\", so the subject_visual must show none (landscape, structures, "
+            "objects, vehicles, ships, aircraft, weather, light, camera movement). When the event IS its "
+            "people (a landing, a march, a ceremony, a crowd) set \"people\": \"distant\" on the shots "
+            "that show them, and describe them only as small, distant, faceless groups in WIDE shots: "
+            "never faces, never close-ups, no graphic violence, and no uniforms, units or equipment the "
+            "source material does not mention. Never describe people while \"people\" is \"none\"."
         )
     prompt = _build_prompt_from_context("real-world region/subject", context, variants, tone,
                                          num_shots, target_duration_seconds)

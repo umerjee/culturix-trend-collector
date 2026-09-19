@@ -178,10 +178,19 @@ def _build_shot_prompt(shot: dict, background=None) -> str:
     subject_visual = (shot.get("subject_visual") or "").strip()
     if focus == "subject" and subject_visual:
         parts.append(subject_visual)
-        parts.append(
-            "No people in frame at all — this shot is entirely on the subject, "
-            "no character visible, no face, no body"
-        )
+        if (shot.get("people") or "").strip().lower() == "distant":
+            # An event that IS its people (a landing, a march, a ceremony) needs them on
+            # screen. Kept small, wide and faceless: identity can't be anchored in a
+            # hostless shot, and close faces are where AI video breaks.
+            parts.append(
+                "People appear only as small, distant, faceless figures in wide shots — no close-ups, "
+                "no readable faces, no single hero figure, no graphic violence"
+            )
+        else:
+            parts.append(
+                "No people in frame at all — this shot is entirely on the subject, "
+                "no character visible, no face, no body"
+            )
         if lighting:
             parts.append(lighting)
         if dialogue:

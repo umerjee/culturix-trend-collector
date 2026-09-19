@@ -1091,14 +1091,22 @@ class TestWorldSourceGrounding:
         assert "inhabited since the Neolithic period" in prompt
         assert "Do NOT add specific facts from memory" in prompt
 
-    def test_hostless_prompt_forbids_people_in_subject_visuals(self, mocker):
-        # The renderer appends "No people in frame at all" to every subject shot, so a
-        # script whose visuals show soldiers or crowds contradicts its own render prompt.
+    def test_hostless_prompt_explains_the_people_field(self, mocker):
+        # The renderer adds "no people in frame" unless a shot says people="distant", so the
+        # writer must be told about the field or its visuals contradict the render prompt.
         from app.services.culturetoon_script import generate_world_script
         client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
         generate_world_script(region_code="FR", region_label="France", subject_text="D-Day landings")
         prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
-        assert "subject_visual must contain NO people" in prompt
+        assert '"people": "distant"' in prompt and "faceless" in prompt and "never faces" in prompt
+        assert 'Never describe people while "people" is "none"' in prompt
+
+    def test_people_field_survives_script_parsing(self, mocker):
+        from app.services.culturetoon_script import generate_world_script
+        shots = [{**_VALID_SHOTS[0], "shot_focus": "subject", "people": "distant"}]
+        _mock_qwen_response(mocker, {"hook_line": "H", "shots": shots})
+        result = generate_world_script(region_code="FR", region_label="France", subject_text="D-Day landings")
+        assert result["shots"][0]["people"] == "distant"
 
     def test_no_source_facts_leaves_prompt_ungrounded_block_out(self, mocker):
         from app.services.culturetoon_script import _world_context

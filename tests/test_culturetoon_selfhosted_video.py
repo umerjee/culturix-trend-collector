@@ -686,6 +686,37 @@ class TestLTX25SubjectShots:
         # Naming a focus character would put them back on screen.
         assert "is the focus" not in prompt
 
+    def test_distant_people_replace_the_no_people_line_and_stay_faceless(self, mocker):
+        # An event that is its people (troops landing) opts in per shot; they stay small,
+        # wide and faceless. The empty-frame instruction must not remain to contradict it.
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "shot_focus": "subject", "people": "distant",
+             "subject_visual": "a wide beach at dawn with landing craft and small figures wading ashore",
+             "dialogue": None},
+        ]), self._cast(mocker))
+        assert "small figures wading ashore" in prompt
+        assert "small, distant, faceless figures in wide shots" in prompt
+        assert "no readable faces" in prompt and "no graphic violence" in prompt
+        assert "No people in frame" not in prompt
+        assert "Zara is the focus" not in prompt  # still a subject shot: nobody is named on screen
+
+    def test_people_none_or_missing_keeps_the_empty_frame(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        for extra in ({}, {"people": "none"}, {"people": ""}, {"people": "crowd"}):  # unknown value = safe default
+            prompt = build_ltx25_scene_prompt(self._script(mocker, [
+                {"shot_number": 1, "shot_focus": "subject", "subject_visual": "an empty beach", "dialogue": None, **extra},
+            ]), self._cast(mocker))
+            assert "No people in frame at all" in prompt
+            assert "faceless" not in prompt
+
+    def test_distant_people_is_case_insensitive(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "shot_focus": "subject", "people": " Distant ", "subject_visual": "a beach", "dialogue": None},
+        ]), self._cast(mocker))
+        assert "faceless" in prompt
+
     def test_voiceover_keeps_the_speaker_off_screen(self, mocker):
         from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
         prompt = build_ltx25_scene_prompt(self._script(mocker, [
