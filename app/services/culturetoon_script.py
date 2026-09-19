@@ -1669,7 +1669,15 @@ def select_thematic_host(session, category: Optional[str], tone: str):
 _PEOPLE_WORDS = re.compile(
     r"\b(soldiers?|troops?|infantry(?:men)?|paratroopers?|marines?|sailors?|airmen|men|women|people|persons?|"
     r"crowds?|civilians?|children|figures?|crews?|teams?|faces?|hands?)\b", re.IGNORECASE)
-_FACE_WORDS = re.compile(r"\b(faces?|facial|close-?ups?|eyes|expressions?)\b", re.IGNORECASE)
+_FACE_WORDS = re.compile(r"\b(faces?|facial|eyes|expressions?)\b", re.IGNORECASE)
+# "Close-up of the beach" is fine; a close-up is only a problem when it is of people.
+_CLOSEUP_OF_PEOPLE = re.compile(
+    r"close-?ups?\b[^.]{0,60}\b(soldiers?|troops?|men|women|people|figures?|crowds?|faces?)\b|"
+    r"\b(soldiers?|troops?|men|women|people|figures?|crowds?)\b[^.]{0,60}\bclose-?ups?\b", re.IGNORECASE)
+
+
+def _mentions_faces(visual: str) -> bool:
+    return bool(_FACE_WORDS.search(visual) or _CLOSEUP_OF_PEOPLE.search(visual))
 
 
 def check_world_visuals(shots: Optional[list]) -> list[str]:
@@ -1685,7 +1693,7 @@ def check_world_visuals(shots: Optional[list]) -> list[str]:
         people = (shot.get("people") or "none").strip().lower()
         number = shot.get("shot_number")
         if people == "distant":
-            if _FACE_WORDS.search(visual):
+            if _mentions_faces(visual):
                 problems.append(f'Shot {number}: people is "distant" but the visual mentions faces, eyes or a '
                                 "close-up. Show only small, distant, faceless figures in a wide shot.")
         elif _PEOPLE_WORDS.search(visual):
@@ -1711,7 +1719,7 @@ def normalize_world_people(shots: Optional[list]) -> tuple[list, list[str]]:
             if people == "none" and _PEOPLE_WORDS.search(visual):
                 people = "distant"
                 warnings.append(f"Shot {shot.get('shot_number')}: visual shows people; people set to distant")
-            if people == "distant" and _FACE_WORDS.search(visual):
+            if people == "distant" and _mentions_faces(visual):
                 warnings.append(f"Shot {shot.get('shot_number')}: distant shot still mentions faces or a close-up")
             shot["people"] = people
         out.append(shot)

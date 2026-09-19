@@ -139,6 +139,7 @@ class TestMuxCommand:
         assert f"[0:a]volume={wn.AMBIENT_GAIN}[amb]" in graph
         assert "[1:a]adelay=250|250" in graph and "[2:a]adelay=9000|9000" in graph
         assert "amix=inputs=3" in graph and "normalize=0" in graph
+        assert f"loudnorm=I={wn.TARGET_LUFS}:TP={wn.TRUE_PEAK_DB}" in graph
         assert cmd[cmd.index("-c:v") + 1] == "copy" and cmd[cmd.index("-t") + 1] == "31.300"
 
     def test_no_ambient_track_means_narration_only(self):
@@ -178,3 +179,18 @@ class TestRealMux:
         offsets = spy.call_args.args[2]
         assert offsets == [2000]   # 4.0s planned * (4s actual / 8s planned)
         assert spy.call_args.args[4] is False   # no ambient track to keep
+
+    def test_the_mix_lands_near_the_target_loudness(self, tmp_path):
+        # The first narrated render came out at -21 LUFS, ~11 dB under the video model's own audio.
+        video = self._make(tmp_path, ["-f", "lavfi", "-i", "testsrc=size=320x180:rate=24:duration=8",
+                                      "-c:v", "libx264", "-pix_fmt", "yuv420p"], "v.mp4")
+        quiet = self._make(tmp_path, ["-f", "lavfi", "-i", "sine=frequency=300:duration=6", "-af", "volume=0.05"], "q.mp3")
+        plan = NarrationPlan(voice="v", language="en", shots=[], total_seconds=8.0,
+                             lines=[ShotLine(shot_index=0, text="t", audio=quiet, duration=6.0, start=0.5)])
+        out = tmp_path / "out.mp4"
+        out.write_bytes(plan.mux(video))
+        result = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(out), "-af", "ebur128=peak=true", "-f", "null", "-"],
+                                capture_output=True, text=True).stderr
+        summary = result.split("Summary:")[1]
+        lufs = float(summary.split("I:")[1].split("LUFS")[0])
+        assert -19 < lufs < -13

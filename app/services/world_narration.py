@@ -48,6 +48,11 @@ TAIL_SECONDS = 0.6         # room after the line before the cut
 MIN_SHOT_SECONDS = 4
 MAX_SHOT_SECONDS = 14      # a single line longer than this is rejected, not rushed
 AMBIENT_GAIN = 0.3         # the video model's own ambient/sfx track, under the narration
+# The finished mix is normalised to a platform-friendly level. Measured on the first
+# narrated render: a plain mix came out at -21 LUFS, about 11 dB below the video model's
+# own audio (-10 LUFS) and well under the -14 to -16 LUFS social platforms expect.
+TARGET_LUFS = -16
+TRUE_PEAK_DB = -1.5
 
 
 class NarrationError(ValueError):
@@ -211,7 +216,8 @@ def mux_command(video_path: str, line_paths: list[str], offsets_ms: list[int], o
     for n, offset in enumerate(offsets_ms, start=1):
         parts.append(f"[{n}:a]adelay={offset}|{offset},aresample=48000[n{n}]")
         mix.append(f"[n{n}]")
-    parts.append("".join(mix) + f"amix=inputs={len(mix)}:duration=longest:normalize=0,alimiter=limit=0.95[aout]")
+    parts.append("".join(mix) + f"amix=inputs={len(mix)}:duration=longest:normalize=0,"
+                 f"loudnorm=I={TARGET_LUFS}:TP={TRUE_PEAK_DB}:LRA=11[aout]")
     return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inputs,
             "-filter_complex", ";".join(parts), "-map", "0:v", "-map", "[aout]",
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-t", f"{duration:.3f}", out_path]

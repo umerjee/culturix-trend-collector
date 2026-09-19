@@ -1439,3 +1439,13 @@ class TestWorldPeopleRule:
         from app.services.culturetoon_script import _world_context
         ctx = _world_context("France", "D-Day", "custom", visual_fixes=["Shot 2: shows faces"])
         assert "broke the PEOPLE rule" in ctx and "Shot 2: shows faces" in ctx
+
+    def test_a_close_up_of_an_object_is_not_a_people_problem(self):
+        from app.services.culturetoon_script import check_world_visuals
+        visual = "Close-up of the beach, showing wooden stakes and barbed wire. Small, distant, faceless figures clearing it"
+        assert check_world_visuals([self._shot(visual, "distant")]) == []
+
+    def test_a_close_up_of_people_is_still_a_problem(self):
+        from app.services.culturetoon_script import check_world_visuals
+        assert check_world_visuals([self._shot("A close-up of the soldiers as they advance", "distant")])
+        assert check_world_visuals([self._shot("The soldiers in a tight close-up", "distant")])
