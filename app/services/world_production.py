@@ -41,6 +41,26 @@ _CATEGORY_MAP = {
 }
 
 
+# Scene art directions for hostless World videos (None = the default photoreal look).
+# Deliberately separate from culturetoons.ART_STYLES, whose prompts describe CHARACTERS
+# ("a 2D anime-style character illustration"), which would put a character in a landscape.
+WORLD_VISUAL_STYLES = {
+    "illustrated_history": {
+        "label": "Illustrated (painted history book)",
+        "prompt": "Hand-painted gouache illustration in the style of a mid-century history book, "
+                  "flat muted earth colors, visible brush strokes and paper grain, painterly textured "
+                  "skies, stylized simplified figures with no facial detail, not photorealistic, "
+                  "not a photograph",
+    },
+    "graphic_novel": {
+        "label": "Graphic novel (inked)",
+        "prompt": "Inked graphic-novel illustration, bold black linework, limited muted palette, "
+                  "halftone shading, dramatic composition, stylized figures with no facial detail, "
+                  "not photorealistic, not a photograph",
+    },
+}
+
+
 class WorldDraftError(Exception):
     pass
 
@@ -98,6 +118,7 @@ def plan_world_video(item) -> dict:
         "beat_count": beats,
         "rationale": rationale,
         "allowed_durations": list(ALLOWED_DURATIONS),
+        "visual_styles": [{"key": k, "label": v["label"]} for k, v in WORLD_VISUAL_STYLES.items()],
         "source_chars": len(facts),
         "thin_source": thin,
         "estimate": {str(d): estimate_render(d) for d in ALLOWED_DURATIONS},
@@ -124,7 +145,8 @@ def find_live_draft(db, item_id):
 
 
 def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_count: Optional[int] = None,
-                         use_host: bool = False, persist: bool = True) -> dict:
+                         use_host: bool = False, persist: bool = True,
+                         visual_style: Optional[str] = None) -> dict:
     """Plan -> grounded script -> fact-check (one auto-revision) -> persist as
     an approved ToonScript plus an 'idea' Toon. Does NOT render — the paid GPU
     step stays a separate, explicit action. With persist=False nothing is
@@ -140,6 +162,8 @@ def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_
     if persist and find_live_draft(db, item.id):
         raise WorldDraftExists("A World draft already exists for this subject")
 
+    if visual_style is not None and visual_style not in WORLD_VISUAL_STYLES:
+        raise WorldDraftError(f"visual_style must be one of {sorted(WORLD_VISUAL_STYLES)} or omitted")
     if duration_seconds is not None and duration_seconds not in ALLOWED_DURATIONS:
         raise WorldDraftError(f"duration_seconds must be one of {list(ALLOWED_DURATIONS)}")
     if duration_seconds is None:
@@ -200,7 +224,7 @@ def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_
         "title": item.title, "duration_seconds": result.get("total_duration_seconds"),
         "requested_duration_seconds": duration_seconds, "shot_count": len(result.get("shots") or []),
         "hook_line": result.get("hook_line"), "grounding": grounding, "judgment": judgment,
-        "host": bool(host),
+        "host": bool(host), "visual_style": visual_style,
     }
     if not persist:
         return summary
@@ -213,6 +237,7 @@ def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_
         total_duration_seconds=result.get("total_duration_seconds"), comedy_judgment=judgment,
         generation_source="ai", status="approved", is_world_content=True,
         subject_region=item.region, subject_text=item.title, subject_category=category,
+        visual_style=visual_style,
     )
     db.add(script)
     db.commit()

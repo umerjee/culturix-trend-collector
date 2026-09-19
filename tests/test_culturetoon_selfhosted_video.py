@@ -1136,3 +1136,168 @@ class TestLTX25TimeoutBudget:
         handler = pathlib.Path("deploy/runpod_serverless/handler.py").read_text(encoding="utf-8")
         worker = int(re.search(r'COMFYUI_JOB_TIMEOUT_SECONDS", "(\d+)"', handler).group(1))
         assert worker >= float(RENDER_GPU_SECONDS_PER_OUTPUT_SECOND) * MAX_TOTAL_SECONDS
+
+
+class TestExternalNarrationAndScriptStyle:
+    """A World video's narrator is a separately synthesised voice, so the video model
+    must not speak; and a script with no Location carries its own art direction."""
+
+    def _script(self, mocker, shots, visual_style=None):
+        script = mocker.Mock(hook_line="Operation Neptune", scene_direction="", visual_style=visual_style)
+        script.shots = shots
+        return script
+
+    def test_an_externally_narrated_subject_shot_asks_the_model_for_ambient_sound_only(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "shot_focus": "subject", "narration": "external",
+             "subject_visual": "an empty beach", "dialogue": "The largest invasion in history."},
+        ]), [])
+        assert "No one speaks in this shot" in prompt and "ambient sound only" in prompt
+        assert "a voice is heard" not in prompt and "The largest invasion in history" not in prompt
+
+    def test_without_the_flag_the_video_model_still_speaks_the_line(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "shot_focus": "subject", "subject_visual": "an empty beach", "dialogue": "Hello."},
+        ]), [])
+        assert "a voice is heard over this shot" in prompt
+
+    def test_the_flag_is_case_insensitive_and_unknown_values_do_not_silence(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        for value, silenced in (("EXTERNAL", True), (" external ", True), ("internal", False), ("", False)):
+            prompt = build_ltx25_scene_prompt(self._script(mocker, [
+                {"shot_number": 1, "shot_focus": "subject", "narration": value, "subject_visual": "beach", "dialogue": "Hi."},
+            ]), [])
+            assert ("No one speaks" in prompt) is silenced
+
+    def test_script_visual_style_reaches_the_prompt_when_there_is_no_location(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "shot_focus": "subject", "subject_visual": "a beach", "dialogue": None},
+        ], visual_style="illustrated_history"), [])
+        assert "gouache" in prompt and "not a photograph" in prompt
+        assert "illustrated_history" not in prompt  # the slug is expanded, never passed through raw
+
+    def test_no_script_style_means_no_style_text(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "shot_focus": "subject", "subject_visual": "a beach", "dialogue": None},
+        ]), [])
+        assert "gouache" not in prompt and "inked" not in prompt
+
+    def test_a_locations_own_style_wins_over_the_script_style(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        background = mocker.Mock(description="A kitchen", country=None, visual_style="cinematic_cultural")
+        background.name = "Kitchen"
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "shot_focus": "subject", "subject_visual": "a beach", "dialogue": None},
+        ], visual_style="illustrated_history"), [], background=background)
+        assert "painterly" in prompt and "gouache" not in prompt
+
+    def test_world_styles_expand_and_character_styles_still_do(self):
+        from app.services.culturetoon_selfhosted_video import _expand_visual_style
+        assert "gouache" in _expand_visual_style("illustrated_history")
+        assert "inked" in _expand_visual_style("graphic_novel").lower()
+        assert "painterly" in _expand_visual_style("cinematic_cultural")
+
+    def test_world_styles_never_describe_a_character(self):
+        # ART_STYLES prompts say "a ... character illustration"; that would put a character in a landscape.
+        from app.services.world_production import WORLD_VISUAL_STYLES
+        for style in WORLD_VISUAL_STYLES.values():
+            assert "character" not in style["prompt"].lower()
+
+
+class TestWorldNarrationInTheRenderFlow:
+    @pytest.fixture
+    def world_toon(self, db):
+        """A hostless World video: no cast on the script or the toon."""
+        session = db()
+        brand = CharacterBrand(user_id=uuid.uuid4(), name="World")
+        session.add(brand)
+        session.commit()
+        shots = [{"shot_number": 1, "duration_seconds": 8, "shot_focus": "subject", "subject_visual": "a beach",
+                  "dialogue": "The largest seaborne invasion in history."}]
+        script = ToonScript(brand_id=brand.id, shots=shots, total_duration_seconds=8, is_world_content=True,
+                            visual_style="illustrated_history")
+        session.add(script)
+        session.commit()
+        toon = Toon(brand_id=brand.id, script_id=script.id, status="animating", is_world_content=True)
+        session.add(toon)
+        session.commit()
+        ids = {"user_id": str(brand.user_id), "toon_id": str(toon.id)}
+        session.close()
+        return ids
+
+    def _plan(self, mocker):
+        from types import SimpleNamespace
+        plan = mocker.Mock(total_seconds=11.0)
+        plan.render_script.side_effect = lambda script: SimpleNamespace(shots=["retimed"], tag="render-view")
+        plan.mux.side_effect = lambda video: video + b"+narration"
+        return plan
+
+    def test_a_hostless_world_video_is_narrated_and_muxed(self, db, world_toon, mocker):
+        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
+        plan = self._plan(mocker)
+        prepare = mocker.patch("app.services.world_narration.prepare_narration", return_value=plan)
+        render = mocker.patch("app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25", return_value=b"video")
+        upload = mocker.patch("app.media.storage.upload", return_value="https://supabase/v.mp4")
+
+        generate_video_for_toon_selfhosted(world_toon["user_id"], world_toon["toon_id"])
+
+        prepare.assert_called_once()
+        assert prepare.call_args.kwargs["language"] == "en"
+        assert render.call_args.args[0].tag == "render-view"            # the renderer got the retimed view, not the stored script
+        assert render.call_args.kwargs["duration_seconds"] == 11        # sized to the narration
+        assert upload.call_args.args[0] == b"video+narration"
+        session = db()
+        assert session.query(Toon).filter_by(id=uuid.UUID(world_toon["toon_id"])).first().status == "ready"
+
+    def test_a_narration_failure_stops_before_any_gpu_call_and_says_why(self, db, world_toon, mocker):
+        from app.services.world_narration import NarrationError
+        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
+        mocker.patch("app.services.world_narration.prepare_narration", side_effect=NarrationError("tts service down"))
+        render = mocker.patch("app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25")
+
+        generate_video_for_toon_selfhosted(world_toon["user_id"], world_toon["toon_id"])
+
+        render.assert_not_called()   # no GPU spend, and no fallback to the video model's own voice
+        toon = db().query(Toon).filter_by(id=uuid.UUID(world_toon["toon_id"])).first()
+        assert toon.status == "failed" and "tts service down" in toon.generation_error
+
+    def test_a_mux_failure_fails_the_render_instead_of_publishing_a_mixed_voice_video(self, db, world_toon, mocker):
+        from app.services.world_narration import NarrationError
+        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
+        plan = self._plan(mocker)
+        plan.mux.side_effect = NarrationError("ffmpeg failed")
+        mocker.patch("app.services.world_narration.prepare_narration", return_value=plan)
+        mocker.patch("app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25", return_value=b"video")
+        upload = mocker.patch("app.media.storage.upload")
+
+        generate_video_for_toon_selfhosted(world_toon["user_id"], world_toon["toon_id"])
+
+        upload.assert_not_called()
+        assert db().query(Toon).filter_by(id=uuid.UUID(world_toon["toon_id"])).first().status == "failed"
+
+    def test_a_video_with_a_host_keeps_the_hosts_own_voice(self, db, seeded, mocker):
+        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
+        prepare = mocker.patch("app.services.world_narration.prepare_narration")
+        mocker.patch("app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25", return_value=b"video")
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/v.mp4")
+        session = db()
+        script = session.query(ToonScript).first()
+        script.is_world_content = True     # a World Feature WITH a host: lip-synced character speech
+        session.commit()
+        session.close()
+
+        generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
+
+        prepare.assert_not_called()
+
+    def test_an_ordinary_character_toon_is_unchanged(self, db, seeded, mocker):
+        mocker.patch.dict("os.environ", {"RUNPOD_SERVERLESS_ENDPOINT_ID": "endpoint-1"})
+        prepare = mocker.patch("app.services.world_narration.prepare_narration")
+        mocker.patch("app.services.culturetoon_selfhosted_video.generate_toon_video_ltx25", return_value=b"video")
+        mocker.patch("app.media.storage.upload", return_value="https://supabase/v.mp4")
+        generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
+        prepare.assert_not_called()

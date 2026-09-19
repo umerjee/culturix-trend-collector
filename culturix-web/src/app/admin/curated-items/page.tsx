@@ -6,7 +6,7 @@ import { Check, Clock3, Database, Download, X } from "lucide-react";
 import { fetchAdminData } from "@/lib/admin/fetchAdmin";
 
 type Item = { id: string; source_type: string; region: string | null; title: string; summary: string; category: string; priority_score: number | null; challenge_notes: string | null; pipeline_decision: string | null; source_url: string | null; created_at: string | null };
-type Plan = { duration_seconds: number; beat_count: number; rationale: string; allowed_durations: number[]; source_chars: number; thin_source: boolean; existing_draft: boolean; estimate: Record<string, { gpu_seconds: number; cost_usd: number }> };
+type Plan = { duration_seconds: number; beat_count: number; rationale: string; allowed_durations: number[]; source_chars: number; thin_source: boolean; existing_draft: boolean; visual_styles: { key: string; label: string }[]; estimate: Record<string, { gpu_seconds: number; cost_usd: number }> };
 
 const COUNTRY_INFO: Record<string, { name: string; continent: string }> = {
   US: { name: "United States", continent: "North America" }, CN: { name: "China", continent: "Asia" },
@@ -36,6 +36,7 @@ export default function CuratedItemsPage() {
   const [planError, setPlanError] = useState("");
   const [duration, setDuration] = useState<number>(20);
   const [useHost, setUseHost] = useState(false);
+  const [visualStyle, setVisualStyle] = useState("");
   const [generating, setGenerating] = useState(false);
 
   function load() { fetchAdminData<Item[]>("curated-items").then(setItems).catch(() => setItems([])); }
@@ -76,7 +77,7 @@ export default function CuratedItemsPage() {
   }
 
   async function openPlan(item: Item) {
-    setPlanItem(item); setPlan(null); setPlanError(""); setUseHost(false);
+    setPlanItem(item); setPlan(null); setPlanError(""); setUseHost(false); setVisualStyle("");
     try {
       const res = await fetch(`/api/admin/curated-items/${item.id}/plan`);
       const data = await res.json();
@@ -89,6 +90,7 @@ export default function CuratedItemsPage() {
     if (!planItem || !plan) return;
     setGenerating(true);
     const body: Record<string, unknown> = { duration_seconds: duration, use_host: useHost };
+    if (visualStyle) body.visual_style = visualStyle;
     if (duration === plan.duration_seconds) body.beat_count = plan.beat_count;
     const res = await fetch(`/api/admin/curated-items/${planItem.id}/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
@@ -146,6 +148,12 @@ export default function CuratedItemsPage() {
           {plan.thin_source && <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">Short source text ({plan.source_chars} characters): longer videos would need invented detail, so the suggestion is capped.</p>}
           {plan.existing_draft && <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">A draft already exists for this subject. Archive it in World Production to regenerate.</p>}
           <div className="mt-4 grid grid-cols-3 min-[420px]:grid-cols-5 gap-2">{plan.allowed_durations.map((d) => <button key={d} onClick={() => setDuration(d)} className={`rounded-lg border px-2 py-2 text-center text-sm ${duration === d ? "border-primary-600 bg-primary-50 font-bold text-primary-700" : "border-gray-200 text-gray-600"}`}>{d}s<span className="block text-[10px] font-normal text-gray-400">~${plan.estimate[String(d)]?.cost_usd.toFixed(2)} render</span></button>)}</div>
+          <label className="mt-4 block text-sm text-gray-600">Look
+            <select value={visualStyle} onChange={(e) => setVisualStyle(e.target.value)} className="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm">
+              <option value="">Photorealistic (default)</option>
+              {plan.visual_styles.map((style) => <option key={style.key} value={style.key}>{style.label}</option>)}
+            </select>
+          </label>
           <label className="mt-4 flex items-start gap-2 text-sm text-gray-600"><input type="checkbox" checked={useHost} onChange={(e) => setUseHost(e.target.checked)} className="mt-0.5" /><span>Add an on-screen host character <span className="text-xs text-gray-400">(optional; the default is real subject footage with narration)</span></span></label>
           <p className="mt-4 text-xs text-gray-400">This writes and fact-checks the script only. Rendering is a separate paid step in World Production.</p>
         </>}

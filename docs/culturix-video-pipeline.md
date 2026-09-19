@@ -640,3 +640,24 @@ Rules that came from real failures — keep them:
   pollute the ranking; re-running retries it.
 - Provenance: `toons.curated_item_id` (duplicate-draft guard, public attribution) and
   `curated_items.source_url`. Rows ingested before those columns existed: `scripts/backfill_curated_source_urls.py`.
+
+### World videos: one narrator voice, and a per-script look
+- **Why the narrator is not the video model.** LTX-2.5 generates audio jointly with each segment, and a script is
+  cut into independent ~15s segments (`_split_shots_into_segments`) with nothing tying them to a speaker, so the
+  voice is not guaranteed to be the same across segments. (A pitch-window comparison could not settle whether a
+  real render actually drifted: the same fixed TTS voice varies +-15% between windows. The guarantee is the design,
+  not a measurement.)
+- **What runs for a hostless World video** (`app/services/world_narration.py`, called from
+  `generate_video_for_toon_selfhosted`): each line is synthesised with ONE named neural voice (edge-tts; English
+  default `en-GB-RyanNeural`, override `WORLD_NARRATOR_VOICE`; 14 languages mapped) BEFORE any GPU is used; shots
+  are retimed to fit the speech (a video grows ~15-20% vs the script's shot lengths); shots are marked
+  `narration="external"` so the prompt asks LTX for ambient sound only; the narration is mixed over the finished
+  video with the model's own audio at 0.3 gain. Offsets are scaled by real/planned length because segments are
+  cross-faded. A failure (TTS down, a line too long for one shot, ffmpeg) FAILS the render with the reason; it never
+  falls back to the model's voice. A World video WITH a host keeps the host's lip-synced voice.
+- **Look:** `toon_scripts.visual_style` (`illustrated_history`, `graphic_novel`, or NULL = photoreal), read by
+  `build_ltx25_scene_prompt`; a Location's own style wins. `WORLD_VISUAL_STYLES` (in `world_production.py`) holds
+  SCENE prompts on purpose: `ART_STYLES` prompts describe characters and would put one in a landscape.
+- **People:** each shot has `people` = `none` | `distant`; the renderer says "no people in frame" or "small, distant,
+  faceless figures in wide shots". The writer only emits it because the output schema names the key.
+

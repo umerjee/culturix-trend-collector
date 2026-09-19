@@ -374,6 +374,7 @@ async def lifespan(_):
             "CREATE INDEX IF NOT EXISTS ix_toon_scripts_era_year ON toon_scripts (era_year)",
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS curated_item_id UUID",
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS world_published BOOLEAN",
+            "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS visual_style VARCHAR(30)",
             "CREATE INDEX IF NOT EXISTS ix_toons_curated_item_id ON toons (curated_item_id)",
             "ALTER TABLE curated_items ADD COLUMN IF NOT EXISTS source_url TEXT",
         ]:
@@ -2984,7 +2985,7 @@ def generate_curated_world_feature(item_id: str, payload: Optional[dict] = None)
     import threading
     from app.db import SessionLocal
     from app.models.curated_item import CuratedItem
-    from app.services.world_production import ALLOWED_DURATIONS, find_live_draft
+    from app.services.world_production import ALLOWED_DURATIONS, WORLD_VISUAL_STYLES, find_live_draft
 
     payload = payload or {}
     duration = payload.get("duration_seconds")
@@ -2992,6 +2993,9 @@ def generate_curated_world_feature(item_id: str, payload: Optional[dict] = None)
         raise HTTPException(status_code=400, detail=f"duration_seconds must be one of {list(ALLOWED_DURATIONS)}")
     beats = payload.get("beat_count")
     use_host = bool(payload.get("use_host", False))
+    visual_style = payload.get("visual_style") or None
+    if visual_style is not None and visual_style not in WORLD_VISUAL_STYLES:
+        raise HTTPException(status_code=400, detail=f"visual_style must be one of {sorted(WORLD_VISUAL_STYLES)}")
 
     session = SessionLocal()
     try:
@@ -3014,7 +3018,8 @@ def generate_curated_world_feature(item_id: str, payload: Optional[dict] = None)
         db = _SessionLocal()
         try:
             db_item = db.query(CuratedItem).filter_by(id=item_id).first()
-            result = generate_world_draft(db, db_item, duration_seconds=duration, beat_count=beats, use_host=use_host)
+            result = generate_world_draft(db, db_item, duration_seconds=duration, beat_count=beats,
+                                          use_host=use_host, visual_style=visual_style)
             logging.info("World draft generated: item=%s toon=%s grounded=%s", item_id, result.get("toon_id"),
                          result["grounding"].get("grounded"))
         except Exception:

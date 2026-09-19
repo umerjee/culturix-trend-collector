@@ -189,3 +189,29 @@ class TestSourceUrlBackfill:
         assert mod.derive_source_url("wikipedia", "History of Italy:Roman Empire") == "https://en.wikipedia.org/wiki/History_of_Italy"
         assert mod.derive_source_url("wikipedia", "Carcassonne:Sieges") is None
         assert mod.derive_source_url("trend", "1") is None
+
+
+class TestVisualStyle:
+    def test_plan_lists_the_available_styles(self, llm):
+        plan = wp.plan_world_video(_item())
+        keys = [style["key"] for style in plan["visual_styles"]]
+        assert "illustrated_history" in keys and "graphic_novel" in keys
+        assert all(style["label"] for style in plan["visual_styles"])
+
+    def test_the_style_is_reported_on_the_draft(self, llm):
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False,
+                                         visual_style="illustrated_history")
+        assert result["visual_style"] == "illustrated_history"
+
+    def test_no_style_is_the_default_photoreal_look(self, llm):
+        assert wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False)["visual_style"] is None
+
+    def test_an_unknown_style_is_rejected_before_anything_is_written(self, llm):
+        with pytest.raises(wp.WorldDraftError) as exc:
+            wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False, visual_style="watercolour")
+        assert "visual_style" in str(exc.value)
+        llm.write.assert_not_called()
+
+    def test_every_style_has_a_label_and_a_scene_prompt(self):
+        for key, style in wp.WORLD_VISUAL_STYLES.items():
+            assert style["label"] and len(style["prompt"]) > 40, key

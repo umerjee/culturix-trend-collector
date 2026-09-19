@@ -87,7 +87,10 @@ def _expand_visual_style(visual_style: str) -> str:
     version of the raw value for any slug not in ART_STYLES (e.g. a
     hand-written style string), rather than dropping it."""
     from app.routers.culturetoons import ART_STYLES
+    from app.services.world_production import WORLD_VISUAL_STYLES
 
+    if visual_style in WORLD_VISUAL_STYLES:
+        return WORLD_VISUAL_STYLES[visual_style]["prompt"]
     style = ART_STYLES.get(visual_style)
     if style and style.get("prompt"):
         return style["prompt"]
@@ -193,7 +196,11 @@ def _build_shot_prompt(shot: dict, background=None) -> str:
             )
         if lighting:
             parts.append(lighting)
-        if dialogue:
+        # narration="external": the line is spoken by a separately synthesised narrator
+        # (app/services/world_narration.py) and mixed in afterwards, so the video model
+        # must not speak it: its own voice would differ from segment to segment.
+        external = (shot.get("narration") or "").strip().lower() == "external"
+        if dialogue and not external:
             # Voice over a subject shot: the line is heard, the speaker isn't seen.
             parts.append(
                 f'a voice is heard over this shot saying "{dialogue}"'
@@ -424,6 +431,13 @@ def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Opt
         visual_style = (getattr(background, "visual_style", None) or "").strip()
         if visual_style:
             parts.append(_expand_visual_style(visual_style))
+
+    script_style = getattr(script, "visual_style", None)
+    script_style = script_style.strip() if isinstance(script_style, str) else ""
+    background_style = getattr(background, "visual_style", None) if background is not None else None
+    background_style = background_style.strip() if isinstance(background_style, str) else ""
+    if script_style and not background_style:
+        parts.append(_expand_visual_style(script_style))
 
     hook = (getattr(script, "hook_line", None) or "").strip()
     if hook and not continuation_anchor:
@@ -1314,10 +1328,24 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
         # backgrounds' and generate_toon_video_ltx25's own docstrings.
         scene_backgrounds = resolve_scene_backgrounds(session, script)
 
+        # A hostless World video gets ONE synthesised narrator voice for the whole video, not
+        # whatever voice the video model invents per ~15s segment. Prepared BEFORE the GPU is
+        # used, and a failure stops here (NarrationError is a ValueError -> marked failed): it
+        # never falls back to the model's own voice, which is the outcome this prevents.
+        narration = None
+        render_script = script
+        if script.is_world_content and not variants:
+            from app.services.world_narration import prepare_narration
+            narration = prepare_narration(script.shots or [], language="en")
+            render_script = narration.render_script(script)
+            duration = int(narration.total_seconds) or duration
+
         video_bytes = generate_toon_video_ltx25(
-            script, variants, endpoint_id, duration_seconds=duration, background=background,
+            render_script, variants, endpoint_id, duration_seconds=duration, background=background,
             scene_backgrounds=scene_backgrounds, stats=run_stats,
         )
+        if narration is not None:
+            video_bytes = narration.mux(video_bytes)
 
         video_url = storage.upload(
             video_bytes, f"culturetoons/{toon.brand_id}/toons/{toon.id}/raw-{_uuid.uuid4().hex[:8]}.mp4", "video/mp4",

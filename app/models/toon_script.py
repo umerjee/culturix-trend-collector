@@ -119,6 +119,10 @@ class ToonScript(Base):
     # character_variant_id above is already nullable and, for a World
     # script, holds the OPTIONAL regional host (never a required cast).
     is_world_content = Column(Boolean, nullable=False, default=False)
+    # Art direction for a script with no Location (a hostless World video): a key of
+    # app/services/world_production.WORLD_VISUAL_STYLES, or NULL for the default
+    # photoreal look. Read by the renderer (build_ltx25_scene_prompt).
+    visual_style = Column(String(30), nullable=True)
     subject_region = Column(String(2), nullable=True, index=True)  # ISO-2, see region_codes.normalize_region
     subject_text = Column(Text, nullable=True)
     # Free text, not a DB enum — one merged filter tag covering both WHAT a
