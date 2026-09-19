@@ -92,7 +92,8 @@ class TestGenerateDraft:
         bad = {"hook_line": "H", "total_duration_seconds": 30, "shots": [
             {"shot_number": 1, "shot_focus": "subject", "subject_visual": "Soldiers advancing", "dialogue": "x"}]}
         good = {"hook_line": "H", "total_duration_seconds": 30, "shots": [
-            {"shot_number": 1, "shot_focus": "subject", "subject_visual": "Small figures on a wide beach",
+            {"shot_number": 1, "shot_focus": "subject", "camera_movement": "tracking",
+             "subject_visual": "Small figures run across a wide beach as smoke rolls past",
              "people": "distant", "dialogue": "x"}]}
         llm.write.side_effect = [bad, good]
         result = wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False)
@@ -110,7 +111,8 @@ class TestGenerateDraft:
 
     def test_consistent_visuals_are_not_rewritten(self, llm):
         ok = {"hook_line": "H", "total_duration_seconds": 30, "shots": [
-            {"shot_number": 1, "shot_focus": "subject", "subject_visual": "An empty beach", "dialogue": "x"}]}
+            {"shot_number": 1, "shot_focus": "subject", "camera_movement": "dolly",
+             "subject_visual": "Waves surge up an empty beach as smoke rolls across the sand", "dialogue": "x"}]}
         llm.write.side_effect = [ok]
         wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False)
         assert llm.write.call_count == 1
@@ -215,3 +217,31 @@ class TestVisualStyle:
     def test_every_style_has_a_label_and_a_scene_prompt(self):
         for key, style in wp.WORLD_VISUAL_STYLES.items():
             assert style["label"] and len(style["prompt"]) > 40, key
+
+
+class TestMotionRewrite:
+    STILL = {"hook_line": "H", "total_duration_seconds": 30, "shots": [
+        {"shot_number": 1, "shot_focus": "subject", "subject_visual": "A wide view of a quiet beach",
+         "camera_movement": "static", "people": "none", "dialogue": "x"}]}
+    MOVING = {"hook_line": "H", "total_duration_seconds": 30, "shots": [
+        {"shot_number": 1, "shot_focus": "subject", "camera_movement": "tracking", "people": "none",
+         "subject_visual": "Waves surge over steel obstacles while smoke rolls across an empty beach", "dialogue": "x"}]}
+
+    def test_a_still_script_is_rewritten_once_with_the_motion_problems(self, llm):
+        llm.write.side_effect = [self.STILL, self.MOVING]
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False)
+        assert llm.write.call_count == 2
+        fixes = llm.write.call_args.kwargs["visual_fixes"]
+        assert any("still scene" in f for f in fixes) and any("camera_movement is static" in f for f in fixes)
+        assert "visual_warnings" not in result["judgment"]
+
+    def test_still_after_the_rewrite_is_surfaced_as_a_warning(self, llm):
+        llm.write.side_effect = [self.STILL, self.STILL]
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False)
+        warnings = result["judgment"]["visual_warnings"]
+        assert any("still scene" in w for w in warnings)
+
+    def test_a_moving_script_is_written_once(self, llm):
+        llm.write.side_effect = [self.MOVING]
+        wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False)
+        assert llm.write.call_count == 1

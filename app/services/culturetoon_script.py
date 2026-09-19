@@ -1680,6 +1680,62 @@ def _mentions_faces(visual: str) -> bool:
     return bool(_FACE_WORDS.search(visual) or _CLOSEUP_OF_PEOPLE.search(visual))
 
 
+_MOTION_VERBS = (
+    "move plough plow surge race run sprint drift roll pour advance streak rise fall burst erupt sweep flow crash "
+    "wade climb fly sail glide billow charge land drop swirl push rush pound fire roar swarm march rocket explode "
+    "tumble lurch slam spray splash churn thunder hurtle whip dive circle descend leap jump dodge spill emerge "
+    "approach storm burn blaze shake rumble skim swing sink launch scatter scramble crawl dash link fade clear "
+    "break lift pull sway shoot blast strike stream cascade swell spin twist gather cross ride track rip tear "
+    "billow sprint hurl bound stagger struggle heave paddle row steam cruise soar swoop plunge rain fill"
+).split()
+
+
+def _verb_forms(verb: str) -> set[str]:
+    """base, -s/-es, -ing (silent-e dropped, final consonant doubled), -ed: "streak" also matches
+    streaks/streaking, "descend" matches descending. Explicit forms, not stems, so "land" does not
+    match "landscape" and "fire" does not match "first"."""
+    forms = {verb, verb + "s", verb + "es", verb + "ing", verb + "ed"}
+    if verb.endswith("e"):
+        forms |= {verb[:-1] + "ing", verb + "d"}
+    if verb.endswith("y"):
+        forms |= {verb[:-1] + "ies", verb[:-1] + "ied"}
+    forms |= {verb + verb[-1] + "ing", verb + verb[-1] + "ed"}
+    return forms
+
+
+_MOTION_WORDS = re.compile(
+    r"\b(" + "|".join(sorted({f for v in _MOTION_VERBS for f in _verb_forms(v)}, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE)
+MIN_MOTION_WORDS = 2
+
+
+MAX_NARRATION_WORDS = 22
+
+
+def check_world_motion(shots: Optional[list]) -> list[str]:
+    """Problems that make a World video render as a still image with a slow zoom: a subject
+    shot whose visual describes no action, or a static camera. Measured on a real render:
+    about a third of the scene motion of the earlier ones, with "static camera movement" in
+    every prompt and no verbs of action in any visual."""
+    problems = []
+    for shot in shots or []:
+        if (shot.get("shot_focus") or "").strip().lower() != "subject":
+            continue
+        number = shot.get("shot_number")
+        visual = shot.get("subject_visual") or ""
+        if len({m.group(0).lower() for m in _MOTION_WORDS.finditer(visual)}) < MIN_MOTION_WORDS:
+            problems.append(f"Shot {number}: the visual is a still scene. Describe what MOVES, in time order, "
+                            "with action verbs (craft ploughing through surf, smoke rolling, figures running).")
+        words = len((shot.get("dialogue") or "").split())
+        if words > MAX_NARRATION_WORDS:
+            problems.append(f"Shot {number}: the narration is {words} words. Keep it to 18 or fewer so the shot "
+                            "stays near 8 seconds (long shots render as slow, static scenes).")
+        if (shot.get("camera_movement") or "").strip().lower() in ("static", ""):
+            problems.append(f"Shot {number}: camera_movement is static. Use tracking, dolly, push_in, pull_out, "
+                            "crane, pan_left, pan_right, tilt or orbit.")
+    return problems
+
+
 def check_world_visuals(shots: Optional[list]) -> list[str]:
     """Problems in a hostless World script's subject shots against the PEOPLE rule: the
     renderer says "no people in frame" unless a shot has people="distant", so a visual that
@@ -1809,8 +1865,21 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
             "objects, vehicles, ships, aircraft, weather, light, camera movement). When the event IS its "
             "people (a landing, a march, a ceremony, a crowd) set \"people\": \"distant\" on the shots "
             "that show them, and describe them only as small, distant, faceless groups in WIDE shots: "
-            "never faces, never close-ups, no graphic violence, and no uniforms, units or equipment the "
-            "source material does not mention. Never describe people while \"people\" is \"none\"."
+            "never faces, never close-ups, no graphic violence, and no named units, insignia or "
+            "specific equipment models unless the source mentions them. Never describe people while "
+            "\"people\" is \"none\".\n"
+            "MOTION: this is video, not a slideshow. A still scene renders as a still image with a slow "
+            "zoom. Every subject_visual must describe ACTION IN TIME ORDER, using present-tense verbs: what "
+            "moves and how, from the start of the shot to its end (craft ploughing through surf, ramps "
+            "dropping, smoke rolling, aircraft streaking overhead, figures running, waves surging). Build "
+            "each shot from concrete things the source material names (for a battle: the craft, the "
+            "bombardment, the airborne troops, the tanks, the obstacles, the gun emplacements) and show them "
+            "DOING something, not sitting in a landscape. Every shot needs a moving camera_movement (never "
+            "\"static\": use tracking, dolly, push_in, pull_out, crane, pan_left, pan_right, tilt or "
+            "orbit) and shot_type should vary across the video. NARRATION LENGTH: each shot's dialogue is "
+            "at most 18 words (about 7 seconds spoken), so shots stay near 8 seconds: a long shot renders as "
+            "a slow, static scene. People wear what the era and event require (for 1944 soldiers: helmets "
+            "and drab olive or khaki uniforms), never bright modern clothing."
         )
     prompt = _build_prompt_from_context("real-world region/subject", context, variants, tone,
                                          num_shots, target_duration_seconds)

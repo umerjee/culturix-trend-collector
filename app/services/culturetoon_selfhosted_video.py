@@ -111,6 +111,14 @@ _QUALITY_SUFFIX = (
     "consistent lighting, high detail, crisp film-quality render"
 )
 
+# Closes a segment made ONLY of subject shots (no character on screen). Measured on a real
+# render: with nothing asking for motion the model produced a near-still scene with a slow
+# camera drift, about a third of the scene motion of the earlier renders.
+_SUBJECT_MOTION_SUFFIX = (
+    "Continuous motion from the first frame to the last: water, smoke, vehicles and figures keep "
+    "moving, and the camera keeps moving. No still frame, no held pose."
+)
+
 # The character-quality suffix actively contradicts a subject shot: asking for
 # "sharp focus on the character's face" in a frame that must contain no people
 # invites the model to put one back in.
@@ -156,7 +164,8 @@ def _build_shot_prompt(shot: dict, background=None) -> str:
     if shot_type:
         parts.append(f"{shot_type.replace('_', ' ')} shot")
     camera_movement = shot.get("camera_movement")
-    if camera_movement:
+    is_subject_shot = (shot.get("shot_focus") or "").strip().lower() == "subject"
+    if camera_movement and not (is_subject_shot and str(camera_movement).strip().lower() == "static"):
         parts.append(f"{camera_movement.replace('_', ' ')} camera movement")
     visual = (shot.get("visual") or "").strip()
     action = (shot.get("action") or "").strip()
@@ -516,6 +525,13 @@ def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Opt
             parts.append(f"{lead} —{location_cue} {focus}. {shot_text}{silence_note}")
         else:
             parts.append(f"{lead} —{location_cue} {shot_text}{silence_note}")
+
+    # A segment of ONLY subject shots has nobody on screen: "faces matching the reference image"
+    # and "lip movement synced to the dialogue" are meaningless there and dilute the prompt
+    # (about 40% of a real World-video prompt was this text). Ask for motion instead.
+    if segment_shots and all((s.get("shot_focus") or "character").strip().lower() == "subject" for s in segment_shots):
+        parts.append(_SUBJECT_MOTION_SUFFIX)
+        return " ".join(p for p in parts if p)
 
     parts.append(
         "Consistent character appearance throughout, faces matching the reference image exactly. "

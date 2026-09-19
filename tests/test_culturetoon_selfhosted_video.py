@@ -1176,7 +1176,7 @@ class TestExternalNarrationAndScriptStyle:
         prompt = build_ltx25_scene_prompt(self._script(mocker, [
             {"shot_number": 1, "shot_focus": "subject", "subject_visual": "a beach", "dialogue": None},
         ], visual_style="illustrated_history"), [])
-        assert "gouache" in prompt and "not a photograph" in prompt
+        assert "history book illustration" in prompt and "brush strokes" in prompt
         assert "illustrated_history" not in prompt  # the slug is expanded, never passed through raw
 
     def test_no_script_style_means_no_style_text(self, mocker):
@@ -1184,7 +1184,7 @@ class TestExternalNarrationAndScriptStyle:
         prompt = build_ltx25_scene_prompt(self._script(mocker, [
             {"shot_number": 1, "shot_focus": "subject", "subject_visual": "a beach", "dialogue": None},
         ]), [])
-        assert "gouache" not in prompt and "inked" not in prompt
+        assert "history book illustration" not in prompt and "graphic-novel" not in prompt
 
     def test_a_locations_own_style_wins_over_the_script_style(self, mocker):
         from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
@@ -1193,12 +1193,12 @@ class TestExternalNarrationAndScriptStyle:
         prompt = build_ltx25_scene_prompt(self._script(mocker, [
             {"shot_number": 1, "shot_focus": "subject", "subject_visual": "a beach", "dialogue": None},
         ], visual_style="illustrated_history"), [], background=background)
-        assert "painterly" in prompt and "gouache" not in prompt
+        assert "painterly" in prompt and "history book illustration" not in prompt
 
     def test_world_styles_expand_and_character_styles_still_do(self):
         from app.services.culturetoon_selfhosted_video import _expand_visual_style
-        assert "gouache" in _expand_visual_style("illustrated_history")
-        assert "inked" in _expand_visual_style("graphic_novel").lower()
+        assert "history book illustration" in _expand_visual_style("illustrated_history")
+        assert "graphic-novel" in _expand_visual_style("graphic_novel").lower()
         assert "painterly" in _expand_visual_style("cinematic_cultural")
 
     def test_world_styles_never_describe_a_character(self):
@@ -1301,3 +1301,40 @@ class TestWorldNarrationInTheRenderFlow:
         mocker.patch("app.media.storage.upload", return_value="https://supabase/v.mp4")
         generate_video_for_toon_selfhosted(seeded["user_id"], seeded["toon_id"])
         prepare.assert_not_called()
+
+
+class TestSubjectOnlySegmentPrompt:
+    """A landscape segment must not carry the character boilerplate, and must ask for motion."""
+
+    def _script(self, mocker, shots):
+        script = mocker.Mock(hook_line="Operation Neptune", scene_direction="", visual_style=None)
+        script.shots = shots
+        return script
+
+    def _subject(self, n=1, camera=None, **extra):
+        return {"shot_number": n, "shot_focus": "subject", "subject_visual": "landing craft race toward a beach",
+                "dialogue": None, **({"camera_movement": camera} if camera else {}), **extra}
+
+    def test_subject_only_segment_drops_the_face_reference_boilerplate_and_asks_for_motion(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [self._subject()]), [])
+        assert "faces matching the reference image" not in prompt
+        assert "lip movement" not in prompt and "face reference only" not in prompt
+        assert "Continuous motion from the first frame to the last" in prompt
+
+    def test_a_segment_with_a_character_shot_keeps_the_character_boilerplate(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        shots = [self._subject(1), {"shot_number": 2, "shot_focus": "character", "action": "leans in", "dialogue": "Hi."}]
+        prompt = build_ltx25_scene_prompt(self._script(mocker, shots), [])
+        assert "faces matching the reference image" in prompt
+        assert "Continuous motion from the first frame" not in prompt
+
+    def test_a_subject_shot_never_says_static_camera_movement(self, mocker):
+        from app.services.culturetoon_selfhosted_video import _build_shot_prompt
+        assert "static camera" not in _build_shot_prompt(self._subject(camera="static"))
+        assert "tracking camera movement" in _build_shot_prompt(self._subject(camera="tracking"))
+
+    def test_a_character_shot_keeps_its_own_static_camera_wording(self, mocker):
+        from app.services.culturetoon_selfhosted_video import _build_shot_prompt
+        prompt = _build_shot_prompt({"shot_number": 1, "shot_focus": "character", "camera_movement": "static", "action": "waves"})
+        assert "static camera movement" in prompt

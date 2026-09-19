@@ -1449,3 +1449,80 @@ class TestWorldPeopleRule:
         from app.services.culturetoon_script import check_world_visuals
         assert check_world_visuals([self._shot("A close-up of the soldiers as they advance", "distant")])
         assert check_world_visuals([self._shot("The soldiers in a tight close-up", "distant")])
+
+
+class TestWorldMotionRule:
+    """A still scene renders as a still image with a slow zoom."""
+
+    @staticmethod
+    def _shot(visual, camera="tracking", n=1, focus="subject"):
+        return {"shot_number": n, "shot_focus": focus, "subject_visual": visual, "camera_movement": camera}
+
+    def test_a_still_scene_is_a_problem(self):
+        from app.services.culturetoon_script import check_world_motion
+        problems = check_world_motion([self._shot("Aerial view of the Normandy coast, showing the vast beach and cliffs")])
+        assert len(problems) == 1 and "still scene" in problems[0] and "Shot 1" in problems[0]
+
+    def test_a_visual_with_action_passes(self):
+        from app.services.culturetoon_script import check_world_motion
+        visual = "Landing craft plough through the surf as their ramps drop and small figures run up the sand, smoke rolling"
+        assert check_world_motion([self._shot(visual)]) == []
+
+    def test_one_motion_word_is_not_enough(self):
+        from app.services.culturetoon_script import check_world_motion
+        assert check_world_motion([self._shot("A wide beach with waves crashing")])
+
+    @pytest.mark.parametrize("camera", ["static", "STATIC", "", None])
+    def test_a_static_or_missing_camera_is_a_problem(self, camera):
+        from app.services.culturetoon_script import check_world_motion
+        visual = "Craft race toward the shore while smoke rolls across the sand"
+        problems = check_world_motion([self._shot(visual, camera=camera)])
+        assert len(problems) == 1 and "camera_movement is static" in problems[0]
+
+    def test_character_shots_are_not_checked(self):
+        from app.services.culturetoon_script import check_world_motion
+        assert check_world_motion([self._shot("A man talking", camera="static", focus="character")]) == []
+
+    def test_the_prompt_asks_for_action_in_time_order_and_a_moving_camera(self, mocker):
+        from app.services.culturetoon_script import generate_world_script
+        client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_world_script(region_code="FR", region_label="France", subject_text="D-Day landings")
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "ACTION IN TIME ORDER" in prompt and "never \"static\"" in prompt
+        assert "concrete things the source material names" in prompt
+
+    def test_a_long_narration_line_is_a_problem(self):
+        from app.services.culturetoon_script import check_world_motion
+        shot = {**self._shot("Craft race toward the shore while smoke rolls across the sand"), "dialogue": " ".join(["word"] * 30)}
+        problems = check_world_motion([shot])
+        assert len(problems) == 1 and "30 words" in problems[0]
+
+    def test_an_18_word_line_is_fine(self):
+        from app.services.culturetoon_script import check_world_motion
+        shot = {**self._shot("Craft race toward the shore while smoke rolls across the sand"), "dialogue": " ".join(["word"] * 18)}
+        assert check_world_motion([shot]) == []
+
+    def test_the_prompt_limits_narration_and_asks_for_era_appropriate_dress(self, mocker):
+        from app.services.culturetoon_script import generate_world_script
+        client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_world_script(region_code="FR", region_label="France", subject_text="D-Day landings")
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "at most 18 words" in prompt and "never bright modern clothing" in prompt
+
+    @pytest.mark.parametrize("visual", [
+        "Airborne troops descending by parachute, aircraft streaking overhead, soldiers running and dodging gunfire",
+        "Allied forces establishing beachheads, linking up, and advancing inland as gunfire fades",
+        "Soldiers clearing obstacles and mines, tanks rolling off landing craft",
+    ])
+    def test_real_writer_output_with_inflected_verbs_is_not_flagged_as_still(self, visual):
+        from app.services.culturetoon_script import check_world_motion
+        assert check_world_motion([self._shot(visual)]) == []
+
+    @pytest.mark.parametrize("visual", [
+        "A wide beach with cliffs and a landscape of dunes under a first light sky",
+        "The Normandy coast, showing the vast expanse of the beach and the distant cliffs",
+    ])
+    def test_stems_do_not_match_unrelated_words(self, visual):
+        # "landscape" must not count as "land", "first" must not count as "fire"
+        from app.services.culturetoon_script import check_world_motion
+        assert any("still scene" in p for p in check_world_motion([self._shot(visual)]))

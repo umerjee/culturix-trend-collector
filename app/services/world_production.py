@@ -45,18 +45,19 @@ _CATEGORY_MAP = {
 # Deliberately separate from culturetoons.ART_STYLES, whose prompts describe CHARACTERS
 # ("a 2D anime-style character illustration"), which would put a character in a landscape.
 WORLD_VISUAL_STYLES = {
+    # Wording chosen by a GPU comparison (2026-09-19), not by taste: an 8s D-Day clip with the same
+    # action prompt scored ~4.5x the scene motion of the earlier still-looking render, and this
+    # description kept a consistent painted look. Positive description only: telling the model what
+    # it is NOT ("not a photograph") gave the worst results.
     "illustrated_history": {
-        "label": "Illustrated (painted history book)",
-        "prompt": "Hand-painted gouache illustration in the style of a mid-century history book, "
-                  "flat muted earth colors, visible brush strokes and paper grain, painterly textured "
-                  "skies, stylized simplified figures with no facial detail, not photorealistic, "
-                  "not a photograph",
+        "label": "Illustrated animation (history book)",
+        "prompt": "Hand-painted 2D animation in the style of a mid-century history book illustration: "
+                  "muted earth palette, visible brush strokes, paper texture, simple stylized figures.",
     },
     "graphic_novel": {
-        "label": "Graphic novel (inked)",
-        "prompt": "Inked graphic-novel illustration, bold black linework, limited muted palette, "
-                  "halftone shading, dramatic composition, stylized figures with no facial detail, "
-                  "not photorealistic, not a photograph",
+        "label": "Graphic novel animation (inked)",
+        "prompt": "Inked graphic-novel animation: bold black linework, limited muted palette, halftone "
+                  "shading, dramatic composition, simple stylized figures.",
     },
 }
 
@@ -155,9 +156,12 @@ def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_
     from app.models.toon_script import ToonScript
     from app.models.trend import Trend
     from app.services.culturetoon_script import (
-        check_world_visuals, generate_world_script, judge_script_comedy, judge_world_grounding,
-        normalize_world_people, select_thematic_host,
+        check_world_motion, check_world_visuals, generate_world_script, judge_script_comedy,
+        judge_world_grounding, normalize_world_people, select_thematic_host,
     )
+
+    def _problems(shots):
+        return check_world_visuals(shots) + check_world_motion(shots)
 
     if persist and find_live_draft(db, item.id):
         raise WorldDraftExists("A World draft already exists for this subject")
@@ -196,20 +200,22 @@ def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_
     result = _write()
     # The renderer says "no people in frame" unless a shot has people="distant": a visual that
     # shows people without it contradicts its own render prompt. One rewrite, then normalize.
-    problems = check_world_visuals(result.get("shots"))
+    problems = _problems(result.get("shots"))
     if problems:
-        logger.info("World draft %r broke the people rule in %d shot(s); revising once", item.title, len(problems))
+        logger.info("World draft %r broke the visual rules (%d problem(s)); revising once", item.title, len(problems))
         revised = _write(fixes=problems)
-        if len(check_world_visuals(revised.get("shots"))) <= len(problems):
+        if len(_problems(revised.get("shots"))) <= len(problems):
             result = revised
     result["shots"], visual_warnings = normalize_world_people(result.get("shots"))
+    visual_warnings += check_world_motion(result.get("shots"))   # still unfixed after the rewrite: surfaced, not hidden
 
     grounding = judge_world_grounding(result, facts)
     if grounding["unsupported_claims"]:
         logger.info("World draft %r had %d unsupported claim(s); revising once", item.title,
                     len(grounding["unsupported_claims"]))
-        revised = _write(avoid=grounding["unsupported_claims"], fixes=check_world_visuals(result.get("shots")) or None)
+        revised = _write(avoid=grounding["unsupported_claims"], fixes=_problems(result.get("shots")) or None)
         revised["shots"], revised_warnings = normalize_world_people(revised.get("shots"))
+        revised_warnings += check_world_motion(revised.get("shots"))
         revised_grounding = judge_world_grounding(revised, facts)
         if len(revised_grounding["unsupported_claims"]) <= len(grounding["unsupported_claims"]):
             result, grounding, visual_warnings = revised, revised_grounding, revised_warnings
