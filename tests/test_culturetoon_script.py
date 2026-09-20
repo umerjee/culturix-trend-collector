@@ -1489,7 +1489,9 @@ class TestWorldMotionRule:
         generate_world_script(region_code="FR", region_label="France", subject_text="D-Day landings")
         prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
         assert "ACTION IN TIME ORDER" in prompt and "never \"static\"" in prompt
-        assert "concrete things the source material names" in prompt
+        assert "THIS subject's own source material" in prompt and "concrete things the source names" in prompt
+        assert "NO AMBIENT LIFE" in prompt
+        assert "ploughing" not in prompt and "surf" not in prompt   # examples from one battle leaked into every subject
 
     def test_a_long_narration_line_is_a_problem(self):
         from app.services.culturetoon_script import check_world_motion
@@ -1554,3 +1556,76 @@ class TestReferencePeopleMode:
         generate_world_script(region_code="FR", region_label="France", subject_text="D-Day")
         prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
         assert '"distant" or "reference"' in prompt
+
+
+class TestWorldRevisionAndEngagement:
+    DRAFT = {"hook_line": "H", "shots": [
+        {"shot_number": 1, "duration_seconds": 8, "shot_type": "wide", "camera_movement": "tracking", "people": "distant",
+         "dialogue": "Eight thousand ships crossed in the dark.", "subject_visual": "Craft plough through surf"}]}
+
+    def test_format_world_draft_shows_narration_picture_camera_and_people(self):
+        from app.services.culturetoon_script import format_world_draft
+        text = format_world_draft(self.DRAFT)
+        assert 'NARRATION: "Eight thousand ships crossed in the dark."' in text
+        assert "VISUAL: Craft plough through surf" in text
+        assert "8s, wide, camera: tracking, people: distant" in text and text.startswith("Hook: H")
+
+    def test_revision_block_carries_the_current_draft_and_every_editor_note(self):
+        from app.services.culturetoon_script import _world_context
+        context = _world_context("France", "Neptune", "custom", source_facts="Facts.", source_label="Wikipedia",
+                                 previous_draft=self.DRAFT, improvements=["Shot 1: flat. Fix: open on the odds.", "Whole video: no payoff."])
+        assert "REVISION" in context and "CURRENT DRAFT:" in context and "Craft plough through surf" in context
+        assert "- Shot 1: flat. Fix: open on the odds." in context and "- Whole video: no payoff." in context
+        assert "Do not add any fact that is not in the verified source material" in context
+
+    def test_no_revision_block_without_notes(self):
+        from app.services.culturetoon_script import _world_context
+        assert "REVISION" not in _world_context("France", "Neptune", "custom", previous_draft=self.DRAFT)
+        assert "REVISION" not in _world_context("France", "Neptune", "custom", improvements=["x"])
+
+    def test_the_hostless_writer_is_told_to_open_on_stakes_escalate_and_change_every_shot(self, mocker):
+        from app.services import culturetoon_script as cs
+        build = mocker.patch.object(cs, "_build_prompt_from_context", return_value="prompt")
+        mocker.patch.object(cs, "_call_llm_for_script", return_value={})
+        cs.generate_world_script("FR", "France", "Neptune", source_facts="Facts.", source_label="Wikipedia",
+                                 previous_draft=self.DRAFT, improvements=["fix it"])
+        context = build.call_args.args[1]
+        assert "ENGAGEMENT" in context and "ESCALATES or TURNS" in context and "CHANGE between its first and last frame" in context
+        assert "REVISION" in context
+
+
+class TestAmbientLifeCheck:
+    @staticmethod
+    def _shot(visual, n=1, focus="subject"):
+        return {"shot_number": n, "shot_focus": focus, "subject_visual": visual}
+
+    @pytest.mark.parametrize("visual", [
+        "A bustling forum with citizens going about their daily lives",
+        "Villagers interacting near the well while smoke rises",
+        "A vibrant market, people moving about",
+        "A peaceful harbour at dawn",
+        "Various merchants selling goods",
+    ])
+    def test_ambient_life_is_flagged_with_the_shot_number_and_the_offending_phrase(self, visual):
+        from app.services.culturetoon_script import check_world_action
+        problems = check_world_action([self._shot(visual, n=3)])
+        assert len(problems) == 1 and problems[0].startswith("Shot 3:") and "ambient life" in problems[0]
+
+    @pytest.mark.parametrize("visual", [
+        "Soldiers hammer a wooden gate until it splinters and the column surges through",
+        "A crane swings a stone beam into place as workers haul the ropes taut",
+        "The fleet's sails fill and the harbour empties",
+    ])
+    def test_a_specific_event_is_not_flagged(self, visual):
+        from app.services.culturetoon_script import check_world_action
+        assert check_world_action([self._shot(visual)]) == []
+
+    def test_only_subject_shots_are_checked(self):
+        from app.services.culturetoon_script import check_world_action
+        assert check_world_action([self._shot("a bustling market", focus="character")]) == []
+        assert check_world_action(None) == []
+
+    def test_the_word_boundary_does_not_flag_unrelated_words(self):
+        from app.services.culturetoon_script import check_world_action
+        assert check_world_action([self._shot("Riders travel various roads... a variety")]) != []   # real hits still flagged
+        assert check_world_action([self._shot("Warriors variegate the banner as it unfurls")]) == []

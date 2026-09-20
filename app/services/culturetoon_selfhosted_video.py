@@ -1042,6 +1042,75 @@ def _sanitize_segment_shots(segment_shots: list, primary_variant, all_variants: 
     return sanitized
 
 
+def _segment_prompt(script, variants: list, background, segment_shots: list, *, subject_only: bool,
+                    primary_variant=None, is_cut: bool = True, msr: bool = False) -> str:
+    """The prompt for one segment. Shared by the render loop and plan_ltx25_segments so that what a
+    curator previews is, by construction, what the renderer sends."""
+    if subject_only:
+        return build_ltx25_scene_prompt(script, [], background=background, shots=segment_shots,
+                                        continuation_anchor=False)
+    if msr:
+        # MSR conditions each cast member from their own reference image, so a second or third named
+        # character has a real identity anchor and their name must not be scrubbed.
+        return build_ltx25_scene_prompt(script, variants, background=background, shots=segment_shots,
+                                        continuation_anchor=False, msr_mode=True)
+    sanitized_shots = _sanitize_segment_shots(segment_shots, primary_variant, variants)
+    return build_ltx25_scene_prompt(script, [primary_variant] if primary_variant is not None else [],
+                                    background=background, shots=sanitized_shots, continuation_anchor=not is_cut)
+
+
+def plan_ltx25_segments(script, variants: list, background=None, scene_backgrounds: Optional[dict] = None) -> list:
+    """What generate_toon_video_ltx25 will send, segment by segment, without rendering anything:
+    [{index, shot_numbers, seconds, mode, prompt, opening_frame: {kind, url, name}, image_strength,
+    negative_prompt}]. Deterministic and free (no GPU, no network). One case can differ at render
+    time: if fewer than two cast portraits can be fetched, an MSR segment falls back to a single
+    portrait."""
+    from app.media import ltx25_workflow
+
+    shots = getattr(script, "shots", None) or []
+    default_bg_url = getattr(background, "image_url", None) if background is not None else None
+    plan = []
+    previous_primary_id = None
+    previous_scene_index = None
+    for index, segment_shots in enumerate(_split_shots_into_segments(shots), start=1):
+        scene_index = _segment_scene_index(segment_shots)
+        scene_bg = (scene_backgrounds or {}).get(scene_index) if scene_index is not None else None
+        backdrop_url = getattr(scene_bg, "image_url", None) if scene_bg is not None else default_bg_url
+        backdrop_name = getattr(scene_bg, "name", None) if scene_bg is not None else getattr(background, "name", None)
+        seconds = sum(s.get("duration_seconds", 0) for s in segment_shots) or 5
+        subject_only = _segment_is_subject_only(segment_shots)
+        image_strength = None
+        if subject_only:
+            prompt = _segment_prompt(script, variants, background, segment_shots, subject_only=True)
+            opening = {"kind": "reference_photo" if backdrop_url else "blank_canvas", "url": backdrop_url, "name": backdrop_name}
+            if backdrop_url:
+                image_strength = LTX25_REFERENCE_PHOTO_STRENGTH
+            previous_primary_id = None
+            previous_scene_index = None
+        else:
+            primary = _segment_primary_variant(segment_shots, variants)
+            primary_id = str(getattr(primary, "id", ""))
+            is_cut = primary_id != previous_primary_id or scene_index != previous_scene_index
+            msr = bool(ltx25_workflow.LTX25_MSR_ENABLED and len(variants) >= 2 and is_cut)
+            prompt = _segment_prompt(script, variants, background, segment_shots, subject_only=False,
+                                     primary_variant=primary, is_cut=is_cut, msr=msr)
+            kind = "cast_portraits" if msr else ("character_portrait" if is_cut else "previous_segment_last_frame")
+            opening = {"kind": kind, "url": None, "name": getattr(primary, "name", None)}
+            previous_primary_id = primary_id
+            previous_scene_index = scene_index
+        plan.append({
+            "index": index,
+            "shot_numbers": [s.get("shot_number") for s in segment_shots],
+            "seconds": seconds,
+            "mode": "subject_only" if subject_only else "character",
+            "prompt": prompt,
+            "opening_frame": opening,
+            "image_strength": image_strength,
+            "negative_prompt": ltx25_workflow.DEFAULT_NEGATIVE_PROMPT,
+        })
+    return plan
+
+
 def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
                               duration_seconds: Optional[int] = None,
                               background=None, scene_backgrounds: Optional[dict] = None,
@@ -1144,10 +1213,7 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
             # for) — reset explicitly so a stale MSR reference set from an
             # earlier segment can't leak into this one's workflow build.
             current_msr_images = None
-            prompt = build_ltx25_scene_prompt(
-                script, [], background=background, shots=segment_shots,
-                continuation_anchor=False,
-            )
+            prompt = _segment_prompt(script, variants, background, segment_shots, subject_only=True)
             # Whatever comes after this must also re-anchor fresh — chaining
             # a character segment off a face-less subject frame would lose
             # identity just as badly as the bug this branch fixes.
@@ -1190,18 +1256,10 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
             # MSR is that a second/third named character now has a real
             # identity anchor, so scrubbing their name would throw away
             # exactly what MSR was added to make usable.
-            if current_msr_images:
-                sanitized_shots = segment_shots
-                prompt = build_ltx25_scene_prompt(
-                    script, variants, background=background, shots=sanitized_shots,
-                    continuation_anchor=False, msr_mode=True,
-                )
-            else:
-                sanitized_shots = _sanitize_segment_shots(segment_shots, primary_variant, variants)
-                prompt = build_ltx25_scene_prompt(
-                    script, [primary_variant], background=background, shots=sanitized_shots,
-                    continuation_anchor=not is_cut,
-                )
+            prompt = _segment_prompt(
+                script, variants, background, segment_shots, subject_only=False,
+                primary_variant=primary_variant, is_cut=is_cut, msr=bool(current_msr_images),
+            )
             previous_primary_id = primary_id
             previous_scene_index = this_scene_index
 
@@ -1273,6 +1331,38 @@ def resolve_scene_backgrounds(session, script) -> Optional[dict]:
     } or None
 
 
+def load_render_context(session, toon, script) -> tuple:
+    """(variants, background, scene_backgrounds) exactly as a render resolves them, so a preview of
+    the prompts reads the same rows. Raises ValueError for a cast member that no longer exists."""
+    from app.models.character_variant import CharacterVariant
+    from app.models.toon_background import ToonBackground
+
+    cast_ids = [str(v) for v in (script.character_variant_ids or [])]
+    if not cast_ids and script.character_variant_id:
+        cast_ids = [str(script.character_variant_id)]
+    if not cast_ids and toon.character_variant_id:
+        cast_ids = [str(toon.character_variant_id)]
+    # A World Feature may have no host at all: cast_ids stays empty rather than falling back to a
+    # None id (which used to crash UUID(str(None))). Everything downstream handles an empty list.
+    variants = []
+    if cast_ids:
+        rows = session.query(CharacterVariant).filter(
+            CharacterVariant.id.in_([_uuid.UUID(v) for v in cast_ids])
+        ).all()
+        variants_by_id = {str(v.id): v for v in rows}
+        missing = [vid for vid in cast_ids if vid not in variants_by_id]
+        if missing:
+            raise ValueError(f"Character variant(s) not found: {missing}")
+        # Script cast order (index 0 is the primary, visually-grounded cast member), not DB order.
+        variants = [variants_by_id[vid] for vid in cast_ids]
+    # script.background_id wins (a script's setting drives its background), then the Toon's.
+    background = None
+    background_id = script.background_id or toon.background_id
+    if background_id:
+        background = session.query(ToonBackground).filter_by(id=background_id).first()
+    return variants, background, resolve_scene_backgrounds(session, script)
+
+
 def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
     """Interactive-button counterpart to culturetoon_video.py's
     generate_video_for_toon, called the same way (backgrounded from
@@ -1308,30 +1398,7 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
         if not script:
             raise ValueError("Toon's script is missing")
 
-        cast_ids = [str(v) for v in (script.character_variant_ids or [])]
-        if not cast_ids and script.character_variant_id:
-            cast_ids = [str(script.character_variant_id)]
-        if not cast_ids and toon.character_variant_id:
-            cast_ids = [str(toon.character_variant_id)]
-        # A World Feature (is_world_content=True) may have no host at all —
-        # cast_ids stays empty rather than falling back to a None id (which
-        # used to crash UUID(str(None)) below). Everything downstream
-        # (generate_toon_video_ltx25, build_ltx25_scene_prompt) already
-        # handles an empty variants list correctly for subject-only content.
-        if cast_ids:
-            variants = session.query(CharacterVariant).filter(
-                CharacterVariant.id.in_([_uuid.UUID(v) for v in cast_ids])
-            ).all()
-            variants_by_id = {str(v.id): v for v in variants}
-            missing = [vid for vid in cast_ids if vid not in variants_by_id]
-            if missing:
-                raise ValueError(f"Character variant(s) not found: {missing}")
-            # Preserve script cast order (index 0 is the primary/visually-
-            # grounded cast member) rather than whatever order the DB query
-            # happened to return.
-            variants = [variants_by_id[vid] for vid in cast_ids]
-        else:
-            variants = []
+        variants, background, scene_backgrounds = load_render_context(session, toon, script)
 
         endpoint_id = os.getenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "")
         if not endpoint_id:
@@ -1347,22 +1414,6 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
             or sum(s.get("duration_seconds", 0) for s in (script.shots or []))
             or 5
         )
-        # Confirmed live 2026-08-30: neither Toon.background_id nor
-        # ToonScript.background_id was ever read here at all, so a
-        # selected Location never reached the video prompt regardless of
-        # which one was chosen. script's own background_id wins (a
-        # script's setting drives its background per that column's own
-        # docstring), falling back to the Toon's.
-        background = None
-        background_id = script.background_id or toon.background_id
-        if background_id:
-            background = session.query(ToonBackground).filter_by(id=background_id).first()
-
-        # One distinct backdrop per plan_scenes() location, for a script
-        # that was planned across more than one — see resolve_scene_
-        # backgrounds' and generate_toon_video_ltx25's own docstrings.
-        scene_backgrounds = resolve_scene_backgrounds(session, script)
-
         # A hostless World video gets ONE synthesised narrator voice for the whole video, not
         # whatever voice the video model invents per ~15s segment. Prepared BEFORE the GPU is
         # used, and a failure stops here (NarrationError is a ValueError -> marked failed): it

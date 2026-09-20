@@ -3047,6 +3047,7 @@ def _world_production_rows(session, archived: bool, limit: int) -> list[dict]:
     from app.models.toon import Toon
     from app.models.toon_script import ToonScript
     from app.services.world_production import estimate_render, source_label
+    from app.services.world_review import review_view
 
     query = (
         session.query(Toon, ToonScript)
@@ -3079,7 +3080,8 @@ def _world_production_rows(session, archived: bool, limit: int) -> list[dict]:
             "hook_line": script.hook_line,
             "narration": [sh.get("dialogue") for sh in (script.shots or []) if sh.get("dialogue")],
             "grounding": judgment.get("grounding"),
-            "craft_score": judgment.get("comedy_score"),
+            "craft_score": judgment.get("score", judgment.get("comedy_score")),
+            "review": review_view(judgment),
             "has_host": bool(script.character_variant_id),
             "source_type": source_label(item) if item else None,
             "source_url": item.source_url if item else None,
@@ -3146,6 +3148,59 @@ def _world_toon_or_404(session, toon_id: str):
     if not toon:
         raise HTTPException(status_code=404, detail="World draft not found")
     return toon
+
+
+@app.get("/admin/world-production/{toon_id}/video-prompt", dependencies=[Depends(require_admin_secret)])
+def preview_world_production_video(toon_id: str):
+    """Exactly what a render of this draft would send to the video model and the narrator, before any GPU
+    is spent: narration voice and timing, and per segment the opening frame, prompt and negative prompt."""
+    from app.db import SessionLocal
+    from app.services.world_production import WorldDraftError, preview_world_render
+    session = SessionLocal()
+    try:
+        toon = _world_toon_or_404(session, toon_id)
+        try:
+            return preview_world_render(session, toon)
+        except WorldDraftError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+    finally:
+        session.close()
+
+
+@app.post("/admin/world-production/{toon_id}/review", dependencies=[Depends(require_admin_secret)])
+def review_world_production_script(toon_id: str):
+    """Score a draft's script (0-100 across hook, story, dynamism, narration, visuals, accuracy) and store
+    the improvement suggestions. Only before the video is rendered."""
+    from app.db import SessionLocal
+    from app.services.world_production import WorldDraftError, review_world_draft
+    session = SessionLocal()
+    try:
+        toon = _world_toon_or_404(session, toon_id)
+        try:
+            review = review_world_draft(session, toon)
+        except WorldDraftError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"status": "reviewed", "toon_id": toon_id, "score": review["score"]}
+    finally:
+        session.close()
+
+
+@app.post("/admin/world-production/{toon_id}/improve", dependencies=[Depends(require_admin_secret)])
+def improve_world_production_script(toon_id: str, body: Optional[dict] = None):
+    """Rewrite a draft's script applying the reviewer's suggestions and an optional curator note, then
+    re-check and re-score it. The rewrite replaces the script only if it scores higher without adding
+    unsupported claims."""
+    from app.db import SessionLocal
+    from app.services.world_production import WorldDraftError, improve_world_draft
+    session = SessionLocal()
+    try:
+        toon = _world_toon_or_404(session, toon_id)
+        try:
+            return {"toon_id": toon_id, **improve_world_draft(session, toon, note=(body or {}).get("note"))}
+        except WorldDraftError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+    finally:
+        session.close()
 
 
 @app.post("/admin/world-production/{toon_id}/publish", dependencies=[Depends(require_admin_secret)])

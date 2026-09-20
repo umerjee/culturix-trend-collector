@@ -203,3 +203,29 @@ class TestRealMux:
         summary = result.split("Summary:")[1]
         lufs = float(summary.split("I:")[1].split("LUFS")[0])
         assert -19 < lufs < -13
+
+
+class TestPreviewCache:
+    SHOTS = [{"shot_number": 1, "duration_seconds": 8, "dialogue": "A spoken line."}]
+
+    def test_the_same_script_is_synthesised_once(self, mocker):
+        wn._PLAN_CACHE.clear()
+        prepare = mocker.patch.object(wn, "prepare_narration", return_value=mocker.Mock())
+        first = wn.prepare_narration_cached(self.SHOTS)
+        second = wn.prepare_narration_cached([dict(s) for s in self.SHOTS])
+        assert first is second and prepare.call_count == 1
+
+    def test_changing_a_line_or_a_planned_length_synthesises_again(self, mocker):
+        wn._PLAN_CACHE.clear()
+        prepare = mocker.patch.object(wn, "prepare_narration", side_effect=lambda *a, **k: mocker.Mock())
+        wn.prepare_narration_cached(self.SHOTS)
+        wn.prepare_narration_cached([{**self.SHOTS[0], "dialogue": "Another line."}])
+        wn.prepare_narration_cached([{**self.SHOTS[0], "duration_seconds": 10}])
+        assert prepare.call_count == 3
+
+    def test_the_cache_is_bounded(self, mocker):
+        wn._PLAN_CACHE.clear()
+        mocker.patch.object(wn, "prepare_narration", side_effect=lambda *a, **k: mocker.Mock())
+        for i in range(wn._PLAN_CACHE_SIZE + 5):
+            wn.prepare_narration_cached([{"shot_number": 1, "duration_seconds": 8, "dialogue": f"Line {i}."}])
+        assert len(wn._PLAN_CACHE) == wn._PLAN_CACHE_SIZE

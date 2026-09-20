@@ -445,8 +445,20 @@ curl -s "https://api.runpod.io/graphql?api_key=$KEY" \
 curl -s -X POST "https://api.runpod.ai/v2/$EP/purge-queue" -H "Authorization: Bearer $KEY"
 ```
 
-Resting cost is ~$0.039/hr baseline. `workersStandby` is **not settable via
-the REST API** — console only.
+Resting cost is ~$0.02-0.04/hr baseline (measured $0.019/hr on 2026-09-20 with
+0 workers and no pods). `workersStandby` is **not settable via the REST API** —
+console only. The account key can read endpoint config and pods through the
+GraphQL API (`myself { endpoints { workersMin idleTimeout } pods { id } }`) even
+though the REST API refuses it. Workers shown as "idle" in `/health` with no jobs
+are not billed compute; check `clientBalance` over a minute rather than counting
+workers.
+
+**A job we stop waiting for keeps running and billing.** Timeout, a network error
+while polling, or a Railway restart mid-render used to leave the RunPod job
+running to completion, output discarded. `runpod_serverless_client.run_inference_job`
+now cancels the job in all three cases (`cancel_job`), and the app's shutdown hook
+cancels everything in flight (`cancel_all_active_jobs`). `CANCELLED`/`TIMED_OUT`
+fail immediately instead of polling to the timeout. Do not remove the `finally`.
 
 Always terminate rented pods in a `finally`, but **never terminate on a
 monitoring/printing error**: a `UnicodeEncodeError` in a progress print once
@@ -660,4 +672,29 @@ Rules that came from real failures — keep them:
   SCENE prompts on purpose: `ART_STYLES` prompts describe characters and would put one in a landscape.
 - **People:** each shot has `people` = `none` | `distant`; the renderer says "no people in frame" or "small, distant,
   faceless figures in wide shots". The writer only emits it because the output schema names the key.
+
+### World script review, Improve, and "what will be generated"
+- **Score before you spend.** `app/services/world_review.py` scores a script 0-100 on hook (20), story (20),
+  dynamism (25), narration (15), visuals (10), accuracy (10) and returns up to 5 concrete suggestions. Dynamism and
+  narration blend the AI critic 50/50 and 60/40 with measurable properties (action verbs, camera/shot variety,
+  line length), because the critic alone rated a script of pure scenery 67 for movement. Accuracy is the existing
+  fact-check. Pass = score >= 75, no dimension < 50, no unsupported claim. The result is stored in
+  `toon_scripts.comedy_judgment` (same column and `comedy_score`/`passes_bar`/`feedback` keys the toons UI reads)
+  plus `dimensions`, `suggestions`, `auto_improved`, `first_score`. Advisory only, never blocks a render.
+- **Improve loop.** A draft that misses the bar is rewritten ONCE automatically with the critic's suggestions and
+  kept only if it scores higher without adding unsupported claims (`_is_better`). The curator can repeat it with
+  "Improve with AI" (+ an optional note), `POST /admin/world-production/{id}/improve`; `.../review` scores an old
+  draft. Both refuse once a video exists (the script would no longer describe the render).
+- **The preview cannot drift from the render.** `GET /admin/world-production/{id}/video-prompt` returns the
+  narration (voice, timing) and, per segment, the opening frame, prompt and negative prompt. It calls
+  `plan_ltx25_segments`, which uses the same `_segment_prompt` and `load_render_context` the render loop uses;
+  `tests/test_ltx25_render_preview.py` runs the real loop and asserts identical prompts. Change how a prompt is
+  built in `_segment_prompt`/`build_ltx25_scene_prompt`, never in one caller only. A narration failure (a line too
+  long) shows up in the preview before any GPU is used.
+- **Writer rules that measurably mattered (2026-09-20, real-model dry runs on "Rise of the Roman Empire").**
+  Motion verbs alone pass `check_world_motion` with scenery ("a bustling forum, villagers going about their daily
+  lives"), so `check_world_action` flags ambient-life wording and forces the one visuals rewrite. Concrete example
+  imagery in the prompt is COPIED into unrelated subjects (a D-Day "craft ploughing through surf" appeared in a
+  753 BC Rome script, then a "weir"): keep writer rules abstract. An abstract, thin-source subject still tends to
+  score in the 60s; photo-anchored scenes (see `world_references.py`) are what produce real action.
 

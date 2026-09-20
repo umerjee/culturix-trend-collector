@@ -1558,11 +1558,30 @@ def generate_toon_script_from_idea(idea: str, variants: Optional[list] = None, t
     return _call_llm_for_script(prompt, tone, variants, planned_scenes)
 
 
+def format_world_draft(script_result: dict) -> str:
+    """A hostless World script as readable text for a reviewer or a revision prompt. The generic
+    _format_script_for_prompt shows "Visual:" and "Dialogue:", which are not the fields a World shot
+    uses (subject_visual, narration in dialogue, people), so a reviewer reading it would not see the
+    picture at all."""
+    lines = []
+    for shot in script_result.get("shots") or []:
+        head = f"Shot {shot.get('shot_number')}"
+        meta = [f"{shot.get('duration_seconds')}s" if shot.get("duration_seconds") else None,
+                (shot.get("shot_type") or "").replace("_", " ") or None,
+                f"camera: {(shot.get('camera_movement') or '').replace('_', ' ')}" if shot.get("camera_movement") else None,
+                f"people: {shot.get('people')}" if shot.get("people") else None]
+        head += " (" + ", ".join(m for m in meta if m) + ")" if any(meta) else ""
+        lines.append(f"{head}\n  NARRATION: \"{(shot.get('dialogue') or '').strip()}\"\n"
+                     f"  VISUAL: {(shot.get('subject_visual') or shot.get('visual') or '').strip()}")
+    return f"Hook: {script_result.get('hook_line') or ''}\n\n" + "\n".join(lines)
+
+
 def _world_context(region_label: str, subject_text: str, subject_category: Optional[str],
                     trends: Optional[list] = None, culture: Optional[dict] = None,
                     source_facts: Optional[str] = None, source_label: Optional[str] = None,
                     avoid_claims: Optional[list] = None, visual_fixes: Optional[list] = None,
-                    scene_briefs: Optional[list] = None) -> str:
+                    scene_briefs: Optional[list] = None, previous_draft: Optional[dict] = None,
+                    improvements: Optional[list] = None) -> str:
     """Builds the "context" string for generate_world_script, in the same
     role _source_type_and_context plays for the Persona/Cluster path — the
     thing a subject-centric World Feature is grounded in isn't a trending
@@ -1627,6 +1646,15 @@ def _world_context(region_label: str, subject_text: str, subject_category: Optio
         context += (
             "\n\nYour previous draft broke the PEOPLE rule. Fix exactly these and change nothing else:\n"
             + "\n".join(f"- {f}" for f in visual_fixes[:6])
+        )
+    if previous_draft and improvements:
+        context += (
+            "\n\nREVISION. An editor reviewed the current draft below. Rewrite it applying EVERY editor note. "
+            "Keep what already works: the same number of shots, the same scene order, every fact the source "
+            "supports. Do not add any fact that is not in the verified source material, and do not weaken a "
+            "shot's action or camera movement while fixing another problem.\n\nCURRENT DRAFT:\n"
+            f"{format_world_draft(previous_draft)}\n\nEDITOR NOTES:\n"
+            + "\n".join(f"- {note}" for note in improvements[:8])
         )
     if culture:
         context += "\n" + _culture_context([culture])
@@ -1736,7 +1764,7 @@ def check_world_motion(shots: Optional[list]) -> list[str]:
         visual = shot.get("subject_visual") or ""
         if len({m.group(0).lower() for m in _MOTION_WORDS.finditer(visual)}) < MIN_MOTION_WORDS:
             problems.append(f"Shot {number}: the visual is a still scene. Describe what MOVES, in time order, "
-                            "with action verbs (craft ploughing through surf, smoke rolling, figures running).")
+                            "with action verbs: name who or what moves, where to, and what has changed by the last frame.")
         words = len((shot.get("dialogue") or "").split())
         if words > MAX_NARRATION_WORDS:
             problems.append(f"Shot {number}: the narration is {words} words. Keep it to 18 or fewer so the shot "
@@ -1744,6 +1772,30 @@ def check_world_motion(shots: Optional[list]) -> list[str]:
         if (shot.get("camera_movement") or "").strip().lower() in ("static", ""):
             problems.append(f"Shot {number}: camera_movement is static. Use tracking, dolly, push_in, pull_out, "
                             "crane, pan_left, pan_right, tilt or orbit.")
+    return problems
+
+
+# Words that describe a place being lived in, not something happening. A visual made of them
+# renders as a still scene with background flicker, however many motion verbs it also has.
+_AMBIENT_LIFE = re.compile(
+    r"\b(go(?:es|ing)? about|daily (?:li(?:fe|ves)|routine)|everyday life|interact(?:s|ing|ion|ions)?|"
+    r"mov(?:e|es|ing) about|bustl\w*|thriv\w*|hustle|lively|vibrant|peaceful|serene|tranquil|"
+    r"a variety of|various)\b", re.IGNORECASE)
+
+
+def check_world_action(shots: Optional[list]) -> list[str]:
+    """A subject visual that is ambient life ("villagers going about their day", "a bustling market")
+    instead of one event. Measured on a real draft: the AI reviewer scored such a script 67 for
+    movement while every shot was scenery, so this is checked in code."""
+    problems = []
+    for shot in shots or []:
+        if (shot.get("shot_focus") or "").strip().lower() != "subject":
+            continue
+        match = _AMBIENT_LIFE.search(shot.get("subject_visual") or "")
+        if match:
+            problems.append(f'Shot {shot.get("shot_number")}: "{match.group(0)}" describes ambient life, not an event. '
+                            "Replace it with ONE specific thing that happens: who does what to what, and what is "
+                            "different in the last frame from the first.")
     return problems
 
 
@@ -1834,7 +1886,9 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
                            source_facts: Optional[str] = None, source_label: Optional[str] = None,
                            avoid_claims: Optional[list] = None,
                            visual_fixes: Optional[list] = None,
-                           scene_briefs: Optional[list] = None) -> dict:
+                           scene_briefs: Optional[list] = None,
+                           previous_draft: Optional[dict] = None,
+                           improvements: Optional[list] = None) -> dict:
     """Generates a World Feature script — a subject-centric video (a place,
     phenomenon, or species is the star) grounded in real region-filtered
     Trend rows and (optionally) the shared Culture library, for the public
@@ -1860,7 +1914,8 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
     variants = [host_variant] if host_variant is not None else []
     context = _world_context(region_label, subject_text, subject_category, trends, culture,
                              source_facts=source_facts, source_label=source_label, avoid_claims=avoid_claims,
-                             visual_fixes=visual_fixes, scene_briefs=scene_briefs)
+                             visual_fixes=visual_fixes, scene_briefs=scene_briefs,
+                             previous_draft=previous_draft, improvements=improvements)
     if not variants:
         # cast_line is empty with no variants (see _cast_line), which on its
         # own leaves the craft guidance's "use the cast to carry the
@@ -1882,16 +1937,28 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
             "\"people\" is \"none\".\n"
             "MOTION: this is video, not a slideshow. A still scene renders as a still image with a slow "
             "zoom. Every subject_visual must describe ACTION IN TIME ORDER, using present-tense verbs: what "
-            "moves and how, from the start of the shot to its end (craft ploughing through surf, ramps "
-            "dropping, smoke rolling, aircraft streaking overhead, figures running, waves surging). Build "
-            "each shot from concrete things the source material names (for a battle: the craft, the "
-            "bombardment, the airborne troops, the tanks, the obstacles, the gun emplacements) and show them "
-            "DOING something, not sitting in a landscape. Every shot needs a moving camera_movement (never "
+"moves and how, from the start of the shot to its end: who or what moves, where to, and what has "
+            "changed by the last frame. Take every "
+            "picture from THIS subject's own source material, never from a different subject: build each shot "
+            "from the concrete things the source names (its people, machines, buildings, animals, weather, "
+            "objects) and show them DOING something, not sitting in a landscape. Every shot needs a moving camera_movement (never "
             "\"static\": use tracking, dolly, push_in, pull_out, crane, pan_left, pan_right, tilt or "
             "orbit) and shot_type should vary across the video. NARRATION LENGTH: each shot's dialogue is "
             "14 to 18 words (about 6 to 7 seconds spoken), so shots stay near 8 seconds: a long shot renders "
             "as a slow, static scene, and a very short line leaves the shot silent. People wear what the era and event require (for 1944 soldiers: helmets "
-            "and drab olive or khaki uniforms), never bright modern clothing."
+            "and drab olive or khaki uniforms), never bright modern clothing.\n"
+            "NO AMBIENT LIFE: never write that people 'go about their daily lives', that a place is 'bustling', "
+            "'thriving', 'vibrant' or 'peaceful', or that people 'interact'. That is scenery. Each subject_visual is "
+            "ONE specific event with a clear before and after, naming who does what to what.\n"
+            "ENGAGEMENT: the viewer decides in three seconds. Line 1 drops them into a moment of stakes or "
+            "contrast using the most striking fact in the source (the scale of the force, the odds, the "
+            "surprise), never a label or a date-and-definition opener. Each later line ESCALATES or TURNS "
+            "(cause, then effect, then consequence); it never lists. The last line reframes what the viewer "
+            "just watched. In EVERY shot something must CHANGE between its first and last frame (a fleet "
+            "appears out of haze, a ramp drops and men pour out, a wall of smoke swallows the shore), told "
+            "as an event, not a scene. Vary scale and angle shot to shot (wide establishing, low tracking "
+            "along the action, a close detail of machinery or water, an aerial), and let each visual show "
+            "what its narration line has just said."
         )
     prompt = _build_prompt_from_context("real-world region/subject", context, variants, tone,
                                          num_shots, target_duration_seconds)

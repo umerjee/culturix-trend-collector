@@ -19,12 +19,15 @@ with a clear error. It never falls back to the model's own voice, because that
 is the mixed-voices outcome this module exists to prevent.
 """
 import asyncio
+import hashlib
+import json
 import logging
 import math
 import os
 import shutil
 import subprocess
 import tempfile
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -203,6 +206,26 @@ def prepare_narration(shots: list[dict], language: str = "en", voice: Optional[s
     logger.info("Narration prepared: voice=%s, %d line(s), %.1fs of speech over %.1fs of video",
                 voice, len(lines), sum(durations.values()), total)
     return NarrationPlan(voice=voice, language=language, lines=lines, shots=retimed, total_seconds=total)
+
+
+_PLAN_CACHE: "OrderedDict[str, NarrationPlan]" = OrderedDict()
+_PLAN_CACHE_SIZE = 16
+
+
+def prepare_narration_cached(shots: list[dict], language: str = "en") -> NarrationPlan:
+    """prepare_narration with a small in-memory cache keyed on what actually determines the audio (voice,
+    each line, each shot's planned length). Only for previews: a render always synthesises fresh."""
+    voice = narrator_voice(language)
+    key = hashlib.sha1(json.dumps([voice, language, [(s.get("dialogue"), s.get("duration_seconds")) for s in shots]],
+                                  sort_keys=True).encode("utf-8")).hexdigest()
+    if key in _PLAN_CACHE:
+        _PLAN_CACHE.move_to_end(key)
+        return _PLAN_CACHE[key]
+    plan = prepare_narration(shots, language=language, voice=voice)
+    _PLAN_CACHE[key] = plan
+    while len(_PLAN_CACHE) > _PLAN_CACHE_SIZE:
+        _PLAN_CACHE.popitem(last=False)
+    return plan
 
 
 def mux_command(video_path: str, line_paths: list[str], offsets_ms: list[int], out_path: str,

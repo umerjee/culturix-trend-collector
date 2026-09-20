@@ -22,6 +22,12 @@ def _script(total=30):
             "total_duration_seconds": total}
 
 
+def _review(score=80, passes=True, suggestions=None):
+    return {"score": score, "comedy_score": score, "passes_bar": passes, "feedback": "ok", "judge_failed": False,
+            "dimensions": {"hook": {"score": score, "weight": 20, "note": ""}}, "suggestions": suggestions or [],
+            "review_version": 1}
+
+
 @pytest.fixture
 def llm(mocker):
     base = "app.services.culturetoon_script."
@@ -31,7 +37,7 @@ def llm(mocker):
         write=mocker.patch(base + "generate_world_script", return_value=_script()),
         grounding=mocker.patch(base + "judge_world_grounding",
                                return_value={"grounded": True, "unsupported_claims": [], "judge_failed": False}),
-        craft=mocker.patch(base + "judge_script_comedy", return_value={"comedy_score": 70}),
+        review=mocker.patch("app.services.world_review.review_world_script", return_value=_review()),
         host=mocker.patch(base + "select_thematic_host"),
     )
 
@@ -402,3 +408,290 @@ class TestScenes:
         llm.write.side_effect = [script]
         result = wp.generate_world_draft(None, _item(), duration_seconds=30, scenes=self.SCENES, persist=False)
         assert {s["people"] for s in result["shots"]} == {"none"}
+
+
+SUGGESTION = {"shot": 1, "dimension": "hook", "issue": "The opener is a label.", "fix": "Open on the odds."}
+
+
+class TestAutoImprove:
+    """A draft that misses the bar is rewritten once with the reviewer's suggestions; the better one is kept."""
+
+    def _reviews(self, llm, *reviews):
+        llm.review.side_effect = list(reviews)
+
+    def test_a_passing_draft_is_not_rewritten(self, llm):
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert llm.write.call_count == 1 and llm.review.call_count == 1
+        assert "auto_improved" not in result["judgment"]
+
+    def test_a_failing_draft_is_rewritten_with_its_suggestions_and_the_better_one_wins(self, llm):
+        first, second = _script(), {**_script(), "hook_line": "Better hook"}
+        llm.write.side_effect = [first, second]
+        self._reviews(llm, _review(55, False, [SUGGESTION]), _review(82, True))
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert result["hook_line"] == "Better hook"
+        assert result["judgment"]["auto_improved"] is True and result["judgment"]["first_score"] == 55
+        revision_call = llm.write.call_args_list[1].kwargs
+        assert revision_call["previous_draft"]["hook_line"] == "H"
+        assert revision_call["improvements"] == ["Shot 1: The opener is a label. Fix: Open on the odds."]
+
+    def test_a_rewrite_that_scores_lower_is_discarded(self, llm):
+        llm.write.side_effect = [_script(), {**_script(), "hook_line": "Worse"}]
+        self._reviews(llm, _review(60, False, [SUGGESTION]), _review(40, False))
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert result["hook_line"] == "H" and result["judgment"]["score"] == 60
+        assert "auto_improved" not in result["judgment"]
+
+    def test_a_rewrite_that_adds_unsupported_claims_is_discarded_even_if_it_scores_higher(self, llm):
+        llm.write.side_effect = [_script(), {**_script(), "hook_line": "Invented"}, {**_script(), "hook_line": "Invented"}]
+        clean = {"grounded": True, "unsupported_claims": [], "judge_failed": False}
+        dirty = {"grounded": False, "unsupported_claims": ["a fact"], "judge_failed": False}
+        llm.grounding.side_effect = [clean, dirty, dirty]
+        self._reviews(llm, _review(60, False, [SUGGESTION]), _review(90, True))
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert result["hook_line"] == "H"
+
+    def test_no_suggestions_means_nothing_to_apply(self, llm):
+        self._reviews(llm, _review(50, False, []))
+        wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert llm.write.call_count == 1
+
+    def test_a_failed_review_does_not_trigger_a_rewrite(self, llm):
+        llm.review.return_value = {**_review(0, None), "score": None, "passes_bar": None, "judge_failed": True}
+        wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert llm.write.call_count == 1
+
+
+class TestImproveAndPreview:
+    @pytest.fixture
+    def db(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.db import Base
+        from app.models.curated_item import CuratedItem
+        from app.models.toon import Toon
+        from app.models.toon_background import ToonBackground
+        from app.models.toon_script import ToonScript
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine, tables=[Toon.__table__, ToonScript.__table__, CuratedItem.__table__,
+                                                      ToonBackground.__table__])
+        s = sessionmaker(bind=engine)()
+        yield s
+        s.close()
+
+    @staticmethod
+    def _draft(db, status="idea", judgment=None, with_photos=False):
+        from app.models.curated_item import CuratedItem
+        from app.models.toon import Toon
+        from app.models.toon_background import ToonBackground
+        from app.models.toon_script import ToonScript
+        item = CuratedItem(source_type="wikipedia", source_ref="Neptune", title="Operation Neptune", summary="The landing.",
+                           raw_text="Facts " * 100, category="history", region=None)
+        db.add(item)
+        db.commit()
+        shots = [{"shot_number": i + 1, "duration_seconds": 8, "shot_focus": "subject", "camera_movement": "tracking",
+                  "people": "none", "dialogue": f"Line {i + 1} is spoken here.",
+                  "subject_visual": "Ships surge and smoke rolls", "scene_index": i if with_photos else None} for i in range(2)]
+        scene_backgrounds = None
+        if with_photos:
+            scene_backgrounds = []
+            for i in range(2):
+                bg = ToonBackground(brand_id=uuid.uuid4(), name=f"Scene {i}", image_url=f"https://cdn/{i}.jpg",
+                                    description=f"Brief {i}")
+                db.add(bg)
+                db.commit()
+                scene_backgrounds.append({"scene_index": i, "background_id": str(bg.id)})
+        script = ToonScript(brand_id=uuid.uuid4(), hook_line="H", shots=shots, total_duration_seconds=16,
+                            generation_source="ai", status="approved", is_world_content=True,
+                            comedy_judgment=judgment, scene_backgrounds=scene_backgrounds)
+        db.add(script)
+        db.commit()
+        toon = Toon(brand_id=script.brand_id, script_id=script.id, title="Operation Neptune", status=status,
+                    is_world_content=True, curated_item_id=item.id)
+        db.add(toon)
+        db.commit()
+        return toon, script
+
+    def test_a_rendered_draft_cannot_be_improved_or_rescored(self, db, llm):
+        toon, _ = self._draft(db, status="ready")
+        with pytest.raises(wp.WorldDraftError, match="before its video is rendered"):
+            wp.improve_world_draft(db, toon)
+        with pytest.raises(wp.WorldDraftError):
+            wp.review_world_draft(db, toon)
+
+    def test_review_scores_an_old_draft_and_keeps_its_other_judgment_fields(self, db, llm):
+        toon, script = self._draft(db, judgment={"comedy_score": 50, "grounding": {"grounded": True, "unsupported_claims": []},
+                                                 "references": [{"scene": 0}]})
+        llm.review.return_value = _review(72, False, [SUGGESTION])
+        wp.review_world_draft(db, toon)
+        db.refresh(script)
+        assert script.comedy_judgment["score"] == 72 and script.comedy_judgment["suggestions"] == [SUGGESTION]
+        assert script.comedy_judgment["references"] == [{"scene": 0}]
+        llm.grounding.assert_not_called()       # the stored fact-check is reused, not repeated
+
+    def test_improve_applies_the_suggestions_and_the_curators_note_then_saves_the_better_script(self, db, llm):
+        toon, script = self._draft(db, judgment={**_review(60, False, [SUGGESTION]),
+                                                 "grounding": {"grounded": True, "unsupported_claims": []},
+                                                 "duration_plan": {"duration_seconds": 15, "beat_count": 2}})
+        better = {"hook_line": "New hook", "total_duration_seconds": 16, "shots": [
+            {"shot_number": 1, "duration_seconds": 8, "shot_focus": "subject", "people": "none", "dialogue": "a", "subject_visual": "x"},
+            {"shot_number": 2, "duration_seconds": 8, "shot_focus": "subject", "people": "none", "dialogue": "b", "subject_visual": "y"}]}
+        llm.write.return_value = better
+        llm.review.return_value = _review(84, True)
+        outcome = wp.improve_world_draft(db, toon, note="make the ending bigger")
+        assert outcome == {"improved": True, "score_before": 60, "score_after": 84, "message": "Script improved."}
+        db.refresh(script)
+        assert script.hook_line == "New hook" and script.comedy_judgment["score"] == 84
+        assert script.comedy_judgment["first_score"] == 60
+        kwargs = llm.write.call_args.kwargs
+        assert kwargs["previous_draft"]["hook_line"] == "H"
+        assert kwargs["improvements"][-1] == "The curator specifically asked: make the ending bigger"
+        assert kwargs["target_duration_seconds"] == 15
+
+    def test_improve_keeps_the_current_script_when_the_rewrite_is_not_better(self, db, llm):
+        toon, script = self._draft(db, judgment={**_review(70, False, [SUGGESTION]),
+                                                 "grounding": {"grounded": True, "unsupported_claims": []}})
+        llm.write.return_value = {**_script(), "hook_line": "Worse"}
+        llm.review.return_value = _review(50, False)
+        outcome = wp.improve_world_draft(db, toon)
+        assert outcome["improved"] is False and "kept" in outcome["message"]
+        db.refresh(script)
+        assert script.hook_line == "H"
+
+    def test_improve_scores_a_draft_that_has_no_review_yet_before_improving(self, db, llm):
+        toon, script = self._draft(db, judgment={"comedy_score": 50, "grounding": {"grounded": True, "unsupported_claims": []}})
+        llm.review.side_effect = [_review(60, False, [SUGGESTION]), _review(85, True)]
+        llm.write.return_value = {**_script(), "hook_line": "Improved"}
+        assert wp.improve_world_draft(db, toon)["improved"] is True
+        assert llm.review.call_count == 2
+
+    def test_improve_with_nothing_to_apply_says_so_instead_of_rewriting(self, db, llm):
+        toon, _ = self._draft(db, judgment={**_review(90, True, []), "grounding": {"grounded": True, "unsupported_claims": []}})
+        outcome = wp.improve_world_draft(db, toon)
+        assert outcome["improved"] is False and "no suggestions" in outcome["message"]
+        llm.write.assert_not_called()
+
+    def test_improve_keeps_one_shot_per_scene_and_each_shots_photo(self, db, llm):
+        toon, script = self._draft(db, with_photos=True, judgment={
+            **_review(60, False, [SUGGESTION]), "grounding": {"grounded": True, "unsupported_claims": []},
+            "references": [{"scene": 0, "url": "https://cdn/0.jpg"}, {"scene": 1, "url": "https://cdn/1.jpg"}]})
+        llm.write.return_value = {"hook_line": "N", "total_duration_seconds": 16, "shots": [
+            {"shot_number": i + 1, "duration_seconds": 8, "shot_focus": "subject", "people": "distant",
+             "dialogue": "x", "subject_visual": "y"} for i in range(2)]}
+        llm.review.return_value = _review(80, True)
+        wp.improve_world_draft(db, toon)
+        db.refresh(script)
+        assert [s["scene_index"] for s in script.shots] == [0, 1]
+        assert [s["people"] for s in script.shots] == ["reference", "reference"]     # each opens on a real photo
+        assert llm.write.call_args.kwargs["scene_briefs"] == ["Brief 0", "Brief 1"]
+        assert script.comedy_judgment["references"][0]["url"] == "https://cdn/0.jpg"   # carried over
+
+    def test_preview_returns_the_narration_plan_and_the_exact_prompts(self, db, mocker):
+        from app.services import world_narration as wn
+        toon, script = self._draft(db, with_photos=True)
+        retimed = [dict(s, duration_seconds=9, narration="external") for s in script.shots]
+        plan = wn.NarrationPlan(voice="en-GB-RyanNeural", language="en", shots=retimed, total_seconds=18.0, lines=[
+            wn.ShotLine(shot_index=0, text="Line 1 is spoken here.", audio=b"", duration=2.4, start=0.25),
+            wn.ShotLine(shot_index=1, text="Line 2 is spoken here.", audio=b"", duration=2.5, start=9.25)])
+        mocker.patch.object(wn, "prepare_narration_cached", return_value=plan)
+        preview = wp.preview_world_render(db, toon)
+        assert preview["duration_seconds"] == 18 and preview["look"] == "Photoreal (default)"
+        assert preview["narration"]["voice"] == "en-GB-RyanNeural" and preview["narration"]["error"] is None
+        assert preview["narration"]["lines"][1] == {"shot": 2, "text": "Line 2 is spoken here.", "starts_at": 9.2, "speech_seconds": 2.5}
+        assert preview["narration"]["shot_seconds"] == [9, 9]
+        first = preview["segments"][0]
+        assert first["mode"] == "subject_only" and first["opening_frame"] == {
+            "kind": "reference_photo", "url": "https://cdn/0.jpg", "name": "Scene 0"}
+        assert first["image_strength"] == 0.5 and "Ships surge and smoke rolls" in first["prompt"]
+        assert "ambient sound only" in first["prompt"]           # the model is not asked to speak the line
+        assert "watermark" in first["negative_prompt"] and preview["estimate"]["cost_usd"] > 0
+
+    def test_preview_reports_a_narration_failure_before_any_gpu_is_spent(self, db, mocker):
+        from app.services import world_narration as wn
+        toon, _ = self._draft(db)
+        mocker.patch.object(wn, "prepare_narration_cached", side_effect=wn.NarrationError("line too long"))
+        preview = wp.preview_world_render(db, toon)
+        assert "before using the GPU" in preview["narration"]["error"] and "line too long" in preview["narration"]["error"]
+        assert preview["segments"]          # still shows what would be sent
+
+
+class TestWorldProductionEndpoints:
+    """The admin endpoints, called as plain functions (this suite's convention) against an in-memory DB."""
+
+    @pytest.fixture
+    def db(self, mocker):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.db import Base
+        from app.models.curated_item import CuratedItem
+        from app.models.toon import Toon
+        from app.models.toon_background import ToonBackground
+        from app.models.toon_script import ToonScript
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine, tables=[Toon.__table__, ToonScript.__table__, CuratedItem.__table__,
+                                                      ToonBackground.__table__])
+        s = sessionmaker(bind=engine)()
+        mocker.patch("app.db.SessionLocal", return_value=s)
+        # Postgres accepts the endpoint's string id; SQLite's UUID type needs a UUID object.
+        import app.main as main
+        real_lookup = main._world_toon_or_404
+        mocker.patch.object(main, "_world_toon_or_404", lambda session, toon_id: real_lookup(session, uuid.UUID(toon_id)))
+        yield s
+        s.close()
+
+    _draft = staticmethod(TestImproveAndPreview._draft)
+
+    def test_rows_expose_the_review_for_a_scored_draft_and_none_for_an_old_one(self, db):
+        from app.main import _world_production_rows
+        self._draft(db, judgment={**_review(77, False, [SUGGESTION]), "grounding": {"grounded": True, "unsupported_claims": []}})
+        self._draft(db, judgment={"comedy_score": 50})
+        by_score = {r["craft_score"]: r for r in _world_production_rows(db, archived=False, limit=10)}
+        assert by_score[77]["review"]["suggestions"] == [SUGGESTION] and by_score[77]["review"]["passes_bar"] is False
+        assert "grounding" not in by_score[77]["review"]
+        assert by_score[50]["review"] is None
+
+    def test_review_endpoint_scores_and_reports_the_score(self, db, llm):
+        from app.main import review_world_production_script
+        toon, _ = self._draft(db, judgment={"grounding": {"grounded": True, "unsupported_claims": []}})
+        llm.review.return_value = _review(73, False, [SUGGESTION])
+        tid = str(toon.id)
+        assert review_world_production_script(tid) == {"status": "reviewed", "toon_id": tid, "score": 73}
+
+    def test_improve_endpoint_passes_the_note_and_returns_the_outcome(self, db, llm):
+        from app.main import improve_world_production_script
+        toon, _ = self._draft(db, judgment={**_review(60, False, [SUGGESTION]), "grounding": {"grounded": True, "unsupported_claims": []}})
+        llm.write.return_value = {**_script(), "hook_line": "Better"}
+        llm.review.return_value = _review(85, True)
+        tid = str(toon.id)
+        out = improve_world_production_script(tid, {"note": "bigger ending"})
+        assert out["improved"] is True and out["score_after"] == 85 and out["toon_id"] == tid
+        assert llm.write.call_args.kwargs["improvements"][-1].endswith("bigger ending")
+
+    def test_improve_and_review_are_refused_once_a_video_exists(self, db, llm):
+        from fastapi import HTTPException
+        from app.main import improve_world_production_script, review_world_production_script
+        toon, _ = self._draft(db, status="ready")
+        for call in (lambda: improve_world_production_script(str(toon.id), None), lambda: review_world_production_script(str(toon.id))):
+            with pytest.raises(HTTPException) as err:
+                call()
+            assert err.value.status_code == 409 and "before its video is rendered" in err.value.detail
+
+    def test_unknown_draft_is_a_404(self, db):
+        from fastapi import HTTPException
+        from app.main import improve_world_production_script, preview_world_production_video
+        for call in (lambda: improve_world_production_script(str(uuid.uuid4()), None),
+                     lambda: preview_world_production_video(str(uuid.uuid4()))):
+            with pytest.raises(HTTPException) as err:
+                call()
+            assert err.value.status_code == 404
+
+    def test_video_prompt_endpoint_returns_the_preview(self, db, mocker):
+        from app.main import preview_world_production_video
+        from app.services import world_narration as wn
+        toon, script = self._draft(db)
+        plan = wn.NarrationPlan(voice="v", language="en", lines=[], total_seconds=16.0,
+                                shots=[dict(s, duration_seconds=8, narration="external") for s in script.shots])
+        mocker.patch.object(wn, "prepare_narration_cached", return_value=plan)
+        tid = str(toon.id)
+        out = preview_world_production_video(tid)
+        assert out["toon_id"] == tid and out["segments"] and out["narration"]["voice"] == "v"

@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, EyeOff, Film, Play, RefreshCw, Archive, Upload } from "lucide-react";
 import { fetchAdminData } from "@/lib/admin/fetchAdmin";
+import WorldScriptReview, { ScoreChip, type Review } from "@/components/admin/WorldScriptReview";
+import WorldVideoPrompt from "@/components/admin/WorldVideoPrompt";
 
 type Grounding = { grounded: boolean | null; unsupported_claims: string[]; judge_failed: boolean };
 type Draft = {
@@ -11,7 +13,7 @@ type Draft = {
   hook_line: string | null; narration: string[]; grounding: Grounding | null; craft_score: number | null; has_host: boolean;
   source_type: string | null; source_url: string | null; render_estimate: { gpu_seconds: number; cost_usd: number } | null;
   generation_error: string | null; publish_recommended: boolean | null; published: boolean; created_at: string | null;
-  previous_video_urls: string[]; visual_style: string | null; raw_video_url: string | null;
+  previous_video_urls: string[]; visual_style: string | null; raw_video_url: string | null; review: Review | null;
 };
 
 const STATUS_LABEL: Record<string, string> = { idea: "Script ready", animating: "Rendering", ready: "Rendered", failed: "Render failed", posted: "Posted" };
@@ -76,7 +78,9 @@ export default function WorldProductionPage() {
 
   async function generateVideo(draft: Draft) {
     const cost = draft.render_estimate ? ` (about $${draft.render_estimate.cost_usd.toFixed(2)} of GPU time)` : "";
-    if (!window.confirm(`Render "${draft.title}" as a ${draft.duration_seconds}s video${cost}? This starts a paid GPU job.`)) return;
+    if (!window.confirm(`Render "${draft.title}" as a ${draft.duration_seconds}s video${cost}? This starts a paid GPU job.
+
+Open "What will be generated" on the card first to see the exact prompts and narration.`)) return;
     const res = await fetch(`/api/admin/world-production/${draft.id}/generate-video`, { method: "POST" });
     const data = await res.json().catch(() => ({}));
     setMessage(res.ok ? "Render started. This page refreshes automatically; it usually takes several minutes." : (data.detail || "Video generation could not be started."));
@@ -126,12 +130,18 @@ export default function WorldProductionPage() {
           {draft.grounding?.grounded === false && <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="h-3.5 w-3.5" /> {unsupported} claim{unsupported === 1 ? "" : "s"} not backed by the source</span>}
           {(!draft.grounding || draft.grounding.grounded === null) && <span className="text-gray-400">Fact-check unavailable</span>}
           {draft.source_url && <a href={draft.source_url} target="_blank" rel="noreferrer" className="text-primary-600 hover:underline">Source: {draft.source_type}</a>}
+          {draft.status !== "animating" && <ScoreChip review={draft.review} />}
           {draft.narration.length > 0 && <button onClick={() => setOpen(open === draft.id ? null : draft.id)} className="text-gray-500 hover:text-gray-800">{open === draft.id ? "Hide narration" : "Read narration"}</button>}
         </div>
         {open === draft.id && <div className="mt-3 rounded-lg bg-gray-50 p-3 text-sm text-gray-700">
           <ol className="list-decimal space-y-1 pl-5">{draft.narration.map((line, index) => <li key={index}>{line}</li>)}</ol>
           {unsupported > 0 && <div className="mt-3 border-t border-amber-200 pt-2 text-xs text-amber-800"><p className="font-semibold">Not found in the source:</p><ul className="list-disc pl-5">{draft.grounding!.unsupported_claims.map((claim, index) => <li key={index}>{claim}</li>)}</ul></div>}
         </div>}
+        {(draft.status === "idea" || draft.status === "failed") && <>
+          <WorldScriptReview draftId={draft.id} review={draft.review} editable onChanged={load} onMessage={setMessage} />
+          <WorldVideoPrompt draftId={draft.id} />
+        </>}
+        {(draft.status === "ready" || draft.status === "posted") && draft.review && <WorldScriptReview draftId={draft.id} review={draft.review} editable={false} onChanged={load} onMessage={setMessage} />}
         {draft.generation_error && draft.status === "failed" && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{draft.generation_error}</p>}
         <div className="mt-4 flex flex-wrap items-center gap-2">
           {(draft.final_video_url || (draft.previous_video_urls || []).length > 0) && <TakeLinks draft={draft} />}
