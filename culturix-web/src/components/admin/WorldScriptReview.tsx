@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown, Loader2, Sparkles } from "lucide-react";
+import WorldPeriodEditor, { type Phase } from "@/components/admin/WorldPeriodEditor";
 
 export type ReviewDimension = { score: number | null; weight: number; note: string };
 export type ReviewSuggestion = { shot: number | null; dimension: string | null; issue: string; fix: string };
@@ -9,7 +10,7 @@ export type Review = {
   score: number | null; passes_bar: boolean | null; feedback: string | null; judge_failed: boolean;
   dimensions: Record<string, ReviewDimension>; suggestions: ReviewSuggestion[];
   auto_improved?: boolean; first_score?: number | null;
-  anachronisms?: string[]; era?: { label: string; start_year: number; end_year: number } | null;
+  anachronisms?: string[]; era?: { label: string; start_year: number; end_year: number; phases?: Phase[] } | null;
 };
 
 const DIMENSION_LABEL: Record<string, string> = {
@@ -70,6 +71,7 @@ export default function WorldScriptReview({ draftId, review, editable, onChanged
         {!review.era && <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">No period was set for this video, so nothing checks it for out-of-period objects. Score it again to set one.</p>}
         {review.anachronisms && review.anachronisms.length > 0 && <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">Not from this period: {review.anachronisms.join(", ")}. Use Improve with AI to remove {review.anachronisms.length === 1 ? "it" : "them"}.</p>}
         {review.feedback && <p className="text-gray-700">{review.feedback}</p>}
+        {review.era?.phases && review.era.phases.length > 0 && <WorldPeriodEditor key={JSON.stringify(review.era.phases)} draftId={draftId} phases={review.era.phases} editable={editable} onChanged={onChanged} onMessage={onMessage} />}
         <ul className="space-y-2.5">{dimensions.map(([key, d]) => <li key={key}>
           <div className="flex items-baseline justify-between gap-3 text-xs"><span className="font-medium text-gray-700">{DIMENSION_LABEL[key] || key}</span><span className={`tabular-nums font-semibold ${tone(d.score).text}`}>{d.score ?? "n/a"}</span></div>
           <div role="img" aria-label={`${DIMENSION_LABEL[key] || key}: ${d.score ?? "not scored"} out of 100`} className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100"><div className={`h-full rounded-full ${tone(d.score).bar}`} style={{ width: `${d.score ?? 0}%` }} /></div>

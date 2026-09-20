@@ -1519,3 +1519,76 @@ class TestCuratorNotesAreHonoured:
         assert out["improved"] is True
         db.refresh(script)
         assert script.shots[0]["subject_visual"].startswith("Workers raise")
+
+
+class TestReviewGivesLegacyDraftsTheirPhases:
+    _draft = staticmethod(TestLegacyDraftsGetAnEraBeforeTheyRender._draft)
+    parts = TestLegacyDraftsGetAnEraBeforeTheyRender.parts
+
+    def test_scoring_an_old_draft_also_sets_its_period_phases_and_shot_years(self, parts, llm, mocker):
+        db, _ = parts
+        mocker.patch("app.services.world_era.period_phases", return_value=PHASES)
+        toon, script = self._draft(db, judgment={"era": ROME_ERA, "grounding": {"grounded": True, "unsupported_claims": []}})
+        llm.review.return_value = _review(60, False)
+        wp.review_world_draft(db, toon)
+        db.refresh(script)
+        assert script.comedy_judgment["era"]["phases"] == PHASES
+        assert script.shots[0]["period_phase"] == 1
+        assert llm.review.call_args.args[-1]["phases"] == PHASES        # scored against the phases
+
+
+class TestEditPeriod:
+    _draft = staticmethod(TestLegacyDraftsGetAnEraBeforeTheyRender._draft)
+    parts = TestLegacyDraftsGetAnEraBeforeTheyRender.parts
+
+    def _with_phases(self, parts, status="idea", visual="Legions march past huts as smoke drifts"):
+        db, _ = parts
+        toon, script = self._draft(db, judgment={"era": {**ROME_ERA, "phases": [dict(p) for p in PHASES]}})
+        script.shots = [dict(script.shots[0], subject_visual=visual, dialogue="In 753 BC Rome was a village.")]
+        toon.status = status
+        db.commit()
+        return db, toon, script
+
+    def test_the_curators_description_replaces_the_ais_and_reaches_the_prompt(self, parts, mocker):
+        from app.services import world_narration as wn
+        db, toon, script = self._with_phases(parts)
+        out = wp.edit_world_period(db, toon, [
+            {"label": "Iron Age huts", "look": "Round wattle-and-daub huts with thatched roofs and no windows.", "avoid": "windows, stone walls, tiles"},
+            {"label": "Republic", "look": "Brick and tufa.", "avoid": ["glass"]}])
+        assert out["phases"][0]["label"] == "Iron Age huts" and out["phases"][0]["avoid"] == ["windows", "stone walls", "tiles"]
+        assert out["phases"][0]["edited"] is True and out["phases"][0]["from_year"] == -753          # the years stay
+        db.refresh(script)
+        assert script.comedy_judgment["era"]["phases"][0]["look"].startswith("Round wattle-and-daub huts")
+        mocker.patch.object(wn, "prepare_narration_cached", side_effect=lambda shots, language="en": wn.NarrationPlan(
+            voice="v", language="en", lines=[], total_seconds=8.0, shots=[dict(s, duration_seconds=8, narration="external") for s in shots]))
+        preview = wp.preview_world_render(db, toon)["segments"][0]
+        assert "Round wattle-and-daub huts" in preview["prompt"] and "windows, stone walls, tiles" in preview["negative_prompt"]
+
+    def test_shots_that_now_conflict_with_the_corrected_period_are_reported(self, parts):
+        db, toon, script = self._with_phases(parts, visual="Legions march past stone walls as smoke drifts")
+        out = wp.edit_world_period(db, toon, [{"avoid": "stone walls"}, {}])
+        assert len(out["conflicts"]) == 1 and "'stone walls'" in out["conflicts"][0] and "still" not in out["message"]
+        assert "Saved, but 1 shot" in out["message"]
+
+    def test_omitted_fields_keep_their_current_values(self, parts):
+        db, toon, script = self._with_phases(parts)
+        out = wp.edit_world_period(db, toon, [{"look": "Only the look changes."}, {}])
+        assert out["phases"][0]["label"] == "Roman Kingdom" and out["phases"][0]["avoid"] == ["marble"]
+        assert out["phases"][1]["look"] == PHASES[1]["look"]
+
+    @pytest.mark.parametrize("phases", [[{"look": "  "}, {}], [{"label": ""}, {}]])
+    def test_an_empty_name_or_description_is_refused(self, parts, phases):
+        db, toon, script = self._with_phases(parts)
+        with pytest.raises(wp.WorldDraftError, match="needs a name and a description"):
+            wp.edit_world_period(db, toon, phases)
+
+    def test_a_video_with_no_phases_has_nothing_to_edit(self, parts):
+        db, _ = parts
+        toon, script = self._draft(db, judgment={"era": {"label": "Present day", "start_year": 2020, "end_year": 2020}})
+        with pytest.raises(wp.WorldDraftError, match="no period phases"):
+            wp.edit_world_period(db, toon, [])
+
+    def test_a_rendered_draft_cannot_be_edited(self, parts):
+        db, toon, script = self._with_phases(parts, status="ready")
+        with pytest.raises(wp.WorldDraftError, match="before its video is rendered"):
+            wp.edit_world_period(db, toon, [{}, {}])

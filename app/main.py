@@ -3241,6 +3241,23 @@ def edit_world_production_script(toon_id: str, body: dict):
         session.close()
 
 
+@app.post("/admin/world-production/{toon_id}/edit-period", dependencies=[Depends(require_admin_secret)])
+def edit_world_production_period(toon_id: str, body: dict):
+    """Correct the AI's description of what each phase of the story looked like ({phases: [{label, look,
+    avoid}]}, same order and count as the stored phases). Before a video is rendered."""
+    from app.db import SessionLocal
+    from app.services.world_production import WorldDraftError, edit_world_period
+    session = SessionLocal()
+    try:
+        toon = _world_toon_or_404(session, toon_id)
+        try:
+            return {"toon_id": toon_id, **edit_world_period(session, toon, body.get("phases") or [])}
+        except WorldDraftError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+    finally:
+        session.close()
+
+
 @app.post("/admin/world-production/{toon_id}/improve", dependencies=[Depends(require_admin_secret)])
 def improve_world_production_script(toon_id: str, body: Optional[dict] = None):
     """Rewrite a draft's script applying the reviewer's suggestions and an optional curator note, then

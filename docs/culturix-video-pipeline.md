@@ -776,3 +776,11 @@ needed the description to state height, street layout and weathering and "modern
 becoming a modern Italian town from above. The model's own history is imperfect (it once listed "iron tools" and "wheeled
 carts" as not yet existing): the prompt asks for only things it is CERTAIN were absent. Generic vocabulary can never do this job.
 
+**Period phases are editable (`POST /admin/world-production/{id}/edit-period`).** The phase text is the AI's general knowledge
+and is wrong for early periods (it wrote "rough uncut stone houses with windows" for 753 BC Rome, which was wattle-and-daub
+huts with thatch). A curator can correct each phase's name, description and did-not-exist list before rendering; the years
+stay; the prompts, negative prompts and per-shot anachronism checks read the edited text, and shots that now conflict with it
+are reported. Edited phases are marked `edited` and are never regenerated. Also: an explicit curator note in Improve is applied
+unless it adds claims/period errors or drops the AI score by more than `HUMAN_NOTE_SCORE_TOLERANCE` (the AI score cannot see
+what a note asked for).
+

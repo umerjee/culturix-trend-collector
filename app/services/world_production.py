@@ -597,6 +597,7 @@ def review_world_draft(db, toon) -> dict:
     from app.services.world_review import review_world_script
 
     script, item = _editable_draft(db, toon)
+    ensure_script_era(db, toon, script)        # period, phases and each shot's own year, so it is scored against them
     facts = build_source_facts(item)
     stored = {"hook_line": script.hook_line, "shots": script.shots}
     previous = script.comedy_judgment or {}
@@ -662,6 +663,48 @@ def fix_world_claims(db, toon) -> dict:
     else:
         message = "The AI could not fix it. Edit the line yourself in the narration panel; the fact-check re-runs when you save."
     return {"before": before, "remaining": remaining, "fixed": not remaining, "message": message}
+
+
+def edit_world_period(db, toon, phases: list) -> dict:
+    """Let a curator correct what each phase of the story looked like ("dry-stone houses with windows" for 753 BC
+    Rome is the AI's guess, and wrong). Only label, look and the did-not-exist list change; the years stay. The
+    prompts, negative prompts and anachronism checks all read these, so the correction reaches the render.
+    Returns {phases, conflicts, message}: `conflicts` are shots whose current picture description now names
+    something the corrected phase says did not exist, for the curator to fix with Improve or by hand."""
+    from app.services.world_era import assign_shot_periods, check_world_anachronisms
+
+    script, item = _editable_draft(db, toon)
+    ensure_script_era(db, toon, script)
+    judgment = dict(script.comedy_judgment) if isinstance(script.comedy_judgment, dict) else {}
+    era = judgment.get("era")
+    existing = (era or {}).get("phases") or []
+    if not existing:
+        raise WorldDraftError("This video has no period phases to edit (its period is modern, or could not be worked out)")
+    edited = []
+    for i, phase in enumerate(existing):
+        incoming = phases[i] if i < len(phases) and isinstance(phases[i], dict) else {}
+        look = str(incoming.get("look", phase["look"])).strip()
+        label = str(incoming.get("label", phase["label"])).strip()
+        if not look or not label:
+            raise WorldDraftError(f"Phase {i + 1} needs a name and a description")
+        avoid_raw = incoming.get("avoid", phase.get("avoid") or [])
+        if isinstance(avoid_raw, str):
+            avoid_raw = avoid_raw.split(",")
+        avoid = []
+        for term in avoid_raw:
+            term = str(term).strip().lower()
+            if 2 <= len(term) <= 30 and term not in avoid:
+                avoid.append(term)
+        edited.append({**phase, "label": label[:60], "look": look[:600], "avoid": avoid[:12], "edited": True})
+    new_era = {**era, "phases": edited}
+    script.shots = assign_shot_periods(script.shots, new_era)
+    judgment["era"] = new_era
+    script.comedy_judgment = judgment
+    db.commit()
+    conflicts = check_world_anachronisms(script.shots, new_era)
+    return {"phases": edited, "conflicts": conflicts,
+            "message": "Saved. The prompts and checks now use your description." if not conflicts
+            else f"Saved, but {len(conflicts)} shot(s) show something the corrected period says did not exist yet. Use Improve with AI or edit them."}
 
 
 def edit_world_script(db, toon, hook_line: Optional[str], lines: list) -> dict:
