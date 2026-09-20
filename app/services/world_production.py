@@ -342,19 +342,28 @@ def _fix_claims(result: dict, grounding: dict, facts: str) -> tuple:
     return current, current_grounding
 
 
-def _is_better(new: dict, old: dict) -> bool:
+HUMAN_NOTE_SCORE_TOLERANCE = 10
+
+
+def _is_better(new: dict, old: dict, tolerance: int = 0) -> bool:
     """A revision replaces a draft if it has FEWER unsupported claims (a claim the source does not back must
-    go, even if the rewrite scores a little lower), and otherwise only if it scores higher without adding any."""
+    go, even if the rewrite scores a little lower), never if it adds claims or out-of-period objects, and
+    otherwise if it scores higher. `tolerance` lets a rewrite that scores a few points LOWER still win: used
+    when a curator gave an explicit instruction, which the AI score cannot see (a 4-point dip threw away a
+    rewrite that removed a "bustling market" and the togas on 509 BC soldiers, because the note was not what
+    the score measures)."""
     new_score, old_score = new["review"]["score"], old["review"]["score"]
     new_claims = len(new["grounding"]["unsupported_claims"])
     old_claims = len(old["grounding"]["unsupported_claims"])
     if new_claims > old_claims:
         return False
+    if len(new["review"].get("anachronisms") or []) > len(old["review"].get("anachronisms") or []):
+        return False
     if new_claims < old_claims:
         return True
     if new_score is None:
         return False
-    return old_score is None or new_score > old_score
+    return old_score is None or new_score > old_score - tolerance
 
 
 def _build_judgment(composed: dict, duration_seconds: int, beat_count: int, scenes: Optional[list],
@@ -733,9 +742,9 @@ def improve_world_draft(db, toon, note: Optional[str] = None) -> dict:
 
     current = {"hook_line": script.hook_line, "shots": script.shots}
     old = {"result": current, "grounding": judgment.get("grounding") or {"grounded": None, "unsupported_claims": []},
-           "review": {"score": judgment.get("score")}}
+           "review": {"score": judgment.get("score"), "anachronisms": judgment.get("anachronisms") or []}}
     better = _compose_script(db, item, improvements=notes, previous=current, **common)
-    if not _is_better(better, old):
+    if not _is_better(better, old, tolerance=HUMAN_NOTE_SCORE_TOLERANCE if (note or "").strip() else 0):
         return {"improved": False, "score_before": judgment.get("score"), "score_after": better["review"]["score"],
                 "message": "The rewrite did not score higher, so the current script was kept." + claim_note}
 

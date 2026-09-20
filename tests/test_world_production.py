@@ -1468,3 +1468,54 @@ class TestLegacyDraftsGetPhases:
         video.load_render_context(db, toon, script)
         db.refresh(script)
         assert script.comedy_judgment["era"]["phases"] == PHASES
+
+
+class TestCuratorNotesAreHonoured:
+    @staticmethod
+    def _c(score, claims=(), anachronisms=()):
+        return {"review": {"score": score, "anachronisms": list(anachronisms)}, "grounding": {"unsupported_claims": list(claims)}}
+
+    def test_a_small_score_dip_is_accepted_when_the_curator_asked_for_the_change(self):
+        assert wp._is_better(self._c(62), self._c(66), tolerance=wp.HUMAN_NOTE_SCORE_TOLERANCE) is True
+        assert wp._is_better(self._c(62), self._c(66)) is False
+
+    def test_a_big_dip_is_still_refused(self):
+        assert wp._is_better(self._c(50), self._c(66), tolerance=wp.HUMAN_NOTE_SCORE_TOLERANCE) is False
+
+    def test_new_unsupported_claims_or_out_of_period_objects_are_refused_whatever_the_note(self):
+        assert wp._is_better(self._c(90, claims=["x"]), self._c(60), tolerance=10) is False
+        assert wp._is_better(self._c(90, anachronisms=["jeep"]), self._c(60), tolerance=10) is False
+
+    def test_fewer_period_errors_alone_do_not_beat_a_lower_score_without_a_note(self):
+        assert wp._is_better(self._c(60), self._c(66, anachronisms=["jeep"])) is False
+
+    def test_improve_with_a_note_applies_a_slightly_lower_scoring_rewrite(self, llm):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.db import Base
+        from app.models.curated_item import CuratedItem
+        from app.models.toon import Toon
+        from app.models.toon_background import ToonBackground
+        from app.models.toon_script import ToonScript
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine, tables=[Toon.__table__, ToonScript.__table__, CuratedItem.__table__, ToonBackground.__table__])
+        db = sessionmaker(bind=engine)()
+        item = CuratedItem(source_type="wikipedia", source_ref="R", title="Rome", summary="Rome.", raw_text="Facts " * 50, category="history", region=None)
+        db.add(item)
+        db.commit()
+        shots = [{"shot_number": 1, "duration_seconds": 8, "shot_focus": "subject", "dialogue": "In 27 BC an empire.", "subject_visual": "A bustling market"}]
+        script = ToonScript(brand_id=uuid.uuid4(), hook_line="H", shots=shots, total_duration_seconds=8, generation_source="ai", status="approved",
+                            is_world_content=True, comedy_judgment={**_review(66, False, [SUGGESTION]), "grounding": {"grounded": True, "unsupported_claims": []}})
+        db.add(script)
+        db.commit()
+        toon = Toon(brand_id=script.brand_id, script_id=script.id, title="Rome", status="idea", is_world_content=True, curated_item_id=item.id)
+        db.add(toon)
+        db.commit()
+        llm.write.return_value = {"hook_line": "H2", "total_duration_seconds": 8, "shots": [
+            {"shot_number": 1, "duration_seconds": 8, "shot_focus": "subject", "people": "none", "dialogue": "In 27 BC an empire.",
+             "subject_visual": "Workers raise a temple wall block by block"}]}
+        llm.review.return_value = _review(62, False)
+        out = wp.improve_world_draft(db, toon, note="Replace the market with one specific event")
+        assert out["improved"] is True
+        db.refresh(script)
+        assert script.shots[0]["subject_visual"].startswith("Workers raise")
