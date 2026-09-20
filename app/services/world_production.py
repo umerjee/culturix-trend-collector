@@ -127,6 +127,21 @@ def plan_world_video(item) -> dict:
     }
 
 
+def _use_reference_people(shots: list, scenes: Optional[list]) -> list:
+    """A shot that opens on a real photo shows the photo's real people, so its people mode is
+    "reference", not "distant": telling the model they are faceless would fight the photo it is
+    conditioned on. Shots without a photo keep the writer's value."""
+    if not scenes:
+        return shots
+    out = []
+    for i, shot in enumerate(shots or []):
+        shot = dict(shot)
+        if i < len(scenes) and scenes[i].get("image_url") and shot.get("people") == "distant":
+            shot["people"] = "reference"
+        out.append(shot)
+    return out
+
+
 def _world_brand(db):
     from app.models.character_brand import CharacterBrand
 
@@ -219,6 +234,7 @@ def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_
         if len(_problems(revised.get("shots"))) <= len(problems):
             result = revised
     result["shots"], visual_warnings = normalize_world_people(result.get("shots"))
+    result["shots"] = _use_reference_people(result["shots"], scenes)
     visual_warnings += check_world_motion(result.get("shots"))   # still unfixed after the rewrite: surfaced, not hidden
 
     grounding = judge_world_grounding(result, facts)
@@ -227,6 +243,7 @@ def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_
                     len(grounding["unsupported_claims"]))
         revised = _write(avoid=grounding["unsupported_claims"], fixes=_problems(result.get("shots")) or None)
         revised["shots"], revised_warnings = normalize_world_people(revised.get("shots"))
+        revised["shots"] = _use_reference_people(revised["shots"], scenes)
         revised_warnings += check_world_motion(revised.get("shots"))
         revised_grounding = judge_world_grounding(revised, facts)
         if len(revised_grounding["unsupported_claims"]) <= len(grounding["unsupported_claims"]):

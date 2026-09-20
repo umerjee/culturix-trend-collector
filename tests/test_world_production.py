@@ -386,3 +386,19 @@ class TestScenes:
         assert sorted(mapped) == [0, 1] and set(mapped.values()) == {str(b.id) for b in backgrounds}
         assert script.visual_style == "illustrated_history"
         assert script.comedy_judgment["references"][0]["credit"] == "IWM"
+
+    def test_photo_scenes_get_the_reference_people_mode_and_photoless_ones_keep_distant(self, llm):
+        script = {"hook_line": "H", "total_duration_seconds": 30, "shots": [
+            {"shot_number": i + 1, "shot_focus": "subject", "camera_movement": "tracking", "people": "distant",
+             "subject_visual": "Soldiers run up the beach as smoke rolls past", "dialogue": "x"} for i in range(3)]}
+        llm.write.side_effect = [script]
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, scenes=self.SCENES, persist=False)
+        assert [s["people"] for s in result["shots"]] == ["reference", "reference", "distant"]   # scene 3 has no photo
+
+    def test_a_none_shot_stays_none_even_with_a_photo(self, llm):
+        script = {"hook_line": "H", "total_duration_seconds": 30, "shots": [
+            {"shot_number": i + 1, "shot_focus": "subject", "camera_movement": "tracking", "people": "none",
+             "subject_visual": "A battleship fires and smoke rolls across the sea", "dialogue": "x"} for i in range(3)]}
+        llm.write.side_effect = [script]
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, scenes=self.SCENES, persist=False)
+        assert {s["people"] for s in result["shots"]} == {"none"}

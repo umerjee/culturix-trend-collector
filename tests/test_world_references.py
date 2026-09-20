@@ -119,3 +119,22 @@ class TestFetchImage:
         get = mocker.patch("httpx.get", return_value=MagicMock(content=b"img", raise_for_status=lambda: None))
         assert wr.fetch_image("https://x/y.jpg") == b"img"
         assert "culturix" in get.call_args.kwargs["headers"]["User-Agent"]
+
+
+class TestExactLookup:
+    def test_returns_the_image_when_it_is_public_domain(self, mocker):
+        _mock_commons(mocker, [], [_page("File:Approaching Omaha.jpg")])
+        r = wr.get_public_domain_image("File:Approaching Omaha.jpg")
+        assert r["title"] == "File:Approaching Omaha.jpg" and r["license"] == "Public domain" and r["url"] == "https://up/x.jpg"
+
+    @pytest.mark.parametrize("page", [
+        _page("File:a.jpg", license_name="CC BY-SA 4.0"), _page("File:a.jpg", width=300),
+        _page("File:a.jpg", mime="image/tiff"), _page("File:a.jpg", thumb=None), {"title": "File:a.jpg", "missing": ""},
+    ])
+    def test_anything_else_is_none(self, mocker, page):
+        _mock_commons(mocker, [], [page])
+        assert wr.get_public_domain_image("File:a.jpg") is None
+
+    def test_never_raises(self, mocker):
+        mocker.patch("httpx.get", side_effect=RuntimeError("down"))
+        assert wr.get_public_domain_image("File:a.jpg") is None

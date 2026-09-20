@@ -1889,8 +1889,8 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
             "DOING something, not sitting in a landscape. Every shot needs a moving camera_movement (never "
             "\"static\": use tracking, dolly, push_in, pull_out, crane, pan_left, pan_right, tilt or "
             "orbit) and shot_type should vary across the video. NARRATION LENGTH: each shot's dialogue is "
-            "at most 18 words (about 7 seconds spoken), so shots stay near 8 seconds: a long shot renders as "
-            "a slow, static scene. People wear what the era and event require (for 1944 soldiers: helmets "
+            "14 to 18 words (about 6 to 7 seconds spoken), so shots stay near 8 seconds: a long shot renders "
+            "as a slow, static scene, and a very short line leaves the shot silent. People wear what the era and event require (for 1944 soldiers: helmets "
             "and drab olive or khaki uniforms), never bright modern clothing."
         )
     prompt = _build_prompt_from_context("real-world region/subject", context, variants, tone,

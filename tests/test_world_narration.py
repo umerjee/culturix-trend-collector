@@ -40,8 +40,16 @@ class TestRetime:
         assert [s["duration_seconds"] for s in shots] == [9, 11]   # ceil(7.5+0.25+0.6), ceil(9.5+0.85)
         assert starts == [0.0, 9.0]
 
-    def test_short_lines_get_the_minimum_shot_length(self):
-        shots, _ = wn.retime_shots(_shots("hi"), {0: 1.0})
+    def test_a_short_line_keeps_the_shots_planned_length(self):
+        # Shrinking would squeeze a five-scene video to about half its planned length; the extra
+        # time is just more time on the scene.
+        shots, starts = wn.retime_shots(_shots("hi", "yo"), {0: 1.0, 1: 1.5})
+        assert [s["duration_seconds"] for s in shots] == [8, 8] and starts == [0.0, 8.0]
+
+    def test_the_minimum_only_applies_when_the_script_planned_less(self):
+        base = _shots("hi")
+        base[0]["duration_seconds"] = 2
+        shots, _ = wn.retime_shots(base, {0: 1.0})
         assert shots[0]["duration_seconds"] == wn.MIN_SHOT_SECONDS
 
     def test_narrated_shots_are_marked_external_and_others_keep_their_length(self):
@@ -49,7 +57,7 @@ class TestRetime:
         base[1]["dialogue"] = None
         shots, starts = wn.retime_shots(base, {0: 5.0})
         assert shots[0]["narration"] == "external" and "narration" not in shots[1]
-        assert shots[1]["duration_seconds"] == 8 and starts == [0.0, 6.0]  # ceil(5.0+0.25+0.6)
+        assert shots[1]["duration_seconds"] == 8 and starts == [0.0, 8.0]  # 5.85s of speech fits the planned 8s
 
     def test_input_shots_are_not_mutated(self):
         base = _shots("spoken")
@@ -82,9 +90,10 @@ class TestPrepare:
 
     def test_lines_are_positioned_and_shots_retimed(self, fake):
         plan = wn.prepare_narration(_shots("one", "two", "three"), "en", synth=fake.synth)
-        assert [round(l.start, 2) for l in plan.lines] == [0.25, 7.25, 16.25]
-        assert [s["duration_seconds"] for s in plan.shots] == [7, 9, 8]
-        assert plan.total_seconds == 24 and all(s["narration"] == "external" for s in plan.shots)
+        # speech 6.0 / 8.0 / 7.0s against planned 8s shots: only the middle one has to grow (8.85 -> 9)
+        assert [round(l.start, 2) for l in plan.lines] == [0.25, 8.25, 17.25]
+        assert [s["duration_seconds"] for s in plan.shots] == [8, 9, 8]
+        assert plan.total_seconds == 25 and all(s["narration"] == "external" for s in plan.shots)
 
     def test_an_explicit_voice_wins(self, fake):
         assert wn.prepare_narration(_shots("one"), "en", voice="en-US-GuyNeural", synth=fake.synth).voice == "en-US-GuyNeural"

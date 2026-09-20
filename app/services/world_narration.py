@@ -159,7 +159,7 @@ def probe_duration(data: bytes, suffix: str = ".mp3") -> float:
 
 
 def retime_shots(shots: list[dict], durations: dict[int, float]) -> tuple[list[dict], list[float]]:
-    """Copies of `shots`, each narrated shot resized to fit its spoken line and marked
+    """Copies of `shots`, each narrated shot grown (never shrunk) to fit its spoken line and marked
     narration="external" (the renderer then asks the video model for ambient sound only).
     Returns (shots, planned start second of each shot). Un-narrated shots keep their length."""
     out, starts, clock = [], [], 0.0
@@ -173,7 +173,10 @@ def retime_shots(shots: list[dict], durations: dict[int, float]) -> tuple[list[d
                     f"Shot {shot.get('shot_number', i + 1)}'s line takes {durations[i]:.1f}s to speak, too long "
                     f"for one shot (max {MAX_SHOT_SECONDS - LEAD_IN_SECONDS - TAIL_SECONDS:.1f}s). Shorten the "
                     "line or split the shot.")
-            planned = float(min(MAX_SHOT_SECONDS, max(MIN_SHOT_SECONDS, math.ceil(needed))))
+            # Grow a shot that is too short for its line, but never shrink one below the length the
+            # script planned: a short line over a longer shot is just more time on the scene, and
+            # shrinking would squeeze a five-scene video to about half its planned length.
+            planned = float(min(MAX_SHOT_SECONDS, max(MIN_SHOT_SECONDS, planned, math.ceil(needed))))
             shot["narration"] = "external"
         shot["duration_seconds"] = int(planned)
         starts.append(clock)

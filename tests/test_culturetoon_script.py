@@ -1507,7 +1507,7 @@ class TestWorldMotionRule:
         client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
         generate_world_script(region_code="FR", region_label="France", subject_text="D-Day landings")
         prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
-        assert "at most 18 words" in prompt and "never bright modern clothing" in prompt
+        assert "14 to 18 words" in prompt and "never bright modern clothing" in prompt
 
     @pytest.mark.parametrize("visual", [
         "Airborne troops descending by parachute, aircraft streaking overhead, soldiers running and dodging gunfire",

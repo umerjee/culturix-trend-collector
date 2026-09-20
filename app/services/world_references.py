@@ -83,6 +83,31 @@ def find_public_domain_images(query: str, limit: int = 8, min_width: int = MIN_W
     return results[:limit]
 
 
+def get_public_domain_image(title: str, min_width: int = MIN_WIDTH) -> Optional[dict]:
+    """The one public-domain image with this exact Commons title (e.g. "File:Approaching Omaha.jpg"),
+    same shape as find_public_domain_images, or None if it is missing, too small, not a photo, or not
+    recorded as public domain. Never raises."""
+    try:
+        info = httpx.get(_API, params={"action": "query", "titles": title, "prop": "imageinfo",
+                                       "iiprop": "url|size|mime|extmetadata", "iiurlwidth": 1280, "format": "json"},
+                         headers=_HEADERS, timeout=20.0)
+        info.raise_for_status()
+        page = next(iter(info.json()["query"]["pages"].values()))
+    except Exception as exc:
+        logger.warning("Reference image lookup failed for %r: %s", title, exc)
+        return None
+    ii = (page.get("imageinfo") or [None])[0]
+    if not ii or ii.get("mime") not in _ALLOWED_MIME or (ii.get("width") or 0) < min_width or not ii.get("thumburl"):
+        return None
+    meta = ii.get("extmetadata", {})
+    license_name = (meta.get("LicenseShortName") or {}).get("value", "")
+    if not is_public_domain(license_name, (meta.get("UsageTerms") or {}).get("value", "")):
+        return None
+    return {"title": page["title"], "page": ii.get("descriptionurl"), "url": ii["thumburl"], "width": ii["width"],
+            "height": ii["height"], "license": license_name,
+            "description": _plain((meta.get("ImageDescription") or {}).get("value", ""))[:200]}
+
+
 def _plain(html: str) -> str:
     import re
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html or "")).strip()
