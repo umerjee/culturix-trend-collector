@@ -22,6 +22,23 @@ function formatDay(iso: string | null): string {
   return iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
 }
 
+function formatDayTime(iso: string | null): string {
+  return iso ? new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+}
+
+// "Version 2 of 5" for drafts that share a title, oldest first, counting live and archived drafts together.
+function versionLabels(drafts: Draft[]): Record<string, string> {
+  const byTitle: Record<string, Draft[]> = {};
+  for (const draft of drafts) (byTitle[draft.title || "Untitled"] ||= []).push(draft);
+  const labels: Record<string, string> = {};
+  for (const group of Object.values(byTitle)) {
+    if (group.length < 2) continue;
+    group.sort((a, b) => (a.created_at || "").localeCompare(b.created_at || ""));
+    group.forEach((draft, index) => { labels[draft.id] = `Version ${index + 1} of ${group.length}`; });
+  }
+  return labels;
+}
+
 // Every take of a draft, oldest first: earlier takes were archived when a re-render replaced them.
 function TakeLinks({ draft }: { draft: Draft }) {
   const current = draft.final_video_url || draft.raw_video_url;
@@ -50,6 +67,7 @@ export default function WorldProductionPage() {
     fetchAdminData<Draft[]>("world-production-archived").then(setArchived).catch(() => setArchived([]));
   }
   useEffect(() => { load(); }, []);
+  const versions = versionLabels([...drafts, ...archived]);
   useEffect(() => {
     if (!drafts.some((draft) => draft.status === "animating")) return;
     const timer = setInterval(load, 20000);
@@ -98,7 +116,7 @@ export default function WorldProductionPage() {
         <div className="flex flex-wrap sm:flex-nowrap items-start justify-between gap-2 sm:gap-4">
           <div className="min-w-0">
             <div className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase text-gray-400"><span>{draft.subject_region || "global"}</span><span>{draft.subject_category || "subject"}</span><span className={draft.published ? "text-emerald-600" : draft.status === "ready" ? "text-amber-600" : ""}>{statusLabel(draft)}</span>{draft.has_host && <span>with host</span>}{draft.visual_style && <span>{STYLE_LABEL[draft.visual_style] || draft.visual_style}</span>}</div>
-            <h2 className="mt-1 text-lg font-semibold text-gray-900">{draft.title || "Untitled World subject"}</h2>
+            <h2 className="mt-1 text-lg font-semibold text-gray-900">{draft.title || "Untitled World subject"}{versions[draft.id] && <span className="ml-2 align-middle rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-semibold text-gray-600">{versions[draft.id]}</span>}</h2>
             {draft.hook_line && <p className="mt-1 text-sm text-gray-600">{draft.hook_line}</p>}
           </div>
           <div className="shrink-0 text-right text-sm text-gray-500">{draft.duration_seconds || "-"}s · {draft.shot_count} shots{draft.render_estimate && <span className="block text-xs text-gray-400">~${draft.render_estimate.cost_usd.toFixed(2)} to render</span>}</div>
@@ -133,8 +151,9 @@ export default function WorldProductionPage() {
       <ul className="mt-3 divide-y divide-gray-100">
         {archived.map((draft) => <li key={draft.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-3">
           <div className="min-w-0">
-            <p className="text-sm font-medium text-gray-800">{draft.title || "Untitled"}</p>
-            <p className="text-[11px] uppercase text-gray-400">{[draft.subject_region, draft.visual_style ? (STYLE_LABEL[draft.visual_style] || draft.visual_style) : "Photoreal", draft.duration_seconds ? `${draft.duration_seconds}s` : null, formatDay(draft.created_at)].filter(Boolean).join(" · ")}</p>
+            <p className="text-sm font-medium text-gray-800">{draft.title || "Untitled"}{versions[draft.id] && <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-semibold text-gray-600">{versions[draft.id]}</span>}</p>
+            <p className="text-[11px] uppercase text-gray-400">{[draft.subject_region, draft.visual_style ? (STYLE_LABEL[draft.visual_style] || draft.visual_style) : "Photoreal", draft.duration_seconds ? `${draft.duration_seconds}s` : null, draft.shot_count ? `${draft.shot_count} scenes` : null, formatDayTime(draft.created_at)].filter(Boolean).join(" · ")}</p>
+            {draft.narration?.[0] && <p className="mt-0.5 max-w-xl text-xs italic text-gray-500 [overflow-wrap:anywhere]">“{draft.narration[0]}”</p>}
           </div>
           <TakeLinks draft={draft} />
         </li>)}
