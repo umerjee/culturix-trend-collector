@@ -507,6 +507,14 @@ async def lifespan(_):
     start()
     yield
     stop()
+    # A restart kills any render that was waiting on a GPU job; stop those jobs so they do not keep billing.
+    try:
+        from app.media.runpod_serverless_client import cancel_all_active_jobs
+        cancelled = cancel_all_active_jobs()
+        if cancelled:
+            logging.getLogger("culturix.shutdown").warning("Cancelled %d in-flight RunPod job(s) at shutdown", cancelled)
+    except Exception:
+        logging.getLogger("culturix.shutdown").exception("Could not cancel in-flight RunPod jobs at shutdown")
 from fastapi.middleware.cors import CORSMiddleware
 from app.personas import (
     generate_personas_for_recent_trends,

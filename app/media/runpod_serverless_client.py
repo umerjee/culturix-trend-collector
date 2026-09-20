@@ -28,6 +28,7 @@ emitted by deploy/runpod_serverless/handler.py.
 import base64
 import logging
 import os
+import threading
 import time
 
 import httpx
@@ -37,6 +38,38 @@ logger = logging.getLogger("culturix.media.runpod_serverless_client")
 _API_BASE = "https://api.runpod.ai/v2"
 _POLL_INTERVAL = 10  # seconds
 _TERMINAL_STATUSES = {"COMPLETED", "FAILED"}
+# RunPod ended the job without output. Not treated as "keep polling": that would wait out the whole
+# client timeout for a job that is already over.
+_DEAD_STATUSES = {"CANCELLED", "TIMED_OUT"}
+
+# Jobs this process is currently waiting on: {job_id: endpoint_id}. A job is billed for as long as
+# it runs on the GPU, whether or not anything is still waiting for its output, so a job we stop
+# waiting for (timeout, network error, server restart) has to be cancelled explicitly.
+_active_jobs: dict[str, str] = {}
+_active_lock = threading.Lock()
+
+
+def cancel_job(endpoint_id: str, job_id: str) -> bool:
+    """Ask RunPod to stop a job so it stops billing. Best effort: never raises (it runs while another
+    error is already propagating). Cancelling a job that already finished is harmless."""
+    try:
+        resp = httpx.post(f"{_API_BASE}/{endpoint_id}/cancel/{job_id}", headers=_headers(), timeout=15)
+        resp.raise_for_status()
+        logger.warning("Cancelled RunPod job %s on endpoint %s", job_id, endpoint_id)
+        return True
+    except Exception as exc:
+        logger.error("Could not cancel RunPod job %s on endpoint %s (it may still be billing): %s",
+                     job_id, endpoint_id, exc)
+        return False
+
+
+def cancel_all_active_jobs() -> int:
+    """Cancel every job this process is waiting on. Called at shutdown: a redeploy kills the render
+    that was waiting for the job, and the job would otherwise keep running to completion unseen."""
+    with _active_lock:
+        jobs = list(_active_jobs.items())
+        _active_jobs.clear()
+    return sum(1 for job_id, endpoint_id in jobs if cancel_job(endpoint_id, job_id))
 
 
 class RunPodServerlessError(Exception):
@@ -137,33 +170,49 @@ def run_inference_job(endpoint_id: str, workflow_json: dict = None, timeout_seco
     if not job_id:
         raise RunPodServerlessError(f"RunPod Serverless returned no job id: {submit_resp.json()}")
 
-    deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
-        status_resp = httpx.get(f"{_API_BASE}/{endpoint_id}/status/{job_id}", headers=_headers(), timeout=20)
-        status_resp.raise_for_status()
-        data = status_resp.json()
-        status = data.get("status")
-        if status == "COMPLETED":
-            # RunPod bills actual compute, and executionTime (ms) is the only
-            # real measure of it. Cost was previously estimated from the
-            # VIDEO's duration, which is not what is charged — a 12s video
-            # takes ~226s of GPU, so that estimate was out by an order of
-            # magnitude. Surfaced via an optional out-param so callers can
-            # record a measured cost without changing this function's
-            # return type.
-            if stats is not None:
-                execution_ms = data.get("executionTime")
-                if isinstance(execution_ms, (int, float)):
-                    stats["execution_seconds"] = execution_ms / 1000.0
-                delay_ms = data.get("delayTime")
-                if isinstance(delay_ms, (int, float)):
-                    stats["delay_seconds"] = delay_ms / 1000.0
-                stats["worker_id"] = data.get("workerId")
-            return _extract_output_bytes(data.get("output"))
-        if status == "FAILED":
-            raise RunPodServerlessError(f"Serverless job {job_id} failed: {data.get('error') or data}", job_id=job_id)
-        time.sleep(poll_interval)
+    with _active_lock:
+        _active_jobs[job_id] = endpoint_id
+    # True once RunPod itself says the job is over. Anything else leaving this function (timeout,
+    # a network error while polling, shutdown) leaves the job running and billing, so it is cancelled.
+    job_is_over = False
+    try:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            status_resp = httpx.get(f"{_API_BASE}/{endpoint_id}/status/{job_id}", headers=_headers(), timeout=20)
+            status_resp.raise_for_status()
+            data = status_resp.json()
+            status = data.get("status")
+            if status == "COMPLETED":
+                job_is_over = True
+                # RunPod bills actual compute, and executionTime (ms) is the only
+                # real measure of it. Cost was previously estimated from the
+                # VIDEO's duration, which is not what is charged — a 12s video
+                # takes ~226s of GPU, so that estimate was out by an order of
+                # magnitude. Surfaced via an optional out-param so callers can
+                # record a measured cost without changing this function's
+                # return type.
+                if stats is not None:
+                    execution_ms = data.get("executionTime")
+                    if isinstance(execution_ms, (int, float)):
+                        stats["execution_seconds"] = execution_ms / 1000.0
+                    delay_ms = data.get("delayTime")
+                    if isinstance(delay_ms, (int, float)):
+                        stats["delay_seconds"] = delay_ms / 1000.0
+                    stats["worker_id"] = data.get("workerId")
+                return _extract_output_bytes(data.get("output"))
+            if status == "FAILED":
+                job_is_over = True
+                raise RunPodServerlessError(f"Serverless job {job_id} failed: {data.get('error') or data}", job_id=job_id)
+            if status in _DEAD_STATUSES:
+                job_is_over = True
+                raise RunPodServerlessError(f"Serverless job {job_id} ended with status {status}", job_id=job_id)
+            time.sleep(poll_interval)
 
-    timeout_exc = TimeoutError(f"Serverless job {job_id} did not complete within {timeout_seconds}s")
-    timeout_exc.job_id = job_id
-    raise timeout_exc
+        timeout_exc = TimeoutError(f"Serverless job {job_id} did not complete within {timeout_seconds}s")
+        timeout_exc.job_id = job_id
+        raise timeout_exc
+    finally:
+        with _active_lock:
+            _active_jobs.pop(job_id, None)
+        if not job_is_over:
+            cancel_job(endpoint_id, job_id)

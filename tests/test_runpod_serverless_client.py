@@ -5,6 +5,7 @@ handler-specific and explicitly unverified (see the module's own header) —
 these tests exercise both assumed output shapes the client tries."""
 import base64
 import os
+from unittest.mock import MagicMock
 
 os.environ.setdefault("RUNPOD_API_KEY", "test-key")
 
@@ -128,3 +129,73 @@ class TestRunInferenceJob:
         monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
         with pytest.raises(RuntimeError):
             run_inference_job("endpoint-1", {"1": {}})
+
+
+class TestCancelsAbandonedJobs:
+    """A job we stop waiting for keeps running on the GPU and keeps billing, so it must be cancelled."""
+
+    @staticmethod
+    def _posted_urls(post):
+        return [call.args[0] for call in post.call_args_list]
+
+    def test_timeout_cancels_the_job(self, mocker):
+        post = mocker.patch("httpx.post", return_value=MagicMock(json=lambda: {"id": "job-9"}))
+        mocker.patch("httpx.get", return_value=MagicMock(json=lambda: {"status": "IN_PROGRESS"}))
+        mocker.patch("time.sleep")
+        fake_time = mocker.patch("time.time")
+        fake_time.side_effect = [0, 0, 100, 100, 100]
+        with pytest.raises(TimeoutError):
+            run_inference_job("ep-1", {"wf": 1}, timeout_seconds=50)
+        assert any(url.endswith("/ep-1/cancel/job-9") for url in self._posted_urls(post))
+
+    def test_a_network_error_while_polling_cancels_the_job(self, mocker):
+        post = mocker.patch("httpx.post", return_value=MagicMock(json=lambda: {"id": "job-9"}))
+        mocker.patch("httpx.get", side_effect=RuntimeError("connection reset"))
+        mocker.patch("time.sleep")
+        with pytest.raises(RuntimeError):
+            run_inference_job("ep-1", {"wf": 1})
+        assert any(url.endswith("/ep-1/cancel/job-9") for url in self._posted_urls(post))
+
+    @pytest.mark.parametrize("status", ["COMPLETED", "FAILED"])
+    def test_a_finished_job_is_not_cancelled(self, mocker, status):
+        post = mocker.patch("httpx.post", return_value=MagicMock(json=lambda: {"id": "job-9"}))
+        mocker.patch("httpx.get", return_value=MagicMock(json=lambda: {"status": status, "output": {"video_base64": "AAAA"}}))
+        mocker.patch("time.sleep")
+        try:
+            run_inference_job("ep-1", {"wf": 1})
+        except RunPodServerlessError:
+            pass
+        assert not any("/cancel/" in url for url in self._posted_urls(post))
+
+    @pytest.mark.parametrize("status", ["CANCELLED", "TIMED_OUT"])
+    def test_a_job_ended_by_runpod_fails_at_once_instead_of_polling_to_the_timeout(self, mocker, status):
+        post = mocker.patch("httpx.post", return_value=MagicMock(json=lambda: {"id": "job-9"}))
+        get = mocker.patch("httpx.get", return_value=MagicMock(json=lambda: {"status": status}))
+        mocker.patch("time.sleep")
+        with pytest.raises(RunPodServerlessError) as excinfo:
+            run_inference_job("ep-1", {"wf": 1})
+        assert status in str(excinfo.value) and excinfo.value.job_id == "job-9"
+        assert get.call_count == 1
+        assert not any("/cancel/" in url for url in self._posted_urls(post))
+
+    def test_a_failed_cancel_never_masks_the_real_error(self, mocker):
+        def post(url, **kw):
+            if "/cancel/" in url:
+                raise RuntimeError("runpod down")
+            return MagicMock(json=lambda: {"id": "job-9"})
+        mocker.patch("httpx.post", side_effect=post)
+        mocker.patch("httpx.get", side_effect=ValueError("poll broke"))
+        mocker.patch("time.sleep")
+        with pytest.raises(ValueError, match="poll broke"):
+            run_inference_job("ep-1", {"wf": 1})
+
+    def test_shutdown_cancels_jobs_still_being_waited_on(self, mocker):
+        from app.media import runpod_serverless_client as client
+        post = mocker.patch("httpx.post", return_value=MagicMock())
+        client._active_jobs.clear()
+        client._active_jobs.update({"job-a": "ep-1", "job-b": "ep-2"})
+        assert client.cancel_all_active_jobs() == 2
+        assert sorted(self._posted_urls(post)) == sorted([
+            "https://api.runpod.ai/v2/ep-1/cancel/job-a", "https://api.runpod.ai/v2/ep-2/cancel/job-b"])
+        assert client._active_jobs == {}
+
