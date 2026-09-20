@@ -1338,3 +1338,51 @@ class TestSubjectOnlySegmentPrompt:
         from app.services.culturetoon_selfhosted_video import _build_shot_prompt
         prompt = _build_shot_prompt({"shot_number": 1, "shot_focus": "character", "camera_movement": "static", "action": "waves"})
         assert "static camera movement" in prompt
+
+
+class TestReferencePhotoRendering:
+    def _script(self, mocker, shots):
+        script = mocker.Mock(hook_line="Operation Neptune", scene_direction="", visual_style=None)
+        script.shots = shots
+        return script
+
+    def test_reference_people_do_not_get_the_faceless_instruction(self, mocker):
+        # The shot opens on a real photo showing real people; "faceless" would fight it.
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        prompt = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "shot_focus": "subject", "people": "reference", "subject_visual": "soldiers wade ashore", "dialogue": None},
+        ]), [])
+        assert "People appear as period figures at wide-to-medium distance" in prompt
+        assert "no close-ups of faces" in prompt and "no graphic violence" in prompt
+        assert "faceless" not in prompt and "No people in frame" not in prompt
+
+    def test_distant_and_none_are_unchanged(self, mocker):
+        from app.services.culturetoon_selfhosted_video import build_ltx25_scene_prompt
+        distant = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "shot_focus": "subject", "people": "distant", "subject_visual": "figures on a beach", "dialogue": None}]), [])
+        none = build_ltx25_scene_prompt(self._script(mocker, [
+            {"shot_number": 1, "shot_focus": "subject", "people": "none", "subject_visual": "an empty beach", "dialogue": None}]), [])
+        assert "faceless" in distant and "No people in frame at all" in none
+
+    def test_a_photo_anchored_segment_is_conditioned_more_loosely(self, mocker):
+        from app.services import culturetoon_selfhosted_video as v
+        assert v.LTX25_REFERENCE_PHOTO_STRENGTH == 0.5
+        build = mocker.patch("app.media.ltx25_workflow.build_workflow", return_value={})
+        mocker.patch("app.media.ltx25_workflow.build_backdrop_only_anchor", return_value=b"anchor")
+        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video")
+        script = self._script(mocker, [{"shot_number": 1, "duration_seconds": 8, "shot_focus": "subject",
+                                        "scene_index": 0, "subject_visual": "ships", "dialogue": None}])
+        backdrop = mocker.Mock(image_url="https://s/photo.jpg")
+        mocker.patch("httpx.get", return_value=mocker.Mock(content=b"photo"))
+        v.generate_toon_video_ltx25(script, [], "endpoint", scene_backgrounds={0: backdrop})
+        assert build.call_args.kwargs["image_strength"] == 0.5
+
+    def test_no_photo_keeps_the_template_default_strength(self, mocker):
+        from app.services import culturetoon_selfhosted_video as v
+        build = mocker.patch("app.media.ltx25_workflow.build_workflow", return_value={})
+        mocker.patch("app.media.ltx25_workflow.build_backdrop_only_anchor", return_value=b"anchor")
+        mocker.patch("app.media.runpod_serverless_client.run_inference_job", return_value=b"video")
+        script = self._script(mocker, [{"shot_number": 1, "duration_seconds": 8, "shot_focus": "subject",
+                                        "subject_visual": "ships", "dialogue": None}])
+        v.generate_toon_video_ltx25(script, [], "endpoint")
+        assert build.call_args.kwargs["image_strength"] is None

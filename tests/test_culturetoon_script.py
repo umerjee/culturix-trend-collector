@@ -1526,3 +1526,31 @@ class TestWorldMotionRule:
         # "landscape" must not count as "land", "first" must not count as "fire"
         from app.services.culturetoon_script import check_world_motion
         assert any("still scene" in p for p in check_world_motion([self._shot(visual)]))
+
+
+class TestReferencePeopleMode:
+    @staticmethod
+    def _shot(visual, people, n=1):
+        return {"shot_number": n, "shot_focus": "subject", "subject_visual": visual, "people": people}
+
+    def test_reference_is_a_valid_value_and_allows_people_in_the_visual(self):
+        from app.services.culturetoon_script import check_world_visuals, normalize_world_people
+        shots = [self._shot("Soldiers wade ashore between steel obstacles", "reference")]
+        assert check_world_visuals(shots) == []
+        assert normalize_world_people(shots)[0][0]["people"] == "reference"
+
+    def test_reference_still_may_not_ask_for_faces(self):
+        from app.services.culturetoon_script import check_world_visuals
+        assert check_world_visuals([self._shot("A close-up of the soldiers' faces", "reference")])
+
+    def test_the_scene_block_tells_the_writer_to_use_reference(self):
+        from app.services.culturetoon_script import _world_context
+        ctx = _world_context("France", "D-Day", "custom", scene_briefs=["Armada", "Bombardment"])
+        assert '"people": "reference"' in ctx and "exactly 2 shots" in ctx and "1. Armada" in ctx and "2. Bombardment" in ctx
+
+    def test_schema_offers_reference(self, mocker):
+        from app.services.culturetoon_script import generate_world_script
+        client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_world_script(region_code="FR", region_label="France", subject_text="D-Day")
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert '"distant" or "reference"' in prompt

@@ -11,9 +11,26 @@ type Draft = {
   hook_line: string | null; narration: string[]; grounding: Grounding | null; craft_score: number | null; has_host: boolean;
   source_type: string | null; source_url: string | null; render_estimate: { gpu_seconds: number; cost_usd: number } | null;
   generation_error: string | null; publish_recommended: boolean | null; published: boolean; created_at: string | null;
+  previous_video_urls: string[]; visual_style: string | null; raw_video_url: string | null;
 };
 
 const STATUS_LABEL: Record<string, string> = { idea: "Script ready", animating: "Rendering", ready: "Rendered", failed: "Render failed", posted: "Posted" };
+
+const STYLE_LABEL: Record<string, string> = { illustrated_history: "Illustrated", graphic_novel: "Graphic novel" };
+
+function formatDay(iso: string | null): string {
+  return iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
+}
+
+// Every take of a draft, oldest first: earlier takes were archived when a re-render replaced them.
+function TakeLinks({ draft }: { draft: Draft }) {
+  const current = draft.final_video_url || draft.raw_video_url;
+  const takes = [...(draft.previous_video_urls || []), ...(current && !(draft.previous_video_urls || []).includes(current) ? [current] : [])];
+  if (takes.length === 0) return null;
+  return <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+    {takes.map((url, index) => <a key={url} href={url} target="_blank" rel="noreferrer" className="inline-flex min-h-8 items-center text-primary-600 hover:underline">{takes.length === 1 ? "Watch video" : `Take ${index + 1}${index === takes.length - 1 ? " (latest)" : ""}`}</a>)}
+  </span>;
+}
 
 function statusLabel(draft: Draft): string {
   if (draft.status === "ready") return draft.published ? "Published" : "Rendered, awaiting publish";
@@ -25,8 +42,13 @@ export default function WorldProductionPage() {
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState<string | null>(null);
+  const [archived, setArchived] = useState<Draft[]>([]);
 
-  function load() { setLoading(true); fetchAdminData<Draft[]>("world-production").then(setDrafts).catch(() => setDrafts([])).finally(() => setLoading(false)); }
+  function load() {
+    setLoading(true);
+    fetchAdminData<Draft[]>("world-production").then(setDrafts).catch(() => setDrafts([])).finally(() => setLoading(false));
+    fetchAdminData<Draft[]>("world-production-archived").then(setArchived).catch(() => setArchived([]));
+  }
   useEffect(() => { load(); }, []);
   useEffect(() => {
     if (!drafts.some((draft) => draft.status === "animating")) return;
@@ -75,7 +97,7 @@ export default function WorldProductionPage() {
       return <article key={draft.id} className="rounded-xl border border-gray-100 bg-white p-4 sm:p-5 shadow-sm">
         <div className="flex flex-wrap sm:flex-nowrap items-start justify-between gap-2 sm:gap-4">
           <div className="min-w-0">
-            <div className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase text-gray-400"><span>{draft.subject_region || "global"}</span><span>{draft.subject_category || "subject"}</span><span className={draft.published ? "text-emerald-600" : draft.status === "ready" ? "text-amber-600" : ""}>{statusLabel(draft)}</span>{draft.has_host && <span>with host</span>}</div>
+            <div className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase text-gray-400"><span>{draft.subject_region || "global"}</span><span>{draft.subject_category || "subject"}</span><span className={draft.published ? "text-emerald-600" : draft.status === "ready" ? "text-amber-600" : ""}>{statusLabel(draft)}</span>{draft.has_host && <span>with host</span>}{draft.visual_style && <span>{STYLE_LABEL[draft.visual_style] || draft.visual_style}</span>}</div>
             <h2 className="mt-1 text-lg font-semibold text-gray-900">{draft.title || "Untitled World subject"}</h2>
             {draft.hook_line && <p className="mt-1 text-sm text-gray-600">{draft.hook_line}</p>}
           </div>
@@ -94,7 +116,7 @@ export default function WorldProductionPage() {
         </div>}
         {draft.generation_error && draft.status === "failed" && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{draft.generation_error}</p>}
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          {draft.final_video_url && <a href={draft.final_video_url} target="_blank" rel="noreferrer" className="inline-flex min-h-10 items-center text-sm font-semibold text-primary-600 hover:underline">Watch video</a>}
+          {(draft.final_video_url || (draft.previous_video_urls || []).length > 0) && <TakeLinks draft={draft} />}
           {draft.status === "ready" && !draft.published && <button onClick={() => publish(draft)} className="inline-flex min-h-10 items-center gap-1 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white"><Upload className="h-3.5 w-3.5" /> Publish</button>}
           {draft.status === "ready" && draft.published && <button onClick={() => unpublish(draft)} className="inline-flex min-h-10 items-center gap-1 rounded-md border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700"><EyeOff className="h-3.5 w-3.5" /> Unpublish</button>}
           {draft.status === "ready" && !draft.published && draft.publish_recommended === false && <span className="text-xs text-amber-700">Automatic QA did not recommend publishing this render.</span>}
@@ -104,5 +126,19 @@ export default function WorldProductionPage() {
         </div>
       </article>;
     })}</div>}
+
+    {archived.length > 0 && <details className="mt-10 rounded-xl border border-gray-100 bg-white p-4 sm:p-5">
+      <summary className="cursor-pointer text-sm font-semibold text-gray-700">Archived videos ({archived.length})</summary>
+      <p className="mt-2 text-xs text-gray-400">Retired drafts keep their rendered video. Nothing here is public.</p>
+      <ul className="mt-3 divide-y divide-gray-100">
+        {archived.map((draft) => <li key={draft.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-gray-800">{draft.title || "Untitled"}</p>
+            <p className="text-[11px] uppercase text-gray-400">{[draft.subject_region, draft.visual_style ? (STYLE_LABEL[draft.visual_style] || draft.visual_style) : "Photoreal", draft.duration_seconds ? `${draft.duration_seconds}s` : null, formatDay(draft.created_at)].filter(Boolean).join(" · ")}</p>
+          </div>
+          <TakeLinks draft={draft} />
+        </li>)}
+      </ul>
+    </details>}
   </div>;
 }

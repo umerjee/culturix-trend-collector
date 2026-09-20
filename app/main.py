@@ -3032,52 +3032,76 @@ def generate_curated_world_feature(item_id: str, payload: Optional[dict] = None)
     return {"status": "generating", "item_id": item_id, "message": "World script generation started"}
 
 
-@app.get("/admin/world-production", dependencies=[Depends(require_admin_secret)])
-def list_world_production(limit: int = 100):
-    from app.db import SessionLocal
+def _world_production_rows(session, archived: bool, limit: int) -> list[dict]:
+    """Serialized World drafts. archived=False is the working list (everything not archived);
+    archived=True is every retired draft that still has a video to link to."""
     from app.models.curated_item import CuratedItem
     from app.models.toon import Toon
     from app.models.toon_script import ToonScript
     from app.services.world_production import estimate_render, source_label
+
+    query = (
+        session.query(Toon, ToonScript)
+        .join(ToonScript, Toon.script_id == ToonScript.id)
+        .filter(Toon.is_world_content.is_(True))
+        .filter(Toon.status == "archived" if archived else Toon.status != "archived")
+        .order_by(Toon.created_at.desc())
+        .limit(max(1, min(limit, 200)))
+    )
+    rows = query.all()
+    if archived:
+        rows = [(t, sc) for t, sc in rows if t.final_video_url or t.raw_video_url or t.previous_video_urls]
+    item_ids = [t.curated_item_id for t, _ in rows if t.curated_item_id]
+    items = {i.id: i for i in session.query(CuratedItem).filter(CuratedItem.id.in_(item_ids)).all()} if item_ids else {}
+    out = []
+    for toon, script in rows:
+        item = items.get(toon.curated_item_id)
+        judgment = script.comedy_judgment or {}
+        duration = script.total_duration_seconds
+        out.append({
+            "id": str(toon.id), "title": toon.title, "status": toon.status,
+            "final_video_url": toon.final_video_url, "raw_video_url": toon.raw_video_url,
+            # Earlier takes of this same draft (a re-render archives the video it replaces), oldest first
+            "previous_video_urls": list(toon.previous_video_urls or []),
+            "visual_style": script.visual_style,
+            "subject_region": toon.subject_region, "subject_category": toon.subject_category,
+            "subject_text": toon.subject_text, "script_id": str(script.id),
+            "duration_seconds": duration,
+            "shot_count": len(script.shots or []),
+            "hook_line": script.hook_line,
+            "narration": [sh.get("dialogue") for sh in (script.shots or []) if sh.get("dialogue")],
+            "grounding": judgment.get("grounding"),
+            "craft_score": judgment.get("comedy_score"),
+            "has_host": bool(script.character_variant_id),
+            "source_type": source_label(item) if item else None,
+            "source_url": item.source_url if item else None,
+            "render_estimate": estimate_render(duration) if duration else None,
+            "published": bool(toon.status == "ready" and toon.final_video_url and toon.world_published is not False),
+            "generation_error": toon.generation_error,
+            "publish_recommended": toon.publish_recommended,
+            "qa_results": toon.qa_results,
+            "created_at": toon.created_at.isoformat() if toon.created_at else None,
+        })
+    return out
+
+
+@app.get("/admin/world-production", dependencies=[Depends(require_admin_secret)])
+def list_world_production(limit: int = 100):
+    from app.db import SessionLocal
     session = SessionLocal()
     try:
-        rows = (
-            session.query(Toon, ToonScript)
-            .join(ToonScript, Toon.script_id == ToonScript.id)
-            .filter(Toon.is_world_content.is_(True), Toon.status != "archived")
-            .order_by(Toon.created_at.desc())
-            .limit(max(1, min(limit, 200)))
-            .all()
-        )
-        item_ids = [t.curated_item_id for t, _ in rows if t.curated_item_id]
-        items = {i.id: i for i in session.query(CuratedItem).filter(CuratedItem.id.in_(item_ids)).all()} if item_ids else {}
-        out = []
-        for toon, script in rows:
-            item = items.get(toon.curated_item_id)
-            judgment = script.comedy_judgment or {}
-            duration = script.total_duration_seconds
-            out.append({
-                "id": str(toon.id), "title": toon.title, "status": toon.status,
-                "final_video_url": toon.final_video_url, "raw_video_url": toon.raw_video_url,
-                "subject_region": toon.subject_region, "subject_category": toon.subject_category,
-                "subject_text": toon.subject_text, "script_id": str(script.id),
-                "duration_seconds": duration,
-                "shot_count": len(script.shots or []),
-                "hook_line": script.hook_line,
-                "narration": [s.get("dialogue") for s in (script.shots or []) if s.get("dialogue")],
-                "grounding": judgment.get("grounding"),
-                "craft_score": judgment.get("comedy_score"),
-                "has_host": bool(script.character_variant_id),
-                "source_type": source_label(item) if item else None,
-                "source_url": item.source_url if item else None,
-                "render_estimate": estimate_render(duration) if duration else None,
-                "published": bool(toon.status == "ready" and toon.final_video_url and toon.world_published is not False),
-                "generation_error": toon.generation_error,
-                "publish_recommended": toon.publish_recommended,
-                "qa_results": toon.qa_results,
-                "created_at": toon.created_at.isoformat() if toon.created_at else None,
-            })
-        return out
+        return _world_production_rows(session, archived=False, limit=limit)
+    finally:
+        session.close()
+
+
+@app.get("/admin/world-production/archived", dependencies=[Depends(require_admin_secret)])
+def list_world_production_archived(limit: int = 100):
+    """Retired drafts that still have a rendered video, newest first, so every take stays reachable."""
+    from app.db import SessionLocal
+    session = SessionLocal()
+    try:
+        return _world_production_rows(session, archived=True, limit=limit)
     finally:
         session.close()
 

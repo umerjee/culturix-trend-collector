@@ -22,6 +22,7 @@ const PATH_MAP: Record<string, { path: string; defaultLimit?: number }> = {
   "runpod-orphan-kills": { path: "/admin/runpod-orphan-kills", defaultLimit: 50 },
   "curated-items":      { path: "/admin/curated-items", defaultLimit: 100 },
   "world-production":   { path: "/admin/world-production", defaultLimit: 100 },
+  "world-production-archived": { path: "/admin/world-production/archived", defaultLimit: 100 },
 };
 
 // Types that need an :id substituted into the backend path

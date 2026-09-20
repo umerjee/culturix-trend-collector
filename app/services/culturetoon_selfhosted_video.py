@@ -111,6 +111,12 @@ _QUALITY_SUFFIX = (
     "consistent lighting, high detail, crisp film-quality render"
 )
 
+# Conditioning strength for a segment whose opening frame is a real reference photo. Measured on
+# the GPU with the same prompt: 0.5 gave a battleship broadside clip 21.2 units of scene motion vs
+# 13.2 at the template default of 0.7, and troops running through surf 26.1; the photo's look and
+# content still carry through. A stronger hold on the photo makes the clip drift toward a still.
+LTX25_REFERENCE_PHOTO_STRENGTH = 0.5
+
 # Closes a segment made ONLY of subject shots (no character on screen). Measured on a real
 # render: with nothing asking for motion the model produced a near-still scene with a slow
 # camera drift, about a third of the scene motion of the earlier renders.
@@ -190,7 +196,15 @@ def _build_shot_prompt(shot: dict, background=None) -> str:
     subject_visual = (shot.get("subject_visual") or "").strip()
     if focus == "subject" and subject_visual:
         parts.append(subject_visual)
-        if (shot.get("people") or "").strip().lower() == "distant":
+        people_mode = (shot.get("people") or "").strip().lower()
+        if people_mode == "reference":
+            # The shot opens on a real photograph that shows real people. Telling the model they are
+            # "faceless" would fight the photo it is conditioned on, so ask only for the safe parts.
+            parts.append(
+                "People appear as period figures at wide-to-medium distance, moving naturally — no "
+                "close-ups of faces, no graphic violence"
+            )
+        elif people_mode == "distant":
             # An event that IS its people (a landing, a march, a ceremony) needs them on
             # screen. Kept small, wide and faceless: identity can't be anchored in a
             # hostless shot, and close faces are where AI video breaks.
@@ -1197,7 +1211,12 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
                 prompt, segment_duration, reference_image_filenames=list(current_msr_images.keys()),
             )
         else:
-            workflow = ltx25_workflow.build_workflow(prompt, segment_duration)
+            # A real photo as the opening frame is held more loosely so the clip can move.
+            photo_anchored = subject_only and backdrop is not None
+            workflow = ltx25_workflow.build_workflow(
+                prompt, segment_duration,
+                image_strength=LTX25_REFERENCE_PHOTO_STRENGTH if photo_anchored else None,
+            )
         segment_stats: dict = {}
         video_bytes = runpod_serverless_client.run_inference_job(
             endpoint_id, workflow,

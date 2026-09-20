@@ -1,5 +1,6 @@
 """World production: plan -> grounded script -> fact-check -> draft."""
 import uuid
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -245,3 +246,143 @@ class TestMotionRewrite:
         llm.write.side_effect = [self.MOVING]
         wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False)
         assert llm.write.call_count == 1
+
+
+class TestArchivedListing:
+    """Retired drafts keep their rendered video, and the admin page links every take."""
+
+    @pytest.fixture
+    def session(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.db import Base
+        from app.models.curated_item import CuratedItem
+        from app.models.toon import Toon
+        from app.models.toon_script import ToonScript
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine, tables=[Toon.__table__, ToonScript.__table__, CuratedItem.__table__])
+        s = sessionmaker(bind=engine)()
+        yield s
+        s.close()
+
+    @staticmethod
+    def _add(session, title, status, video=None, style=None, world=True):
+        from app.models.toon import Toon
+        from app.models.toon_script import ToonScript
+        script = ToonScript(brand_id=uuid.uuid4(), hook_line="H", shots=[{"dialogue": "x"}], total_duration_seconds=30,
+                            visual_style=style, generation_source="ai", status="approved", is_world_content=world)
+        session.add(script)
+        session.commit()
+        toon = Toon(brand_id=uuid.uuid4(), script_id=script.id, title=title, status=status, final_video_url=video,
+                    raw_video_url=video, is_world_content=world, subject_region="FR")
+        session.add(toon)
+        session.commit()
+        return toon
+
+    def test_archived_list_has_only_retired_drafts_that_still_have_a_video(self, session):
+        from app.main import _world_production_rows
+        self._add(session, "retired with video", "archived", video="https://cdn/a.mp4", style="illustrated_history")
+        self._add(session, "retired never rendered", "archived", video=None)
+        self._add(session, "live draft", "ready", video="https://cdn/b.mp4")
+        self._add(session, "not a world video", "archived", video="https://cdn/c.mp4", world=False)
+        rows = _world_production_rows(session, archived=True, limit=50)
+        assert [r["title"] for r in rows] == ["retired with video"]
+        assert rows[0]["final_video_url"] == "https://cdn/a.mp4" and rows[0]["visual_style"] == "illustrated_history"
+
+    def test_working_list_excludes_archived_and_reports_the_style(self, session):
+        from app.main import _world_production_rows
+        self._add(session, "retired", "archived", video="https://cdn/a.mp4")
+        self._add(session, "live", "idea", style="graphic_novel")
+        rows = _world_production_rows(session, archived=False, limit=50)
+        assert [r["title"] for r in rows] == ["live"] and rows[0]["visual_style"] == "graphic_novel"
+
+    def test_previous_takes_default_to_an_empty_list_not_null(self, session):
+        from app.main import _world_production_rows
+        self._add(session, "live", "ready", video="https://cdn/b.mp4")
+        assert _world_production_rows(session, archived=False, limit=50)[0]["previous_video_urls"] == []
+
+    def test_newest_first(self, session):
+        from app.main import _world_production_rows
+        first = self._add(session, "older", "archived", video="https://cdn/1.mp4")
+        second = self._add(session, "newer", "archived", video="https://cdn/2.mp4")
+        first.created_at = datetime(2026, 1, 1)
+        second.created_at = datetime(2026, 2, 1)
+        session.commit()
+        assert [r["title"] for r in _world_production_rows(session, archived=True, limit=50)] == ["newer", "older"]
+
+
+class TestScenes:
+    """Each shot opens on its own reference photo: one shot per scene, in order."""
+
+    SCENES = [
+        {"brief": "The Allied armada crosses the Channel", "image_url": "https://s/1.jpg", "credit": "IWM", "name": "Armada"},
+        {"brief": "A battleship fires a broadside", "image_url": "https://s/2.jpg", "credit": "US Navy", "name": "Bombardment"},
+        {"brief": "Landing craft approach the beach", "image_url": None},
+    ]
+
+    @staticmethod
+    def _script(n):
+        return {"hook_line": "H", "total_duration_seconds": 30, "shots": [
+            {"shot_number": i + 1, "shot_focus": "subject", "camera_movement": "tracking", "people": "none",
+             "subject_visual": "Waves surge and smoke rolls past the ships", "dialogue": "x"} for i in range(n)]}
+
+    def test_scene_briefs_reach_the_writer_and_set_the_shot_count(self, llm):
+        llm.write.side_effect = [self._script(3)]
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=9, scenes=self.SCENES, persist=False)
+        kwargs = llm.write.call_args.kwargs
+        assert kwargs["num_shots"] == 3          # forced to the number of scenes, whatever was asked
+        assert kwargs["scene_briefs"] == ["The Allied armada crosses the Channel", "A battleship fires a broadside",
+                                          "Landing craft approach the beach"]
+        assert result["scenes"] == 3
+
+    def test_the_wrong_shot_count_is_rewritten_once_with_a_clear_instruction(self, llm):
+        llm.write.side_effect = [self._script(2), self._script(3)]
+        wp.generate_world_draft(None, _item(), duration_seconds=30, scenes=self.SCENES, persist=False)
+        assert llm.write.call_count == 2
+        assert any("exactly 3 shots" in fix for fix in llm.write.call_args.kwargs["visual_fixes"])
+
+    def test_references_and_credits_are_recorded_on_the_judgment(self, llm):
+        llm.write.side_effect = [self._script(3)]
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, scenes=self.SCENES, persist=False)
+        refs = result["judgment"]["references"]
+        assert [r["scene"] for r in refs] == [0, 1, 2] and refs[1]["credit"] == "US Navy" and refs[2]["url"] is None
+
+    def test_no_scenes_leaves_the_old_behaviour_untouched(self, llm):
+        wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False)
+        assert llm.write.call_args.kwargs["scene_briefs"] is None
+
+    @pytest.mark.parametrize("scenes", [[], [{"brief": ""}], [{"brief": "  "}], [{"brief": "x"}] * 9, [{"image_url": "u"}]])
+    def test_invalid_scene_lists_are_rejected_before_any_generation(self, llm, scenes):
+        with pytest.raises(wp.WorldDraftError):
+            wp.generate_world_draft(None, _item(), duration_seconds=30, scenes=scenes, persist=False)
+        llm.write.assert_not_called()
+
+    def test_persisting_creates_a_location_per_photo_and_maps_each_shot_to_its_scene(self, llm, mocker):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.db import Base
+        from app.models.character_brand import CharacterBrand
+        from app.models.toon import Toon
+        from app.models.toon_background import ToonBackground
+        from app.models.toon_script import ToonScript
+        from app.models.trend import Trend
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine, tables=[CharacterBrand.__table__, Toon.__table__, ToonScript.__table__,
+                                                       ToonBackground.__table__, Trend.__table__])
+        db = sessionmaker(bind=engine)()
+        db.add(CharacterBrand(user_id=uuid.uuid4(), name="World"))
+        db.commit()
+        llm.write.side_effect = [self._script(3)]
+        item = _item(region="FR")
+
+        result = wp.generate_world_draft(db, item, duration_seconds=30, scenes=self.SCENES, visual_style="illustrated_history")
+
+        script = db.query(ToonScript).filter_by(id=uuid.UUID(result["script_id"])).one()
+        assert [s["scene_index"] for s in script.shots] == [0, 1, 2]
+        backgrounds = db.query(ToonBackground).order_by(ToonBackground.name).all()
+        assert sorted(b.image_url for b in backgrounds) == ["https://s/1.jpg", "https://s/2.jpg"]   # scene 3 has no photo
+        assert {b.country for b in backgrounds} == {"France"}
+        mapped = {e["scene_index"]: e["background_id"] for e in script.scene_backgrounds}
+        assert sorted(mapped) == [0, 1] and set(mapped.values()) == {str(b.id) for b in backgrounds}
+        assert script.visual_style == "illustrated_history"
+        assert script.comedy_judgment["references"][0]["credit"] == "IWM"

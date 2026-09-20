@@ -948,7 +948,7 @@ Return ONLY valid JSON with exactly these keys:
   shot_focus (string), subject_visual (string or null), voiceover (boolean),
   expression (string or null), dialogue (string or null),
   dialogue_delivery (string or null), shot_type (string), camera_movement (string or null),
-  people (string: "none", or "distant" only where the PEOPLE rule in the context allows it; otherwise always "none"){scene_index_key}{speaker_key}
+  people (string: "none", or "distant" or "reference" only where the PEOPLE rule in the context allows it; otherwise always "none"){scene_index_key}{speaker_key}
 
 Return ONLY the JSON object, no other text."""
 
@@ -1561,7 +1561,8 @@ def generate_toon_script_from_idea(idea: str, variants: Optional[list] = None, t
 def _world_context(region_label: str, subject_text: str, subject_category: Optional[str],
                     trends: Optional[list] = None, culture: Optional[dict] = None,
                     source_facts: Optional[str] = None, source_label: Optional[str] = None,
-                    avoid_claims: Optional[list] = None, visual_fixes: Optional[list] = None) -> str:
+                    avoid_claims: Optional[list] = None, visual_fixes: Optional[list] = None,
+                    scene_briefs: Optional[list] = None) -> str:
     """Builds the "context" string for generate_world_script, in the same
     role _source_type_and_context plays for the Persona/Cluster path — the
     thing a subject-centric World Feature is grounded in isn't a trending
@@ -1611,6 +1612,16 @@ def _world_context(region_label: str, subject_text: str, subject_category: Optio
         context += (
             "\n\nA previous draft made these UNSUPPORTED claims — do not repeat them:\n"
             + "\n".join(f"- {c}" for c in avoid_claims[:6])
+        )
+    if scene_briefs:
+        context += (
+            f"\n\nSCENES: write exactly {len(scene_briefs)} shots, one per scene below, in this order. Each "
+            "shot OPENS on a real reference photograph of that scene, so describe what moves in it and how the "
+            "action continues from that opening frame, and stay true to what the scene shows. Because the "
+            "photo shows real people where the scene has them, set \"people\": \"reference\" on shots whose "
+            "scene contains people (ignore the \"distant\" instruction above for these) and \"none\" on "
+            "shots whose scene has none. Never write faces or close-ups of people:\n"
+            + "\n".join(f"{i}. {brief}" for i, brief in enumerate(scene_briefs, 1))
         )
     if visual_fixes:
         context += (
@@ -1748,7 +1759,7 @@ def check_world_visuals(shots: Optional[list]) -> list[str]:
         visual = shot.get("subject_visual") or ""
         people = (shot.get("people") or "none").strip().lower()
         number = shot.get("shot_number")
-        if people == "distant":
+        if people in ("distant", "reference"):
             if _mentions_faces(visual):
                 problems.append(f'Shot {number}: people is "distant" but the visual mentions faces, eyes or a '
                                 "close-up. Show only small, distant, faceless figures in a wide shot.")
@@ -1770,12 +1781,12 @@ def normalize_world_people(shots: Optional[list]) -> tuple[list, list[str]]:
         if (shot.get("shot_focus") or "").strip().lower() == "subject":
             people = (shot.get("people") or "none").strip().lower()
             visual = shot.get("subject_visual") or ""
-            if people not in ("none", "distant"):
+            if people not in ("none", "distant", "reference"):
                 people = "none"
             if people == "none" and _PEOPLE_WORDS.search(visual):
                 people = "distant"
                 warnings.append(f"Shot {shot.get('shot_number')}: visual shows people; people set to distant")
-            if people == "distant" and _mentions_faces(visual):
+            if people in ("distant", "reference") and _mentions_faces(visual):
                 warnings.append(f"Shot {shot.get('shot_number')}: distant shot still mentions faces or a close-up")
             shot["people"] = people
         out.append(shot)
@@ -1822,7 +1833,8 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
                            target_duration_seconds: int = 20,
                            source_facts: Optional[str] = None, source_label: Optional[str] = None,
                            avoid_claims: Optional[list] = None,
-                           visual_fixes: Optional[list] = None) -> dict:
+                           visual_fixes: Optional[list] = None,
+                           scene_briefs: Optional[list] = None) -> dict:
     """Generates a World Feature script — a subject-centric video (a place,
     phenomenon, or species is the star) grounded in real region-filtered
     Trend rows and (optionally) the shared Culture library, for the public
@@ -1848,7 +1860,7 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
     variants = [host_variant] if host_variant is not None else []
     context = _world_context(region_label, subject_text, subject_category, trends, culture,
                              source_facts=source_facts, source_label=source_label, avoid_claims=avoid_claims,
-                             visual_fixes=visual_fixes)
+                             visual_fixes=visual_fixes, scene_briefs=scene_briefs)
     if not variants:
         # cast_line is empty with no variants (see _cast_line), which on its
         # own leaves the craft guidance's "use the cast to carry the
