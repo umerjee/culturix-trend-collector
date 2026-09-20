@@ -3095,6 +3095,8 @@ def _world_production_rows(session, archived: bool, limit: int) -> list[dict]:
             "shot_count": len(script.shots or []),
             "hook_line": script.hook_line,
             "narration": [sh.get("dialogue") for sh in (script.shots or []) if sh.get("dialogue")],
+            "narration_lines": [{"shot_number": sh.get("shot_number"), "dialogue": sh.get("dialogue")}
+                                for sh in (script.shots or []) if sh.get("dialogue")],
             "grounding": judgment.get("grounding"),
             "craft_score": judgment.get("score", judgment.get("comedy_score")),
             "review": review_view(judgment),
@@ -3202,6 +3204,39 @@ def review_world_production_script(toon_id: str):
         except WorldDraftError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         return {"status": "reviewed", "toon_id": toon_id, "score": review["score"]}
+    finally:
+        session.close()
+
+
+@app.post("/admin/world-production/{toon_id}/fix-claims", dependencies=[Depends(require_admin_secret)])
+def fix_world_production_claims(toon_id: str):
+    """Rewrite only the lines that hold claims the source does not support, re-checking after each attempt."""
+    from app.db import SessionLocal
+    from app.services.world_production import WorldDraftError, fix_world_claims
+    session = SessionLocal()
+    try:
+        toon = _world_toon_or_404(session, toon_id)
+        try:
+            return {"toon_id": toon_id, **fix_world_claims(session, toon)}
+        except WorldDraftError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+    finally:
+        session.close()
+
+
+@app.post("/admin/world-production/{toon_id}/edit-script", dependencies=[Depends(require_admin_secret)])
+def edit_world_production_script(toon_id: str, body: dict):
+    """Save the curator's own edits to the hook and narration lines ({hook_line, lines: [{shot_number,
+    dialogue}]}), then re-run the fact-check and the score."""
+    from app.db import SessionLocal
+    from app.services.world_production import WorldDraftError, edit_world_script
+    session = SessionLocal()
+    try:
+        toon = _world_toon_or_404(session, toon_id)
+        try:
+            return {"toon_id": toon_id, **edit_world_script(session, toon, body.get("hook_line"), body.get("lines") or [])}
+        except WorldDraftError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
     finally:
         session.close()
 

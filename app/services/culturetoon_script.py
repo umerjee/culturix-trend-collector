@@ -1988,6 +1988,44 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
     return _call_llm_for_script(prompt, tone, variants, planned_scenes=None)
 
 
+_STOPWORDS = frozenset(
+    "the a an and or but of in on at to for from by with as is are was were be been being it its this that these those "
+    "their his her they them he she we you i not no than then so such into onto over under about after before while "
+    "during also more most many much some any each other one two three".split())
+CLAIM_SUPPORT_COVERAGE = 0.85
+
+
+def _content_stems(text: str) -> list[str]:
+    """Lowercase content words, crudely stemmed so "declared", "declaring" and "declares" match."""
+    stems = []
+    for word in re.findall(r"[a-z0-9]+", (text or "").lower()):
+        if word in _STOPWORDS or (len(word) < 3 and not word.isdigit()):
+            continue
+        for suffix in ("ing", "ed", "es", "s"):
+            if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+                word = word[: -len(suffix)]
+                break
+        stems.append(word)
+    return stems
+
+
+def claim_supported_by_source(claim: str, source_facts: str) -> bool:
+    """True when ONE sentence of the source contains every number in the claim and at least
+    CLAIM_SUPPORT_COVERAGE of its content words. The fact-checker model is not deterministic: it flagged "The
+    United States declared its independence on July 4, 1776" when the source says exactly that, so a curator
+    could fix a real problem and still never clear the warning. Requiring all of it inside a single sentence
+    keeps real inventions ("a quill pen scratches") flagged: their invented words are not in any sentence."""
+    wanted = _content_stems(claim)
+    if not wanted:
+        return False
+    numbers = {w for w in wanted if w.isdigit()}
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", source_facts or ""):
+        have = set(_content_stems(sentence))
+        if numbers <= have and sum(1 for w in wanted if w in have) / len(wanted) >= CLAIM_SUPPORT_COVERAGE:
+            return True
+    return False
+
+
 def judge_world_grounding(script_result: dict, source_facts: str) -> dict:
     """Fact-checks a World script against its verified source material via a
     SEPARATE LLM call (a fresh critic, same posture as judge_script_comedy).
@@ -2012,8 +2050,72 @@ Return ONLY valid JSON: {{"unsupported_claims": [string], "grounded": boolean (t
     except ToonScriptGenerationError as exc:
         logger.warning("Grounding judge call failed, leaving draft unchecked: %s", exc)
         return {"grounded": None, "unsupported_claims": [], "judge_failed": True}
-    claims = [str(c) for c in (parsed.get("unsupported_claims") or []) if c]
-    return {"grounded": not claims, "unsupported_claims": claims, "judge_failed": False}
+    flagged = [str(c) for c in (parsed.get("unsupported_claims") or []) if c]
+    dismissed = [c for c in flagged if claim_supported_by_source(c, source_facts)]
+    claims = [c for c in flagged if c not in dismissed]
+    if dismissed:
+        logger.info("Grounding judge flagged %d claim(s) that a source sentence states; dismissed: %s",
+                    len(dismissed), dismissed)
+    result = {"grounded": not claims, "unsupported_claims": claims, "judge_failed": False}
+    if dismissed:
+        result["dismissed"] = dismissed
+    return result
+
+
+def fix_unsupported_claims(script_result: dict, claims: list, source_facts: str) -> Optional[dict]:
+    """Rewrite ONLY the narration lines (and the hook) that hold claims the source does not support, using
+    only what the source says. Returns a copy of the script with those lines replaced, or None if nothing
+    could be fixed.
+
+    Why this is separate from regenerating the script: a full rewrite re-invents the same flourish ("a quill
+    pen sealed the fate of a new nation") and the caller only kept a rewrite that scored higher overall, so a
+    fix that removed the claim but dipped the score was thrown away and the claim stayed. A narrow edit of the
+    named lines does not disturb the rest."""
+    numbered = "\n".join(f"Shot {s.get('shot_number')}: {(s.get('dialogue') or '').strip()}"
+                         for s in script_result.get("shots") or [])
+    prompt = f"""A fact-checker found claims in a short educational video script that the verified source does not support.
+
+VERIFIED SOURCE MATERIAL (the only allowed source of facts):
+{source_facts.strip()[:5000]}
+
+HOOK LINE: {script_result.get("hook_line") or ""}
+NARRATION:
+{numbered}
+
+UNSUPPORTED CLAIMS:
+{chr(10).join("- " + str(c) for c in claims[:8])}
+
+Rewrite ONLY the hook line and the narration lines that contain these claims. Each rewrite:
+- states only facts the source material states (drop embellishment, colour, causes and superlatives the source does not give);
+- keeps the line's place in the story and stays {MAX_NARRATION_WORDS - 6} to {MAX_NARRATION_WORDS - 4} words;
+- is plain, concrete and specific, not vague.
+Leave every other line out of your answer.
+
+Return ONLY valid JSON: {{"hook_line": string or null (null if the hook needs no change), "lines": [{{"shot_number": integer, "dialogue": string}}]}}"""
+    try:
+        parsed = _call_llm_json(prompt, temperature=0.2, max_tokens=700)
+    except ToonScriptGenerationError as exc:
+        logger.warning("Claim fixer call failed: %s", exc)
+        return None
+    shots = [dict(s) for s in script_result.get("shots") or []]
+    by_number = {s.get("shot_number"): s for s in shots}
+    changed = 0
+    for item in parsed.get("lines") or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("dialogue") or "").strip()
+        shot = by_number.get(item.get("shot_number"))
+        if shot is None or not text or len(text.split()) > MAX_NARRATION_WORDS or text == (shot.get("dialogue") or "").strip():
+            continue
+        shot["dialogue"] = text
+        changed += 1
+    hook = str(parsed.get("hook_line") or "").strip()
+    new_hook = hook if hook and hook != (script_result.get("hook_line") or "").strip() else script_result.get("hook_line")
+    if new_hook != script_result.get("hook_line"):
+        changed += 1
+    if not changed:
+        return None
+    return {**script_result, "shots": shots, "hook_line": new_hook}
 
 
 def generate_toon_script_continuing_episode(prior_parts_summary: str, idea: str, variants: Optional[list] = None,

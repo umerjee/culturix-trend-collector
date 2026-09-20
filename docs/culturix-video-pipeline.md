@@ -738,3 +738,19 @@ production"), fills them in when writing finishes (`idea`), or marks them `faile
 older than `SCRIPTING_STALE_MINUTES` (15) lost its writer to a restart: it is reported as failed and no longer blocks
 regenerating. It cannot be rendered, reviewed or archived while being written.
 
+### Unsupported claims: how they are removed (2026-09-20)
+A curator clicked "Improve with AI" twice and "1 claim not backed by the source" never cleared. Two causes:
+- Improve regenerated the whole script and kept it only if the OVERALL score rose, so a rewrite that removed the claim
+  but dipped the score was discarded, and the model re-invented the same flourish ("a quill pen scratched...").
+- The fact-checker model is not deterministic: it flagged "The United States declared its independence on July 4, 1776"
+  when the source says exactly that, and, once the real problem was fixed, often flagged a second line.
+
+So: `fix_unsupported_claims` rewrites ONLY the hook and the narration lines holding the flagged claims, from the source's
+own facts; `_fix_claims` loops (max `MAX_CLAIM_FIXES`=3), keeping an edit when the flagged claims are gone even if the
+re-check flags a different line (progress, not "no more claims than before"); `_is_better` now prefers FEWER unsupported
+claims over a higher score; Improve runs the claim fixer FIRST; `claim_supported_by_source` dismisses a flagged claim
+only when ONE source sentence holds all its numbers and >=85% of its content words (an invented "quill pen" stays
+flagged; words scattered across sentences do not count). Curators can also edit the hook/narration by hand
+(`POST /admin/world-production/{id}/edit-script`), which re-runs the fact-check and score. Endpoint for the button:
+`POST .../fix-claims`. Only before a video exists.
+

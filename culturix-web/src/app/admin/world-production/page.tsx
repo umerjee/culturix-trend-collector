@@ -5,12 +5,13 @@ import { AlertTriangle, CheckCircle2, EyeOff, Film, Loader2, Play, RefreshCw, Ar
 import { fetchAdminData } from "@/lib/admin/fetchAdmin";
 import WorldScriptReview, { ScoreChip, type Review } from "@/components/admin/WorldScriptReview";
 import WorldVideoPrompt from "@/components/admin/WorldVideoPrompt";
+import WorldNarrationEditor, { FixClaimsButton, type NarrationLine } from "@/components/admin/WorldNarrationEditor";
 
 type Grounding = { grounded: boolean | null; unsupported_claims: string[]; judge_failed: boolean };
 type Draft = {
   id: string; title: string | null; status: string; final_video_url: string | null;
   subject_region: string | null; subject_category: string | null; duration_seconds: number | null; shot_count: number;
-  hook_line: string | null; narration: string[]; grounding: Grounding | null; craft_score: number | null; has_host: boolean;
+  hook_line: string | null; narration: string[]; narration_lines: NarrationLine[]; grounding: Grounding | null; craft_score: number | null; has_host: boolean;
   source_type: string | null; source_url: string | null; render_estimate: { gpu_seconds: number; cost_usd: number } | null;
   generation_error: string | null; publish_recommended: boolean | null; published: boolean; created_at: string | null;
   previous_video_urls: string[]; visual_style: string | null; raw_video_url: string | null; review: Review | null;
@@ -134,7 +135,7 @@ Open "What will be generated" on the card first to see the exact prompts and nar
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
           {draft.grounding?.grounded === true && <span className="inline-flex items-center gap-1 text-green-700"><CheckCircle2 className="h-3.5 w-3.5" /> Fact-checked against source</span>}
-          {draft.grounding?.grounded === false && <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="h-3.5 w-3.5" /> {unsupported} claim{unsupported === 1 ? "" : "s"} not backed by the source</span>}
+          {draft.grounding?.grounded === false && <span className="inline-flex flex-wrap items-center gap-2 text-amber-700"><span className="inline-flex items-center gap-1"><AlertTriangle className="h-3.5 w-3.5" /> {unsupported} claim{unsupported === 1 ? "" : "s"} not backed by the source</span>{(draft.status === "idea" || draft.status === "failed") && !noScript && <FixClaimsButton draftId={draft.id} onChanged={load} onMessage={setMessage} />}</span>}
           {(!draft.grounding || draft.grounding.grounded === null) && <span className="text-gray-400">Fact-check unavailable</span>}
           {draft.review?.era?.label && <span className="text-gray-500">Period: {draft.review.era.label}</span>}
           {draft.source_url && <a href={draft.source_url} target="_blank" rel="noreferrer" className="text-primary-600 hover:underline">Source: {draft.source_type}</a>}
@@ -142,7 +143,9 @@ Open "What will be generated" on the card first to see the exact prompts and nar
           {draft.narration.length > 0 && <button onClick={() => setOpen(open === draft.id ? null : draft.id)} className="text-gray-500 hover:text-gray-800">{open === draft.id ? "Hide narration" : "Read narration"}</button>}
         </div>
         {open === draft.id && <div className="mt-3 rounded-lg bg-gray-50 p-3 text-sm text-gray-700">
-          <ol className="list-decimal space-y-1 pl-5">{draft.narration.map((line, index) => <li key={index}>{line}</li>)}</ol>
+          <WorldNarrationEditor key={`${draft.id}-${(draft.narration_lines || []).map((l) => l.dialogue).join("|")}-${draft.hook_line}`} draftId={draft.id} hook={draft.hook_line}
+            lines={draft.narration_lines || []} claims={draft.grounding?.unsupported_claims || []}
+            editable={draft.status === "idea" || draft.status === "failed"} onChanged={load} onMessage={setMessage} />
           {unsupported > 0 && <div className="mt-3 border-t border-amber-200 pt-2 text-xs text-amber-800"><p className="font-semibold">Not found in the source:</p><ul className="list-disc pl-5">{draft.grounding!.unsupported_claims.map((claim, index) => <li key={index}>{claim}</li>)}</ul></div>}
         </div>}
         {(draft.status === "idea" || draft.status === "failed") && <>

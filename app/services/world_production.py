@@ -153,6 +153,8 @@ def _world_brand(db):
 
 
 MAX_VISUAL_REWRITES = 2
+MAX_CLAIM_FIXES = 3
+MAX_LINE_WORDS = 22
 SCRIPTING = "scripting"
 SCRIPTING_STALE_MINUTES = 15   # writing takes 1-3 minutes; a longer one was killed by a restart
 
@@ -288,6 +290,8 @@ def _compose_script(db, item, *, duration_seconds: int, beat_count: int, host, s
 
     grounding = judge_world_grounding(result, facts)
     if grounding["unsupported_claims"]:
+        result, grounding = _fix_claims(result, grounding, facts)   # narrow edits of the named lines first
+    if grounding["unsupported_claims"]:
         logger.info("World draft %r had %d unsupported claim(s); revising once", item.title,
                     len(grounding["unsupported_claims"]))
         revised = _write(avoid=grounding["unsupported_claims"], fixes=_problems(result.get("shots")) or None)
@@ -302,12 +306,51 @@ def _compose_script(db, item, *, duration_seconds: int, beat_count: int, host, s
     return {"result": result, "grounding": grounding, "visual_warnings": visual_warnings, "review": review, "era": era}
 
 
+def _norm_claims(claims) -> set:
+    return {" ".join(str(c).lower().split()) for c in claims or []}
+
+
+def _fix_claims(result: dict, grounding: dict, facts: str) -> tuple:
+    """Fix unsupported claims with narrow edits of the lines that hold them, re-checking after each attempt, up to
+    MAX_CLAIM_FIXES times. Returns (script, grounding) as of the last accepted edit.
+
+    An edit is accepted when the claims it was asked to remove are gone, even if the re-check then flags a
+    DIFFERENT line: the fact-checker is not deterministic and often finds a second unsupported line only once the
+    first is fixed, so "no more claims than before" threw away good fixes. The next attempt handles the new one."""
+    from app.services.culturetoon_script import fix_unsupported_claims, judge_world_grounding
+
+    current, current_grounding = result, grounding
+    for attempt in range(MAX_CLAIM_FIXES):
+        if not current_grounding["unsupported_claims"]:
+            break
+        fixed = fix_unsupported_claims(current, current_grounding["unsupported_claims"], facts)
+        if not fixed:
+            break
+        fixed_grounding = judge_world_grounding(fixed, facts)
+        if fixed_grounding.get("grounded") is None:
+            break
+        asked = _norm_claims(current_grounding["unsupported_claims"])
+        left = _norm_claims(fixed_grounding["unsupported_claims"])
+        fewer = len(fixed_grounding["unsupported_claims"]) < len(current_grounding["unsupported_claims"])
+        if not (fewer or not (asked & left)):
+            break                                   # the flagged claims are all still there: this edit did nothing useful
+        logger.info("Claim fix %d/%d: %d -> %d unsupported claim(s)", attempt + 1, MAX_CLAIM_FIXES,
+                    len(current_grounding["unsupported_claims"]), len(fixed_grounding["unsupported_claims"]))
+        current, current_grounding = fixed, fixed_grounding
+    return current, current_grounding
+
+
 def _is_better(new: dict, old: dict) -> bool:
-    """A revision replaces a draft only if it scores higher without adding unsupported claims."""
+    """A revision replaces a draft if it has FEWER unsupported claims (a claim the source does not back must
+    go, even if the rewrite scores a little lower), and otherwise only if it scores higher without adding any."""
     new_score, old_score = new["review"]["score"], old["review"]["score"]
-    if new_score is None:
+    new_claims = len(new["grounding"]["unsupported_claims"])
+    old_claims = len(old["grounding"]["unsupported_claims"])
+    if new_claims > old_claims:
         return False
-    if len(new["grounding"]["unsupported_claims"]) > len(old["grounding"]["unsupported_claims"]):
+    if new_claims < old_claims:
+        return True
+    if new_score is None:
         return False
     return old_score is None or new_score > old_score
 
@@ -551,6 +594,86 @@ def review_world_draft(db, toon) -> dict:
     return review
 
 
+def _save_script_text(db, script, result: dict, grounding: dict, facts: str, title: str) -> dict:
+    """Write revised hook/narration into the stored script, re-score it, and save the new grounding, keeping
+    everything else in the judgment (era, references, ...). Returns the new review."""
+    from app.services.world_review import review_world_script
+
+    judgment = script.comedy_judgment if isinstance(script.comedy_judgment, dict) else {}
+    script.hook_line = result.get("hook_line")
+    script.shots = result.get("shots")
+    review = review_world_script({"hook_line": script.hook_line, "shots": script.shots}, title,
+                                 script.total_duration_seconds, facts, grounding, judgment.get("era"))
+    new_judgment = dict(judgment)
+    new_judgment.update(review)
+    new_judgment["grounding"] = grounding
+    script.comedy_judgment = new_judgment
+    db.commit()
+    return review
+
+
+def fix_world_claims(db, toon) -> dict:
+    """Remove the claims the source does not support from a draft's script: re-check it, rewrite only the lines
+    that hold them, re-check, repeat. Returns {before, remaining: [claims], fixed, message}."""
+    from app.services.culturetoon_script import judge_world_grounding
+
+    script, item = _editable_draft(db, toon)
+    facts = build_source_facts(item)
+    current = {"hook_line": script.hook_line, "shots": script.shots}
+    grounding = judge_world_grounding(current, facts)          # fresh: the stored one may be stale
+    before = len(grounding["unsupported_claims"])
+    if grounding.get("grounded") is None:
+        return {"before": None, "remaining": [], "fixed": False,
+                "message": "The fact-check is unavailable right now. Try again in a moment."}
+    if not before:
+        _save_script_text(db, script, current, grounding, facts, item.title)
+        return {"before": 0, "remaining": [], "fixed": True, "message": "Every claim in this script is backed by the source."}
+    result, new_grounding = _fix_claims(current, grounding, facts)
+    remaining = new_grounding["unsupported_claims"]
+    changed = result is not current
+    if changed:
+        _save_script_text(db, script, result, new_grounding, facts, item.title)
+    if not remaining:
+        message = "Fixed: every claim is now backed by the source."
+    elif changed:
+        message = (f"Fixed the flagged claim(s), but the re-check found {len(remaining)} more. "
+                   "Run it again, or edit the line yourself in the narration panel.")
+    else:
+        message = "The AI could not fix it. Edit the line yourself in the narration panel; the fact-check re-runs when you save."
+    return {"before": before, "remaining": remaining, "fixed": not remaining, "message": message}
+
+
+def edit_world_script(db, toon, hook_line: Optional[str], lines: list) -> dict:
+    """Apply a curator's own edits to the hook and narration lines, then re-run the fact-check and the score.
+    lines: [{shot_number, dialogue}]. Returns {unsupported_claims, score, message}."""
+    from app.services.culturetoon_script import judge_world_grounding
+
+    script, item = _editable_draft(db, toon)
+    shots = [dict(s) for s in script.shots or []]
+    by_number = {s.get("shot_number"): s for s in shots}
+    for entry in lines or []:
+        text = str(entry.get("dialogue") or "").strip()
+        shot = by_number.get(entry.get("shot_number"))
+        if shot is None:
+            raise WorldDraftError(f"There is no shot {entry.get('shot_number')} in this script")
+        if not text:
+            raise WorldDraftError(f"Shot {entry.get('shot_number')}'s narration cannot be empty")
+        if len(text.split()) > MAX_LINE_WORDS:
+            raise WorldDraftError(f"Shot {entry.get('shot_number')}'s line is {len(text.split())} words; keep it to "
+                                  f"{MAX_LINE_WORDS} or fewer so the shot stays near 8 seconds")
+        shot["dialogue"] = text
+    new_hook = (hook_line or "").strip() or script.hook_line
+    facts = build_source_facts(item)
+    result = {"hook_line": new_hook, "shots": shots}
+    grounding = judge_world_grounding(result, facts)
+    review = _save_script_text(db, script, result, grounding, facts, item.title)
+    claims = grounding["unsupported_claims"]
+    return {"unsupported_claims": claims, "score": review["score"],
+            "message": "Saved. Every claim is backed by the source." if not claims and grounding.get("grounded") is not None
+            else (f"Saved, but {len(claims)} claim(s) are still not backed by the source." if claims
+                  else "Saved. The fact-check was unavailable, so it was not re-checked.")}
+
+
 def improve_world_draft(db, toon, note: Optional[str] = None) -> dict:
     """Revise a draft's script with the reviewer's suggestions (and an optional note from the curator),
     then re-check and re-score it. Replaces the stored script only if the revision scores higher without
@@ -562,6 +685,13 @@ def improve_world_draft(db, toon, note: Optional[str] = None) -> dict:
 
     script, item = _editable_draft(db, toon)
     ensure_script_era(db, toon, script)
+    # A claim the source does not back comes out first, by its own narrow path, so a rewrite that removes it can
+    # never be thrown away for scoring a few points lower.
+    claim_note = ""
+    if ((script.comedy_judgment or {}).get("grounding") or {}).get("unsupported_claims"):
+        fixed = fix_world_claims(db, toon)
+        db.refresh(script)
+        claim_note = f" {fixed['message']}" if fixed.get("before") else ""
     judgment = script.comedy_judgment or {}
     if not judgment.get("suggestions") and not (note or "").strip():
         review_world_draft(db, toon)
@@ -569,7 +699,8 @@ def improve_world_draft(db, toon, note: Optional[str] = None) -> dict:
     notes = improvement_notes(judgment, note)
     if not notes:
         return {"improved": False, "score_before": judgment.get("score"), "score_after": judgment.get("score"),
-                "message": "The reviewer has no suggestions for this script. Add a note to ask for a specific change."}
+                "message": ("The reviewer has no other suggestions for this script. Add a note to ask for a specific change."
+                            + claim_note)}
 
     scenes = _scenes_for_script(db, script)
     plan = judgment.get("duration_plan") or {}
@@ -594,7 +725,7 @@ def improve_world_draft(db, toon, note: Optional[str] = None) -> dict:
     better = _compose_script(db, item, improvements=notes, previous=current, **common)
     if not _is_better(better, old):
         return {"improved": False, "score_before": judgment.get("score"), "score_after": better["review"]["score"],
-                "message": "The rewrite did not score higher, so the current script was kept."}
+                "message": "The rewrite did not score higher, so the current script was kept." + claim_note}
 
     result = better["result"]
     _tag_scene_indexes(result["shots"], scenes)
@@ -606,7 +737,7 @@ def improve_world_draft(db, toon, note: Optional[str] = None) -> dict:
     script.comedy_judgment = new_judgment
     db.commit()
     return {"improved": True, "score_before": judgment.get("score"), "score_after": better["review"]["score"],
-            "message": "Script improved."}
+            "message": "Script improved." + claim_note}
 
 
 def preview_world_render(db, toon) -> dict:

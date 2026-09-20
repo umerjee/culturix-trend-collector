@@ -39,6 +39,7 @@ def llm(mocker):
                                return_value={"grounded": True, "unsupported_claims": [], "judge_failed": False}),
         review=mocker.patch("app.services.world_review.review_world_script", return_value=_review()),
         era=mocker.patch("app.services.world_era.determine_world_era", return_value=None),
+        claimfix=mocker.patch(base + "fix_unsupported_claims", return_value=None),
         host=mocker.patch(base + "select_thematic_host"),
     )
 
@@ -573,7 +574,7 @@ class TestImproveAndPreview:
     def test_improve_with_nothing_to_apply_says_so_instead_of_rewriting(self, db, llm):
         toon, _ = self._draft(db, judgment={**_review(90, True, []), "grounding": {"grounded": True, "unsupported_claims": []}})
         outcome = wp.improve_world_draft(db, toon)
-        assert outcome["improved"] is False and "no suggestions" in outcome["message"]
+        assert outcome["improved"] is False and "no other suggestions" in outcome["message"]
         llm.write.assert_not_called()
 
     def test_improve_keeps_one_shot_per_scene_and_each_shots_photo(self, db, llm):
@@ -1007,3 +1008,346 @@ class TestBoundedVisualRewrites:
         result = wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
         assert "map of the Mediterranean" in result["shots"][0]["subject_visual"]     # kept the better of the two
         assert llm.write.call_count == 2
+
+
+US_SOURCE = ("The United States declared its independence from Great Britain on July 4, 1776, with the signing of the "
+             "Declaration of Independence. The Treaty of Paris in 1783 formally recognized the sovereignty of the new "
+             "nation, and the U.S. Constitution was signed in 1787, establishing the first modern U.S. government.")
+
+
+class TestClaimSupportFilter:
+    """The fact-checker model flagged a sentence the source states verbatim, so a curator could fix the real
+    problem and still never clear the warning."""
+
+    @pytest.mark.parametrize("claim", [
+        "The United States declared its independence on July 4, 1776.",
+        "In 1787, the U.S. Constitution was signed, establishing the first modern U.S. government.",
+        "The Treaty of Paris in 1783 recognized the sovereignty of the new nation.",
+    ])
+    def test_a_sentence_the_source_states_is_supported(self, claim):
+        from app.services.culturetoon_script import claim_supported_by_source
+        assert claim_supported_by_source(claim, US_SOURCE) is True
+
+    @pytest.mark.parametrize("claim", [
+        "A quill pen scratches, declaring independence on July 4, 1776.",          # invented detail
+        "The Treaty of Paris in 1784 recognized the new nation.",                  # wrong year
+        "These thirteen colonies, stretching from New Hampshire to Georgia, were the foundation of the new nation.",
+        "The delegates worked tirelessly to create a new government.",
+        "",
+    ])
+    def test_invented_or_altered_claims_stay_flagged(self, claim):
+        from app.services.culturetoon_script import claim_supported_by_source
+        assert claim_supported_by_source(claim, US_SOURCE) is False
+
+    def test_words_spread_over_different_sentences_do_not_count(self):
+        from app.services.culturetoon_script import claim_supported_by_source
+        # every word appears somewhere in the source, but no single sentence says it
+        assert claim_supported_by_source("The Constitution recognized the Declaration of Independence in 1783.", US_SOURCE) is False
+
+    def test_the_judge_drops_only_the_flagged_claims_a_source_sentence_states(self, mocker):
+        from app.services.culturetoon_script import judge_world_grounding
+        mocker.patch("app.services.culturetoon_script._call_llm_json", return_value={"unsupported_claims": [
+            "The United States declared its independence on July 4, 1776.", "A quill pen scratches on July 4, 1776."]})
+        result = judge_world_grounding({"hook_line": "H", "shots": []}, US_SOURCE)
+        assert result["unsupported_claims"] == ["A quill pen scratches on July 4, 1776."]
+        assert result["dismissed"] == ["The United States declared its independence on July 4, 1776."]
+        assert result["grounded"] is False
+
+    def test_when_every_flagged_claim_is_stated_by_the_source_the_script_is_grounded(self, mocker):
+        from app.services.culturetoon_script import judge_world_grounding
+        mocker.patch("app.services.culturetoon_script._call_llm_json", return_value={
+            "unsupported_claims": ["The United States declared its independence on July 4, 1776."]})
+        result = judge_world_grounding({"hook_line": "H", "shots": []}, US_SOURCE)
+        assert result["grounded"] is True and result["unsupported_claims"] == []
+
+
+class TestFixUnsupportedClaims:
+    SCRIPT = {"hook_line": "A quill pen sealed a nation's fate.", "shots": [
+        {"shot_number": 1, "dialogue": "A quill pen sealed a nation's fate."},
+        {"shot_number": 2, "dialogue": "In 1787, the Constitution was signed."}]}
+
+    def _llm(self, mocker, payload=None, error=None):
+        return mocker.patch("app.services.culturetoon_script._call_llm_json", return_value=payload, side_effect=error)
+
+    def test_only_the_named_lines_and_the_hook_change(self, mocker):
+        from app.services.culturetoon_script import fix_unsupported_claims
+        self._llm(mocker, {"hook_line": "The United States declared independence on July 4, 1776.",
+                           "lines": [{"shot_number": 1, "dialogue": "The United States declared independence on July 4, 1776."}]})
+        fixed = fix_unsupported_claims(self.SCRIPT, ["A quill pen sealed a nation's fate."], US_SOURCE)
+        assert fixed["hook_line"].startswith("The United States declared")
+        assert fixed["shots"][0]["dialogue"].startswith("The United States declared")
+        assert fixed["shots"][1]["dialogue"] == "In 1787, the Constitution was signed."      # untouched
+        assert self.SCRIPT["shots"][0]["dialogue"].startswith("A quill pen")                  # the input is not mutated
+
+    def test_the_prompt_carries_the_source_the_claim_and_the_lines(self, mocker):
+        from app.services.culturetoon_script import fix_unsupported_claims
+        call = self._llm(mocker, {"hook_line": None, "lines": []})
+        fix_unsupported_claims(self.SCRIPT, ["A quill pen sealed a nation's fate."], US_SOURCE)
+        prompt = call.call_args.args[0]
+        assert "Declaration of Independence" in prompt and "- A quill pen sealed a nation's fate." in prompt
+        assert "Shot 2: In 1787, the Constitution was signed." in prompt
+
+    @pytest.mark.parametrize("payload", [
+        {"hook_line": None, "lines": []},
+        {"hook_line": None, "lines": [{"shot_number": 99, "dialogue": "A line for a shot that does not exist."}]},
+        {"hook_line": None, "lines": [{"shot_number": 1, "dialogue": ""}]},
+        {"hook_line": None, "lines": [{"shot_number": 1, "dialogue": " ".join(["word"] * 40)}]},         # too long to speak
+        {"hook_line": None, "lines": [{"shot_number": 1, "dialogue": "A quill pen sealed a nation's fate."}]},   # unchanged
+        {"hook_line": None, "lines": ["junk", 5, None]},
+    ])
+    def test_nothing_usable_is_none(self, mocker, payload):
+        from app.services.culturetoon_script import fix_unsupported_claims
+        self._llm(mocker, payload)
+        assert fix_unsupported_claims(self.SCRIPT, ["x"], US_SOURCE) is None
+
+    def test_a_failed_model_call_is_none(self, mocker):
+        from app.services.culturetoon_script import ToonScriptGenerationError, fix_unsupported_claims
+        self._llm(mocker, error=ToonScriptGenerationError("down"))
+        assert fix_unsupported_claims(self.SCRIPT, ["x"], US_SOURCE) is None
+
+
+def _grounding(*claims, grounded=True):
+    return {"grounded": (not claims) if grounded else None, "unsupported_claims": list(claims), "judge_failed": False}
+
+
+class TestFixClaimsLoop:
+    SCRIPT = {"hook_line": "H", "shots": [{"shot_number": 1, "dialogue": "old"}]}
+
+    @staticmethod
+    def _fixed(text):
+        return {"hook_line": "H", "shots": [{"shot_number": 1, "dialogue": text}]}
+
+    def _run(self, mocker, fixes, checks, grounding=None):
+        fixer = mocker.patch("app.services.culturetoon_script.fix_unsupported_claims", side_effect=fixes)
+        judge = mocker.patch("app.services.culturetoon_script.judge_world_grounding", side_effect=checks)
+        return wp._fix_claims(self.SCRIPT, grounding or _grounding("quill pen"), "facts"), fixer, judge
+
+    def test_a_clean_fix_is_kept(self, mocker):
+        (result, grounding), fixer, _ = self._run(mocker, [self._fixed("plain")], [_grounding()])
+        assert result["shots"][0]["dialogue"] == "plain" and grounding["unsupported_claims"] == [] and fixer.call_count == 1
+
+    def test_a_fix_is_kept_even_when_the_recheck_flags_a_different_line(self, mocker):
+        # The fact-checker often finds a second problem only once the first is fixed. That is progress, not failure.
+        (result, grounding), fixer, _ = self._run(
+            mocker, [self._fixed("plain"), self._fixed("plainer")], [_grounding("thirteen colonies", "second"), _grounding()])
+        assert result["shots"][0]["dialogue"] == "plainer" and fixer.call_count == 2
+        assert fixer.call_args_list[1].args[1] == ["thirteen colonies", "second"]        # the next attempt gets the new claims
+
+    def test_an_edit_that_leaves_the_flagged_claim_in_place_stops_the_loop(self, mocker):
+        (result, grounding), fixer, _ = self._run(mocker, [self._fixed("still quill pen")] * 3, [_grounding("quill pen")] * 3)
+        assert result is self.SCRIPT and fixer.call_count == 1
+
+    def test_it_never_runs_more_than_the_cap(self, mocker):
+        checks = [_grounding(f"claim {i}") for i in range(1, 10)]
+        (_, _), fixer, _ = self._run(mocker, [self._fixed(f"v{i}") for i in range(10)], checks)
+        assert fixer.call_count == wp.MAX_CLAIM_FIXES
+
+    def test_no_change_from_the_fixer_stops_it(self, mocker):
+        (result, _), fixer, judge = self._run(mocker, [None], [])
+        assert result is self.SCRIPT and fixer.call_count == 1 and judge.call_count == 0
+
+    def test_an_unavailable_fact_check_stops_it_and_keeps_the_original(self, mocker):
+        (result, _), _, _ = self._run(mocker, [self._fixed("x")], [_grounding(grounded=False)])
+        assert result is self.SCRIPT
+
+    def test_nothing_flagged_means_no_work(self, mocker):
+        (result, _), fixer, _ = self._run(mocker, [], [], grounding=_grounding())
+        assert result is self.SCRIPT and fixer.call_count == 0
+
+
+class TestIsBetterPrefersFewerClaims:
+    @staticmethod
+    def _c(score, *claims):
+        return {"review": {"score": score}, "grounding": {"unsupported_claims": list(claims)}}
+
+    def test_fewer_claims_wins_even_with_a_lower_score(self):
+        assert wp._is_better(self._c(50), self._c(60, "a claim")) is True
+
+    def test_more_claims_loses_even_with_a_higher_score(self):
+        assert wp._is_better(self._c(90, "a", "b"), self._c(60, "a")) is False
+
+    def test_equal_claims_falls_back_to_the_score(self):
+        assert wp._is_better(self._c(70, "a"), self._c(60, "a")) is True
+        assert wp._is_better(self._c(50, "a"), self._c(60, "a")) is False
+
+
+class TestFixClaimsOnADraft:
+    @pytest.fixture(autouse=True)
+    def _isolate(self, mocker):
+        mocker.patch("app.services.world_era.determine_world_era", return_value=None)
+
+    @pytest.fixture
+    def db(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.db import Base
+        from app.models.curated_item import CuratedItem
+        from app.models.toon import Toon
+        from app.models.toon_background import ToonBackground
+        from app.models.toon_script import ToonScript
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine, tables=[Toon.__table__, ToonScript.__table__, CuratedItem.__table__,
+                                                      ToonBackground.__table__])
+        s = sessionmaker(bind=engine)()
+        yield s
+        s.close()
+
+    @staticmethod
+    def _draft(db, status="idea", claims=("A quill pen scratches.",)):
+        from app.models.curated_item import CuratedItem
+        from app.models.toon import Toon
+        from app.models.toon_script import ToonScript
+        item = CuratedItem(source_type="wikipedia", source_ref="US", title="Establishment of the United States",
+                           summary=US_SOURCE, raw_text="", category="history", region=None)
+        db.add(item)
+        db.commit()
+        shots = [{"shot_number": 1, "duration_seconds": 8, "shot_focus": "subject", "dialogue": "A quill pen scratches."},
+                 {"shot_number": 2, "duration_seconds": 8, "shot_focus": "subject", "dialogue": "In 1787, the Constitution was signed."}]
+        judgment = {"score": 57, "grounding": {"grounded": not claims, "unsupported_claims": list(claims)}, "era": None}
+        script = ToonScript(brand_id=uuid.uuid4(), hook_line="A quill pen scratches.", shots=shots, total_duration_seconds=16,
+                            generation_source="ai", status="approved", is_world_content=True, comedy_judgment=judgment)
+        db.add(script)
+        db.commit()
+        toon = Toon(brand_id=script.brand_id, script_id=script.id, title="Establishment of the United States", status=status,
+                    is_world_content=True, curated_item_id=item.id)
+        db.add(toon)
+        db.commit()
+        return toon, script
+
+    def test_the_fix_is_saved_rescored_and_the_warning_clears(self, db, llm, mocker):
+        toon, script = self._draft(db)
+        llm.grounding.side_effect = [_grounding("A quill pen scratches."), _grounding()]       # fresh check, then re-check
+        fixer = mocker.patch("app.services.culturetoon_script.fix_unsupported_claims", return_value={
+            "hook_line": "The United States declared independence.", "shots": [
+                {"shot_number": 1, "duration_seconds": 8, "shot_focus": "subject", "dialogue": "The United States declared independence."},
+                {"shot_number": 2, "duration_seconds": 8, "shot_focus": "subject", "dialogue": "In 1787, the Constitution was signed."}]})
+        llm.review.return_value = _review(72, False)
+        out = wp.fix_world_claims(db, toon)
+        assert out == {"before": 1, "remaining": [], "fixed": True, "message": "Fixed: every claim is now backed by the source."}
+        db.refresh(script)
+        assert script.hook_line == "The United States declared independence." and script.shots[0]["dialogue"].startswith("The United States")
+        assert script.comedy_judgment["grounding"]["unsupported_claims"] == [] and script.comedy_judgment["score"] == 72
+        assert fixer.call_args.args[1] == ["A quill pen scratches."]
+
+    def test_a_script_with_no_claims_says_so_and_is_not_rewritten(self, db, llm, mocker):
+        toon, script = self._draft(db, claims=())
+        llm.grounding.return_value = _grounding()
+        fixer = mocker.patch("app.services.culturetoon_script.fix_unsupported_claims")
+        out = wp.fix_world_claims(db, toon)
+        assert out["before"] == 0 and out["fixed"] is True and "backed by the source" in out["message"]
+        fixer.assert_not_called()
+
+    def test_when_the_model_cannot_fix_it_the_curator_is_told_to_edit_by_hand(self, db, llm, mocker):
+        toon, script = self._draft(db)
+        llm.grounding.return_value = _grounding("A quill pen scratches.")
+        mocker.patch("app.services.culturetoon_script.fix_unsupported_claims", return_value=None)
+        out = wp.fix_world_claims(db, toon)
+        assert out["fixed"] is False and out["remaining"] == ["A quill pen scratches."] and "Edit the line yourself" in out["message"]
+        db.refresh(script)
+        assert script.hook_line == "A quill pen scratches."         # untouched
+
+    def test_an_unavailable_fact_check_is_reported_not_guessed(self, db, llm):
+        toon, _ = self._draft(db)
+        llm.grounding.return_value = _grounding(grounded=False)
+        out = wp.fix_world_claims(db, toon)
+        assert out["fixed"] is False and "unavailable" in out["message"]
+
+    def test_a_rendered_draft_is_refused(self, db, llm):
+        toon, _ = self._draft(db, status="ready")
+        with pytest.raises(wp.WorldDraftError):
+            wp.fix_world_claims(db, toon)
+
+    def test_improve_removes_the_claim_first_and_says_so(self, db, llm, mocker):
+        toon, script = self._draft(db)
+        llm.grounding.side_effect = [_grounding("A quill pen scratches."), _grounding(), _grounding()]
+        mocker.patch("app.services.culturetoon_script.fix_unsupported_claims", return_value={
+            "hook_line": "The United States declared independence.", "shots": [
+                {"shot_number": 1, "duration_seconds": 8, "shot_focus": "subject", "dialogue": "The United States declared independence."},
+                {"shot_number": 2, "duration_seconds": 8, "shot_focus": "subject", "dialogue": "In 1787, the Constitution was signed."}]})
+        llm.review.return_value = _review(80, True, [])            # nothing else to improve
+        out = wp.improve_world_draft(db, toon)
+        assert "Fixed: every claim is now backed by the source." in out["message"]
+        db.refresh(script)
+        assert script.hook_line == "The United States declared independence."
+
+
+class TestEditScript:
+    _draft = staticmethod(TestFixClaimsOnADraft._draft)
+    db = TestFixClaimsOnADraft.db
+    _isolate = TestFixClaimsOnADraft._isolate
+
+    def test_the_curators_line_is_saved_and_rechecked(self, db, llm):
+        toon, script = self._draft(db)
+        llm.grounding.return_value = _grounding()
+        llm.review.return_value = _review(70, False)
+        out = wp.edit_world_script(db, toon, "The United States declared independence.",
+                                   [{"shot_number": 1, "dialogue": "The United States declared independence on July 4, 1776."}])
+        assert out["unsupported_claims"] == [] and out["score"] == 70 and "Every claim is backed" in out["message"]
+        db.refresh(script)
+        assert script.shots[0]["dialogue"].endswith("July 4, 1776.") and script.hook_line == "The United States declared independence."
+        assert script.shots[1]["dialogue"] == "In 1787, the Constitution was signed."
+        assert script.comedy_judgment["grounding"]["unsupported_claims"] == []
+
+    def test_a_line_that_is_still_unsupported_is_saved_but_reported(self, db, llm):
+        toon, script = self._draft(db)
+        llm.grounding.return_value = _grounding("A quill pen sealed it.")
+        out = wp.edit_world_script(db, toon, None, [{"shot_number": 1, "dialogue": "A quill pen sealed it."}])
+        assert out["unsupported_claims"] == ["A quill pen sealed it."] and "still not backed" in out["message"]
+
+    def test_an_empty_hook_keeps_the_current_one(self, db, llm):
+        toon, script = self._draft(db)
+        llm.grounding.return_value = _grounding()
+        wp.edit_world_script(db, toon, "  ", [])
+        db.refresh(script)
+        assert script.hook_line == "A quill pen scratches."
+
+    @pytest.mark.parametrize("lines,match", [
+        ([{"shot_number": 9, "dialogue": "x"}], "no shot 9"),
+        ([{"shot_number": 1, "dialogue": "   "}], "cannot be empty"),
+        ([{"shot_number": 1, "dialogue": " ".join(["word"] * 30)}], "30 words"),
+    ])
+    def test_bad_edits_are_refused_before_anything_is_saved(self, db, llm, lines, match):
+        toon, script = self._draft(db)
+        with pytest.raises(wp.WorldDraftError, match=match):
+            wp.edit_world_script(db, toon, None, lines)
+        db.refresh(script)
+        assert script.shots[0]["dialogue"] == "A quill pen scratches."
+        llm.grounding.assert_not_called()
+
+    def test_endpoints_map_errors_to_409(self, db, llm, mocker):
+        from fastapi import HTTPException
+        import app.main as main
+        mocker.patch("app.db.SessionLocal", return_value=db)
+        real = main._world_toon_or_404
+        mocker.patch.object(main, "_world_toon_or_404", lambda s, tid: real(s, uuid.UUID(tid)))
+        toon, _ = self._draft(db, status="ready")
+        tid = str(toon.id)
+        for call in (lambda: main.fix_world_production_claims(tid),
+                     lambda: main.edit_world_production_script(tid, {"lines": []})):
+            with pytest.raises(HTTPException) as err:
+                call()
+            assert err.value.status_code == 409
+
+
+class TestNarrationLinesInTheList:
+    def test_each_line_carries_its_shot_number_so_it_can_be_edited(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.db import Base
+        from app.main import _world_production_rows
+        from app.models.curated_item import CuratedItem
+        from app.models.toon import Toon
+        from app.models.toon_script import ToonScript
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine, tables=[Toon.__table__, ToonScript.__table__, CuratedItem.__table__])
+        db = sessionmaker(bind=engine)()
+        script = ToonScript(brand_id=uuid.uuid4(), hook_line="H", total_duration_seconds=16, generation_source="ai", status="approved",
+                            is_world_content=True, shots=[{"shot_number": 1, "dialogue": "One."}, {"shot_number": 2, "dialogue": None},
+                                                          {"shot_number": 3, "dialogue": "Three."}])
+        db.add(script)
+        db.commit()
+        db.add(Toon(brand_id=script.brand_id, script_id=script.id, title="T", status="idea", is_world_content=True))
+        db.commit()
+        (row,) = _world_production_rows(db, archived=False, limit=5)
+        assert row["narration_lines"] == [{"shot_number": 1, "dialogue": "One."}, {"shot_number": 3, "dialogue": "Three."}]
+        assert row["narration"] == ["One.", "Three."]
