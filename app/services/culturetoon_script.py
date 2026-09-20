@@ -2026,6 +2026,18 @@ def claim_supported_by_source(claim: str, source_facts: str) -> bool:
     return False
 
 
+def _narration_for_fact_check(script_result: dict) -> str:
+    """The headline and the spoken lines only. The generic script formatter also prints each shot's picture
+    description, and the fact-checker then flagged pictorial detail ("sealed with a wax seal") that no viewer
+    hears and that the claim fixer, which edits narration, could never remove."""
+    lines = [f"Headline: {script_result.get('hook_line') or ''}"]
+    for shot in script_result.get("shots") or []:
+        text = (shot.get("dialogue") or "").strip()
+        if text:
+            lines.append(f"Shot {shot.get('shot_number')}: {text}")
+    return "\n".join(lines)
+
+
 def judge_world_grounding(script_result: dict, source_facts: str) -> dict:
     """Fact-checks a World script against its verified source material via a
     SEPARATE LLM call (a fresh critic, same posture as judge_script_comedy).
@@ -2037,12 +2049,13 @@ def judge_world_grounding(script_result: dict, source_facts: str) -> dict:
 VERIFIED SOURCE MATERIAL:
 {source_facts.strip()[:5000]}
 
-SCRIPT:
-{_format_script_for_prompt(script_result)}
+WHAT THE VIEWER WILL HEAR AND READ:
+{_narration_for_fact_check(script_result)}
 
-List every specific factual claim in the script (dates, numbers, names, causes, superlatives) that is
-NOT supported by the source material above. General framing and transitions are fine; only flag concrete
-claims the source does not back up.
+List every specific factual claim in the headline and narration above (dates, numbers, names, causes,
+superlatives) that is NOT supported by the source material. General framing and transitions are fine; only
+flag concrete claims the source does not back up. Quote each claim exactly as it appears above. The pictures
+that accompany the narration are illustrations and are checked separately: do not judge them.
 
 Return ONLY valid JSON: {{"unsupported_claims": [string], "grounded": boolean (true only if the list is empty)}}"""
     try:

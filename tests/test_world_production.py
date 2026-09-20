@@ -1351,3 +1351,17 @@ class TestNarrationLinesInTheList:
         (row,) = _world_production_rows(db, archived=False, limit=5)
         assert row["narration_lines"] == [{"shot_number": 1, "dialogue": "One."}, {"shot_number": 3, "dialogue": "Three."}]
         assert row["narration"] == ["One.", "Three."]
+
+
+class TestFactCheckScope:
+    def test_the_fact_checker_sees_the_headline_and_narration_but_not_the_pictures(self, mocker):
+        from app.services.culturetoon_script import judge_world_grounding
+        call = mocker.patch("app.services.culturetoon_script._call_llm_json", return_value={"unsupported_claims": []})
+        judge_world_grounding({"hook_line": "The US declared independence.", "shots": [
+            {"shot_number": 1, "dialogue": "In 1787 the Constitution was signed.", "subject_visual": "A delegate seals it with a wax seal",
+             "visual": "wax seal", "action": "seals the document"},
+            {"shot_number": 2, "dialogue": None, "subject_visual": "quill pen"}]}, "source")
+        prompt = call.call_args.args[0]
+        assert "Headline: The US declared independence." in prompt and "Shot 1: In 1787 the Constitution was signed." in prompt
+        assert "wax seal" not in prompt and "quill pen" not in prompt and "seals the document" not in prompt
+        assert "checked separately" in prompt
