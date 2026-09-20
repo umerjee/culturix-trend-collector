@@ -9,6 +9,7 @@ export type Review = {
   score: number | null; passes_bar: boolean | null; feedback: string | null; judge_failed: boolean;
   dimensions: Record<string, ReviewDimension>; suggestions: ReviewSuggestion[];
   auto_improved?: boolean; first_score?: number | null;
+  anachronisms?: string[]; era?: { label: string; start_year: number; end_year: number } | null;
 };
 
 const DIMENSION_LABEL: Record<string, string> = {
@@ -65,6 +66,9 @@ export default function WorldScriptReview({ draftId, review, editable, onChanged
         {editable && <button disabled={busy !== null} onClick={() => call("review")} className="mt-3 inline-flex min-h-10 items-center gap-1.5 rounded-md bg-primary-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">{busy === "score" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />} Score this script</button>}
       </div> : <div className="space-y-4">
         {review.judge_failed && <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">The AI reviewer was unavailable, so only the measured parts are shown. Try again in a moment.</p>}
+        {review.era?.label && <p className="text-xs text-gray-500">Set in <span className="font-medium text-gray-700">{review.era.label}</span>. Only things from that period may appear.</p>}
+        {!review.era && <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">No period was set for this video, so nothing checks it for out-of-period objects. Score it again to set one.</p>}
+        {review.anachronisms && review.anachronisms.length > 0 && <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">Not from this period: {review.anachronisms.join(", ")}. Use Improve with AI to remove {review.anachronisms.length === 1 ? "it" : "them"}.</p>}
         {review.feedback && <p className="text-gray-700">{review.feedback}</p>}
         <ul className="space-y-2.5">{dimensions.map(([key, d]) => <li key={key}>
           <div className="flex items-baseline justify-between gap-3 text-xs"><span className="font-medium text-gray-700">{DIMENSION_LABEL[key] || key}</span><span className={`tabular-nums font-semibold ${tone(d.score).text}`}>{d.score ?? "n/a"}</span></div>

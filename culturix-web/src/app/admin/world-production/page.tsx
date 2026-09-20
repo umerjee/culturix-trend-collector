@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, EyeOff, Film, Play, RefreshCw, Archive, Upload } from "lucide-react";
+import { AlertTriangle, CheckCircle2, EyeOff, Film, Loader2, Play, RefreshCw, Archive, Upload } from "lucide-react";
 import { fetchAdminData } from "@/lib/admin/fetchAdmin";
 import WorldScriptReview, { ScoreChip, type Review } from "@/components/admin/WorldScriptReview";
 import WorldVideoPrompt from "@/components/admin/WorldVideoPrompt";
@@ -16,7 +16,7 @@ type Draft = {
   previous_video_urls: string[]; visual_style: string | null; raw_video_url: string | null; review: Review | null;
 };
 
-const STATUS_LABEL: Record<string, string> = { idea: "Script ready", animating: "Rendering", ready: "Rendered", failed: "Render failed", posted: "Posted" };
+const STATUS_LABEL: Record<string, string> = { scripting: "Under production", idea: "Script ready", animating: "Rendering", ready: "Rendered", failed: "Render failed", posted: "Posted" };
 
 const STYLE_LABEL: Record<string, string> = { illustrated_history: "Illustrated", graphic_novel: "Graphic novel" };
 
@@ -71,13 +71,13 @@ export default function WorldProductionPage() {
   useEffect(() => { load(); }, []);
   const versions = versionLabels([...drafts, ...archived]);
   useEffect(() => {
-    if (!drafts.some((draft) => draft.status === "animating")) return;
-    const timer = setInterval(load, 20000);
+    if (!drafts.some((draft) => draft.status === "animating" || draft.status === "scripting")) return;
+    const timer = setInterval(load, drafts.some((draft) => draft.status === "scripting") ? 6000 : 20000);
     return () => clearInterval(timer);
   }, [drafts]);
 
   async function generateVideo(draft: Draft) {
-    const cost = draft.render_estimate ? ` (about $${draft.render_estimate.cost_usd.toFixed(2)} of GPU time)` : "";
+    const cost = draft.render_estimate ? ` (about $${draft.render_estimate.cost_usd.toFixed(2)} of GPU time, more if a worker has to cold-start or a segment is retried)` : "";
     if (!window.confirm(`Render "${draft.title}" as a ${draft.duration_seconds}s video${cost}? This starts a paid GPU job.
 
 Open "What will be generated" on the card first to see the exact prompts and narration.`)) return;
@@ -116,6 +116,13 @@ Open "What will be generated" on the card first to see the exact prompts and nar
     {message && <p className="mb-5 rounded-lg bg-green-50 px-4 py-3 text-sm text-green-700">{message}</p>}
     {loading && drafts.length === 0 ? <p className="text-sm text-gray-400">Loading World drafts...</p> : drafts.length === 0 ? <p className="rounded-xl border border-dashed border-gray-200 p-8 text-sm text-gray-400">No World drafts yet. Select a subject in the Subject Library first.</p> : <div className="space-y-3">{drafts.map((draft) => {
       const unsupported = draft.grounding?.unsupported_claims?.length ?? 0;
+      if (draft.status === "scripting") return <article key={draft.id} aria-busy="true" className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-4 sm:p-5">
+        <div className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase text-gray-400"><span>{draft.subject_region || "global"}</span><span>{draft.subject_category || "subject"}</span><span className="inline-flex items-center gap-1 text-amber-600"><Loader2 className="h-3 w-3 animate-spin" /> Under production</span></div>
+        <h2 className="mt-1 text-lg font-semibold text-gray-500">{draft.title || "Untitled World subject"}</h2>
+        <p className="mt-1 text-sm text-gray-500">Writing the script and checking every claim against its source. This takes a minute or two, and this card fills in by itself when it is done.</p>
+        <div className="mt-4 space-y-2" aria-hidden="true"><div className="h-3 w-3/4 animate-pulse rounded bg-gray-200" /><div className="h-3 w-5/6 animate-pulse rounded bg-gray-200" /><div className="h-3 w-2/3 animate-pulse rounded bg-gray-200" /></div>
+      </article>;
+      const noScript = draft.shot_count === 0;
       return <article key={draft.id} className="rounded-xl border border-gray-100 bg-white p-4 sm:p-5 shadow-sm">
         <div className="flex flex-wrap sm:flex-nowrap items-start justify-between gap-2 sm:gap-4">
           <div className="min-w-0">
@@ -129,6 +136,7 @@ Open "What will be generated" on the card first to see the exact prompts and nar
           {draft.grounding?.grounded === true && <span className="inline-flex items-center gap-1 text-green-700"><CheckCircle2 className="h-3.5 w-3.5" /> Fact-checked against source</span>}
           {draft.grounding?.grounded === false && <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle className="h-3.5 w-3.5" /> {unsupported} claim{unsupported === 1 ? "" : "s"} not backed by the source</span>}
           {(!draft.grounding || draft.grounding.grounded === null) && <span className="text-gray-400">Fact-check unavailable</span>}
+          {draft.review?.era?.label && <span className="text-gray-500">Period: {draft.review.era.label}</span>}
           {draft.source_url && <a href={draft.source_url} target="_blank" rel="noreferrer" className="text-primary-600 hover:underline">Source: {draft.source_type}</a>}
           {draft.status !== "animating" && <ScoreChip review={draft.review} />}
           {draft.narration.length > 0 && <button onClick={() => setOpen(open === draft.id ? null : draft.id)} className="text-gray-500 hover:text-gray-800">{open === draft.id ? "Hide narration" : "Read narration"}</button>}
@@ -142,13 +150,13 @@ Open "What will be generated" on the card first to see the exact prompts and nar
           <WorldVideoPrompt draftId={draft.id} />
         </>}
         {(draft.status === "ready" || draft.status === "posted") && draft.review && <WorldScriptReview draftId={draft.id} review={draft.review} editable={false} onChanged={load} onMessage={setMessage} />}
-        {draft.generation_error && draft.status === "failed" && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{draft.generation_error}</p>}
+        {draft.generation_error && draft.status === "failed" && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{draft.generation_error}{noScript && " Archive this draft, then generate the subject again from the Subject Library."}</p>}
         <div className="mt-4 flex flex-wrap items-center gap-2">
           {(draft.final_video_url || (draft.previous_video_urls || []).length > 0) && <TakeLinks draft={draft} />}
           {draft.status === "ready" && !draft.published && <button onClick={() => publish(draft)} className="inline-flex min-h-10 items-center gap-1 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white"><Upload className="h-3.5 w-3.5" /> Publish</button>}
           {draft.status === "ready" && draft.published && <button onClick={() => unpublish(draft)} className="inline-flex min-h-10 items-center gap-1 rounded-md border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700"><EyeOff className="h-3.5 w-3.5" /> Unpublish</button>}
           {draft.status === "ready" && !draft.published && draft.publish_recommended === false && <span className="text-xs text-amber-700">Automatic QA did not recommend publishing this render.</span>}
-          {!draft.final_video_url && <button disabled={draft.status === "animating"} onClick={() => generateVideo(draft)} className="inline-flex min-h-10 items-center gap-1 rounded-md bg-primary-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"><Play className="h-3.5 w-3.5" /> {draft.status === "failed" ? "Retry render" : "Generate video"}</button>}
+          {!draft.final_video_url && !noScript && <button disabled={draft.status === "animating"} onClick={() => generateVideo(draft)} className="inline-flex min-h-10 items-center gap-1 rounded-md bg-primary-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"><Play className="h-3.5 w-3.5" /> {draft.status === "failed" ? "Retry render" : "Generate video"}</button>}
           <span className="text-xs text-gray-400">{draft.status === "animating" ? "Rendering in progress" : ""}</span>
           <button disabled={draft.status === "animating"} onClick={() => archive(draft)} className="ml-auto inline-flex min-h-10 items-center gap-1 rounded-md bg-gray-100 px-2.5 py-1.5 text-xs font-semibold text-gray-600 disabled:opacity-50"><Archive className="h-3.5 w-3.5" /> Archive</button>
         </div>

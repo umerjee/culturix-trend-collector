@@ -38,6 +38,7 @@ def llm(mocker):
         grounding=mocker.patch(base + "judge_world_grounding",
                                return_value={"grounded": True, "unsupported_claims": [], "judge_failed": False}),
         review=mocker.patch("app.services.world_review.review_world_script", return_value=_review()),
+        era=mocker.patch("app.services.world_era.determine_world_era", return_value=None),
         host=mocker.patch(base + "select_thematic_host"),
     )
 
@@ -111,9 +112,9 @@ class TestGenerateDraft:
     def test_still_broken_after_the_rewrite_is_forced_to_distant_and_warned(self, llm):
         bad = {"hook_line": "H", "total_duration_seconds": 30, "shots": [
             {"shot_number": 1, "shot_focus": "subject", "subject_visual": "Soldiers advancing", "dialogue": "x"}]}
-        llm.write.side_effect = [bad, bad]
+        llm.write.side_effect = [bad, bad, bad]
         result = wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False)
-        assert llm.write.call_count == 2
+        assert llm.write.call_count == 1 + wp.MAX_VISUAL_REWRITES
         assert result["judgment"]["visual_warnings"] and "set to distant" in result["judgment"]["visual_warnings"][0]
 
     def test_consistent_visuals_are_not_rewritten(self, llm):
@@ -243,7 +244,7 @@ class TestMotionRewrite:
         assert "visual_warnings" not in result["judgment"]
 
     def test_still_after_the_rewrite_is_surfaced_as_a_warning(self, llm):
-        llm.write.side_effect = [self.STILL, self.STILL]
+        llm.write.side_effect = [self.STILL] * (1 + wp.MAX_VISUAL_REWRITES)
         result = wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False)
         warnings = result["judgment"]["visual_warnings"]
         assert any("still scene" in w for w in warnings)
@@ -463,6 +464,10 @@ class TestAutoImprove:
 
 
 class TestImproveAndPreview:
+    @pytest.fixture(autouse=True)
+    def _no_era_model_call(self, mocker):
+        mocker.patch("app.services.world_era.determine_world_era", return_value=None)
+
     @pytest.fixture
     def db(self):
         from sqlalchemy import create_engine
@@ -695,3 +700,310 @@ class TestWorldProductionEndpoints:
         tid = str(toon.id)
         out = preview_world_production_video(tid)
         assert out["toon_id"] == tid and out["segments"] and out["narration"]["voice"] == "v"
+
+
+ROME_ERA = {"label": "Ancient Rome, 753 BC to 27 BC", "start_year": -753, "end_year": -27}
+
+
+def _rome_shots(visual="Villagers run past thatched huts as smoke drifts and water splashes", n=1):
+    return {"hook_line": "H", "total_duration_seconds": 30, "shots": [
+        {"shot_number": i + 1, "shot_focus": "subject", "camera_movement": "tracking", "people": "none",
+         "subject_visual": visual, "dialogue": "Rome grew from a village."} for i in range(n)]}
+
+
+class TestUnderProduction:
+    """The draft row exists from the moment Generate is clicked, so it can be shown greyed while the script
+    is written, and a failed script shows its reason instead of vanishing."""
+
+    @pytest.fixture
+    def db(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.db import Base
+        from app.models.character_brand import CharacterBrand
+        from app.models.curated_item import CuratedItem
+        from app.models.toon import Toon
+        from app.models.toon_background import ToonBackground
+        from app.models.toon_script import ToonScript
+        from app.models.trend import Trend
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine, tables=[CharacterBrand.__table__, Toon.__table__, ToonScript.__table__,
+                                                       ToonBackground.__table__, Trend.__table__, CuratedItem.__table__])
+        s = sessionmaker(bind=engine)()
+        s.add(CharacterBrand(user_id=uuid.uuid4(), name="World"))
+        s.commit()
+        yield s
+        s.close()
+
+    @staticmethod
+    def _toons(db):
+        from app.models.toon import Toon
+        return db.query(Toon).all()
+
+    def test_the_draft_exists_and_says_scripting_while_the_script_is_being_written(self, db, llm):
+        seen = {}
+
+        def write(**kwargs):
+            toons = self._toons(db)
+            seen["statuses"] = [t.status for t in toons]
+            seen["title"] = toons[0].title if toons else None
+            return _script()
+        llm.write.side_effect = write
+        wp.generate_world_draft(db, _item(), duration_seconds=30)
+        assert seen == {"statuses": ["scripting"], "title": "Carcassonne"}
+
+    def test_it_becomes_an_idea_with_the_script_filled_in_and_no_second_row(self, db, llm):
+        from app.models.toon_script import ToonScript
+        result = wp.generate_world_draft(db, _item(), duration_seconds=30)
+        (toon,) = self._toons(db)
+        assert toon.status == "idea" and str(toon.id) == result["toon_id"]
+        (script,) = db.query(ToonScript).all()
+        assert script.status == "approved" and script.hook_line == "H" and script.shots and str(script.id) == result["script_id"]
+
+    def test_a_failed_script_shows_its_reason_and_can_be_generated_again(self, db, llm):
+        item = _item()
+        llm.write.side_effect = RuntimeError("model overloaded")
+        with pytest.raises(RuntimeError):
+            wp.generate_world_draft(db, item, duration_seconds=30)
+        (toon,) = self._toons(db)
+        assert toon.status == "failed" and "model overloaded" in toon.generation_error
+        assert wp.find_live_draft(db, item.id) is None            # a failed script does not block a retry
+        llm.write.side_effect = None
+        wp.generate_world_draft(db, item, duration_seconds=30)
+        assert sorted(t.status for t in self._toons(db)) == ["failed", "idea"]
+
+    def test_a_second_click_while_scripting_is_refused(self, db, llm):
+        item = _item()
+        from app.models.toon import Toon
+        wp._start_placeholder(db, item, 30, None)
+        with pytest.raises(wp.WorldDraftExists):
+            wp.generate_world_draft(db, item, duration_seconds=30)
+        assert db.query(Toon).count() == 1
+
+    def test_a_scripting_draft_left_over_from_a_restart_no_longer_blocks(self, db, llm):
+        from datetime import datetime, timedelta
+        item = _item()
+        toon, _ = wp._start_placeholder(db, item, 30, None)
+        toon.created_at = datetime.utcnow() - timedelta(minutes=wp.SCRIPTING_STALE_MINUTES + 5)
+        db.commit()
+        assert wp.scripting_is_stale(toon) is True and wp.find_live_draft(db, item.id) is None
+        wp.generate_world_draft(db, item, duration_seconds=30)
+
+    def test_a_dry_run_creates_nothing(self, db, llm):
+        wp.generate_world_draft(db, _item(), duration_seconds=30, persist=False)
+        assert self._toons(db) == []
+
+    def test_a_draft_archived_while_it_was_being_written_stays_archived(self, db, llm):
+        def write(**kwargs):
+            for t in self._toons(db):
+                t.status = "archived"
+            db.commit()
+            return _script()
+        llm.write.side_effect = write
+        wp.generate_world_draft(db, _item(), duration_seconds=30)
+        assert [t.status for t in self._toons(db)] == ["archived"]
+
+    def test_the_list_shows_a_scripting_draft_and_reports_a_stale_one_as_failed(self, db):
+        from datetime import datetime, timedelta
+        from app.main import _world_production_rows
+        fresh, _ = wp._start_placeholder(db, _item(), 30, None)
+        stale, _ = wp._start_placeholder(db, _item(), 30, None)
+        stale.created_at = datetime.utcnow() - timedelta(minutes=wp.SCRIPTING_STALE_MINUTES + 1)
+        db.commit()
+        rows = {r["id"]: r for r in _world_production_rows(db, archived=False, limit=10)}
+        assert rows[str(fresh.id)]["status"] == "scripting" and rows[str(fresh.id)]["shot_count"] == 0
+        assert rows[str(stale.id)]["status"] == "failed" and "interrupted" in rows[str(stale.id)]["generation_error"]
+
+    def test_a_draft_without_a_script_cannot_be_rendered_reviewed_or_archived_while_writing(self, db, llm, mocker):
+        from fastapi import HTTPException
+        import app.main as main
+        mocker.patch("app.db.SessionLocal", return_value=db)
+        real = main._world_toon_or_404
+        mocker.patch.object(main, "_world_toon_or_404", lambda s, tid: real(s, uuid.UUID(tid)))
+        toon, _ = wp._start_placeholder(db, _item(), 30, None)
+        tid = str(toon.id)
+        for call in (lambda: main.generate_world_production_video(tid, mocker.Mock()),
+                     lambda: main.archive_world_production(tid)):
+            with pytest.raises(HTTPException) as err:
+                call()
+            assert err.value.status_code == 409 and "still being written" in err.value.detail
+        with pytest.raises(wp.WorldDraftError, match="still being written"):
+            wp.review_world_draft(db, db.query(type(toon)).filter_by(id=uuid.UUID(tid)).one())
+
+
+class TestEraInProduction:
+    def test_the_era_is_decided_once_and_given_to_the_writer_the_checker_and_the_reviewer(self, llm):
+        llm.era.return_value = ROME_ERA
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert llm.era.call_count == 1
+        assert llm.write.call_args.kwargs["era"] == ROME_ERA
+        assert llm.review.call_args.args[-1] == ROME_ERA
+        assert result["judgment"]["era"] == ROME_ERA
+
+    def test_the_curators_period_wins_and_skips_the_model(self, llm):
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False, era_text="Roman Republic, 307 BC")
+        llm.era.assert_not_called()
+        assert result["judgment"]["era"]["label"] == "Roman Republic, 307 BC" and result["judgment"]["era"]["end_year"] == -307
+
+    def test_a_period_with_no_year_is_refused_before_any_writing(self, llm):
+        with pytest.raises(wp.WorldDraftError, match="at least one year"):
+            wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False, era_text="a long time ago")
+        llm.write.assert_not_called()
+
+    def test_a_modern_object_in_an_ancient_script_triggers_the_rewrite_with_the_problem(self, llm):
+        llm.era.return_value = ROME_ERA
+        llm.write.side_effect = [_rome_shots("A jeep drives past the huts as smoke drifts and villagers run"),
+                                 _rome_shots("Villagers run past thatched huts as smoke drifts and water splashes")]
+        wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert llm.write.call_count == 2
+        fixes = llm.write.call_args_list[1].kwargs["visual_fixes"]
+        assert any("'jeep'" in f and "Ancient Rome" in f for f in fixes)
+
+    def test_the_same_modern_object_is_fine_in_a_modern_period(self, llm):
+        llm.era.return_value = {"label": "Normandy, June 1944", "start_year": 1944, "end_year": 1944}
+        llm.write.side_effect = [_rome_shots("A jeep drives past the huts as smoke drifts and villagers run")]
+        wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert llm.write.call_count == 1
+
+    def test_narration_that_names_a_later_year_widens_the_era(self, llm):
+        llm.era.return_value = {"label": "Ancient Rome", "start_year": -753, "end_year": -509}
+        shots = _rome_shots()
+        shots["shots"][0]["dialogue"] = "In 27 BC the empire began."
+        llm.write.side_effect = [shots]
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert result["judgment"]["era"]["end_year"] == -27
+
+    def test_an_unknown_era_turns_the_guard_off_rather_than_guessing(self, llm):
+        llm.era.return_value = None
+        llm.write.side_effect = [_rome_shots("A jeep drives past the huts as smoke drifts and villagers run")]
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert llm.write.call_count == 1 and result["judgment"]["era"] is None
+
+    def test_the_stored_era_survives_an_improvement(self, llm):
+        llm.era.return_value = ROME_ERA
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        composed = wp._build_judgment({"review": _review(), "grounding": {"grounded": True, "unsupported_claims": []},
+                                       "visual_warnings": [], "era": ROME_ERA}, 30, 4, None,
+                                      previous_judgment=result["judgment"])
+        assert composed["era"] == ROME_ERA
+
+
+class TestCostEstimate:
+    def test_it_uses_the_measured_serverless_rate_not_the_old_placeholder(self):
+        from app.services.culturetoon_usage import RENDER_GPU_SECONDS_PER_OUTPUT_SECOND, RUNPOD_SERVERLESS_COST_PER_SECOND
+        est = wp.estimate_render(41)
+        assert est["cost_usd"] == round(float(RENDER_GPU_SECONDS_PER_OUTPUT_SECOND) * 41 * float(RUNPOD_SERVERLESS_COST_PER_SECOND), 2)
+        assert 0.7 <= est["cost_usd"] <= 1.2      # recorded 41s renders cost $0.55 to $1.05; it used to say $0.10
+
+
+class TestLegacyDraftsGetAnEraBeforeTheyRender:
+    """A draft written before periods existed has none, and a prompt with no era gets the model's default:
+    the present day (jeeps in ancient Rome). The preview and the render decide and save one first."""
+
+    @pytest.fixture
+    def parts(self, mocker):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.db import Base
+        from app.models.curated_item import CuratedItem
+        from app.models.toon import Toon
+        from app.models.toon_background import ToonBackground
+        from app.models.toon_script import ToonScript
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine, tables=[Toon.__table__, ToonScript.__table__, CuratedItem.__table__,
+                                                      ToonBackground.__table__])
+        db = sessionmaker(bind=engine)()
+        decide = mocker.patch("app.services.world_era.determine_world_era", return_value=ROME_ERA)
+        return db, decide
+
+    @staticmethod
+    def _draft(db, judgment=None, with_item=True):
+        from app.models.curated_item import CuratedItem
+        from app.models.toon import Toon
+        from app.models.toon_script import ToonScript
+        item = CuratedItem(source_type="wikipedia", source_ref="Rome", title="Rise of the Roman Empire", summary="Rome.",
+                           raw_text="Facts " * 50, category="history", region=None)
+        db.add(item)
+        db.commit()
+        shots = [{"shot_number": 1, "duration_seconds": 8, "shot_focus": "subject", "camera_movement": "tracking",
+                  "people": "none", "dialogue": "In 27 BC the empire began.", "subject_visual": "Legions march and banners snap"}]
+        script = ToonScript(brand_id=uuid.uuid4(), hook_line="H", shots=shots, total_duration_seconds=8, generation_source="ai",
+                            status="approved", is_world_content=True, comedy_judgment=judgment)
+        db.add(script)
+        db.commit()
+        toon = Toon(brand_id=script.brand_id, script_id=script.id, title="Rise of the Roman Empire", status="idea",
+                    is_world_content=True, curated_item_id=item.id if with_item else None)
+        db.add(toon)
+        db.commit()
+        return toon, script
+
+    def test_the_era_is_worked_out_saved_and_widened_to_the_narration(self, parts):
+        db, decide = parts
+        toon, script = self._draft(db)
+        decide.return_value = {"label": "Ancient Rome", "start_year": -753, "end_year": -509}
+        era = wp.ensure_script_era(db, toon, script)
+        assert era["end_year"] == -27                                    # the narration says "in 27 BC"
+        db.refresh(script)
+        assert script.comedy_judgment["era"] == era
+
+    def test_a_stored_era_is_used_without_asking_the_model_again(self, parts):
+        db, decide = parts
+        toon, script = self._draft(db, judgment={"era": ROME_ERA, "score": 70})
+        assert wp.ensure_script_era(db, toon, script) == ROME_ERA
+        decide.assert_not_called()
+
+    def test_existing_judgment_fields_are_kept(self, parts):
+        db, _ = parts
+        toon, script = self._draft(db, judgment={"score": 70, "suggestions": []})
+        wp.ensure_script_era(db, toon, script)
+        db.refresh(script)
+        assert script.comedy_judgment["score"] == 70 and script.comedy_judgment["era"]
+
+    def test_no_subject_or_no_answer_or_an_error_means_no_era_and_never_an_exception(self, parts):
+        db, decide = parts
+        toon, script = self._draft(db, with_item=False)
+        assert wp.ensure_script_era(db, toon, script) is None
+        toon2, script2 = self._draft(db)
+        decide.return_value = None
+        assert wp.ensure_script_era(db, toon2, script2) is None
+        decide.side_effect = RuntimeError("model down")
+        assert wp.ensure_script_era(db, toon2, script2) is None
+
+    def test_the_preview_of_a_legacy_draft_opens_every_segment_with_the_era(self, parts, mocker):
+        from app.services import world_narration as wn
+        db, _ = parts
+        toon, script = self._draft(db)
+        plan = wn.NarrationPlan(voice="v", language="en", lines=[], total_seconds=8.0,
+                                shots=[dict(s, duration_seconds=8, narration="external") for s in script.shots])
+        mocker.patch.object(wn, "prepare_narration_cached", return_value=plan)
+        preview = wp.preview_world_render(db, toon)
+        assert preview["segments"][0]["prompt"].startswith("Ancient Rome, 753 BC to 27 BC. Set in the ancient world")
+        assert "jeeps" in preview["segments"][0]["negative_prompt"]
+
+
+class TestBoundedVisualRewrites:
+    GOOD = _rome_shots("Legionaries run across a stone bridge as banners snap and dust billows")
+    MAP = _rome_shots("A map of the Mediterranean shows the empire's territories")
+
+    def test_a_second_rewrite_fixes_what_the_first_did_not(self, llm):
+        llm.write.side_effect = [self.MAP, self.MAP, self.GOOD]
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert llm.write.call_count == 3
+        assert "map" not in result["shots"][0]["subject_visual"] and "visual_warnings" not in result["judgment"]
+
+    def test_it_stops_as_soon_as_the_rules_are_met(self, llm):
+        llm.write.side_effect = [self.MAP, self.GOOD]
+        wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert llm.write.call_count == 2
+
+    def test_it_never_runs_more_than_the_cap(self, llm):
+        llm.write.side_effect = [self.MAP] * 10
+        wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert llm.write.call_count == 1 + wp.MAX_VISUAL_REWRITES
+
+    def test_a_worse_rewrite_is_not_used_and_stops_the_loop(self, llm):
+        worse = _rome_shots("An infographic of the trade routes appears on screen", n=2)   # two bad shots against one
+        llm.write.side_effect = [self.MAP, worse, self.GOOD]
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert "map of the Mediterranean" in result["shots"][0]["subject_visual"]     # kept the better of the two
+        assert llm.write.call_count == 2

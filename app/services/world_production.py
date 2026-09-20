@@ -86,16 +86,17 @@ def build_source_facts(item) -> str:
 
 
 def estimate_render(duration_seconds: int) -> dict:
-    """Realistic paid-GPU estimate for a render of this length. Uses the
-    measured GPU-seconds per output-second, not a duration-derived guess (see
-    culturetoon_selfhosted_video.ltx25_timeout_seconds for why they differ by
-    more than an order of magnitude)."""
-    from app.services.culturetoon_usage import RENDER_GPU_SECONDS_PER_OUTPUT_SECOND, RUNPOD_GPU_COST_PER_SECOND
+    """Realistic paid-GPU estimate for a render of this length: the measured GPU-seconds per
+    output-second times the measured SERVERLESS rate. It used RUNPOD_GPU_COST_PER_SECOND, the old
+    $0.50/hr placeholder for a different kind of GPU, and quoted about $0.10 for a video that really
+    costs $0.55 to $1.05 (recorded renders, 2026-09), i.e. about a ninth of the real figure. A render
+    can cost more than this if a worker has to cold-start or a segment is retried."""
+    from app.services.culturetoon_usage import RENDER_GPU_SECONDS_PER_OUTPUT_SECOND, RUNPOD_SERVERLESS_COST_PER_SECOND
 
     gpu_seconds = float(RENDER_GPU_SECONDS_PER_OUTPUT_SECOND) * duration_seconds
     return {
         "gpu_seconds": round(gpu_seconds),
-        "cost_usd": round(gpu_seconds * float(RUNPOD_GPU_COST_PER_SECOND), 2),
+        "cost_usd": round(gpu_seconds * float(RUNPOD_SERVERLESS_COST_PER_SECOND), 2),
     }
 
 
@@ -151,14 +152,72 @@ def _world_brand(db):
     return brand
 
 
+MAX_VISUAL_REWRITES = 2
+SCRIPTING = "scripting"
+SCRIPTING_STALE_MINUTES = 15   # writing takes 1-3 minutes; a longer one was killed by a restart
+
+
+def scripting_is_stale(toon) -> bool:
+    """A draft still marked 'scripting' long after it should have finished: the server restarted while the
+    script was being written, so nothing will ever complete it."""
+    from datetime import datetime, timedelta
+    return (toon.status == SCRIPTING and toon.created_at is not None
+            and datetime.utcnow() - toon.created_at > timedelta(minutes=SCRIPTING_STALE_MINUTES))
+
+
 def find_live_draft(db, item_id):
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import and_, or_
     from app.models.toon import Toon
 
+    stale_before = datetime.utcnow() - timedelta(minutes=SCRIPTING_STALE_MINUTES)
     return (
         db.query(Toon)
-        .filter(Toon.curated_item_id == item_id, Toon.status.notin_(["archived", "failed"]))
+        .filter(Toon.curated_item_id == item_id, Toon.status.notin_(["archived", "failed"]),
+                or_(Toon.status != SCRIPTING, Toon.created_at >= stale_before))
         .first()
     )
+
+
+def _start_placeholder(db, item, duration_seconds: Optional[int], visual_style: Optional[str]):
+    """The draft row, created BEFORE the slow work so it shows in World production the moment the curator
+    clicks Generate (greyed, 'under production') instead of appearing minutes later or, if writing fails,
+    never. Returns (toon, script)."""
+    from app.models.toon import Toon
+    from app.models.toon_script import ToonScript
+
+    brand = _world_brand(db)
+    category = _CATEGORY_MAP.get(item.category, "custom")
+    script = ToonScript(
+        brand_id=brand.id, hook_line=None, tone="informative", shots=[], total_duration_seconds=duration_seconds,
+        generation_source="ai", status="draft", is_world_content=True, subject_region=item.region,
+        subject_text=item.title, subject_category=category, visual_style=visual_style,
+    )
+    db.add(script)
+    db.commit()
+    db.refresh(script)
+    toon = Toon(brand_id=brand.id, script_id=script.id, title=item.title, status=SCRIPTING, is_world_content=True,
+                subject_region=item.region, subject_text=item.title, subject_category=category, curated_item_id=item.id)
+    db.add(toon)
+    db.commit()
+    db.refresh(toon)
+    return toon, script
+
+
+def _fail_placeholder(db, placeholder, exc: Exception) -> None:
+    """Mark a draft whose script could not be written as failed, with the reason, so the curator sees it."""
+    from app.models.toon import Toon
+
+    try:
+        db.rollback()
+        toon = db.query(Toon).filter_by(id=placeholder[0].id).first()
+        if toon:
+            toon.status = "failed"
+            toon.generation_error = f"Script writing failed: {exc}"[:2000]
+            db.commit()
+    except Exception:
+        logger.exception("Could not mark draft %s as failed", getattr(placeholder[0], "id", "?"))
 
 
 def _tag_scene_indexes(shots: list, scenes: Optional[list]) -> None:
@@ -171,7 +230,7 @@ def _tag_scene_indexes(shots: list, scenes: Optional[list]) -> None:
 
 
 def _compose_script(db, item, *, duration_seconds: int, beat_count: int, host, scenes: Optional[list],
-                    trends: list, category: str, facts: str, label: str,
+                    trends: list, category: str, facts: str, label: str, era: Optional[dict] = None,
                     improvements: Optional[list] = None, previous: Optional[dict] = None) -> dict:
     """Write -> visual/motion rules (one rewrite) -> fact-check (one rewrite) -> editorial review.
     With `previous` and `improvements` the writer revises that draft instead of starting fresh.
@@ -180,10 +239,12 @@ def _compose_script(db, item, *, duration_seconds: int, beat_count: int, host, s
         check_world_action, check_world_motion, check_world_visuals, generate_world_script,
         judge_world_grounding, normalize_world_people,
     )
+    from app.services.world_era import check_world_anachronisms, widen_to_narration
     from app.services.world_review import review_world_script
 
     def _problems(shots):
-        found = check_world_visuals(shots) + check_world_motion(shots) + check_world_action(shots)
+        found = (check_world_visuals(shots) + check_world_motion(shots) + check_world_action(shots)
+                 + check_world_anachronisms(shots, era))
         if scenes is not None and len(shots or []) != len(scenes):
             found.append(f"Write exactly {len(scenes)} shots, one per scene, in the order given "
                          f"(you wrote {len(shots or [])}).")
@@ -198,24 +259,32 @@ def _compose_script(db, item, *, duration_seconds: int, beat_count: int, host, s
             culture=None, host_variant=host, tone="informative", num_shots=beat_count,
             target_duration_seconds=duration_seconds, source_facts=facts, source_label=label,
             avoid_claims=avoid, visual_fixes=fixes, scene_briefs=scene_briefs,
-            previous_draft=previous, improvements=improvements,
+            previous_draft=previous, improvements=improvements, era=era,
         )
 
     def _settle(script):
         script["shots"], warnings = normalize_world_people(script.get("shots"))
         script["shots"] = _use_reference_people(script["shots"], scenes)
-        return script, warnings + check_world_motion(script.get("shots")) + check_world_action(script.get("shots"))
+        return script, (warnings + check_world_motion(script.get("shots")) + check_world_action(script.get("shots"))
+                        + check_world_anachronisms(script.get("shots"), era))
 
     result = _write()
-    # The renderer says "no people in frame" unless a shot has people="distant": a visual that
-    # shows people without it contradicts its own render prompt. One rewrite, then normalize.
+    # The renderer says "no people in frame" unless a shot has people="distant", and a visual with a modern
+    # object, a map or scenery renders as exactly that. Rewrite against the named problems, up to
+    # MAX_VISUAL_REWRITES times while each rewrite is not worse, then normalize. What is still wrong after that
+    # is surfaced as a warning, not hidden.
     problems = _problems(result.get("shots"))
-    if problems:
-        logger.info("World draft %r broke the visual rules (%d problem(s)); revising once", item.title, len(problems))
+    for attempt in range(MAX_VISUAL_REWRITES):
+        if not problems:
+            break
+        logger.info("World draft %r broke the visual rules (%d problem(s)); rewriting (%d/%d)", item.title,
+                    len(problems), attempt + 1, MAX_VISUAL_REWRITES)
         revised = _write(fixes=problems)
-        if len(_problems(revised.get("shots"))) <= len(problems):
-            result = revised
-    result, visual_warnings = _settle(result)   # still unfixed after the rewrite: surfaced, not hidden
+        revised_problems = _problems(revised.get("shots"))
+        if len(revised_problems) > len(problems):
+            break
+        result, problems = revised, revised_problems
+    result, visual_warnings = _settle(result)
 
     grounding = judge_world_grounding(result, facts)
     if grounding["unsupported_claims"]:
@@ -227,8 +296,10 @@ def _compose_script(db, item, *, duration_seconds: int, beat_count: int, host, s
         if len(revised_grounding["unsupported_claims"]) <= len(grounding["unsupported_claims"]):
             result, grounding, visual_warnings = revised, revised_grounding, revised_warnings
 
-    review = review_world_script(result, item.title, duration_seconds, facts, grounding)
-    return {"result": result, "grounding": grounding, "visual_warnings": visual_warnings, "review": review}
+    # A script that names a year outside the era (the narration says "in 27 BC") widens the era to reach it.
+    era = widen_to_narration(era, result.get("shots"))
+    review = review_world_script(result, item.title, duration_seconds, facts, grounding, era)
+    return {"result": result, "grounding": grounding, "visual_warnings": visual_warnings, "review": review, "era": era}
 
 
 def _is_better(new: dict, old: dict) -> bool:
@@ -244,6 +315,7 @@ def _is_better(new: dict, old: dict) -> bool:
 def _build_judgment(composed: dict, duration_seconds: int, beat_count: int, scenes: Optional[list],
                     previous_judgment: Optional[dict] = None) -> dict:
     judgment = dict(composed["review"])
+    judgment["era"] = composed.get("era")
     judgment["grounding"] = composed["grounding"]
     judgment["duration_plan"] = {"duration_seconds": duration_seconds, "beat_count": beat_count}
     if scenes:
@@ -261,19 +333,33 @@ def _build_judgment(composed: dict, duration_seconds: int, beat_count: int, scen
 
 def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_count: Optional[int] = None,
                          use_host: bool = False, persist: bool = True,
-                         visual_style: Optional[str] = None, scenes: Optional[list] = None) -> dict:
+                         visual_style: Optional[str] = None, scenes: Optional[list] = None,
+                         era_text: Optional[str] = None) -> dict:
     """Plan -> grounded script -> fact-check (one auto-revision) -> editorial review (one auto-improvement
     if it does not pass) -> persist as an approved ToonScript plus an 'idea' Toon. Does NOT render:
     the paid GPU step stays a separate, explicit action. With persist=False nothing is written (dry
-    run). Raises WorldDraftExists on a duplicate live draft."""
-    from app.models.toon import Toon
-    from app.models.toon_script import ToonScript
-    from app.models.trend import Trend
-    from app.services.culturetoon_script import select_thematic_host
-    from app.services.world_review import improvement_notes
+    run). Raises WorldDraftExists on a duplicate live draft.
 
+    The draft row exists from the start with status 'scripting' (see _start_placeholder) and becomes 'idea'
+    when the script is done, or 'failed' with the reason if writing raises."""
     if persist and find_live_draft(db, item.id):
         raise WorldDraftExists("A World draft already exists for this subject")
+    placeholder = _start_placeholder(db, item, duration_seconds, visual_style) if persist else None
+    try:
+        return _generate_world_draft(db, item, duration_seconds, beat_count, use_host, persist, visual_style,
+                                     scenes, era_text, placeholder)
+    except Exception as exc:
+        if placeholder:
+            _fail_placeholder(db, placeholder, exc)
+        raise
+
+
+def _generate_world_draft(db, item, duration_seconds, beat_count, use_host, persist, visual_style, scenes,
+                          era_text, placeholder) -> dict:
+    from app.models.trend import Trend
+    from app.services.culturetoon_script import select_thematic_host
+    from app.services.world_era import determine_world_era, era_from_text
+    from app.services.world_review import improvement_notes
 
     if visual_style is not None and visual_style not in WORLD_VISUAL_STYLES:
         raise WorldDraftError(f"visual_style must be one of {sorted(WORLD_VISUAL_STYLES)} or omitted")
@@ -301,8 +387,14 @@ def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_
     host = select_thematic_host(db, category, "informative") if use_host else None
     facts = build_source_facts(item)
     label = source_label(item)
+    # When the video is set. The curator's own words win; otherwise it is decided once here, so the writer,
+    # the anachronism check, the reviewer and the renderer all use the same period.
+    try:
+        era = era_from_text(era_text) if (era_text or "").strip() else determine_world_era(item.title, facts)
+    except ValueError as exc:
+        raise WorldDraftError(str(exc)) from exc
     common = dict(duration_seconds=duration_seconds, beat_count=beat_count, host=host, scenes=scenes,
-                  trends=trends, category=category, facts=facts, label=label)
+                  trends=trends, category=category, facts=facts, label=label, era=era)
 
     composed = _compose_script(db, item, **common)
     review = composed["review"]
@@ -344,28 +436,50 @@ def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_
                 db.commit()
                 db.refresh(bg)
                 scene_backgrounds.append({"scene_index": i, "background_id": str(bg.id)})
-    script = ToonScript(
-        brand_id=brand.id, character_variant_id=host.id if host else None,
-        character_variant_ids=[str(host.id)] if host else None,
-        hook_line=result.get("hook_line"), tone="informative", shots=result.get("shots"),
-        total_duration_seconds=result.get("total_duration_seconds"), comedy_judgment=judgment,
-        generation_source="ai", status="approved", is_world_content=True,
-        subject_region=item.region, subject_text=item.title, subject_category=category,
-        visual_style=visual_style, scene_backgrounds=scene_backgrounds,
-    )
-    db.add(script)
-    db.commit()
-    db.refresh(script)
-    toon = Toon(
-        brand_id=brand.id, character_variant_id=host.id if host else None, script_id=script.id,
-        title=item.title, status="idea", is_world_content=True, subject_region=item.region,
-        subject_text=item.title, subject_category=category, curated_item_id=item.id,
-    )
-    db.add(toon)
-    db.commit()
+    toon, script = placeholder
     db.refresh(toon)
+    if toon.status != SCRIPTING:
+        # Archived (or otherwise changed) while the script was being written: do not reopen it.
+        return summary
+    script.character_variant_id = host.id if host else None
+    script.character_variant_ids = [str(host.id)] if host else None
+    script.hook_line = result.get("hook_line")
+    script.shots = result.get("shots")
+    script.total_duration_seconds = result.get("total_duration_seconds")
+    script.comedy_judgment = judgment
+    script.status = "approved"
+    script.scene_backgrounds = scene_backgrounds
+    toon.character_variant_id = host.id if host else None
+    toon.status = "idea"
+    db.commit()
     summary.update({"toon_id": str(toon.id), "script_id": str(script.id)})
     return summary
+
+
+def ensure_script_era(db, toon, script) -> Optional[dict]:
+    """The era a World script is set in, working it out and saving it if the draft predates periods. Called
+    before a preview or a render builds any prompt: without an era a render of ancient Rome gets the model's
+    default, the present day (jeeps at the huts). Best effort: None if it cannot be decided, and a failure
+    here must never block a render."""
+    judgment = script.comedy_judgment if isinstance(script.comedy_judgment, dict) else {}
+    if judgment.get("era"):
+        return judgment["era"]
+    try:
+        from app.models.curated_item import CuratedItem
+        from app.services.world_era import determine_world_era, widen_to_narration
+
+        item = db.query(CuratedItem).filter_by(id=toon.curated_item_id).first() if toon.curated_item_id else None
+        if not item:
+            return None
+        era = widen_to_narration(determine_world_era(item.title, build_source_facts(item)), script.shots)
+        if era:
+            script.comedy_judgment = {**judgment, "era": era}
+            db.commit()
+        return era
+    except Exception:
+        logger.warning("Could not work out the era for draft %s", getattr(toon, "id", "?"), exc_info=True)
+        db.rollback()
+        return None
 
 
 EDITABLE_STATUSES = ("idea", "failed")
@@ -377,12 +491,14 @@ def _editable_draft(db, toon):
     from app.models.curated_item import CuratedItem
     from app.models.toon_script import ToonScript
 
+    if toon.status == SCRIPTING:
+        raise WorldDraftError("The script is still being written")
     if toon.status not in EDITABLE_STATUSES:
         raise WorldDraftError("A script can only be scored or improved before its video is rendered")
     script = db.query(ToonScript).filter_by(id=toon.script_id).first()
     item = db.query(CuratedItem).filter_by(id=toon.curated_item_id).first() if toon.curated_item_id else None
-    if not script or not item:
-        raise WorldDraftError("This draft has no script or no source subject to review against")
+    if not script or not item or not script.shots:
+        raise WorldDraftError("This draft has no script yet, or no source subject to review it against")
     return script, item
 
 
@@ -421,7 +537,12 @@ def review_world_draft(db, toon) -> dict:
     stored = {"hook_line": script.hook_line, "shots": script.shots}
     previous = script.comedy_judgment or {}
     grounding = previous.get("grounding") or judge_world_grounding(stored, facts)
-    review = review_world_script(stored, item.title, script.total_duration_seconds, facts, grounding)
+    era = previous.get("era")
+    if not era:
+        # A draft written before periods existed: decide it now, so it is scored (and rendered) against one.
+        from app.services.world_era import determine_world_era, widen_to_narration
+        era = widen_to_narration(determine_world_era(item.title, facts), script.shots)
+    review = review_world_script(stored, item.title, script.total_duration_seconds, facts, grounding, era)
     judgment = dict(previous)
     judgment.update(review)
     judgment["grounding"] = grounding
@@ -440,6 +561,7 @@ def improve_world_draft(db, toon, note: Optional[str] = None) -> dict:
     from app.services.world_review import improvement_notes
 
     script, item = _editable_draft(db, toon)
+    ensure_script_era(db, toon, script)
     judgment = script.comedy_judgment or {}
     if not judgment.get("suggestions") and not (note or "").strip():
         review_world_draft(db, toon)
@@ -464,7 +586,7 @@ def improve_world_draft(db, toon, note: Optional[str] = None) -> dict:
         host = db.query(CharacterVariant).filter_by(id=script.character_variant_id).first()
     facts = build_source_facts(item)
     common = dict(duration_seconds=duration_seconds, beat_count=beat_count, host=host, scenes=scenes,
-                  trends=trends, category=category, facts=facts, label=source_label(item))
+                  trends=trends, category=category, facts=facts, label=source_label(item), era=judgment.get("era"))
 
     current = {"hook_line": script.hook_line, "shots": script.shots}
     old = {"result": current, "grounding": judgment.get("grounding") or {"grounded": None, "unsupported_claims": []},

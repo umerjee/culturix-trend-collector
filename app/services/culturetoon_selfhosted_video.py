@@ -120,9 +120,12 @@ LTX25_REFERENCE_PHOTO_STRENGTH = 0.5
 # Closes a segment made ONLY of subject shots (no character on screen). Measured on a real
 # render: with nothing asking for motion the model produced a near-still scene with a slow
 # camera drift, about a third of the scene motion of the earlier renders.
+# It must not name things the scene may not contain: "vehicles" here put jeeps and cars in a video set in
+# 753 BC. Whatever the scene actually holds is what should keep moving.
 _SUBJECT_MOTION_SUFFIX = (
-    "Continuous motion from the first frame to the last: water, smoke, vehicles and figures keep "
-    "moving, and the camera keeps moving. No still frame, no held pose."
+    "Continuous motion from the first frame to the last: everything in the scene that can move keeps "
+    "moving, water, smoke, cloth, animals and figures, and the camera keeps moving. "
+    "No still frame, no held pose."
 )
 
 # The character-quality suffix actively contradicts a subject shot: asking for
@@ -132,6 +135,24 @@ _SUBJECT_QUALITY_SUFFIX = (
     "Smooth natural camera motion, cinematic scale and depth, "
     "consistent lighting, high detail, crisp film-quality render"
 )
+
+
+def script_era(script) -> Optional[dict]:
+    """The era a World script is set in (see app/services/world_era.py), or None. Stored inside the
+    script's judgment; anything that is not a real dict there (a toon script, a test double) means none."""
+    judgment = getattr(script, "comedy_judgment", None)
+    era = judgment.get("era") if isinstance(judgment, dict) else None
+    return era if isinstance(era, dict) and era.get("label") else None
+
+
+def _segment_negative_prompt(script) -> str:
+    """The negative prompt for a script's segments: the standard one, plus the modern things to avoid when
+    the script is set in a period before 1900."""
+    from app.media import ltx25_workflow
+    from app.services.world_era import era_negative_terms
+
+    extra = era_negative_terms(script_era(script))
+    return f"{ltx25_workflow.DEFAULT_NEGATIVE_PROMPT}, {extra}" if extra else ltx25_workflow.DEFAULT_NEGATIVE_PROMPT
 
 
 def _build_shot_prompt(shot: dict, background=None) -> str:
@@ -330,6 +351,14 @@ def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Opt
         ["LEFT", "CENTRE", "RIGHT", "FAR RIGHT", "BACKGROUND"]
     )
     parts = []
+
+    # When a video is set. Every segment is its own generation, so the era has to be in every prompt, and
+    # first: a prompt that never says when it is set gets the model's default, which is the present day
+    # (jeeps in a Roman village, measured 2026-09-20). See app/services/world_era.py.
+    from app.services.world_era import era_prompt_line
+    era_line = era_prompt_line(script_era(script))
+    if era_line:
+        parts.append(era_line)
 
     # Identity comes FIRST, before setting or premise, and is explicitly tied
     # to the reference image rather than left implicit. This is a first-frame
@@ -1106,7 +1135,7 @@ def plan_ltx25_segments(script, variants: list, background=None, scene_backgroun
             "prompt": prompt,
             "opening_frame": opening,
             "image_strength": image_strength,
-            "negative_prompt": ltx25_workflow.DEFAULT_NEGATIVE_PROMPT,
+            "negative_prompt": _segment_negative_prompt(script),
         })
     return plan
 
@@ -1267,6 +1296,7 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
         if current_msr_images:
             workflow = ltx25_workflow.build_workflow(
                 prompt, segment_duration, reference_image_filenames=list(current_msr_images.keys()),
+                negative_prompt=_segment_negative_prompt(script),
             )
         else:
             # A real photo as the opening frame is held more loosely so the clip can move.
@@ -1274,6 +1304,7 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
             workflow = ltx25_workflow.build_workflow(
                 prompt, segment_duration,
                 image_strength=LTX25_REFERENCE_PHOTO_STRENGTH if photo_anchored else None,
+                negative_prompt=_segment_negative_prompt(script),
             )
         segment_stats: dict = {}
         video_bytes = runpod_serverless_client.run_inference_job(
@@ -1360,6 +1391,11 @@ def load_render_context(session, toon, script) -> tuple:
     background_id = script.background_id or toon.background_id
     if background_id:
         background = session.query(ToonBackground).filter_by(id=background_id).first()
+    # A World draft written before periods existed has no era, and a prompt with no era gets the model's
+    # default, the present day. Decide it now (once, saved) so the preview and the render both have it.
+    if getattr(script, "is_world_content", False) is True and script_era(script) is None:
+        from app.services.world_production import ensure_script_era
+        ensure_script_era(session, toon, script)
     return variants, background, resolve_scene_backgrounds(session, script)
 
 

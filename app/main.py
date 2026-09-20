@@ -2971,7 +2971,8 @@ def plan_curated_world_feature(item_id: str):
     curator can accept or override before any script is generated."""
     from app.db import SessionLocal
     from app.models.curated_item import CuratedItem
-    from app.services.world_production import plan_world_video, find_live_draft
+    from app.services.world_era import determine_world_era
+    from app.services.world_production import build_source_facts, plan_world_video, find_live_draft
 
     session = SessionLocal()
     try:
@@ -2980,6 +2981,10 @@ def plan_curated_world_feature(item_id: str):
             raise HTTPException(status_code=404, detail="Curated item not found")
         plan = plan_world_video(item)
         plan["existing_draft"] = bool(find_live_draft(session, item.id))
+        # The period the video will be set in, for the curator to confirm or change BEFORE writing starts:
+        # it decides which objects the script and the video may contain.
+        era = determine_world_era(item.title, build_source_facts(item))
+        plan["era"] = era["label"] if era else None
         return plan
     finally:
         session.close()
@@ -2988,8 +2993,10 @@ def plan_curated_world_feature(item_id: str):
 @app.post("/admin/curated-items/{item_id}/generate", dependencies=[Depends(require_admin_secret)])
 def generate_curated_world_feature(item_id: str, payload: Optional[dict] = None):
     """Generate a fact-checked World script for a selected subject. Optional
-    body: {duration_seconds, beat_count, use_host}. Does not start the paid
-    render — that is a separate action on the World Production page."""
+    body: {duration_seconds, beat_count, use_host, visual_style, era}. `era` is the period to show in the
+    curator's own words and must name a year ("Roman Republic, 307 BC"); without it the period is worked
+    out from the source. Does not start the paid render — that is a separate action on the World
+    Production page."""
     import threading
     from app.db import SessionLocal
     from app.models.curated_item import CuratedItem
@@ -3004,6 +3011,13 @@ def generate_curated_world_feature(item_id: str, payload: Optional[dict] = None)
     visual_style = payload.get("visual_style") or None
     if visual_style is not None and visual_style not in WORLD_VISUAL_STYLES:
         raise HTTPException(status_code=400, detail=f"visual_style must be one of {sorted(WORLD_VISUAL_STYLES)}")
+    era_text = (payload.get("era") or "").strip() or None
+    if era_text:
+        from app.services.world_era import EraError, era_from_text
+        try:
+            era_from_text(era_text)
+        except EraError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     session = SessionLocal()
     try:
@@ -3027,7 +3041,7 @@ def generate_curated_world_feature(item_id: str, payload: Optional[dict] = None)
         try:
             db_item = db.query(CuratedItem).filter_by(id=item_id).first()
             result = generate_world_draft(db, db_item, duration_seconds=duration, beat_count=beats,
-                                          use_host=use_host, visual_style=visual_style)
+                                          use_host=use_host, visual_style=visual_style, era_text=era_text)
             logging.info("World draft generated: item=%s toon=%s grounded=%s", item_id, result.get("toon_id"),
                          result["grounding"].get("grounded"))
         except Exception:
@@ -3046,7 +3060,7 @@ def _world_production_rows(session, archived: bool, limit: int) -> list[dict]:
     from app.models.curated_item import CuratedItem
     from app.models.toon import Toon
     from app.models.toon_script import ToonScript
-    from app.services.world_production import estimate_render, source_label
+    from app.services.world_production import estimate_render, scripting_is_stale, source_label
     from app.services.world_review import review_view
 
     query = (
@@ -3068,7 +3082,9 @@ def _world_production_rows(session, archived: bool, limit: int) -> list[dict]:
         judgment = script.comedy_judgment or {}
         duration = script.total_duration_seconds
         out.append({
-            "id": str(toon.id), "title": toon.title, "status": toon.status,
+            "id": str(toon.id), "title": toon.title,
+            # A draft still "scripting" long after it should have finished lost its writer to a restart.
+            "status": "failed" if scripting_is_stale(toon) else toon.status,
             "final_video_url": toon.final_video_url, "raw_video_url": toon.raw_video_url,
             # Earlier takes of this same draft (a re-render archives the video it replaces), oldest first
             "previous_video_urls": list(toon.previous_video_urls or []),
@@ -3087,7 +3103,8 @@ def _world_production_rows(session, archived: bool, limit: int) -> list[dict]:
             "source_url": item.source_url if item else None,
             "render_estimate": estimate_render(duration) if duration else None,
             "published": bool(toon.status == "ready" and toon.final_video_url and toon.world_published is not False),
-            "generation_error": toon.generation_error,
+            "generation_error": ("Script writing was interrupted (the server restarted). Archive this draft "
+                                 "and generate the subject again." if scripting_is_stale(toon) else toon.generation_error),
             "publish_recommended": toon.publish_recommended,
             "qa_results": toon.qa_results,
             "created_at": toon.created_at.isoformat() if toon.created_at else None,
@@ -3124,11 +3141,15 @@ def generate_world_production_video(toon_id: str, background_tasks: BackgroundTa
     from app.services.culturetoon_selfhosted_video import generate_video_for_toon_selfhosted
     session = SessionLocal()
     try:
-        toon = session.query(Toon).filter_by(id=toon_id, is_world_content=True).first()
-        if not toon:
-            raise HTTPException(status_code=404, detail="World draft not found")
+        toon = _world_toon_or_404(session, toon_id)
         if toon.status == "animating":
             raise HTTPException(status_code=409, detail="A render is already in progress for this draft")
+        if toon.status == "scripting":
+            raise HTTPException(status_code=409, detail="The script is still being written. Render it once it is ready.")
+        from app.models.toon_script import ToonScript
+        script = session.query(ToonScript).filter_by(id=toon.script_id).first()
+        if not script or not script.shots:
+            raise HTTPException(status_code=409, detail="This draft has no script to render. Archive it and generate the subject again.")
         brand = session.query(CharacterBrand).filter_by(id=toon.brand_id).first()
         toon.status = "animating"
         toon.generation_error = None
@@ -3245,6 +3266,9 @@ def archive_world_production(toon_id: str):
         toon = _world_toon_or_404(session, toon_id)
         if toon.status == "animating":
             raise HTTPException(status_code=409, detail="Cannot archive while a render is in progress")
+        from app.services.world_production import scripting_is_stale
+        if toon.status == "scripting" and not scripting_is_stale(toon):
+            raise HTTPException(status_code=409, detail="The script is still being written. Archive it once it is done.")
         toon.status = "archived"
         toon.world_published = False
         session.commit()

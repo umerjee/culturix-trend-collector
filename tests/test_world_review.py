@@ -150,3 +150,80 @@ class TestNotesAndView:
     def test_review_view_exposes_only_what_the_page_shows(self):
         view = wr.review_view({"score": 80, "passes_bar": True, "dimensions": {}, "suggestions": [], "grounding": {"x": 1}, "references": [1]})
         assert view["score"] == 80 and "grounding" not in view and "references" not in view
+
+
+class TestPeriodInTheWriterPrompt:
+    ROME = {"label": "Ancient Rome, 753 BC to 27 BC", "start_year": -753, "end_year": -27}
+
+    def test_the_writer_is_told_the_period_and_that_nothing_modern_may_appear(self):
+        from app.services.culturetoon_script import _world_context
+        context = _world_context("Italy", "Rome", "custom", era=self.ROME)
+        assert "PERIOD: this video is set in Ancient Rome, 753 BC to 27 BC (753 BC to 27 BC)" in context
+        assert "must be something that existed in that place and time" in context
+        assert "no engines, cars, trucks, jeeps, aircraft, electric light" in context
+
+    def test_a_modern_period_only_gets_the_period_line(self):
+        from app.services.culturetoon_script import _world_context
+        context = _world_context("France", "D-Day", "custom", era={"label": "Normandy, June 1944", "start_year": 1944, "end_year": 1944})
+        assert "PERIOD: this video is set in Normandy, June 1944 (1944)" in context and "Nothing modern" not in context
+
+    def test_no_era_no_period_block(self):
+        from app.services.culturetoon_script import _world_context
+        assert "PERIOD:" not in _world_context("Italy", "Rome", "custom")
+
+    def test_the_hostless_rules_no_longer_hand_the_writer_modern_machines_or_1944_uniforms(self, mocker):
+        from app.services import culturetoon_script as cs
+        build = mocker.patch.object(cs, "_build_prompt_from_context", return_value="prompt")
+        mocker.patch.object(cs, "_call_llm_for_script", return_value={})
+        cs.generate_world_script("IT", "Italy", "Rome", source_facts="Facts.", source_label="Wikipedia", era=self.ROME)
+        context = build.call_args.args[1]
+        assert "vehicles, ships, aircraft" not in context and "khaki" not in context.split("PERIOD:")[0]
+        assert "1944" not in context and "only things that existed in the period" in context
+        assert "PERIOD:" in context
+
+
+class TestReviewCountsPeriodErrors:
+    ROME = {"label": "Ancient Rome, 753 BC to 27 BC", "start_year": -753, "end_year": -27}
+    CLEAN = {"grounded": True, "unsupported_claims": [], "judge_failed": False}
+
+    @staticmethod
+    def _script(visual):
+        return {"hook_line": "H", "shots": [
+            {"shot_number": i, "shot_focus": "subject", "subject_visual": visual, "camera_movement": "tracking",
+             "shot_type": t, "dialogue": "one two three four five six seven eight nine ten eleven twelve thirteen fourteen"}
+            for i, t in ((1, "wide"), (2, "aerial"), (3, "low_angle"))]}
+
+    def _review(self, mocker, visual, era, llm_anachronisms=None):
+        payload = {"dimensions": {k: {"score": 90, "note": ""} for k in ("hook", "story", "dynamism", "narration", "visuals")},
+                   "suggestions": [], "summary": "ok", "anachronisms": llm_anachronisms or []}
+        call = mocker.patch("app.services.world_review._call_llm_json", return_value=payload)
+        return wr.review_world_script(self._script(visual), "Rome", 30, "facts", self.CLEAN, era), call
+
+    def test_a_modern_object_costs_accuracy_and_blocks_a_pass_however_good_the_rest_is(self, mocker):
+        review, _ = self._review(mocker, "A jeep and a truck race past huts as smoke rolls", self.ROME)
+        assert review["anachronisms"] == ["jeep", "truck"]
+        assert review["dimensions"]["accuracy"]["score"] == 50 and "jeep" in review["dimensions"]["accuracy"]["note"]
+        assert review["passes_bar"] is False
+
+    def test_the_same_script_in_a_modern_period_is_fine(self, mocker):
+        modern = {"label": "Normandy, 1944", "start_year": 1944, "end_year": 1944}
+        review, _ = self._review(mocker, "A jeep and a truck race past huts as smoke rolls", modern)
+        assert review["anachronisms"] == [] and review["dimensions"]["accuracy"]["score"] == 100
+
+    def test_what_the_critic_notices_is_added_without_duplicates(self, mocker):
+        review, _ = self._review(mocker, "A jeep races past huts as smoke rolls", self.ROME, ["Jeep", "sash windows"])
+        assert review["anachronisms"] == ["jeep", "sash windows"]
+
+    def test_the_critic_is_told_the_period(self, mocker):
+        _, call = self._review(mocker, "Villagers run past huts as smoke rolls", self.ROME)
+        prompt = call.call_args.args[0]
+        assert "set in Ancient Rome, 753 BC to 27 BC" in prompt and '"anachronisms"' in prompt
+
+    def test_with_no_era_nothing_is_flagged_and_the_prompt_has_no_period(self, mocker):
+        review, call = self._review(mocker, "A jeep races past huts as smoke rolls", None, ["jeep"])
+        assert review["anachronisms"] == [] and review["era"] is None
+        assert "The video is set in" not in call.call_args.args[0]
+
+    def test_the_view_the_page_shows_carries_the_era_and_the_period_errors(self):
+        view = wr.review_view({"score": 60, "dimensions": {}, "anachronisms": ["jeep"], "era": self.ROME})
+        assert view["anachronisms"] == ["jeep"] and view["era"] == self.ROME

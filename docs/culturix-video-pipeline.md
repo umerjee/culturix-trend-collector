@@ -698,3 +698,43 @@ Rules that came from real failures — keep them:
   753 BC Rome script, then a "weir"): keep writer rules abstract. An abstract, thin-source subject still tends to
   score in the 60s; photo-anchored scenes (see `world_references.py`) are what produce real action.
 
+### World videos: period accuracy (2026-09-20) — jeeps in ancient Rome
+A render of "Rise of the Roman Empire" showed jeeps and vans at the huts, a khaki military camp, asphalt streets and
+steamships. Three causes, all ours, found by reading the exact prompt the render had sent (`/video-prompt`):
+1. **The prompt never said when the video is set.** The era appeared once, in the "Premise" sentence; each segment is
+   its own generation, so the model defaulted to the present day. My earlier D-Day tests only worked because those
+   prompts named the date and place.
+2. **Our own boilerplate asked for vehicles.** `_SUBJECT_MOTION_SUFFIX` said "water, smoke, vehicles and figures keep
+   moving" in every World segment. Never name objects in a suffix that is applied to every subject.
+3. **Nothing checked for anachronisms**, and the negative prompt had no era terms.
+
+What exists now (`app/services/world_era.py`, one source of truth):
+- An **era** per draft (`{label, start_year, end_year}`, BC negative) stored in `toon_scripts.comedy_judgment["era"]`.
+  The curator can set it in the plan dialog ("Roman Republic, 307 BC", must contain a year; "Present day" is allowed);
+  otherwise `determine_world_era` decides it once, sanity-checked against years the title/source name, and the
+  narration's own years widen it. A drafts with no era (written before this) gets one saved by
+  `ensure_script_era` at preview/render time (`load_render_context`), so nothing renders without one.
+- **Prompt:** every segment opens with the era plus what that period looked like (`ERA_BANDS`, positive wording only:
+  telling the video model what NOT to draw inside the prompt measured worst earlier) — `build_ltx25_scene_prompt`.
+- **Negative prompt:** the modern things to avoid, per band (`era_negative_terms`), passed through
+  `_segment_negative_prompt` to the preview AND the render.
+- **Script:** the writer gets a PERIOD block; `check_world_anachronisms` (word lists per band, whole words, only for
+  eras ending before 1900) flags modern objects in visuals/locations and forces the rewrite; the reviewer counts them
+  against accuracy and any one blocks a pass. Rewrites are bounded (`MAX_VISUAL_REWRITES`=2).
+- `check_world_action` also rejects ambient-life wording and non-filmable visuals (maps, graphics, text).
+- Measured on the GPU (5 segments, ~$1): the same old script that produced jeeps rendered with thatched huts, stone
+  towers, terracotta roofs, ox-cart markets and masted ships once the era, no-"vehicles" suffix and era negatives were in.
+  Generic era vocabulary gives period-plausible, not Roman-specific, imagery; specificity comes from the writer.
+
+### Cost estimate was wrong by ~9x (fixed 2026-09-20)
+`estimate_render` used `RUNPOD_GPU_COST_PER_SECOND` (the old $0.50/hr placeholder), quoting ~$0.10 for a 41s video.
+Real recorded renders cost $0.55-1.05 each (one $1.50); the measured serverless rate is
+`RUNPOD_SERVERLESS_COST_PER_SECOND` = $0.00124/s x 18.3 GPU-s per output-second, about $0.93 for 41s. Can run higher
+if a worker cold-starts or a segment is retried. Real spend = `generation_usage` rows + RunPod `clientBalance`.
+
+### Drafts exist from the moment Generate is clicked
+`generate_world_draft` creates the Toon + stub script immediately with status `scripting` (shown greyed as "Under
+production"), fills them in when writing finishes (`idea`), or marks them `failed` with the reason. A `scripting` draft
+older than `SCRIPTING_STALE_MINUTES` (15) lost its writer to a restart: it is reported as failed and no longer blocks
+regenerating. It cannot be rendered, reviewed or archived while being written.
+

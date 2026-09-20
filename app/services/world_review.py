@@ -78,8 +78,10 @@ def accuracy_signal(grounding: Optional[dict]) -> Optional[int]:
     return max(0, 100 - 30 * len(grounding.get("unsupported_claims") or []))
 
 
-def _prompt(script_result: dict, title: str, duration_seconds, source_facts: str) -> str:
-    return f"""You are a blunt, strict short-form video editor reviewing the script of a {duration_seconds}s factual video about "{title}". Viewers scroll past anything slow, list-like or static. Most first drafts are mediocre; a score above 80 is rare and must be earned.
+def _prompt(script_result: dict, title: str, duration_seconds, source_facts: str, era: Optional[dict] = None) -> str:
+    period = (f'\nThe video is set in {era["label"]}. Every object, building, garment and technology must have existed '
+              "then and there.\n") if era and era.get("label") else ""
+    return f"""You are a blunt, strict short-form video editor reviewing the script of a {duration_seconds}s factual video about "{title}".{period} Viewers scroll past anything slow, list-like or static. Most first drafts are mediocre; a score above 80 is rare and must be earned.
 
 VERIFIED SOURCE MATERIAL (the only allowed source of facts):
 {(source_facts or "").strip()[:1800]}
@@ -96,8 +98,10 @@ Score each dimension 0-100 with a one-sentence note that names the exact shot or
 
 Then give at most {MAX_SUGGESTIONS} suggestions, worst problem first. Each names the shot number (null for the whole video), the dimension, the problem, and a concrete fix that quotes replacement wording where possible. The opening is shot 1's narration line (there is no separate title): a hook problem is always shot 1, and its fix is a replacement line for shot 1. A visual problem's fix names one specific event. Never suggest adding a fact that is not in the source material.
 
+List in "anachronisms" every object, building, garment, vehicle or technology in the script that did not exist in the period above (an empty list if none, or if no period is given).
+
 Return ONLY valid JSON:
-{{"dimensions": {{"hook": {{"score": int, "note": string}}, "story": {{...}}, "dynamism": {{...}}, "narration": {{...}}, "visuals": {{...}}}}, "suggestions": [{{"shot": int|null, "dimension": string, "issue": string, "fix": string}}], "summary": "one or two sentences: the overall verdict"}}"""
+{{"dimensions": {{"hook": {{"score": int, "note": string}}, "story": {{...}}, "dynamism": {{...}}, "narration": {{...}}, "visuals": {{...}}}}, "suggestions": [{{"shot": int|null, "dimension": string, "issue": string, "fix": string}}], "anachronisms": [string], "summary": "one or two sentences: the overall verdict"}}"""
 
 
 def _clean_suggestions(raw) -> list[dict]:
@@ -119,21 +123,25 @@ def _clean_suggestions(raw) -> list[dict]:
 
 
 def review_world_script(script_result: dict, title: str, duration_seconds, source_facts: str,
-                        grounding: Optional[dict] = None) -> dict:
+                        grounding: Optional[dict] = None, era: Optional[dict] = None) -> dict:
     """Score a World script. Returns a dict that also carries the keys the toons UI/regenerate flow reads
     (comedy_score, passes_bar, feedback, judge_failed): {score, comedy_score, passes_bar, feedback,
     judge_failed, dimensions: {name: {score, weight, note}}, suggestions: [{shot, dimension, issue, fix}],
     review_version}. Fails open: if the critic call fails, score is None and only the measurable
     dimensions are filled in."""
+    from app.services.world_era import find_anachronisms
+
     shots = script_result.get("shots")
     llm = {}
+    llm_anachronisms: list = []
     summary = ""
     suggestions: list[dict] = []
     failed = False
     try:
-        parsed = _call_llm_json(_prompt(script_result, title, duration_seconds, source_facts),
+        parsed = _call_llm_json(_prompt(script_result, title, duration_seconds, source_facts, era),
                                 temperature=0.1, max_tokens=1100)
         llm = parsed.get("dimensions") or {}
+        llm_anachronisms = [str(a).strip()[:80] for a in (parsed.get("anachronisms") or []) if str(a).strip()]
         summary = str(parsed.get("summary") or "").strip()
         suggestions = _clean_suggestions(parsed.get("suggestions"))
     except ToonScriptGenerationError as exc:
@@ -143,6 +151,15 @@ def review_world_script(script_result: dict, title: str, duration_seconds, sourc
     def llm_score(name):
         entry = llm.get(name) if isinstance(llm.get(name), dict) else {}
         return _clamp(entry.get("score")), str(entry.get("note") or "").strip()
+
+    # Period errors: the objects our own word lists know did not exist yet (certain), plus whatever the
+    # critic noticed. Each one costs accuracy, and any one blocks a pass.
+    anachronisms: list[str] = []
+    for shot in shots or []:
+        text = " ".join(str(shot.get(k) or "") for k in ("subject_visual", "visual", "location", "action"))
+        anachronisms += [w for w in find_anachronisms(text, era) if w not in anachronisms]
+    anachronisms += [a for a in llm_anachronisms if a.lower() not in {x.lower() for x in anachronisms}]
+    anachronisms = anachronisms[:8] if (era and era.get("label")) else []
 
     dims: dict[str, dict] = {}
     for name, (weight, _) in DIMENSIONS.items():
@@ -155,6 +172,9 @@ def review_world_script(script_result: dict, title: str, duration_seconds, sourc
             score = measured if score is None else (score if measured is None else round(0.6 * score + 0.4 * measured))
         elif name == "accuracy":
             score = accuracy_signal(grounding)
+            if anachronisms:
+                score = min(100 if score is None else score, max(0, 100 - 25 * len(anachronisms)))
+                note = "Not from this period: " + ", ".join(anachronisms)
         dims[name] = {"score": score, "weight": weight, "note": note}
 
     scored = [d for d in dims.values() if d["score"] is not None]
@@ -163,7 +183,8 @@ def review_world_script(script_result: dict, title: str, duration_seconds, sourc
     passes = None
     if overall is not None:
         grounded = (grounding or {}).get("grounded")
-        passes = overall >= PASS_SCORE and all(d["score"] >= DIMENSION_FLOOR for d in scored) and grounded is not False
+        passes = (overall >= PASS_SCORE and all(d["score"] >= DIMENSION_FLOOR for d in scored)
+                  and grounded is not False and not anachronisms)
 
     feedback = summary
     if suggestions:
@@ -171,6 +192,7 @@ def review_world_script(script_result: dict, title: str, duration_seconds, sourc
     return {
         "score": overall, "comedy_score": overall, "passes_bar": passes, "feedback": feedback or None,
         "judge_failed": failed, "dimensions": dims, "suggestions": suggestions, "review_version": REVIEW_VERSION,
+        "anachronisms": anachronisms, "era": era if era and era.get("label") else None,
     }
 
 
@@ -192,4 +214,4 @@ def review_view(judgment: Optional[dict]) -> Optional[dict]:
     if not judgment or "dimensions" not in judgment:
         return None
     return {k: judgment.get(k) for k in ("score", "passes_bar", "feedback", "judge_failed", "dimensions",
-                                         "suggestions", "auto_improved", "first_score")}
+                                         "suggestions", "auto_improved", "first_score", "anachronisms", "era")}

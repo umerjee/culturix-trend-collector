@@ -1581,7 +1581,7 @@ def _world_context(region_label: str, subject_text: str, subject_category: Optio
                     source_facts: Optional[str] = None, source_label: Optional[str] = None,
                     avoid_claims: Optional[list] = None, visual_fixes: Optional[list] = None,
                     scene_briefs: Optional[list] = None, previous_draft: Optional[dict] = None,
-                    improvements: Optional[list] = None) -> str:
+                    improvements: Optional[list] = None, era: Optional[dict] = None) -> str:
     """Builds the "context" string for generate_world_script, in the same
     role _source_type_and_context plays for the Persona/Cluster path — the
     thing a subject-centric World Feature is grounded in isn't a trending
@@ -1627,6 +1627,19 @@ def _world_context(region_label: str, subject_text: str, subject_category: Optio
             "duration. (4) Every subject_visual is a concrete, filmable real-world scene (light, "
             "scale, motion, camera move) — no text overlays, maps-with-labels or infographics."
         )
+    if era and era.get("label"):
+        from app.services.world_era import band_for, year_text
+        span = year_text(era["start_year"]) + (f" to {year_text(era['end_year'])}" if era["end_year"] != era["start_year"] else "")
+        context += (
+            f"\n\nPERIOD: this video is set in {era['label']} ({span}). Every person, building, tool, vehicle, "
+            "weapon, garment and material in every visual must be something that existed in that place and "
+            "time, described with that period's own materials, clothing and objects."
+        )
+        if band_for(era):
+            context += (
+                " Nothing modern may appear anywhere: no engines, cars, trucks, jeeps, aircraft, electric light, "
+                "factories, chimneys, asphalt, khaki or any modern clothing, and no modern-looking buildings."
+            )
     if avoid_claims:
         context += (
             "\n\nA previous draft made these UNSUPPORTED claims — do not repeat them:\n"
@@ -1783,6 +1796,12 @@ _AMBIENT_LIFE = re.compile(
     r"a variety of|various)\b", re.IGNORECASE)
 
 
+# A picture of information rather than a place: a video model renders it as a flat card with garbled text.
+_NOT_A_SCENE = re.compile(
+    r"\b(maps?|infographics?|diagrams?|charts?|timelines?|title cards?|text overlays?|captions?|graphics?|"
+    r"globes?|illustrations? of|painting of|drawing of)\b", re.IGNORECASE)
+
+
 def check_world_action(shots: Optional[list]) -> list[str]:
     """A subject visual that is ambient life ("villagers going about their day", "a bustling market")
     instead of one event. Measured on a real draft: the AI reviewer scored such a script 67 for
@@ -1791,6 +1810,10 @@ def check_world_action(shots: Optional[list]) -> list[str]:
     for shot in shots or []:
         if (shot.get("shot_focus") or "").strip().lower() != "subject":
             continue
+        card = _NOT_A_SCENE.search(shot.get("subject_visual") or "")
+        if card:
+            problems.append(f'Shot {shot.get("shot_number")}: "{card.group(0)}" is not a filmable scene. Show a real '
+                            "place, people or objects doing something, not a map, graphic or text.")
         match = _AMBIENT_LIFE.search(shot.get("subject_visual") or "")
         if match:
             problems.append(f'Shot {shot.get("shot_number")}: "{match.group(0)}" describes ambient life, not an event. '
@@ -1888,7 +1911,8 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
                            visual_fixes: Optional[list] = None,
                            scene_briefs: Optional[list] = None,
                            previous_draft: Optional[dict] = None,
-                           improvements: Optional[list] = None) -> dict:
+                           improvements: Optional[list] = None,
+                           era: Optional[dict] = None) -> dict:
     """Generates a World Feature script — a subject-centric video (a place,
     phenomenon, or species is the star) grounded in real region-filtered
     Trend rows and (optionally) the shared Culture library, for the public
@@ -1915,7 +1939,7 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
     context = _world_context(region_label, subject_text, subject_category, trends, culture,
                              source_facts=source_facts, source_label=source_label, avoid_claims=avoid_claims,
                              visual_fixes=visual_fixes, scene_briefs=scene_briefs,
-                             previous_draft=previous_draft, improvements=improvements)
+                             previous_draft=previous_draft, improvements=improvements, era=era)
     if not variants:
         # cast_line is empty with no variants (see _cast_line), which on its
         # own leaves the craft guidance's "use the cast to carry the
@@ -1929,7 +1953,7 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
             "name, or describe any narrator/host appearing in frame. "
             "PEOPLE: every shot has a \"people\" field. The default is \"none\": the renderer then adds "
             "\"no people in frame\", so the subject_visual must show none (landscape, structures, "
-            "objects, vehicles, ships, aircraft, weather, light, camera movement). When the event IS its "
+            "objects, animals, ships, weather, light, camera movement: only things that existed in the period). When the event IS its "
             "people (a landing, a march, a ceremony, a crowd) set \"people\": \"distant\" on the shots "
             "that show them, and describe them only as small, distant, faceless groups in WIDE shots: "
             "never faces, never close-ups, no graphic violence, and no named units, insignia or "
@@ -1945,8 +1969,7 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
             "\"static\": use tracking, dolly, push_in, pull_out, crane, pan_left, pan_right, tilt or "
             "orbit) and shot_type should vary across the video. NARRATION LENGTH: each shot's dialogue is "
             "14 to 18 words (about 6 to 7 seconds spoken), so shots stay near 8 seconds: a long shot renders "
-            "as a slow, static scene, and a very short line leaves the shot silent. People wear what the era and event require (for 1944 soldiers: helmets "
-            "and drab olive or khaki uniforms), never bright modern clothing.\n"
+            "as a slow, static scene, and a very short line leaves the shot silent. People wear what the period and place required, never modern clothing.\n"
             "NO AMBIENT LIFE: never write that people 'go about their daily lives', that a place is 'bustling', "
             "'thriving', 'vibrant' or 'peaceful', or that people 'interact'. That is scenery. Each subject_visual is "
             "ONE specific event with a clear before and after, naming who does what to what.\n"

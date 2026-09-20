@@ -1509,7 +1509,7 @@ class TestWorldMotionRule:
         client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
         generate_world_script(region_code="FR", region_label="France", subject_text="D-Day landings")
         prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
-        assert "14 to 18 words" in prompt and "never bright modern clothing" in prompt
+        assert "14 to 18 words" in prompt and "never modern clothing" in prompt
 
     @pytest.mark.parametrize("visual", [
         "Airborne troops descending by parachute, aircraft streaking overhead, soldiers running and dodging gunfire",
@@ -1629,3 +1629,26 @@ class TestAmbientLifeCheck:
         from app.services.culturetoon_script import check_world_action
         assert check_world_action([self._shot("Riders travel various roads... a variety")]) != []   # real hits still flagged
         assert check_world_action([self._shot("Warriors variegate the banner as it unfurls")]) == []
+
+
+class TestNotAFilmableScene:
+    @pytest.mark.parametrize("visual", [
+        "A map of the Mediterranean shows the empire's territories",
+        "An animated map reveals the borders as the camera tilts",
+        "An infographic of the trade routes",
+        "A timeline of the republic fills the screen",
+        "A globe spins slowly",
+    ])
+    def test_maps_and_graphics_are_flagged(self, visual):
+        from app.services.culturetoon_script import check_world_action
+        problems = check_world_action([{"shot_number": 3, "shot_focus": "subject", "subject_visual": visual}])
+        assert len(problems) == 1 and problems[0].startswith("Shot 3:") and "not a filmable scene" in problems[0]
+
+    @pytest.mark.parametrize("visual", [
+        "Legionaries march across a stone bridge as banners snap in the wind",
+        "A mapmaker unrolls a scroll on a wooden table",             # a person doing something, not a map on screen
+        "Traders unload clay amphorae from a ship as gulls wheel overhead",
+    ])
+    def test_real_scenes_are_not(self, visual):
+        from app.services.culturetoon_script import check_world_action
+        assert not any("filmable" in p for p in check_world_action([{"shot_number": 1, "shot_focus": "subject", "subject_visual": visual}]))

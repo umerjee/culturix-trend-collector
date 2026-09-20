@@ -111,3 +111,75 @@ class TestPreviewMatchesTheRender:
                               {0: SimpleNamespace(image_url="https://cdn/0.jpg", name="s")})
         get.assert_not_called()
         run.assert_not_called()
+
+
+ROME = {"label": "Ancient Rome, 753 BC to 27 BC", "start_year": -753, "end_year": -27}
+
+
+def _era_script(era, shots=None):
+    script = _script(shots or [_shot(1), _shot(2)])
+    script.comedy_judgment = {"era": era} if era else {}
+    return script
+
+
+class TestEraInThePrompt:
+    """A render of Rome in 753 BC showed jeeps: the prompt never said when it was set and the boilerplate asked
+    for 'vehicles'. Every segment now opens with the era, and no World prompt names a vehicle."""
+
+    def test_every_segment_opens_with_the_era_and_what_the_period_looked_like(self):
+        plan = v.plan_ltx25_segments(_era_script(ROME), [], None, None)
+        assert len(plan) == 2
+        for seg in plan:
+            assert seg["prompt"].startswith("Ancient Rome, 753 BC to 27 BC. Set in the ancient world")
+            assert "terracotta" in seg["prompt"] and "Everything on screen belongs to this period" in seg["prompt"]
+
+    def test_the_era_comes_before_the_premise_and_the_shot(self):
+        prompt = v.plan_ltx25_segments(_era_script(ROME), [], None, None)[0]["prompt"]
+        assert prompt.index("Ancient Rome") < prompt.index("Premise:") < prompt.index("SHOT 1")
+
+    @pytest.mark.parametrize("era", [ROME, None, {"label": "Normandy, June 1944", "start_year": 1944, "end_year": 1944}])
+    def test_no_prompt_asks_the_model_to_animate_vehicles(self, era):
+        for seg in v.plan_ltx25_segments(_era_script(era), [], None, None):
+            assert "vehicle" not in seg["prompt"].lower()
+            assert "everything in the scene that can move keeps moving" in seg["prompt"]
+
+    def test_a_script_with_no_era_is_prompted_exactly_as_before_apart_from_the_motion_line(self):
+        prompt = v.plan_ltx25_segments(_era_script(None), [], None, None)[0]["prompt"]
+        assert prompt.startswith("Premise: Premise")
+
+    def test_a_toon_script_is_untouched(self):
+        # Toon scripts carry a comedy judgment too, but never an era.
+        script = _script([_shot(1)])
+        script.comedy_judgment = {"comedy_score": 70, "passes_bar": True}
+        assert not v.plan_ltx25_segments(script, [], None, None)[0]["prompt"].startswith("Ancient")
+        assert v.script_era(SimpleNamespace(comedy_judgment=None)) is None
+        assert v.script_era(SimpleNamespace(comedy_judgment="not a dict")) is None
+        assert v.script_era(SimpleNamespace()) is None
+
+
+class TestEraNegativePrompt:
+    def test_an_ancient_script_adds_the_modern_things_to_the_negative_prompt(self):
+        neg = v.plan_ltx25_segments(_era_script(ROME), [], None, None)[0]["negative_prompt"]
+        assert neg.startswith("blurry") and "cars, trucks, jeeps" in neg and "asphalt roads" in neg and "khaki" in neg
+
+    def test_a_modern_or_unknown_era_keeps_the_standard_negative_prompt(self):
+        from app.media import ltx25_workflow
+        for era in (None, {"label": "Normandy, June 1944", "start_year": 1944, "end_year": 1944}):
+            neg = v.plan_ltx25_segments(_era_script(era), [], None, None)[0]["negative_prompt"]
+            assert neg == ltx25_workflow.DEFAULT_NEGATIVE_PROMPT
+
+    def test_the_render_sends_exactly_the_negative_prompt_the_preview_shows(self, stubs):
+        script = _era_script(ROME)
+        plan = v.plan_ltx25_segments(script, [], None, None)
+        v.generate_toon_video_ltx25(script, [], "endpoint")
+        sent = [c.kwargs["negative_prompt"] for c in stubs.build.call_args_list]
+        assert sent == [seg["negative_prompt"] for seg in plan] and "jeeps" in sent[0]
+        assert _rendered_prompts(stubs) == [seg["prompt"] for seg in plan]
+
+    def test_a_hosted_video_gets_the_era_negative_prompt_too(self, stubs):
+        zara = _variant("z", "Zara")
+        shots = [_shot(1, seconds=8, focus="character", speaker_variant_id="z", scene_index=0, people=None,
+                       dialogue="Hi", narration=None)]
+        script = _era_script(ROME, shots)
+        v.generate_toon_video_ltx25(script, [zara], "endpoint")
+        assert "jeeps" in stubs.build.call_args.kwargs["negative_prompt"]
