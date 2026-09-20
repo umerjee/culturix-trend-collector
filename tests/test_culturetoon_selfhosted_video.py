@@ -1153,7 +1153,7 @@ class TestExternalNarrationAndScriptStyle:
             {"shot_number": 1, "shot_focus": "subject", "narration": "external",
              "subject_visual": "an empty beach", "dialogue": "The largest invasion in history."},
         ]), [])
-        assert "No one speaks in this shot" in prompt and "ambient sound only" in prompt
+        assert "No one speaks in this shot" in prompt and "only the natural sounds of the place" in prompt
         assert "a voice is heard" not in prompt and "The largest invasion in history" not in prompt
 
     def test_without_the_flag_the_video_model_still_speaks_the_line(self, mocker):

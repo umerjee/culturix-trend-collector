@@ -192,3 +192,123 @@ class TestDetermine:
         self._llm(mocker, {"label": "Rome", "start_year": -27, "end_year": -753})
         era = we.determine_world_era("Rome", "no years here")
         assert (era["start_year"], era["end_year"]) == (-753, -27)
+
+
+KINGDOM = {"from_year": -753, "to_year": -509, "label": "Roman Kingdom",
+           "look": "Simple huts of wattle and daub with thatched roofs. Narrow unpaved dirt paths.",
+           "avoid": ["marble", "columns", "tile", "aqueducts"]}
+REPUBLIC = {"from_year": -508, "to_year": -27, "label": "Roman Republic",
+            "look": "Stone and brick buildings with tiled roofs and paved streets.", "avoid": ["concrete", "domes"]}
+ROME_PHASES = {"label": "Ancient Rome, 753 BC to 27 BC", "start_year": -753, "end_year": -27, "phases": [KINGDOM, REPUBLIC]}
+
+
+def _shot(n, dialogue="", visual="Villagers run past huts", **kw):
+    return {"shot_number": n, "dialogue": dialogue, "subject_visual": visual, **kw}
+
+
+class TestPhaseLookup:
+    @pytest.mark.parametrize("year,label", [(-753, "Roman Kingdom"), (-509, "Roman Kingdom"), (-508, "Roman Republic"),
+                                            (-27, "Roman Republic"), (-900, "Roman Kingdom"), (100, "Roman Republic")])
+    def test_the_phase_containing_the_year_or_the_nearest_one(self, year, label):
+        assert we.phase_for_year(ROME_PHASES, year)["label"] == label
+
+    def test_no_phases_or_no_year(self):
+        assert we.phase_for_year(ROME, -700) is None and we.phase_for_year(None, -700) is None
+        assert we.phase_for_year(ROME_PHASES, None)["label"] == "Roman Kingdom"      # unknown year: the start of the story
+
+
+class TestShotYears:
+    def test_the_narrations_own_year_wins_over_the_writers(self):
+        shots = [_shot(1, "In 753 BC Rome began.", year=-27)]
+        assert we.shot_years(shots, ROME_PHASES) == [-753]
+
+    def test_the_writers_year_is_used_when_the_narration_names_none(self):
+        assert we.shot_years([_shot(1, "Rome grew.", year=-509)], ROME_PHASES) == [-509]
+
+    @pytest.mark.parametrize("bad", [None, "1944", True, 99999, -99999])
+    def test_a_junk_writer_year_is_ignored(self, bad):
+        assert we.shot_years([_shot(1, "Rome grew.", year=bad)], ROME_PHASES) == [-753]     # falls back to the era's start
+
+    def test_a_shot_with_no_year_carries_the_previous_ones(self):
+        shots = [_shot(1, "By 509 BC it was a republic."), _shot(2, "It expanded."), _shot(3, "Later still.")]
+        assert we.shot_years(shots, ROME_PHASES) == [-509, -509, -509]
+
+    def test_assigning_periods_sets_the_year_and_the_phase_index(self):
+        shots = [_shot(1, "In 753 BC..."), _shot(2, "In 27 BC...")]
+        out = we.assign_shot_periods(shots, ROME_PHASES)
+        assert [(s["period_year"], s["period_phase"]) for s in out] == [(-753, 0), (-27, 1)]
+        assert "period_year" not in shots[0]                                               # inputs are not mutated
+
+    def test_an_era_without_phases_leaves_shots_unchanged(self):
+        assert we.assign_shot_periods([_shot(1, "In 753 BC")], ROME) == [_shot(1, "In 753 BC")]
+
+
+class TestPhasePromptAndChecks:
+    def test_the_prompt_line_describes_the_shots_own_place_and_year(self):
+        line = we.era_prompt_line(ROME_PHASES, KINGDOM, -753)
+        assert line == ("Ancient Rome, 753 BC to 27 BC. Roman Kingdom (753 BC): Simple huts of wattle and daub with thatched "
+                        "roofs. Narrow unpaved dirt paths. Everything on screen belongs to this period.")
+        assert "marble" not in line and "terracotta" not in line          # not the generic ancient-world description
+
+    def test_without_a_phase_it_falls_back_to_the_generic_band(self):
+        assert "terracotta" in we.era_prompt_line(ROME_PHASES, None, None)
+
+    def test_the_negative_terms_add_what_did_not_exist_in_that_phase(self):
+        neg = we.era_negative_terms(ROME_PHASES, KINGDOM)
+        assert neg.startswith("cars, trucks") and neg.endswith("marble, columns, tile, aqueducts")
+        assert we.era_negative_terms(ROME_PHASES, REPUBLIC).endswith("concrete, domes")
+        assert we.era_negative_terms(NORMANDY, KINGDOM) == ""
+
+    def test_a_phase_term_is_matched_as_a_whole_word_and_plural(self):
+        assert we.find_anachronisms("Marble columns rise", ROME_PHASES, KINGDOM) == ["marble", "columns"]
+        assert we.find_anachronisms("A column of soldiers marches", ROME_PHASES, KINGDOM) == []       # 'column' is not 'columns'
+        assert we.find_anachronisms("Tiles glint on a roof", ROME_PHASES, KINGDOM) == ["tile"]
+        assert we.find_anachronisms("The marbled sky", ROME_PHASES, KINGDOM) == []
+
+    def test_each_shot_is_checked_against_its_own_phase(self):
+        shots = [_shot(1, "In 753 BC Rome began.", visual="Marble columns rise over huts"),
+                 _shot(2, "In 27 BC an empire.", visual="Marble columns rise over a forum")]
+        problems = we.check_world_anachronisms(shots, ROME_PHASES)
+        assert len(problems) == 1 and problems[0].startswith("Shot 1:") and "Roman Kingdom (753 BC)" in problems[0]
+
+    def test_a_later_phase_may_have_what_an_earlier_one_did_not(self):
+        assert we.check_world_anachronisms([_shot(1, "In 27 BC an empire.", visual="A tiled roof over a stone forum")], ROME_PHASES) == []
+
+
+class TestPeriodPhasesFromTheModel:
+    def _llm(self, mocker, payload=None, error=None):
+        return mocker.patch("app.services.culturetoon_script._call_llm_json", return_value=payload, side_effect=error)
+
+    def test_phases_are_cleaned_ordered_and_capped(self, mocker):
+        raw = [{"from_year": -508, "to_year": -27, "label": "Republic", "look": "Brick.", "avoid": ["Domes", "domes", "x", " concrete "]},
+               {"from_year": -753, "to_year": -509, "label": "Kingdom", "look": "Huts.", "avoid": ["marble"] * 3},
+               {"from_year": "no", "to_year": 1, "label": "bad", "look": "x"}, {"label": "no years", "look": "x"}, "junk",
+               {"from_year": 1, "to_year": 2, "label": "", "look": "no label"}] + \
+              [{"from_year": i, "to_year": i + 1, "label": f"p{i}", "look": "l"} for i in range(10, 20)]
+        self._llm(mocker, {"phases": raw})
+        phases = we.period_phases("Ancient Rome", -753, -27, "Rome", "facts")
+        assert [p["label"] for p in phases][:2] == ["Kingdom", "Republic"] and len(phases) == we.MAX_PHASES
+        assert phases[0]["avoid"] == ["marble"] and phases[1]["avoid"] == ["domes", "concrete"]     # lowercased, de-duplicated, short ones dropped
+
+    def test_the_prompt_asks_for_certainty_and_gives_the_period(self, mocker):
+        call = self._llm(mocker, {"phases": []})
+        we.period_phases("Ancient Rome, 753 BC to 27 BC", -753, -27, "Rise of Rome", "Rome was founded")
+        prompt = call.call_args.args[0]
+        assert "753 BC to 27 BC" in prompt and "CERTAIN" in prompt and "Rome was founded" in prompt
+
+    def test_a_failed_call_is_no_phases(self, mocker):
+        self._llm(mocker, error=ToonScriptGenerationError("down"))
+        assert we.period_phases("x", -753, -27, "t", "f") == []
+
+    def test_attach_adds_phases_once_and_only_for_an_era_that_needs_them(self, mocker):
+        call = mocker.patch("app.services.world_era.period_phases", return_value=[KINGDOM])
+        attached = we.attach_phases(ROME, "Rome", "facts")
+        assert attached["phases"] == [KINGDOM] and attached["label"] == ROME["label"]
+        assert we.attach_phases(attached, "Rome", "facts") is attached           # already has them
+        assert we.attach_phases(NORMANDY, "D-Day", "facts") is NORMANDY          # a modern era needs none
+        assert we.attach_phases(None, "x", "y") is None
+        assert call.call_count == 1
+
+    def test_a_failed_description_leaves_the_era_as_it_was(self, mocker):
+        mocker.patch("app.services.world_era.period_phases", return_value=[])
+        assert we.attach_phases(ROME, "Rome", "facts") is ROME

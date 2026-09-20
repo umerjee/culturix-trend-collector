@@ -85,7 +85,9 @@ _FIREARMS = (
 _PERIOD_NEGATIVE_COMMON = (
     "cars, trucks, jeeps, motor vehicles, motorboats, steamships, aircraft, helicopters, asphalt roads, power "
     "lines, street lamps, electric lights, factories, smokestacks, skyscrapers, modern buildings, sash windows, "
-    "khaki and olive-drab uniforms, canvas army tents, modern clothing, road signs, billboards"
+    "khaki and olive-drab uniforms, canvas army tents, modern clothing, road signs, billboards, aerial view of a "
+    "modern city, modern town, suburban houses, uniform tiled roofs, window shutters, satellite dishes, street "
+    "markings, shop signs, parked cars"
 )
 
 ERA_BANDS = [
@@ -137,24 +139,34 @@ def band_for(era: Optional[dict]) -> Optional[dict]:
     return None
 
 
-def era_prompt_line(era: Optional[dict]) -> str:
-    """The sentence every video segment opens with. Positive wording only."""
+def era_prompt_line(era: Optional[dict], phase: Optional[dict] = None, year: Optional[int] = None) -> str:
+    """The sentence every video segment opens with. Positive wording only. With a `phase` (what the place looked
+    like at that time, see period_phases) the description is specific to the place and year; without one it is
+    the generic description of the whole era (which, for 753 BC, produced marble columns and multi-storey stone
+    streets: the model's idea of "ancient")."""
     if not era or not era.get("label"):
         return ""
     label = era["label"].strip().rstrip(".")
+    if phase and phase.get("look"):
+        when = f" ({year_text(year)})" if year is not None else ""
+        return f"{label}. {phase['label']}{when}: {phase['look'].strip().rstrip('.')}. Everything on screen belongs to this period."
     band = band_for(era)
     if band:
         return f"{label}. Set in {band['look']}. Everything on screen belongs to this period."
     return f"{label}. Everything on screen belongs to this time and place."
 
 
-def era_negative_terms(era: Optional[dict]) -> str:
+def era_negative_terms(era: Optional[dict], phase: Optional[dict] = None) -> str:
     band = band_for(era)
-    return band["negative"] if band else ""
+    parts = [band["negative"]] if band else []
+    if band and phase and phase.get("avoid"):
+        parts.append(", ".join(phase["avoid"]))
+    return ", ".join(parts)
 
 
-def find_anachronisms(text: str, era: Optional[dict]) -> list[str]:
-    """Distinct words in `text` naming something that did not exist in the era ([] for a modern era)."""
+def find_anachronisms(text: str, era: Optional[dict], phase: Optional[dict] = None) -> list[str]:
+    """Distinct words in `text` naming something that did not exist in the era, or in this phase of it
+    ([] for a modern era)."""
     band = band_for(era)
     if not band or not text:
         return []
@@ -163,23 +175,133 @@ def find_anachronisms(text: str, era: Optional[dict]) -> list[str]:
         word = match.group(0).lower()
         if word not in found:
             found.append(word)
+    for term in (phase or {}).get("avoid") or []:
+        if term.lower() not in found and re.search(rf"\b{re.escape(term)}(?:s|es)?\b", text, re.IGNORECASE):
+            found.append(term.lower())
     return found
 
 
 def check_world_anachronisms(shots: Optional[list], era: Optional[dict]) -> list[str]:
-    """One problem per subject shot whose visual or location names something that did not exist in the era."""
+    """One problem per subject shot whose visual or location names something that did not exist in the era, or
+    in the phase of it the shot's own year falls in."""
     if not band_for(era):
         return []
     problems = []
-    for shot in shots or []:
+    phases = shot_phases(shots, era)
+    for shot, (phase, year) in zip(shots or [], phases):
         text = " ".join(str(shot.get(k) or "") for k in ("subject_visual", "visual", "location", "action"))
-        words = find_anachronisms(text, era)
+        words = find_anachronisms(text, era, phase)
         if words:
+            where = f"{phase['label']} ({year_text(year)})" if phase and year is not None else era["label"]
             problems.append(
                 f"Shot {shot.get('shot_number')}: {', '.join(repr(w) for w in words)} did not exist in "
-                f"{era['label']}. Remove it and show only things that existed in that period."
+                f"{where}. Remove it and show only things that existed then."
             )
     return problems
+
+
+# ---- phases: what the place looked like when -------------------------------------------------------
+
+MAX_PHASES = 4
+
+
+def phase_for_year(era: Optional[dict], year: Optional[int]) -> Optional[dict]:
+    """The phase of the era that contains `year` (the nearest one if it falls in a gap), or None."""
+    phases = (era or {}).get("phases") or []
+    if not phases or year is None:
+        return phases[0] if phases and year is None else None
+    for phase in phases:
+        if phase["from_year"] <= year <= phase["to_year"]:
+            return phase
+    return min(phases, key=lambda ph: min(abs(year - ph["from_year"]), abs(year - ph["to_year"])))
+
+
+def shot_years(shots: Optional[list], era: Optional[dict]) -> list[Optional[int]]:
+    """The year each shot depicts: the year its own narration names, else the year the writer gave it, else the
+    previous shot's, else the start of the era. Narration wins because that is what the viewer is told."""
+    years, previous = [], None
+    for shot in shots or []:
+        named = parse_years(shot.get("dialogue") or "")
+        given = shot.get("year")
+        year = named[0] if named else (int(given) if isinstance(given, (int, float)) and not isinstance(given, bool)
+                                       and MIN_YEAR <= given <= MAX_YEAR else previous)
+        if year is None and era:
+            year = era.get("start_year")
+        years.append(year)
+        previous = year
+    return years
+
+
+def shot_phases(shots: Optional[list], era: Optional[dict]) -> list[tuple]:
+    """[(phase or None, year or None)] per shot."""
+    return [(phase_for_year(era, year), year) for year in shot_years(shots, era)]
+
+
+def assign_shot_periods(shots: Optional[list], era: Optional[dict]) -> list:
+    """Copies of the shots with `period_year` and `period_phase` (the phase's index) set, which is what the
+    renderer reads to describe each shot's own time and place. Unchanged copies when the era has no phases."""
+    out = []
+    phases = (era or {}).get("phases") or []
+    for shot, (phase, year) in zip(shots or [], shot_phases(shots, era)):
+        shot = dict(shot)
+        if phases and phase is not None:
+            shot["period_year"] = year
+            shot["period_phase"] = phases.index(phase)
+        out.append(shot)
+    return out
+
+
+def _clean_phases(raw, start: int, end: int) -> list[dict]:
+    phases = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        span = _valid(item.get("from_year"), item.get("to_year"))
+        look, label = str(item.get("look") or "").strip(), str(item.get("label") or "").strip()
+        if not span or not look or not label:
+            continue
+        avoid = []
+        for term in item.get("avoid") or []:
+            term = str(term).strip().lower()
+            if 2 <= len(term) <= 30 and term not in avoid:
+                avoid.append(term)
+        phases.append({"from_year": span[0], "to_year": span[1], "label": label[:60], "look": look[:420], "avoid": avoid[:10]})
+    return sorted(phases, key=lambda ph: ph["from_year"])[:MAX_PHASES]
+
+
+def period_phases(label: str, start: int, end: int, title: str, source_facts: str) -> list[dict]:
+    """Ask the model what the place looked like in each phase of the story: what buildings were made of and how
+    big they were, roofs, streets, clothing, tools, transport, plus the things that did not exist yet there. []
+    if it cannot be decided. This is what makes 753 BC Rome a village of thatched wattle-and-daub huts instead of
+    the generic "ancient world" of marble columns and stone streets that the model draws otherwise."""
+    from app.services.culturetoon_script import ToonScriptGenerationError, _call_llm_json
+
+    prompt = f"""Describe what this place looked like in each phase of the story, so a video shows only what existed then.
+
+Subject: {title}
+Place and period: {label} ({year_text(start)} to {year_text(end)})
+Source material: {(source_facts or '').strip()[:1200]}
+
+Return ONLY valid JSON: {{"phases": [{{"from_year": integer, "to_year": integer, "label": string, "look": string, "avoid": [string]}}]}}
+- 1 to {MAX_PHASES} phases, in time order, together covering {start} to {end} (BC years are negative integers). Use one phase if the period looked the same throughout.
+- label: a few words naming the phase.
+- look: 35 to 55 words, concrete and visual, written for a video model. It must state: what the buildings were made of, the tallest they got (in storeys) and their size, the roofs, the street layout and surface, the colour and weathering of the materials, what people wore, the tools, animals and transport, and the landscape. Describe a low, irregular, weathered place, never a tidy modern town: a video model given a vague "stone buildings with tiled roofs" draws a present-day Italian town with shutters and paved grids. Describe only what WAS there, in positive terms, exact for THIS place and time, not a generic "ancient" or "medieval" look.
+- avoid: up to 10 single words or two-word terms for things you are CERTAIN did not yet exist in that phase in that place and that a video model might wrongly draw (kinds of building, materials, structures, clothing, vehicles, technology). If you are not certain something was absent, leave it out: a wrong entry forbids something that really was there."""
+    try:
+        parsed = _call_llm_json(prompt, temperature=0.1, max_tokens=900)
+    except ToonScriptGenerationError as exc:
+        logger.warning("Could not describe the phases of %r: %s", label, exc)
+        return []
+    return _clean_phases(parsed.get("phases"), start, end)
+
+
+def attach_phases(era: Optional[dict], title: str, source_facts: str) -> Optional[dict]:
+    """The era with its phases, worked out if it has none yet. A modern era needs none; a failure leaves the era
+    as it was (the generic description of its band still applies)."""
+    if not era or not band_for(era) or era.get("phases"):
+        return era
+    phases = period_phases(era["label"], era["start_year"], era["end_year"], title, source_facts)
+    return {**era, "phases": phases} if phases else era
 
 
 # ---- deciding the era ---------------------------------------------------------------------------------

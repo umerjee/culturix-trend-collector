@@ -134,7 +134,8 @@ class TestEraInThePrompt:
             assert "terracotta" in seg["prompt"] and "Everything on screen belongs to this period" in seg["prompt"]
 
     def test_the_era_comes_before_the_premise_and_the_shot(self):
-        prompt = v.plan_ltx25_segments(_era_script(ROME), [], None, None)[0]["prompt"]
+        shots = [_shot(1, narration=None), _shot(2, narration=None)]      # a premise only exists without an external narrator
+        prompt = v.plan_ltx25_segments(_era_script(ROME, shots), [], None, None)[0]["prompt"]
         assert prompt.index("Ancient Rome") < prompt.index("Premise:") < prompt.index("SHOT 1")
 
     @pytest.mark.parametrize("era", [ROME, None, {"label": "Normandy, June 1944", "start_year": 1944, "end_year": 1944}])
@@ -144,7 +145,8 @@ class TestEraInThePrompt:
             assert "everything in the scene that can move keeps moving" in seg["prompt"]
 
     def test_a_script_with_no_era_is_prompted_exactly_as_before_apart_from_the_motion_line(self):
-        prompt = v.plan_ltx25_segments(_era_script(None), [], None, None)[0]["prompt"]
+        shots = [_shot(1, narration=None)]
+        prompt = v.plan_ltx25_segments(_era_script(None, shots), [], None, None)[0]["prompt"]
         assert prompt.startswith("Premise: Premise")
 
     def test_a_toon_script_is_untouched(self):
@@ -165,7 +167,8 @@ class TestEraNegativePrompt:
     def test_a_modern_or_unknown_era_keeps_the_standard_negative_prompt(self):
         from app.media import ltx25_workflow
         for era in (None, {"label": "Normandy, June 1944", "start_year": 1944, "end_year": 1944}):
-            neg = v.plan_ltx25_segments(_era_script(era), [], None, None)[0]["negative_prompt"]
+            shots = [_shot(1, narration=None)]
+            neg = v.plan_ltx25_segments(_era_script(era, shots), [], None, None)[0]["negative_prompt"]
             assert neg == ltx25_workflow.DEFAULT_NEGATIVE_PROMPT
 
     def test_the_render_sends_exactly_the_negative_prompt_the_preview_shows(self, stubs):
@@ -183,3 +186,105 @@ class TestEraNegativePrompt:
         script = _era_script(ROME, shots)
         v.generate_toon_video_ltx25(script, [zara], "endpoint")
         assert "jeeps" in stubs.build.call_args.kwargs["negative_prompt"]
+
+
+class TestNoSecondVoice:
+    """A render had TWO voices: the video model read the script's "Premise:" line aloud, three times, over the
+    separate narrator. Sentence-like text in a prompt gets spoken by a joint audio-video model."""
+
+    def test_an_externally_narrated_segment_has_no_premise(self):
+        for seg in v.plan_ltx25_segments(_era_script(ROME), [], None, None):
+            assert "Premise" not in seg["prompt"] and "Premise: Premise" not in seg["prompt"]
+
+    def test_the_hook_sentence_appears_nowhere_in_a_narrated_prompt(self):
+        script = _era_script(ROME)
+        script.hook_line = "In 509 BC, Rome's senators overthrew their king, igniting a republic."
+        for seg in v.plan_ltx25_segments(script, [], None, None):
+            assert "overthrew their king" not in seg["prompt"]
+
+    def test_a_video_that_is_not_externally_narrated_keeps_its_premise(self):
+        prompt = v.plan_ltx25_segments(_era_script(None, [_shot(1, narration=None)]), [], None, None)[0]["prompt"]
+        assert "Premise: Premise" in prompt
+
+    def test_a_mixed_segment_keeps_the_premise_since_not_every_line_is_external(self):
+        shots = [_shot(1), _shot(2, narration=None)]
+        script = _era_script(ROME, shots)
+        script.shots = shots
+        # both shots are one segment (8s + 8s > 15s splits them; use short shots)
+        script.shots = [_shot(1, seconds=5), _shot(2, seconds=5, narration=None)]
+        seg = v.plan_ltx25_segments(script, [], None, None)[0]
+        assert "Premise:" in seg["prompt"]
+
+    def test_the_negative_prompt_bans_speech_for_a_narrated_segment(self):
+        neg = v.plan_ltx25_segments(_era_script(ROME), [], None, None)[0]["negative_prompt"]
+        for word in ("speech", "voices", "talking", "crowd chatter", "voice-over"):
+            assert word in neg
+
+    def test_a_segment_with_its_own_dialogue_is_not_told_to_be_silent(self):
+        neg = v.plan_ltx25_segments(_era_script(None, [_shot(1, narration=None)]), [], None, None)[0]["negative_prompt"]
+        assert "crowd chatter" not in neg
+
+    def test_the_silence_line_names_natural_sounds_not_just_ambient(self):
+        prompt = v.plan_ltx25_segments(_era_script(ROME), [], None, None)[0]["prompt"]
+        assert "no talking or crowd chatter, only the natural sounds of the place" in prompt
+
+    def test_the_render_sends_the_same_speech_ban_it_previews(self, stubs):
+        script = _era_script(ROME)
+        plan = v.plan_ltx25_segments(script, [], None, None)
+        v.generate_toon_video_ltx25(script, [], "endpoint")
+        sent = [c.kwargs["negative_prompt"] for c in stubs.build.call_args_list]
+        assert sent == [seg["negative_prompt"] for seg in plan] and all("crowd chatter" in n for n in sent)
+
+
+KINGDOM = {"from_year": -753, "to_year": -509, "label": "Roman Kingdom",
+           "look": "Simple huts of wattle and daub with thatched roofs. Narrow unpaved dirt paths.",
+           "avoid": ["marble", "columns"]}
+REPUBLIC = {"from_year": -508, "to_year": -27, "label": "Roman Republic",
+            "look": "Stone and brick buildings with tiled roofs and paved streets.", "avoid": ["concrete"]}
+PHASED = {"label": "Ancient Rome, 753 BC to 27 BC", "start_year": -753, "end_year": -27, "phases": [KINGDOM, REPUBLIC]}
+
+
+class TestEachSegmentDescribesItsOwnPlaceAndYear:
+    def _script(self):
+        shots = [_shot(1, scene_index=0, period_year=-753, period_phase=0), _shot(2, scene_index=1, period_year=-27, period_phase=1)]
+        return _era_script(PHASED, shots)
+
+    def test_segments_in_different_phases_open_differently(self):
+        first, second = v.plan_ltx25_segments(self._script(), [], None, None)
+        assert "Roman Kingdom (753 BC): Simple huts of wattle and daub" in first["prompt"]
+        assert "Roman Republic (27 BC): Stone and brick buildings" in second["prompt"]
+        assert "terracotta" not in first["prompt"] + second["prompt"]                # not the generic description
+
+    def test_the_negative_prompt_bans_what_the_segments_phase_did_not_have(self):
+        first, second = v.plan_ltx25_segments(self._script(), [], None, None)
+        assert "marble, columns" in first["negative_prompt"]
+        assert "marble" not in second["negative_prompt"] and "concrete" in second["negative_prompt"]
+
+    def test_the_render_sends_the_same_phase_prompts_and_negatives_it_previews(self, stubs):
+        script = self._script()
+        plan = v.plan_ltx25_segments(script, [], None, None)
+        v.generate_toon_video_ltx25(script, [], "endpoint")
+        assert _rendered_prompts(stubs) == [seg["prompt"] for seg in plan]
+        assert [c.kwargs["negative_prompt"] for c in stubs.build.call_args_list] == [seg["negative_prompt"] for seg in plan]
+
+    def test_a_shot_without_a_period_falls_back_to_the_generic_era_description(self):
+        script = _era_script(PHASED, [_shot(1, scene_index=0)])
+        assert "terracotta" in v.plan_ltx25_segments(script, [], None, None)[0]["prompt"]
+
+
+class TestWriterPeriodGuide:
+    def test_the_writer_gets_each_phase_with_its_avoid_list_and_is_asked_for_a_year_per_shot(self):
+        from app.services.culturetoon_script import _world_context
+        context = _world_context("Italy", "Rome", "custom", era=PHASED)
+        assert "PERIOD GUIDE" in context and '"year"' in context
+        assert "Roman Kingdom (753 BC to 509 BC): Simple huts of wattle and daub" in context and "Never show: marble, columns." in context
+        assert "Roman Republic (508 BC to 27 BC)" in context and "Never draw something from a later phase" in context
+
+    def test_an_era_without_phases_has_no_guide(self):
+        from app.services.culturetoon_script import _world_context
+        assert "PERIOD GUIDE" not in _world_context("Italy", "Rome", "custom", era={**PHASED, "phases": []})
+
+    def test_the_output_schema_names_the_year_key_or_the_model_will_not_emit_it(self, mocker):
+        from app.services import culturetoon_script as cs
+        prompt = cs._build_prompt_from_context("real-world region/subject", "ctx", [], "informative", 3, 24)
+        assert "year (integer or null" in prompt

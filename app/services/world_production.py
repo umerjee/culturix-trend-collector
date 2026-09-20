@@ -241,7 +241,7 @@ def _compose_script(db, item, *, duration_seconds: int, beat_count: int, host, s
         check_world_action, check_world_motion, check_world_visuals, generate_world_script,
         judge_world_grounding, normalize_world_people,
     )
-    from app.services.world_era import check_world_anachronisms, widen_to_narration
+    from app.services.world_era import assign_shot_periods, check_world_anachronisms, widen_to_narration
     from app.services.world_review import review_world_script
 
     def _problems(shots):
@@ -267,6 +267,7 @@ def _compose_script(db, item, *, duration_seconds: int, beat_count: int, host, s
     def _settle(script):
         script["shots"], warnings = normalize_world_people(script.get("shots"))
         script["shots"] = _use_reference_people(script["shots"], scenes)
+        script["shots"] = assign_shot_periods(script["shots"], era)
         return script, (warnings + check_world_motion(script.get("shots")) + check_world_action(script.get("shots"))
                         + check_world_anachronisms(script.get("shots"), era))
 
@@ -302,6 +303,7 @@ def _compose_script(db, item, *, duration_seconds: int, beat_count: int, host, s
 
     # A script that names a year outside the era (the narration says "in 27 BC") widens the era to reach it.
     era = widen_to_narration(era, result.get("shots"))
+    result["shots"] = assign_shot_periods(result.get("shots"), era)
     review = review_world_script(result, item.title, duration_seconds, facts, grounding, era)
     return {"result": result, "grounding": grounding, "visual_warnings": visual_warnings, "review": review, "era": era}
 
@@ -401,7 +403,7 @@ def _generate_world_draft(db, item, duration_seconds, beat_count, use_host, pers
                           era_text, placeholder) -> dict:
     from app.models.trend import Trend
     from app.services.culturetoon_script import select_thematic_host
-    from app.services.world_era import determine_world_era, era_from_text
+    from app.services.world_era import attach_phases, determine_world_era, era_from_text
     from app.services.world_review import improvement_notes
 
     if visual_style is not None and visual_style not in WORLD_VISUAL_STYLES:
@@ -436,6 +438,7 @@ def _generate_world_draft(db, item, duration_seconds, beat_count, use_host, pers
         era = era_from_text(era_text) if (era_text or "").strip() else determine_world_era(item.title, facts)
     except ValueError as exc:
         raise WorldDraftError(str(exc)) from exc
+    era = attach_phases(era, item.title, facts)     # what the place looked like in each phase, for the writer and the renderer
     common = dict(duration_seconds=duration_seconds, beat_count=beat_count, host=host, scenes=scenes,
                   trends=trends, category=category, facts=facts, label=label, era=era)
 
@@ -505,18 +508,27 @@ def ensure_script_era(db, toon, script) -> Optional[dict]:
     default, the present day (jeeps at the huts). Best effort: None if it cannot be decided, and a failure
     here must never block a render."""
     judgment = script.comedy_judgment if isinstance(script.comedy_judgment, dict) else {}
-    if judgment.get("era"):
-        return judgment["era"]
     try:
         from app.models.curated_item import CuratedItem
-        from app.services.world_era import determine_world_era, widen_to_narration
+        from app.services.world_era import assign_shot_periods, attach_phases, band_for, determine_world_era, widen_to_narration
 
+        era = judgment.get("era")
         item = db.query(CuratedItem).filter_by(id=toon.curated_item_id).first() if toon.curated_item_id else None
-        if not item:
-            return None
-        era = widen_to_narration(determine_world_era(item.title, build_source_facts(item)), script.shots)
-        if era:
+        if not era:
+            if not item:
+                return None
+            era = widen_to_narration(determine_world_era(item.title, build_source_facts(item)), script.shots)
+        # A draft whose era has no phases yet (written before they existed) gets them now, and each shot its
+        # own period, so the render describes the right place for each shot's year.
+        needs_phases = (bool(era) and bool(band_for(era)) and not era.get("phases") and not era.get("phases_tried")
+                        and item is not None)
+        if needs_phases:
+            attached = attach_phases(era, item.title, build_source_facts(item))
+            # A failed description is remembered so a preview does not ask the model again every time.
+            era = attached if attached.get("phases") else {**era, "phases_tried": True}
+        if era and (era != judgment.get("era") or any("period_phase" not in s for s in (script.shots or []) if era.get("phases"))):
             script.comedy_judgment = {**judgment, "era": era}
+            script.shots = assign_shot_periods(script.shots, era)
             db.commit()
         return era
     except Exception:

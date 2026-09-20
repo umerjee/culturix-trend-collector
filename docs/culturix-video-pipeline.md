@@ -754,3 +754,25 @@ flagged; words scattered across sentences do not count). Curators can also edit 
 (`POST /admin/world-production/{id}/edit-script`), which re-runs the fact-check and score. Endpoint for the button:
 `POST .../fix-claims`. Only before a video exists.
 
+### A second voice, and buildings that look modern (2026-09-20, second pass on the Rome video)
+**Two voices.** Transcribing the finished Rome video showed the VIDEO MODEL reading the script's "Premise: ..." line aloud
+(three times, over the separate narrator). A joint audio-video model speaks any sentence-like text in its prompt.
+Fix: an externally narrated segment (`_all_narrated_externally`) gets NO "Premise:" line, a silence sentence naming natural
+sounds, and speech terms in its negative prompt (`_NARRATED_NEGATIVE`). Verified by transcribing the RAW model audio of four
+new segments: no speech. **Rule: never put a narration-like sentence in a video prompt whose audio is not meant to speak it.**
+Check any new prompt text by transcribing a raw render (faster-whisper on the segment mp4), not the muxed video.
+
+**Buildings.** One generic "ancient world" description (timber, mud brick, stone, terracotta tile) produced marble-column
+forums and multi-storey stone streets for 753 BC, and a present-day Italian town from the air for 27 BC. Now each era has
+PHASES (`period_phases`, `era["phases"]`): what the place looked like in each phase of the story (materials, tallest building in
+storeys, roofs, street layout and surface, weathering, clothing, tools, transport) plus what did NOT yet exist there. Each shot
+gets its own year (its narration's year, else the writer's `year`, else the previous shot's: `shot_years`) and phase index
+(`period_year`, `period_phase`), so shot 1 (753 BC) shows thatched wattle huts and dirt tracks and shot 4 (27 BC) shows
+brick and cut stone. The prompt opens with that phase, the negative prompt lists that phase's `avoid`, the writer gets a PERIOD
+GUIDE and must give every shot a `year`, and the anachronism check runs per shot against its own phase. Legacy drafts get
+phases at preview/render (`ensure_script_era`, remembered as `phases_tried` if the model fails).
+Measured on the GPU: 753 BC and 509 BC shots came out as thatched huts, dirt tracks, oxen and tunics; the 27 BC shots
+needed the description to state height, street layout and weathering and "modern town" terms in the negative prompt to stop
+becoming a modern Italian town from above. The model's own history is imperfect (it once listed "iron tools" and "wheeled
+carts" as not yet existing): the prompt asks for only things it is CERTAIN were absent. Generic vocabulary can never do this job.
+

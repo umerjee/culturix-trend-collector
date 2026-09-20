@@ -948,7 +948,8 @@ Return ONLY valid JSON with exactly these keys:
   shot_focus (string), subject_visual (string or null), voiceover (boolean),
   expression (string or null), dialogue (string or null),
   dialogue_delivery (string or null), shot_type (string), camera_movement (string or null),
-  people (string: "none", or "distant" or "reference" only where the PEOPLE rule in the context allows it; otherwise always "none"){scene_index_key}{speaker_key}
+  people (string: "none", or "distant" or "reference" only where the PEOPLE rule in the context allows it; otherwise always "none"),
+  year (integer or null: the calendar year this shot depicts, BC as a negative number, when the PERIOD GUIDE in the context asks for it; otherwise null){scene_index_key}{speaker_key}
 
 Return ONLY the JSON object, no other text."""
 
@@ -1639,6 +1640,19 @@ def _world_context(region_label: str, subject_text: str, subject_category: Optio
             context += (
                 " Nothing modern may appear anywhere: no engines, cars, trucks, jeeps, aircraft, electric light, "
                 "factories, chimneys, asphalt, khaki or any modern clothing, and no modern-looking buildings."
+            )
+        phases = era.get("phases") or []
+        if phases:
+            context += (
+                "\n\nPERIOD GUIDE. What this place looked like in each phase of the story. Every shot has a "
+                '"year": the calendar year its narration is about (BC as a negative integer). A shot\'s picture '
+                "must match the phase that contains its year and show only what that phase's description says "
+                "existed: its materials, building sizes, clothing and tools. Never draw something from a later "
+                "phase, however famous it is.\n"
+                + "\n".join(
+                    f"- {ph['label']} ({year_text(ph['from_year'])} to {year_text(ph['to_year'])}): {ph['look']}"
+                    + (f" Never show: {', '.join(ph['avoid'])}." if ph.get("avoid") else "")
+                    for ph in phases)
             )
     if avoid_claims:
         context += (

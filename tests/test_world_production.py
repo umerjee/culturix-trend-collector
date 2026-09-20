@@ -39,6 +39,7 @@ def llm(mocker):
                                return_value={"grounded": True, "unsupported_claims": [], "judge_failed": False}),
         review=mocker.patch("app.services.world_review.review_world_script", return_value=_review()),
         era=mocker.patch("app.services.world_era.determine_world_era", return_value=None),
+        phases=mocker.patch("app.services.world_era.period_phases", return_value=[]),
         claimfix=mocker.patch(base + "fix_unsupported_claims", return_value=None),
         host=mocker.patch(base + "select_thematic_host"),
     )
@@ -468,6 +469,7 @@ class TestImproveAndPreview:
     @pytest.fixture(autouse=True)
     def _no_era_model_call(self, mocker):
         mocker.patch("app.services.world_era.determine_world_era", return_value=None)
+        mocker.patch("app.services.world_era.period_phases", return_value=[])
 
     @pytest.fixture
     def db(self):
@@ -609,7 +611,7 @@ class TestImproveAndPreview:
         assert first["mode"] == "subject_only" and first["opening_frame"] == {
             "kind": "reference_photo", "url": "https://cdn/0.jpg", "name": "Scene 0"}
         assert first["image_strength"] == 0.5 and "Ships surge and smoke rolls" in first["prompt"]
-        assert "ambient sound only" in first["prompt"]           # the model is not asked to speak the line
+        assert "only the natural sounds of the place" in first["prompt"]           # the model is not asked to speak the line
         assert "watermark" in first["negative_prompt"] and preview["estimate"]["cost_usd"] > 0
 
     def test_preview_reports_a_narration_failure_before_any_gpu_is_spent(self, db, mocker):
@@ -915,6 +917,7 @@ class TestLegacyDraftsGetAnEraBeforeTheyRender:
                                                       ToonBackground.__table__])
         db = sessionmaker(bind=engine)()
         decide = mocker.patch("app.services.world_era.determine_world_era", return_value=ROME_ERA)
+        mocker.patch("app.services.world_era.period_phases", return_value=[])
         return db, decide
 
     @staticmethod
@@ -949,8 +952,9 @@ class TestLegacyDraftsGetAnEraBeforeTheyRender:
 
     def test_a_stored_era_is_used_without_asking_the_model_again(self, parts):
         db, decide = parts
-        toon, script = self._draft(db, judgment={"era": ROME_ERA, "score": 70})
-        assert wp.ensure_script_era(db, toon, script) == ROME_ERA
+        complete = {**ROME_ERA, "phases": [{"from_year": -753, "to_year": -27, "label": "Rome", "look": "Huts.", "avoid": []}]}
+        toon, script = self._draft(db, judgment={"era": complete, "score": 70})
+        assert wp.ensure_script_era(db, toon, script)["label"] == ROME_ERA["label"]
         decide.assert_not_called()
 
     def test_existing_judgment_fields_are_kept(self, parts):
@@ -1175,6 +1179,7 @@ class TestFixClaimsOnADraft:
     @pytest.fixture(autouse=True)
     def _isolate(self, mocker):
         mocker.patch("app.services.world_era.determine_world_era", return_value=None)
+        mocker.patch("app.services.world_era.period_phases", return_value=[])
 
     @pytest.fixture
     def db(self):
@@ -1365,3 +1370,101 @@ class TestFactCheckScope:
         assert "Headline: The US declared independence." in prompt and "Shot 1: In 1787 the Constitution was signed." in prompt
         assert "wax seal" not in prompt and "quill pen" not in prompt and "seals the document" not in prompt
         assert "checked separately" in prompt
+
+
+PHASES = [
+    {"from_year": -753, "to_year": -509, "label": "Roman Kingdom", "look": "Huts of wattle and daub with thatched roofs.", "avoid": ["marble"]},
+    {"from_year": -508, "to_year": -27, "label": "Roman Republic", "look": "Stone and brick buildings with tiled roofs.", "avoid": ["concrete"]},
+]
+
+
+class TestPhasesInProduction:
+    def _shots(self):
+        shots = _rome_shots("Villagers run past thatched huts as smoke drifts and water splashes", n=2)
+        shots["shots"][0]["dialogue"] = "In 753 BC Rome was a village."
+        shots["shots"][1]["dialogue"] = "By 27 BC it ruled the Mediterranean."
+        return shots
+
+    def test_the_writer_gets_the_phases_and_each_shot_is_given_its_own_period(self, llm):
+        llm.era.return_value = ROME_ERA
+        llm.phases.return_value = PHASES
+        llm.write.side_effect = [self._shots()]
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        assert llm.write.call_args.kwargs["era"]["phases"] == PHASES
+        assert [(s["period_year"], s["period_phase"]) for s in result["shots"]] == [(-753, 0), (-27, 1)]
+        assert result["judgment"]["era"]["phases"] == PHASES
+
+    def test_the_curators_period_gets_phases_too(self, llm):
+        llm.phases.return_value = PHASES
+        result = wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False, era_text="Rome, 753 BC to 27 BC")
+        assert result["judgment"]["era"]["source"] == "curator" and result["judgment"]["era"]["phases"] == PHASES
+
+    def test_a_marble_column_in_753_bc_triggers_the_rewrite_with_the_phase_named(self, llm):
+        llm.era.return_value = ROME_ERA
+        llm.phases.return_value = PHASES
+        bad = self._shots()
+        bad["shots"][0]["subject_visual"] = "Marble columns rise over the huts as smoke drifts and water splashes"
+        llm.write.side_effect = [bad, self._shots()]
+        wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        fixes = llm.write.call_args_list[1].kwargs["visual_fixes"]
+        assert any("'marble'" in f and "Roman Kingdom (753 BC)" in f for f in fixes)
+
+    def test_a_modern_era_gets_no_phases_and_no_model_call(self, llm):
+        llm.era.return_value = {"label": "Normandy, June 1944", "start_year": 1944, "end_year": 1944}
+        wp.generate_world_draft(None, _item(), duration_seconds=30, persist=False)
+        llm.phases.assert_not_called()
+
+
+class TestLegacyDraftsGetPhases:
+    _draft = staticmethod(TestLegacyDraftsGetAnEraBeforeTheyRender._draft)
+    parts = TestLegacyDraftsGetAnEraBeforeTheyRender.parts
+
+    def test_an_era_without_phases_is_upgraded_and_each_shot_gets_its_period(self, parts, mocker):
+        db, _ = parts
+        mocker.patch("app.services.world_era.period_phases", return_value=PHASES)
+        toon, script = self._draft(db, judgment={"era": ROME_ERA, "score": 60})
+        era = wp.ensure_script_era(db, toon, script)
+        assert era["phases"] == PHASES
+        db.refresh(script)
+        assert script.comedy_judgment["era"]["phases"] == PHASES and script.comedy_judgment["score"] == 60
+        assert script.shots[0]["period_phase"] == 1 and script.shots[0]["period_year"] == -27      # its narration says "in 27 BC"
+
+    def test_an_upgraded_draft_previews_with_its_own_phase_and_no_premise(self, parts, mocker):
+        from app.services import world_narration as wn
+        db, _ = parts
+        mocker.patch("app.services.world_era.period_phases", return_value=PHASES)
+        toon, script = self._draft(db, judgment={"era": ROME_ERA})
+        # built from the shots it is given, as the real one is: by then the upgrade has run
+        mocker.patch.object(wn, "prepare_narration_cached", side_effect=lambda shots, language="en": wn.NarrationPlan(
+            voice="v", language="en", lines=[], total_seconds=8.0,
+            shots=[dict(s, duration_seconds=8, narration="external") for s in shots]))
+        prompt = wp.preview_world_render(db, toon)["segments"][0]["prompt"]
+        assert "Roman Republic (27 BC): Stone and brick buildings" in prompt and "Premise" not in prompt
+
+    def test_a_draft_whose_phases_already_exist_is_left_alone(self, parts, mocker):
+        db, _ = parts
+        described = mocker.patch("app.services.world_era.period_phases", return_value=PHASES)
+        toon, script = self._draft(db, judgment={"era": {**ROME_ERA, "phases": PHASES}})
+        script.shots = [dict(s, period_year=-27, period_phase=1) for s in script.shots]
+        db.commit()
+        wp.ensure_script_era(db, toon, script)
+        described.assert_not_called()
+
+    def test_a_failed_phase_description_keeps_the_era_and_is_not_retried_every_time(self, parts, mocker):
+        db, _ = parts
+        described = mocker.patch("app.services.world_era.period_phases", return_value=[])
+        toon, script = self._draft(db, judgment={"era": ROME_ERA})
+        era = wp.ensure_script_era(db, toon, script)
+        assert era["label"] == ROME_ERA["label"] and not era.get("phases") and era["phases_tried"] is True
+        wp.ensure_script_era(db, toon, script)
+        wp.ensure_script_era(db, toon, script)
+        assert described.call_count == 1
+
+    def test_the_render_context_upgrades_a_legacy_draft_that_already_has_an_era(self, parts, mocker):
+        from app.services import culturetoon_selfhosted_video as video
+        db, _ = parts
+        mocker.patch("app.services.world_era.period_phases", return_value=PHASES)
+        toon, script = self._draft(db, judgment={"era": ROME_ERA})
+        video.load_render_context(db, toon, script)
+        db.refresh(script)
+        assert script.comedy_judgment["era"]["phases"] == PHASES

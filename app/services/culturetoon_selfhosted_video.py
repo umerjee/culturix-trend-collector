@@ -145,13 +145,43 @@ def script_era(script) -> Optional[dict]:
     return era if isinstance(era, dict) and era.get("label") else None
 
 
-def _segment_negative_prompt(script) -> str:
-    """The negative prompt for a script's segments: the standard one, plus the modern things to avoid when
-    the script is set in a period before 1900."""
+# Terms for a segment whose narration is a separate synthesised voice. The video model generates audio jointly
+# with the picture and speaks any sentence-like text it is given; a crowd on screen also gets murmuring voices.
+_NARRATED_NEGATIVE = ("speech, voices, talking, spoken words, dialogue, narration, voice-over, singing, chanting, "
+                      "crowd chatter, murmuring")
+
+
+def _all_narrated_externally(segment_shots) -> bool:
+    """True when every shot's line is spoken by the separate narrator (world_narration), so the video model must
+    add no voice of its own."""
+    shots = [s for s in (segment_shots or [])]
+    return bool(shots) and all((s.get("narration") or "").strip().lower() == "external" for s in shots)
+
+
+def _segment_phase(script, segment_shots):
+    """(phase, year) of a segment: the period the FIRST shot with a phase falls in. A World segment is normally
+    one shot; if it holds several, they share a look."""
+    era = script_era(script)
+    for shot in segment_shots or []:
+        idx = shot.get("period_phase")
+        phases = (era or {}).get("phases") or []
+        if isinstance(idx, int) and 0 <= idx < len(phases):
+            return phases[idx], shot.get("period_year")
+    return None, None
+
+
+def _segment_negative_prompt(script, segment_shots=None) -> str:
+    """The negative prompt for one segment: the standard one, plus the modern things to avoid when the script
+    is set before 1900 and what did not yet exist in this segment's phase, plus any voice when the narration is a
+    separate synthesised voice."""
     from app.media import ltx25_workflow
     from app.services.world_era import era_negative_terms
 
-    extra = era_negative_terms(script_era(script))
+    phase, _ = _segment_phase(script, segment_shots)
+    extras = [era_negative_terms(script_era(script), phase)]
+    if _all_narrated_externally(segment_shots):
+        extras.append(_NARRATED_NEGATIVE)
+    extra = ", ".join(e for e in extras if e)
     return f"{ltx25_workflow.DEFAULT_NEGATIVE_PROMPT}, {extra}" if extra else ltx25_workflow.DEFAULT_NEGATIVE_PROMPT
 
 
@@ -255,7 +285,8 @@ def _build_shot_prompt(shot: dict, background=None) -> str:
             # Same joint-audio trap as a silent character shot: with no line
             # and nothing asking for silence, the model invents narration.
             parts.append(
-                "No one speaks in this shot — no dialogue, no voice-over, ambient sound only"
+                "No one speaks in this shot — no dialogue, no voice-over, no talking or crowd chatter, only the "
+                "natural sounds of the place"
             )
         return ". ".join(p for p in parts if p) + ". " + _SUBJECT_QUALITY_SUFFIX
 
@@ -356,7 +387,9 @@ def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Opt
     # first: a prompt that never says when it is set gets the model's default, which is the present day
     # (jeeps in a Roman village, measured 2026-09-20). See app/services/world_era.py.
     from app.services.world_era import era_prompt_line
-    era_line = era_prompt_line(script_era(script))
+    era_shots = shots if shots is not None else (getattr(script, "shots", None) or [])
+    phase, phase_year = _segment_phase(script, era_shots)
+    era_line = era_prompt_line(script_era(script), phase, phase_year)
     if era_line:
         parts.append(era_line)
 
@@ -491,8 +524,12 @@ def build_ltx25_scene_prompt(script, variants: list, background=None, shots: Opt
     if script_style and not background_style:
         parts.append(_expand_visual_style(script_style))
 
+    # The premise is a sentence of the script's own narration ("In 509 BC Rome's senators overthrew their king..."),
+    # and the video model reads any sentence-like text aloud: with a separate narrator it produced a SECOND voice
+    # saying the premise over three segments (measured 2026-09-20 by transcribing a render). A narrated video
+    # carries its story in the visuals, so the premise is left out.
     hook = (getattr(script, "hook_line", None) or "").strip()
-    if hook and not continuation_anchor:
+    if hook and not continuation_anchor and not _all_narrated_externally(shots if shots is not None else getattr(script, "shots", None)):
         parts.append(f"Premise: {hook}")
 
     # Tracks the previous shot's "location" so a repeat (same place) stays
@@ -1135,7 +1172,7 @@ def plan_ltx25_segments(script, variants: list, background=None, scene_backgroun
             "prompt": prompt,
             "opening_frame": opening,
             "image_strength": image_strength,
-            "negative_prompt": _segment_negative_prompt(script),
+            "negative_prompt": _segment_negative_prompt(script, segment_shots),
         })
     return plan
 
@@ -1296,7 +1333,7 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
         if current_msr_images:
             workflow = ltx25_workflow.build_workflow(
                 prompt, segment_duration, reference_image_filenames=list(current_msr_images.keys()),
-                negative_prompt=_segment_negative_prompt(script),
+                negative_prompt=_segment_negative_prompt(script, segment_shots),
             )
         else:
             # A real photo as the opening frame is held more loosely so the clip can move.
@@ -1304,7 +1341,7 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
             workflow = ltx25_workflow.build_workflow(
                 prompt, segment_duration,
                 image_strength=LTX25_REFERENCE_PHOTO_STRENGTH if photo_anchored else None,
-                negative_prompt=_segment_negative_prompt(script),
+                negative_prompt=_segment_negative_prompt(script, segment_shots),
             )
         segment_stats: dict = {}
         video_bytes = runpod_serverless_client.run_inference_job(
@@ -1393,9 +1430,9 @@ def load_render_context(session, toon, script) -> tuple:
         background = session.query(ToonBackground).filter_by(id=background_id).first()
     # A World draft written before periods existed has no era, and a prompt with no era gets the model's
     # default, the present day. Decide it now (once, saved) so the preview and the render both have it.
-    if getattr(script, "is_world_content", False) is True and script_era(script) is None:
+    if getattr(script, "is_world_content", False) is True:
         from app.services.world_production import ensure_script_era
-        ensure_script_era(session, toon, script)
+        ensure_script_era(session, toon, script)      # no-op (no model call) once era, phases and shot periods exist
     return variants, background, resolve_scene_backgrounds(session, script)
 
 
