@@ -2911,7 +2911,18 @@ def list_curated_items(limit: int = 100, region: Optional[str] = None, decision:
 
 @app.post("/admin/curated-items/ingest", dependencies=[Depends(require_admin_secret)])
 def ingest_curated_source(payload: dict):
-    """Fetch a bounded real Wikipedia/UNESCO source batch for admin review."""
+    """Fetch a bounded real Wikipedia/UNESCO source batch for admin review.
+
+    Listing the sources (one Wikipedia page, or a single UNESCO API call) is fast and stays
+    synchronous, so the response can still report a real sources_fetched count. Scoring each
+    source does not — it is one to several real LLM calls per item via app.services
+    .culturix_ingestion.ingest() — and previously ran inline in this same request: a real
+    Italy fetch (5 UNESCO sources) measured ~48s, comfortably past what a proxy/serverless
+    layer in front of this API will wait on before the caller sees a timeout instead of a
+    result. Backgrounded via a thread, matching the same pattern already used for
+    /admin/curated-items/{item_id}/generate.
+    """
+    import threading
     from app.collectors.unesco import fetch_unesco_sites, unesco_source_text
     from app.collectors.wikipedia_extracts import fetch_wikipedia_extract
     from app.db import SessionLocal
@@ -2920,32 +2931,45 @@ def ingest_curated_source(payload: dict):
     source_type = payload.get("source_type")
     region = (payload.get("region") or "").strip().upper() or None
     max_items = max(1, min(int(payload.get("max_items", 5)), 10))
-    session = SessionLocal()
-    try:
-        sources = []  # (source_ref, raw_text, source_url)
-        if source_type == "wikipedia":
-            title = (payload.get("title") or "").strip()
-            if not title:
-                raise HTTPException(status_code=400, detail="Wikipedia title is required")
-            source = fetch_wikipedia_extract(title, full_text=True)
-            if source:
-                sources.append((source["title"], source["extract"], source.get("url")))
-        elif source_type == "unesco":
-            for site in fetch_unesco_sites(region, limit=max(1, min(int(payload.get("limit", 10)), 20))):
-                source_ref = str(site.get("id_no") or site.get("title") or "")
-                raw_text = unesco_source_text(site)
-                if source_ref and raw_text:
-                    sources.append((source_ref, raw_text, site.get("url")))
-        else:
-            raise HTTPException(status_code=400, detail="source_type must be wikipedia or unesco")
 
-        created = []
-        for source_ref, raw_text, source_url in sources:
-            created.extend(ingest(source_type, region, raw_text, session, max_items=max_items,
-                                  source_ref=source_ref, source_url=source_url))
-        return {"sources_fetched": len(sources), "items_created": len(created)}
-    finally:
-        session.close()
+    sources = []  # (source_ref, raw_text, source_url)
+    if source_type == "wikipedia":
+        title = (payload.get("title") or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Wikipedia title is required")
+        source = fetch_wikipedia_extract(title, full_text=True)
+        if source:
+            sources.append((source["title"], source["extract"], source.get("url")))
+    elif source_type == "unesco":
+        for site in fetch_unesco_sites(region, limit=max(1, min(int(payload.get("limit", 10)), 20))):
+            source_ref = str(site.get("id_no") or site.get("title") or "")
+            raw_text = unesco_source_text(site)
+            if source_ref and raw_text:
+                sources.append((source_ref, raw_text, site.get("url")))
+    else:
+        raise HTTPException(status_code=400, detail="source_type must be wikipedia or unesco")
+
+    def _run():
+        db = SessionLocal()
+        try:
+            created = 0
+            for source_ref, raw_text, source_url in sources:
+                created += len(ingest(source_type, region, raw_text, db, max_items=max_items,
+                                      source_ref=source_ref, source_url=source_url))
+            logging.info("Curated ingestion finished: source_type=%s region=%s sources=%d items=%d",
+                         source_type, region, len(sources), created)
+        except Exception:
+            db.rollback()
+            logging.exception("Curated ingestion failed: source_type=%s region=%s", source_type, region)
+        finally:
+            db.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {
+        "status": "ingesting",
+        "sources_fetched": len(sources),
+        "message": f"Scoring {len(sources)} source(s) in the background — refresh the list shortly.",
+    }
 
 
 @app.post("/admin/curated-items/{item_id}/decision", dependencies=[Depends(require_admin_secret)])

@@ -62,8 +62,18 @@ export default function CuratedItemsPage() {
     try {
       const res = await fetch("/api/admin/curated-items", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json();
-      setMessage(`${data.sources_fetched || 0} sources fetched, ${data.items_created || 0} new items created.`);
+      // Scoring each fetched source is one or more real LLM calls and runs in the background now
+      // (a real Italy fetch measured ~48s inline, which risked the request timing out before this
+      // page ever saw a response) — so there's no synchronous items_created count to show yet.
+      // Poll the list for a while instead of making the curator refresh manually.
+      setMessage(data.message || `${data.sources_fetched || 0} source(s) fetched — scoring in the background.`);
       load();
+      let ticks = 0;
+      const poll = window.setInterval(() => {
+        ticks += 1;
+        load();
+        if (ticks >= 15) window.clearInterval(poll); // ~90s at 6s/tick, generous for a handful of LLM calls
+      }, 6000);
     } catch { setMessage("Ingestion failed."); } finally { setBusy(false); }
   }
 
