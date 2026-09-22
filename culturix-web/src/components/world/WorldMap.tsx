@@ -503,7 +503,13 @@ function GlobeMarkers({
           if (!coordinates || geoDistance(coordinates, viewCenter) > maxDistance) return null;
           return (
             <Marker key={code} coordinates={coordinates}>
-              <circle r={5} fill="#a855f7" fillOpacity={0.35} className="animate-ping" style={{ transformOrigin: "center" }} />
+              {/* transform-box defaults to "view-box" for SVG children, so transform-origin: center
+                  resolved to the whole SVG viewport's center (400,250), not this circle's own
+                  position — every ping ring scaled toward/away from the map's center instead of
+                  around itself. Confirmed live: this, not marker visibility, was the real cause of
+                  "dots flying around" on 2026-09-22 (the earlier visibility fix was real too, but
+                  incomplete). fill-box makes "center" resolve to the circle's own geometry. */}
+              <circle r={5} fill="#a855f7" fillOpacity={0.35} className="animate-ping" style={{ transformBox: "fill-box", transformOrigin: "center" }} />
               <circle r={2.2} fill="#7c3aed" stroke="#fff" strokeWidth={0.6} />
             </Marker>
           );
