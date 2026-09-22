@@ -45,11 +45,10 @@ interface Props {
   regionLabel: string;
   coverage: WorldTrendsCoverage;
   initialTrends: WorldTrend[];
-  initialDigest: WorldTrendDigestGroup[];
   initialBrief?: WorldRegionSummary | null;
 }
 
-export default function TimeCursor({ region, regionLabel, coverage, initialTrends, initialDigest, initialBrief = null }: Props) {
+export default function TimeCursor({ region, regionLabel, coverage, initialTrends, initialBrief = null }: Props) {
   const [mode, setMode] = useState<"recent" | "historical">("recent");
   const hasScrubbableCoverage = coverage.days_with_data >= MIN_DAYS_FOR_SCRUBBER && coverage.earliest && coverage.latest;
 
@@ -60,11 +59,16 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
 
   const [dayOffset, setDayOffset] = useState(totalDays); // starts at "latest" (today)
   const [trends, setTrends] = useState<WorldTrend[]>(initialTrends);
-  const [digest, setDigest] = useState<WorldTrendDigestGroup[]>(initialDigest);
+  const [digest, setDigest] = useState<WorldTrendDigestGroup[]>([]);
   const [digestLanguage, setDigestLanguage] = useState<WorldDigestLanguage>("en");
   // > 0 when the translation service was unavailable and some text is shown untranslated.
   const [translationFailed, setTranslationFailed] = useState(0);
   const [loadingTrends, setLoadingTrends] = useState(false);
+  // The digest is fetched client-side after mount instead of blocking the page's server render —
+  // translating it (Google, falling back to a real LLM call when Google is rate-limited) has been
+  // measured taking 4-9s, which made every region-page click feel stuck. The rest of the page
+  // (features, brief, trend coverage) stays on its fast ~1s server fetch; only this section waits.
+  const [loadingInitialDigest, setLoadingInitialDigest] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
   const [eraFeatures, setEraFeatures] = useState<WorldFeature[] | null>(null);
   const [loadingEra, setLoadingEra] = useState(false);
@@ -91,6 +95,14 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
   useEffect(() => {
     if (eraBounds && eraYear === 0) setEraYear(eraBounds.max);
   }, [eraBounds, eraYear]);
+
+  useEffect(() => {
+    const params = new URLSearchParams({ region, limit: "20" });
+    fetchDigest("en", params).finally(() => setLoadingInitialDigest(false));
+    // Runs once on mount for this region — day-scrubbing and the language switcher already
+    // trigger their own digest fetches via fetchTrendsAsOf/changeDigestLanguage.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [region]);
 
   const selectedDate = useMemo(() => {
     if (!coverage.earliest) return null;
@@ -219,7 +231,7 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
       {mode === "recent" && <DailyBrief region={region} regionLabel={regionLabel} date={briefDate} language={digestLanguage} initial={initialBrief} />}
 
       {mode === "recent" ? (
-        loadingTrends ? (
+        loadingTrends || loadingInitialDigest ? (
           <p className="text-sm text-gray-400 py-6">Loading…</p>
         ) : digest.length > 0 ? (
           <section>

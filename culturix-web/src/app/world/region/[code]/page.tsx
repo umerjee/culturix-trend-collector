@@ -7,7 +7,7 @@ import MarketingFooter from "@/components/marketing/MarketingFooter";
 import FeatureCard from "@/components/world/FeatureCard";
 import TimeCursor from "@/components/world/TimeCursor";
 import { RAILWAY_API_BASE } from "@/lib/config/api";
-import type { WorldFeature, WorldRegionSummary, WorldTrend, WorldTrendDigestGroup, WorldTrendsCoverage } from "@/lib/worldTypes";
+import type { WorldFeature, WorldRegionSummary, WorldTrend, WorldTrendsCoverage } from "@/lib/worldTypes";
 
 countries.registerLocale(enLocale as any);
 
@@ -50,17 +50,6 @@ async function fetchCoverage(region: string): Promise<WorldTrendsCoverage> {
   }
 }
 
-async function fetchDigest(region: string): Promise<WorldTrendDigestGroup[]> {
-  try {
-    const res = await fetch(`${RAILWAY_API_BASE}/world/trends/digest?region=${encodeURIComponent(region)}&limit=8`, { cache: "no-store" });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return Array.isArray(data.groups) ? data.groups : [];
-  } catch {
-    return [];
-  }
-}
-
 async function fetchBrief(region: string): Promise<WorldRegionSummary | null> {
   try {
     const res = await fetch(`${RAILWAY_API_BASE}/world/regions/${encodeURIComponent(region)}/summary`, { cache: "no-store" });
@@ -80,7 +69,7 @@ export async function generateMetadata({ params }: { params: { code: string } })
 export default async function WorldRegionPage({ params }: { params: { code: string } }) {
   const code = params.code.toUpperCase();
   const label = countries.getName(code, "en") || code;
-  const [features, trends, coverage, digest, brief] = await Promise.all([fetchFeatures(code), fetchTrends(code), fetchCoverage(code), fetchDigest(code), fetchBrief(code)]);
+  const [features, trends, coverage, brief] = await Promise.all([fetchFeatures(code), fetchTrends(code), fetchCoverage(code), fetchBrief(code)]);
 
   return (
     <div className="min-h-screen bg-white">
@@ -106,7 +95,7 @@ export default async function WorldRegionPage({ params }: { params: { code: stri
           </section>
         )}
 
-        <TimeCursor region={code} regionLabel={label} coverage={coverage} initialTrends={trends} initialDigest={digest} initialBrief={brief} />
+        <TimeCursor region={code} regionLabel={label} coverage={coverage} initialTrends={trends} initialBrief={brief} />
       </main>
 
       <MarketingFooter />
