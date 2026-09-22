@@ -13,6 +13,11 @@ export interface WorldFeature {
   hook_line?: string | null; // only present on the single-feature detail response
   duration_seconds?: number | null; // detail response only
   source?: { label: string; url: string } | null; // detail response only — real Wikipedia/UNESCO attribution
+  // The real narration lines the video's own audio speaks, in order — English by default, or
+  // machine-translated into whatever `?lang=` was requested. Detail response only.
+  transcript?: string[];
+  transcript_language?: string;
+  translation_failed?: boolean;
 }
 
 // Mirrors app/routers/world.py's get_world_trends_coverage — real

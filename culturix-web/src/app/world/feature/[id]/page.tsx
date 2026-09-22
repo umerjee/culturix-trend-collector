@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ArrowLeft, MapPin } from "lucide-react";
 import MarketingHeader from "@/components/marketing/MarketingHeader";
 import MarketingFooter from "@/components/marketing/MarketingFooter";
+import FeatureTranscript from "@/components/world/FeatureTranscript";
 import { RAILWAY_API_BASE } from "@/lib/config/api";
 import { CATEGORY_LABELS } from "@/lib/worldTypes";
 import type { WorldFeature } from "@/lib/worldTypes";
@@ -58,6 +59,9 @@ export default async function WorldFeaturePage({ params }: { params: { id: strin
         </div>
         <h1 className="text-2xl font-bold text-gray-900 mb-2">{feature.title || feature.subject_text}</h1>
         {feature.hook_line && <p className="text-gray-500 leading-relaxed">{feature.hook_line}</p>}
+
+        <FeatureTranscript featureId={feature.id} initial={feature.transcript || []} />
+
         {feature.source && (
           <p className="mt-6 text-xs text-gray-400">
             Source:{" "}
