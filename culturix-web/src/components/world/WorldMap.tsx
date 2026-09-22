@@ -6,7 +6,7 @@ import {
   ComposableMap, Geographies, Geography, ZoomableGroup, Sphere, Graticule, Marker,
 } from "react-simple-maps";
 import type { ProjectionFunction } from "react-simple-maps";
-import { geoOrthographic, geoCentroid } from "d3-geo";
+import { geoOrthographic, geoCentroid, geoDistance } from "d3-geo";
 import { Plus, Minus, RotateCcw, Globe2, Map as MapIcon } from "lucide-react";
 import countries from "i18n-iso-countries";
 import enLocale from "i18n-iso-countries/langs/en.json";
@@ -296,7 +296,7 @@ export default function WorldMap() {
                 })
               }
             </Geographies>
-            <GlobeMarkers regionCounts={regionCounts} />
+            <GlobeMarkers regionCounts={regionCounts} rotation={rotation} globeScale={globeScale} />
           </>
         ) : (
           <ZoomableGroup
@@ -437,12 +437,42 @@ export default function WorldMap() {
   );
 }
 
+// A marker's own rendered footprint (the solid dot plus its animate-ping ring at its largest,
+// Tailwind's default ping scales to 2x) — used to keep the WHOLE marker inside the sphere's edge,
+// not just its mathematical center point. Padded a few px beyond the ring's exact calculated peak
+// (r=5 * 2x scale = 10) so the ring never grazes the sphere's boundary at its animation peak frame.
+const MARKER_VISUAL_RADIUS_PX = 18;
+
+// How far from the view center (in radians) a point can be before it's hidden. This is NOT simply
+// "just under 90°": geoOrthographic projects a point at angle θ to a radius of `scale * sin(θ)` from
+// center, and sin(θ) is nearly flat near 90° (sin(87°) ≈ 0.9986) — so a angular margin that LOOKS
+// generous still puts a marker's projected position within a pixel or two of the sphere's true edge,
+// where its own drawn radius (MARKER_VISUAL_RADIUS_PX) sticks out past it. Confirmed live
+// (2026-09-22): a first attempt at this used a 3%-of-90° margin and markers still visibly poked past
+// the globe's edge during rotation. Solving `scale * sin(θ) = scale - MARKER_VISUAL_RADIUS_PX` for θ
+// instead accounts for the marker's actual pixel size, so the margin is the marker's real footprint,
+// not an arbitrary angle — and it naturally tightens when zoomed out (scale small) and loosens when
+// zoomed in (scale large), where the same pixel radius is a smaller share of the sphere.
+function visibleHemisphereRadians(scale: number): number {
+  return Math.asin(Math.max(0, Math.min(1, 1 - MARKER_VISUAL_RADIUS_PX / scale)));
+}
+
 // Pulsing hotspot markers for every region with real content, positioned at that country's true
 // spherical centroid (computed from the same topology the map itself draws, so a marker is never
-// off by hand-maintained coordinates). Orthographic clipping means a marker on the far side of the
-// globe should be hidden, not drawn floating over the wrong country — react-simple-maps' own
-// <Marker> already skips coordinates the current projection can't place on screen.
-function GlobeMarkers({ regionCounts }: { regionCounts: Record<string, RegionCount> }) {
+// off by hand-maintained coordinates).
+//
+// react-simple-maps' <Marker> does NOT hide a coordinate that has rotated onto the far side of the
+// globe — clipAngle only clips the drawn PATH of a Geography (via geoPath), and a bare projected
+// point has no such clipping applied to it. Left unguarded, a marker for a country that has
+// rotated out of view still gets a valid (but meaningless) [x, y] from geoOrthographic and renders
+// as a stray dot sliding around the visible hemisphere as the globe turns — confirmed live
+// (2026-09-22): "dots flying around" and small dots "persistent" during rotation. Fixed by
+// computing each point's angular distance from the centre of the currently visible hemisphere
+// (geoDistance) and only rendering markers within it — recomputed on every rotation/scale change,
+// which is why this takes `rotation` and `globeScale` as props rather than reading them once.
+function GlobeMarkers({
+  regionCounts, rotation, globeScale,
+}: { regionCounts: Record<string, RegionCount>; rotation: Rotation; globeScale: number }) {
   const [centroids, setCentroids] = useState<Record<string, [number, number]> | null>(null);
 
   useEffect(() => {
@@ -461,13 +491,16 @@ function GlobeMarkers({ regionCounts }: { regionCounts: Record<string, RegionCou
   }, []);
 
   if (!centroids) return null;
+  // The geographic point currently facing the viewer, in [lon, lat] — the inverse of .rotate().
+  const viewCenter: [number, number] = [-rotation[0], -rotation[1]];
+  const maxDistance = visibleHemisphereRadians(globeScale);
   return (
     <>
       {Object.entries(regionCounts)
         .filter(([, s]) => s.feature_count > 0 || s.trend_count > 0)
         .map(([code]) => {
           const coordinates = centroids[code];
-          if (!coordinates) return null;
+          if (!coordinates || geoDistance(coordinates, viewCenter) > maxDistance) return null;
           return (
             <Marker key={code} coordinates={coordinates}>
               <circle r={5} fill="#a855f7" fillOpacity={0.35} className="animate-ping" style={{ transformOrigin: "center" }} />
