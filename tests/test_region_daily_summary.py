@@ -27,6 +27,7 @@ def _inputs(**over):
         "topics": [{"title": f"Concrete topic number {i}", "platform": "tiktok", "likes": 5} for i in range(5)],
         "platforms": ["tiktok"], "themes": [], "events": [], "headlines": [],
         "baseline": {"enough": False, "days": 0, "recent_moods": []},
+        "audience_matches": [],
     }
     base.update(over)
     return base
@@ -70,7 +71,7 @@ class TestValidation:
         inp = _inputs(events=[{"name": "Bastille Day", "category": "holiday", "date": "2026-09-21", "when": "in 3 days", "confirmed": True}])
         assert rds.validate_summary("Bastille Day is in 3 days.", inp) == "Bastille Day is in 3 days."
 
-    @pytest.mark.parametrize("bad", [None, "", "   ", 42, "x" * 400, " ".join(["word"] * 70)])
+    @pytest.mark.parametrize("bad", [None, "", "   ", 42, "x" * 600, " ".join(["word"] * 95)])
     def test_unusable_text_is_rejected(self, bad):
         assert rds.validate_summary(bad, _inputs()) is None
 
@@ -163,6 +164,19 @@ class TestGenerate:
         assert (row.mood, row.sentiment, row.alignment) == ("playful", 1, "diverged")
         assert row.inputs_hash and row.topics and row.calendar == []
         env.session.commit.assert_called_once()
+
+    def test_audience_matches_are_stored_when_there_is_enough_data(self, env):
+        matches = [{"name": "Cosmic Curious", "description": "d", "content_angle": "a", "score": 0.5}]
+        env.gather.return_value = _inputs(audience_matches=matches)
+        row = rds.generate_region_summary(env.session, "FR", DAY, news_fetcher=env.fetcher)
+        assert row.audience_matches == matches
+
+    def test_audience_matches_are_empty_on_a_calendar_only_day(self, env):
+        ev = {"name": "Bastille Day", "category": "holiday", "date": "2026-09-18", "when": "today", "confirmed": True}
+        env.gather.return_value = _inputs(signal_count=3, topics=[], events=[ev],
+                                          audience_matches=[{"name": "Should not appear", "description": "", "content_angle": None, "score": 0.9}])
+        row = rds.generate_region_summary(env.session, "FR", DAY, news_fetcher=env.fetcher)
+        assert row.audience_matches == []
 
     def test_news_is_fetched_only_for_today(self, env):
         rds.generate_region_summary(env.session, "FR", date(2020, 1, 1), news_fetcher=env.fetcher)
@@ -276,9 +290,103 @@ def _store(db, region="FR", day=DAY, **over):
     s.add(RegionDailySummary(region=region, summary_date=day, summary=over.pop("summary", "A brief."),
                              source="ai", signal_count=40, platforms=["tiktok"], news=["SECRET HEADLINE"],
                              calendar=[{"name": "Bastille Day"}], mood="playful", sentiment=1,
-                             alignment="diverged", baseline={"volume_dir": "busier"}, **over))
+                             alignment="diverged", baseline={"volume_dir": "busier"},
+                             audience_matches=over.pop("audience_matches", [{"name": "Reality TV Stan", "description": "d", "content_angle": "a", "score": 0.6}]), **over))
     s.commit()
     s.close()
+
+
+def _persona(mocker, name, description="d", suggestions="Do X. Then Y.", embedding=None, status="active"):
+    return SimpleNamespace(name=name, description=description, content_suggestions=suggestions,
+                           relevance_embedding=embedding, status=status)
+
+
+class TestPersonaMatches:
+    TOPICS = [{"title": "The new season of a hit reality show"}, {"title": "A viral cooking trend"}]
+
+    def test_matches_above_the_threshold_are_returned_ranked_by_score(self, mocker):
+        mocker.patch("app.embeddings.embed_text", return_value=[1.0, 0.0])
+        close = _persona(mocker, "Reality TV Stan", embedding=[0.9, 0.1])
+        far = _persona(mocker, "Weak Match", embedding=[0.1, 0.9])
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = [far, close]
+        result = rds.top_persona_matches(session, self.TOPICS, [])
+        assert [m["name"] for m in result] == ["Reality TV Stan"]  # "far" scores below PERSONA_MATCH_MIN_SCORE
+        assert result[0]["score"] > rds.PERSONA_MATCH_MIN_SCORE
+
+    def test_the_content_angle_is_the_first_sentence_only(self, mocker):
+        mocker.patch("app.embeddings.embed_text", return_value=[1.0, 0.0])
+        p = _persona(mocker, "P", suggestions="Show behind-the-scenes footage. Then do a reaction video. And more.", embedding=[1.0, 0.0])
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = [p]
+        assert rds.top_persona_matches(session, self.TOPICS, [])[0]["content_angle"] == "Show behind-the-scenes footage"
+
+    def test_a_persona_with_no_suggestions_gets_no_angle(self, mocker):
+        mocker.patch("app.embeddings.embed_text", return_value=[1.0, 0.0])
+        p = _persona(mocker, "P", suggestions=None, embedding=[1.0, 0.0])
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = [p]
+        assert rds.top_persona_matches(session, self.TOPICS, [])[0]["content_angle"] is None
+
+    def test_never_the_models_own_words_only_stored_persona_text(self, mocker):
+        llm = mocker.patch("app.services.culturix_ingestion._call_llm_json")
+        mocker.patch("app.embeddings.embed_text", return_value=[1.0, 0.0])
+        p = _persona(mocker, "P", description="Exact stored description.", embedding=[1.0, 0.0])
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = [p]
+        result = rds.top_persona_matches(session, self.TOPICS, [])
+        assert result[0]["description"] == "Exact stored description."
+        llm.assert_not_called()
+
+    def test_capped_at_max_matches(self, mocker):
+        mocker.patch("app.embeddings.embed_text", return_value=[1.0, 0.0])
+        personas = [_persona(mocker, f"P{i}", embedding=[1.0, 0.0]) for i in range(10)]
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = personas
+        assert len(rds.top_persona_matches(session, self.TOPICS, [])) == rds.MAX_PERSONA_MATCHES
+
+    def test_falls_back_to_themes_when_there_are_no_clean_topics(self, mocker):
+        embed = mocker.patch("app.embeddings.embed_text", return_value=[1.0, 0.0])
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = []
+        rds.top_persona_matches(session, [], ["A real detected theme"])
+        assert embed.call_args.args[0] == "A real detected theme"
+
+    def test_nothing_to_embed_is_empty_without_calling_the_embedder(self, mocker):
+        embed = mocker.patch("app.embeddings.embed_text")
+        session = MagicMock()
+        assert rds.top_persona_matches(session, [], []) == []
+        embed.assert_not_called()
+
+    def test_a_failed_embedding_call_is_empty_not_an_exception(self, mocker):
+        mocker.patch("app.embeddings.embed_text", side_effect=RuntimeError("down"))
+        session = MagicMock()
+        assert rds.top_persona_matches(session, self.TOPICS, []) == []
+
+    def test_an_empty_embedding_is_empty(self, mocker):
+        mocker.patch("app.embeddings.embed_text", return_value=[])
+        session = MagicMock()
+        assert rds.top_persona_matches(session, self.TOPICS, []) == []
+
+    def test_dormant_personas_and_ones_with_no_cached_embedding_are_excluded_by_the_query(self, mocker):
+        mocker.patch("app.embeddings.embed_text", return_value=[1.0, 0.0])
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = []
+        rds.top_persona_matches(session, self.TOPICS, [])
+        filter_args = session.query.return_value.filter.call_args
+        assert filter_args is not None
+
+
+class TestCosineSimilarity:
+    def test_identical_vectors_score_one(self):
+        assert rds._cosine_similarity([1.0, 2.0], [1.0, 2.0]) == pytest.approx(1.0)
+
+    def test_orthogonal_vectors_score_zero(self):
+        assert rds._cosine_similarity([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
+
+    @pytest.mark.parametrize("a,b", [([], [1.0]), ([1.0], []), ([1.0, 2.0], [1.0]), (None, [1.0])])
+    def test_mismatched_or_empty_vectors_score_zero(self, a, b):
+        assert rds._cosine_similarity(a, b) == 0.0
 
 
 class TestSummaryEndpoint:
@@ -298,6 +406,12 @@ class TestSummaryEndpoint:
     def test_no_summary_is_a_normal_empty_state(self, db):
         out = world.get_region_summary("JP")
         assert out["summary"] is None and out["region_name"] == "Japan" and out["calendar"] == []
+        assert out["audience_matches"] == []
+
+    def test_audience_matches_are_returned(self, db):
+        _store(db)
+        out = world.get_region_summary("FR", date="2026-09-18")
+        assert out["audience_matches"] == [{"name": "Reality TV Stan", "description": "d", "content_angle": "a", "score": 0.6}]
 
     def test_future_summaries_are_not_returned_as_latest(self, db):
         _store(db, day=date(2099, 1, 1), summary="From the future.")

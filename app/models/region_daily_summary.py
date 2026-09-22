@@ -38,5 +38,11 @@ class RegionDailySummary(Base):
     sentiment = Column(Integer, nullable=True)  # -2 (very negative) .. +2 (very positive)
     alignment = Column(String(10), nullable=True)  # aligned | diverged | unknown — news vs social
     inputs_hash = Column(String(40), nullable=True)
+    # Real, currently-generated audience archetypes (app/models/persona.py — this platform's own
+    # cross-trend clustering, not available on any raw social feed) whose stated interests best match
+    # what is trending here today: [{"name", "description", "content_angle", "score"}]. Computed
+    # deterministically (cosine similarity over Voyage.ai embeddings), never by the summary LLM call —
+    # see region_daily_summary.py::top_persona_matches. [] when nothing matched well enough.
+    audience_matches = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

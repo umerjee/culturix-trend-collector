@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CalendarDays, Newspaper, TrendingDown, TrendingUp } from "lucide-react";
+import { CalendarDays, Newspaper, TrendingDown, TrendingUp, Users } from "lucide-react";
 import type { WorldDigestLanguage, WorldRegionSummary } from "@/lib/worldTypes";
 
 const MOOD_STYLES: Record<string, string> = {
@@ -85,6 +85,30 @@ export default function DailyBrief({ region, regionLabel, date, language, initia
             </li>
           ))}
         </ul>
+      )}
+
+      {brief.audience_matches.length > 0 && (
+        <div className="mt-4 border-t border-purple-100/70 pt-3">
+          <h3 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+            <Users className="h-3.5 w-3.5 text-purple-400" /> Who this is landing with
+          </h3>
+          <p className="mt-0.5 text-[11px] text-gray-400">
+            Audience types our own trend-clustering has already discovered, matched to today&apos;s topics — not on any raw feed.
+          </p>
+          <ul className="mt-2 grid gap-2 sm:grid-cols-2">
+            {brief.audience_matches.map((persona) => (
+              <li key={persona.name} className="rounded-xl border border-purple-100 bg-white/70 px-3 py-2">
+                <p className="text-sm font-semibold text-gray-800">{persona.name}</p>
+                <p className="mt-0.5 text-xs leading-snug text-gray-500 [overflow-wrap:anywhere]">{persona.description}</p>
+                {persona.content_angle && (
+                  <p className="mt-1 text-xs italic leading-snug text-purple-600 [overflow-wrap:anywhere]">
+                    Content angle: {persona.content_angle}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {brief.source !== "calendar" && brief.signal_count > 0 && (

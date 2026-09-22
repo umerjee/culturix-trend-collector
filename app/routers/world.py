@@ -167,7 +167,8 @@ def get_region_summary(code: str, date: Optional[str] = None, lang: str = "en"):
                 RegionDailySummary.summary_date.desc()).first()
         empty = {"region": region, "region_name": region_name(region), "date": wanted.isoformat() if wanted else None,
                  "summary": None, "source": None, "calendar": [], "signal_count": 0, "platforms": [],
-                 "mood": None, "sentiment": None, "alignment": None, "vs_usual": None, "generated_at": None}
+                 "mood": None, "sentiment": None, "alignment": None, "vs_usual": None, "generated_at": None,
+                 "audience_matches": []}
         if not row:
             return empty
         # Summaries are written in English; a failed translation is reported, not hidden.
@@ -182,6 +183,9 @@ def get_region_summary(code: str, date: Optional[str] = None, lang: str = "en"):
             # Only a plain busier/quieter/normal label — the raw headlines stay internal.
             "vs_usual": _vs_usual_label(row.baseline),
             "generated_at": row.updated_at.isoformat() if row.updated_at else None,
+            # Real audience archetypes matched against today's trends — see
+            # region_daily_summary.py::top_persona_matches. Deterministic, not LLM-written.
+            "audience_matches": row.audience_matches or [],
         }
     finally:
         session.close()

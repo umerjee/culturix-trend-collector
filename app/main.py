@@ -377,6 +377,7 @@ async def lifespan(_):
             "ALTER TABLE toon_scripts ADD COLUMN IF NOT EXISTS visual_style VARCHAR(30)",
             "CREATE INDEX IF NOT EXISTS ix_toons_curated_item_id ON toons (curated_item_id)",
             "ALTER TABLE curated_items ADD COLUMN IF NOT EXISTS source_url TEXT",
+            "ALTER TABLE region_daily_summaries ADD COLUMN IF NOT EXISTS audience_matches JSON",
         ]:
             try:
                 _conn.execute(_text(_stmt))

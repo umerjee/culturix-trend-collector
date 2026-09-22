@@ -79,6 +79,9 @@ export interface WorldRegionSummary {
   vs_usual: "busier" | "quieter" | "normal" | null;
   generated_at: string | null;
   translation_failed?: boolean;
+  // Real audience archetypes (Culturix's own cross-trend clustering) matched against today's
+  // trends — never a real individual, never LLM-written. [] when nothing matched well.
+  audience_matches: { name: string; description: string; content_angle: string | null; score: number }[];
 }
 
 // One merged filter vocabulary covering both WHAT a Feature is about

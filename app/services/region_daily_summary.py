@@ -37,12 +37,22 @@ PER_PLATFORM = 3
 UPCOMING_DAYS = 3
 BASELINE_DAYS = 7
 MIN_BASELINE_DAYS = 3
-MAX_SUMMARY_CHARS = 320
-MAX_SUMMARY_WORDS = 60
+MAX_SUMMARY_CHARS = 520
+MAX_SUMMARY_WORDS = 90
 MAX_HEADLINES = 8
 
+# Audience-archetype matching (top_persona_matches). Measured against the real corpus (2026-09-22):
+# across several genuinely on-topic queries, unrelated personas cluster at cosine ~0.05-0.09 (the noise
+# floor) while real matches — including a persona whose whole archetype IS the query subject — land at
+# ~0.15-0.43. 0.35, tried first, was too strict: it excluded "Marvel Stan" (0.276) for a Marvel trailer
+# and "Die-Hard Sports Fan" (0.314) for a football story. 0.20 sits above the noise floor with margin
+# while keeping matches like those. Persona description text is long-form and query text is short
+# topic titles, which compresses this embedding space's cosine range lower than a naive guess assumes.
+PERSONA_MATCH_MIN_SCORE = 0.20
+MAX_PERSONA_MATCHES = 4
+
 # Bump when build_prompt changes so cached rows are rewritten instead of skipped.
-PROMPT_VERSION = 4
+PROMPT_VERSION = 5
 
 MOODS = ("celebratory", "playful", "curious", "tense", "somber", "angry", "neutral")
 ALIGNMENTS = ("aligned", "diverged", "unknown")
@@ -188,6 +198,65 @@ def gather_baseline(session, region: str, day: date, signal_count: int, today_th
     }
 
 
+def _cosine_similarity(a: list, b: list) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(y * y for y in b) ** 0.5
+    return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+
+
+def top_persona_matches(session, topics: list[dict], themes: list[str]) -> list[dict]:
+    """Real, already-generated audience archetypes (app/models/persona.py — Culturix's own
+    cross-platform interest clustering, run once across the whole trend corpus, not a real
+    individual and not specific to this region) whose stated interests best match what is
+    trending here today. This is the differentiator a raw trend feed cannot offer: not just
+    WHAT is trending, but WHO an audience for it actually is, in terms already proven to work
+    for content matching elsewhere in this product (culturetoon_trend_relevance.py's same
+    Voyage.ai embedding mechanism).
+
+    Deterministic, not LLM-written: the model never invents or rephrases a persona, it is only
+    ever real stored name/description/content_suggestions text, ranked by cosine similarity.
+    [] when there is nothing to match against or the embedding call fails — never guesses."""
+    from app.embeddings import embed_text
+    from app.models.persona import Persona
+
+    query_text = ", ".join(t["title"] for t in topics[:6]) or ", ".join(themes[:4])
+    if not query_text.strip():
+        return []
+    try:
+        query_embedding = embed_text(query_text)
+    except Exception:
+        logger.warning("Persona-match embedding failed", exc_info=True)
+        return []
+    if not query_embedding:
+        return []
+
+    rows = (
+        session.query(Persona)
+        .filter(Persona.relevance_embedding.isnot(None), Persona.status != "dormant")
+        .all()
+    )
+    scored = []
+    for persona in rows:
+        score = _cosine_similarity(persona.relevance_embedding, query_embedding)
+        if score >= PERSONA_MATCH_MIN_SCORE:
+            scored.append((persona, score))
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+    return [
+        {
+            "name": persona.name,
+            "description": (persona.description or "").strip()[:200],
+            # First sentence only: content_suggestions is often a short paragraph, and the card
+            # this feeds has room for one concrete angle, not the whole thing.
+            "content_angle": (cs.split(".")[0].strip()[:160] if (cs := (persona.content_suggestions or "").strip()) else None),
+            "score": round(score, 2),
+        }
+        for persona, score in scored[:MAX_PERSONA_MATCHES]
+    ]
+
+
 def gather_inputs(session, region: str, day: date, headlines: list[dict] | None = None) -> dict:
     """Everything a summary may be built from, for one region and day."""
     from sqlalchemy import func, or_
@@ -233,6 +302,7 @@ def gather_inputs(session, region: str, day: date, headlines: list[dict] | None 
         "platforms": platforms, "themes": themes, "events": events,
         "headlines": (headlines or [])[:MAX_HEADLINES],
         "baseline": gather_baseline(session, region, day, signal_count, themes, float(avg_likes) if avg_likes else None),
+        "audience_matches": top_persona_matches(session, topics, themes),
     }
 
 
@@ -257,7 +327,8 @@ def build_prompt(inputs: dict) -> str:
         history = "nothing notable"
     moods = ", ".join(f"{m['date'][5:]}: {m['mood']}" for m in b.get("recent_moods", [])[-5:]) or "none recorded yet"
 
-    return f"""You write the daily brief for {country} on {day.isoformat()} for a public world-culture atlas.
+    return f"""You write the daily brief for {country} on {day.isoformat()} for a public world-culture atlas read by
+people who want to feel the day's actual texture, not a dry log of numbers.
 
 CALENDAR (real entries):
 {cal}
@@ -273,16 +344,22 @@ LIVE NEWS HEADLINES in {country} right now:
 NEW VERSUS THE PAST WEEK: {history}
 RECENT DAILY MOODS: {moods}
 
-Write the brief in English: at most 2 short sentences and 45 words. Every sentence must end with a period.
-1. Calendar: if an event is today or within 3 days, say so in plain words ("Respect for the Aged Day is in
-   3 days."). If there is none, do NOT mention the calendar at all.
-2. Name one or two CONCRETE subjects people engaged with (a person, show, sport, product, or event taken from
-   the lists), never a vague category like "entertainment" or "a mix of content". Then, in the same sentence,
-   say whether the news covers the same things or something different.
+Write the brief in English: 2 to 4 sentences, at most 90 words total. Every sentence must end with a period.
+1. Open on the single most concrete, specific thing people engaged with today (a person, show, sport, product,
+   or event taken from the lists) — never a vague category like "entertainment" or "a mix of content", and
+   never a generic opener like "Today in {country}" or "It was a day of". Make the reader see the actual moment.
+2. If a second subject is genuinely distinct from the first, add it as a real second sentence, not a
+   comma-spliced list.
+3. Say whether the live news covers the same things or something different — as its own complete sentence
+   ("The news, meanwhile, was about X." or "That matched what was in the news."), never a sentence
+   fragment starting with "While" or "Meanwhile" with no main clause of its own.
+4. Calendar: if an event is today or within 3 days, weave it in naturally, in plain words. If there is none,
+   do NOT mention the calendar at all.
 Do NOT say how busy or quiet the day was compared with usual; that sentence is added separately.
 Rules: use only what is listed above. Do not invent events, causes, names, or numbers. Do not call anything
-viral or trending unless it appears in the lists. No emojis, hashtags, or quotation marks. If the posts are
-mostly noise, say so briefly instead of inventing a theme.
+viral or trending unless it appears in the lists. No emojis, hashtags, or quotation marks. Write like a sharp
+culture editor, not a report: specific nouns, active verbs, no filler ("various", "a range of", "several").
+If the posts are mostly noise, say so briefly and plainly instead of inventing a theme.
 
 Also judge the day's overall feel from the posts and news:
 - mood: one of {list(MOODS)}
@@ -357,6 +434,9 @@ def inputs_hash(inputs: dict) -> str:
         "day": inputs["day"].isoformat(), "topics": [t["title"] for t in inputs["topics"]],
         "headlines": [h["title"] for h in inputs["headlines"]], "events": inputs["events"],
         "themes": inputs["themes"], "baseline": inputs["baseline"], "prompt": PROMPT_VERSION,
+        # Excluded on purpose: persona matching has its own failure/threshold behavior independent of
+        # whether the summary text needs rewriting, and re-embedding on every persona-score wobble
+        # would defeat the whole point of this cache.
     }
     return hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
@@ -366,7 +446,7 @@ def _write_with_llm(inputs: dict) -> tuple[str, dict] | None:
     from app.services.culturix_ingestion import IngestionError, _call_llm_json
 
     try:
-        parsed = _call_llm_json(build_prompt(inputs), temperature=0.3, max_tokens=350)
+        parsed = _call_llm_json(build_prompt(inputs), temperature=0.4, max_tokens=500)
     except IngestionError as exc:
         logger.warning("Region summary LLM call failed for %s: %s", inputs["region"], exc)
         return None
@@ -423,6 +503,7 @@ def generate_region_summary(session, region: str, day: date, force: bool = False
     row.news = [h["title"] for h in inputs["headlines"]]
     row.baseline = inputs["baseline"]
     row.mood, row.sentiment, row.alignment = feel["mood"], feel["sentiment"], feel["alignment"]
+    row.audience_matches = inputs["audience_matches"] if enough else []
     row.inputs_hash = digest
     if not existing:
         session.add(row)
