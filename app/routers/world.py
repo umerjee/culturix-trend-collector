@@ -416,10 +416,17 @@ def get_world_trends_coverage(region: str):
 
 
 @router.get("/features/{feature_id}")
-def get_world_feature(feature_id: str):
+def get_world_feature(feature_id: str, lang: str = "en"):
+    """A World video's own detail, plus its real narration as a text transcript — always stored and
+    returned in English first (`shots[].dialogue`, in shot order, the exact lines the video's audio
+    speaks), machine-translated into `lang` on request. This exists because dubbing every video into
+    14 languages is neither cheap nor reliable, but the narration text is already real and already
+    sitting in the database — a transcript is a text-translation problem, which this platform's
+    translation service (app/translation/service.py) already handles well, not an audio problem."""
     from app.db import SessionLocal
     from app.models.toon import Toon
     from app.models.toon_script import ToonScript
+    from app.translation import normalize_language, translate_many
 
     session = SessionLocal()
     try:
@@ -433,8 +440,26 @@ def get_world_feature(feature_id: str):
             raise HTTPException(status_code=404, detail="Feature not found")
         script = session.query(ToonScript).filter_by(id=toon.script_id).first()
         result = _serialize_feature(toon)
-        result["hook_line"] = script.hook_line if script else None
+        hook_line = script.hook_line if script else None
+        transcript = [line for sh in ((script.shots if script else None) or [])
+                      if (line := (sh.get("dialogue") or "").strip())]
+
+        target = normalize_language(lang) or "en"
+        translation_failed = False
+        if target != "en":
+            texts = ([hook_line] if hook_line else []) + transcript
+            translated = translate_many(texts, target)
+            translation_failed = any(not t.ok for t in translated)
+            if hook_line:
+                hook_line, transcript = translated[0].text, [t.text for t in translated[1:]]
+            else:
+                transcript = [t.text for t in translated]
+
+        result["hook_line"] = hook_line
         result["duration_seconds"] = script.total_duration_seconds if script else None
+        result["transcript"] = transcript
+        result["transcript_language"] = target
+        result["translation_failed"] = translation_failed
         result["source"] = None
         if toon.curated_item_id:
             from app.models.curated_item import CuratedItem

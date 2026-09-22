@@ -31,9 +31,9 @@ def db(mocker):
 def _make_toon(db, *, is_world_content=True, status="ready", final_video_url="https://cdn/x.mp4",
                subject_region="IR", subject_text="The Strait of Hormuz", subject_category="place",
                title="The Strait of Hormuz", hook_line="A vital chokepoint.",
-               era_label=None, era_year=None, world_published=True):
+               era_label=None, era_year=None, world_published=True, shots=None):
     session = db()
-    script = ToonScript(brand_id=uuid.uuid4(), hook_line=hook_line, generation_source="ai", status="approved")
+    script = ToonScript(brand_id=uuid.uuid4(), hook_line=hook_line, generation_source="ai", status="approved", shots=shots)
     session.add(script)
     session.commit()
     session.refresh(script)
@@ -165,6 +165,77 @@ class TestGetWorldFeature:
         with pytest.raises(HTTPException) as exc_info:
             world.get_world_feature("not-a-uuid")
         assert exc_info.value.status_code == 404
+
+
+class TestFeatureTranscript:
+    """The real narration text, always sourced from the shots the video's own audio speaks —
+    never a separate, hand-written caption that could drift from what viewers actually hear."""
+
+    SHOTS = [
+        {"shot_number": 1, "dialogue": "In 753 BC, Rome was founded."},
+        {"shot_number": 2, "dialogue": ""},  # a silent/subject-only shot: never a blank transcript line
+        {"shot_number": 3, "dialogue": "  By 509 BC, it became a republic.  "},
+        {"shot_number": 4, "dialogue": None},
+    ]
+
+    def test_english_transcript_is_the_real_dialogue_lines_in_order(self, db):
+        toon_id = _make_toon(db, shots=self.SHOTS)
+        result = world.get_world_feature(toon_id)
+        assert result["transcript"] == ["In 753 BC, Rome was founded.", "By 509 BC, it became a republic."]
+        assert result["transcript_language"] == "en" and result["translation_failed"] is False
+
+    def test_a_script_with_no_shots_is_an_empty_transcript_not_an_error(self, db):
+        toon_id = _make_toon(db, shots=None)
+        assert world.get_world_feature(toon_id)["transcript"] == []
+
+    def test_requesting_a_language_translates_the_hook_and_every_line(self, db, mocker):
+        from app.translation import TranslationResult
+        toon_id = _make_toon(db, hook_line="A vital chokepoint.", shots=self.SHOTS)
+
+        def fake_translate_many(texts, target, **kw):
+            return [TranslationResult(text=f"[{target}] {t}", target=target, ok=True, translated=True) for t in texts]
+        translate = mocker.patch("app.translation.translate_many", side_effect=fake_translate_many)
+
+        result = world.get_world_feature(toon_id, lang="fr")
+        assert result["hook_line"] == "[fr] A vital chokepoint."
+        assert result["transcript"] == ["[fr] In 753 BC, Rome was founded.", "[fr] By 509 BC, it became a republic."]
+        assert result["transcript_language"] == "fr" and result["translation_failed"] is False
+        # Exactly one batched call (hook + every real line together), not one request per line.
+        assert translate.call_count == 1
+        assert translate.call_args.args[0] == ["A vital chokepoint.", "In 753 BC, Rome was founded.", "By 509 BC, it became a republic."]
+
+    def test_a_failed_translation_is_reported_not_silently_shown_as_english(self, db, mocker):
+        from app.translation import TranslationResult
+        toon_id = _make_toon(db, shots=self.SHOTS)
+
+        def fake_translate_many(texts, target, **kw):
+            return [TranslationResult(text=t, target=target, ok=False, translated=False, error="down") for t in texts]
+        mocker.patch("app.translation.translate_many", side_effect=fake_translate_many)
+
+        result = world.get_world_feature(toon_id, lang="fr")
+        assert result["translation_failed"] is True
+
+    def test_an_unrecognized_language_falls_back_to_english_untranslated(self, db):
+        toon_id = _make_toon(db, hook_line="A vital chokepoint.", shots=self.SHOTS)
+        result = world.get_world_feature(toon_id, lang="not-a-real-language")
+        assert result["transcript_language"] == "en" and result["hook_line"] == "A vital chokepoint."
+
+    def test_english_never_calls_the_translator(self, db, mocker):
+        translate = mocker.patch("app.translation.translate_many")
+        toon_id = _make_toon(db, shots=self.SHOTS)
+        world.get_world_feature(toon_id, lang="en")
+        translate.assert_not_called()
+
+    def test_a_toon_with_no_stored_script_is_an_empty_transcript(self, db):
+        session = db()
+        toon = Toon(brand_id=uuid.uuid4(), script_id=uuid.uuid4(), title="Orphaned", status="ready",
+                    final_video_url="https://cdn/x.mp4", is_world_content=True, world_published=True)
+        session.add(toon)
+        session.commit()
+        toon_id = str(toon.id)
+        session.close()
+        result = world.get_world_feature(toon_id)
+        assert result["transcript"] == [] and result["hook_line"] is None
 
 
 def _make_trend(db, *, platform="tiktok", title="A trend", content="content text",
