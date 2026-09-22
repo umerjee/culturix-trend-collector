@@ -55,13 +55,13 @@ export default function DailyBrief({ region, regionLabel, date, language, initia
 
   const events = brief.calendar.filter((e) => e.when === "today").concat(brief.calendar.filter((e) => e.when !== "today")).slice(0, 3);
   return (
-    <section aria-label={`Daily brief for ${regionLabel}`} className={`mb-6 rounded-2xl border border-purple-100 bg-gradient-to-br from-white to-purple-50/50 p-4 sm:p-5 transition-opacity ${loading ? "opacity-60" : ""}`}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <h2 className="text-[11px] font-bold uppercase tracking-[0.16em] text-purple-500">
+    <section aria-label={`Daily brief for ${regionLabel}`} className={`mb-8 rounded-3xl border border-purple-100 bg-gradient-to-br from-white to-purple-50/50 p-5 sm:p-8 shadow-sm shadow-purple-100/40 transition-opacity ${loading ? "opacity-60" : ""}`}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <span className="text-[11px] font-bold uppercase tracking-[0.16em] text-purple-500">
           {brief.date ? `${regionLabel} · ${formatDay(brief.date)}` : `${regionLabel} daily brief`}
-        </h2>
+        </span>
         {brief.mood && (
-          <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${MOOD_STYLES[brief.mood] || MOOD_STYLES.neutral}`}>{brief.mood}</span>
+          <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold capitalize ${MOOD_STYLES[brief.mood] || MOOD_STYLES.neutral}`}>{brief.mood}</span>
         )}
         {brief.vs_usual === "busier" && <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600"><TrendingUp className="h-3 w-3" /> busier than usual</span>}
         {brief.vs_usual === "quieter" && <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500"><TrendingDown className="h-3 w-3" /> quieter than usual</span>}
@@ -70,13 +70,13 @@ export default function DailyBrief({ region, regionLabel, date, language, initia
         )}
       </div>
 
-      <p className="mt-2 text-base leading-relaxed text-gray-800">{brief.summary}</p>
+      <h2 className="mt-3 text-xl sm:text-2xl font-semibold leading-snug tracking-tight text-gray-900">{brief.summary}</h2>
       {brief.translation_failed && (
-        <p role="status" className="mt-1 text-xs text-amber-700">Translation is temporarily unavailable, so this is shown in English.</p>
+        <p role="status" className="mt-1.5 text-xs text-amber-700">Translation is temporarily unavailable, so this is shown in English.</p>
       )}
 
       {events.length > 0 && (
-        <ul className="mt-3 flex flex-wrap gap-2">
+        <ul className="mt-4 flex flex-wrap gap-2">
           {events.map((e) => (
             <li key={`${e.name}-${e.date}`} className="inline-flex items-center gap-1.5 rounded-full border border-purple-100 bg-white px-2.5 py-1 text-xs text-gray-600">
               <CalendarDays className="h-3 w-3 text-purple-400" />
@@ -88,23 +88,20 @@ export default function DailyBrief({ region, regionLabel, date, language, initia
       )}
 
       {brief.audience_matches.length > 0 && (
-        <div className="mt-4 border-t border-purple-100/70 pt-3">
-          <h3 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-            <Users className="h-3.5 w-3.5 text-purple-400" /> Who this is landing with
+        <div className="mt-5 border-t border-purple-100/70 pt-4">
+          <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-600">
+            <Users className="h-3.5 w-3.5 text-purple-400" /> Best-fit audiences to make this for
           </h3>
-          <p className="mt-0.5 text-[11px] text-gray-400">
-            Audience types our own trend-clustering has already discovered, matched to today&apos;s topics — not on any raw feed.
+          <p className="mt-0.5 text-xs text-gray-400">
+            Creator audience archetypes closest to today&apos;s topics by interest similarity.
           </p>
-          <ul className="mt-2 grid gap-2 sm:grid-cols-2">
+          <ul className="mt-3 grid gap-2.5 sm:grid-cols-2">
             {brief.audience_matches.map((persona) => (
-              <li key={persona.name} className="rounded-xl border border-purple-100 bg-white/70 px-3 py-2">
-                <p className="text-sm font-semibold text-gray-800">{persona.name}</p>
-                <p className="mt-0.5 text-xs leading-snug text-gray-500 [overflow-wrap:anywhere]">{persona.description}</p>
-                {persona.content_angle && (
-                  <p className="mt-1 text-xs italic leading-snug text-purple-600 [overflow-wrap:anywhere]">
-                    Content angle: {persona.content_angle}
-                  </p>
-                )}
+              <li key={persona.name} className="rounded-xl border border-purple-100 bg-white px-3.5 py-3">
+                <p className="text-sm font-semibold text-gray-900">{persona.name}</p>
+                <p className="mt-1 text-xs leading-snug text-gray-500 [overflow-wrap:anywhere]">
+                  {persona.content_angle || persona.description}
+                </p>
               </li>
             ))}
           </ul>
@@ -112,7 +109,7 @@ export default function DailyBrief({ region, regionLabel, date, language, initia
       )}
 
       {brief.source !== "calendar" && brief.signal_count > 0 && (
-        <p className="mt-3 text-[11px] text-gray-400">
+        <p className="mt-4 text-[11px] text-gray-400">
           From {brief.signal_count.toLocaleString("en-US")} posts across {brief.platforms.slice(0, 4).map((p) => p.replace("_", " ")).join(", ")}
           {brief.source === "ai" ? ", read against live news headlines and this country's recent history." : "."}
         </p>

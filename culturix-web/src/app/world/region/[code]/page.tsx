@@ -81,21 +81,25 @@ export default async function WorldRegionPage({ params }: { params: { code: stri
         </Link>
 
         <h1 className="text-3xl font-bold text-gray-900 mb-2">{label}</h1>
-        <p className="text-gray-500 mb-10">
-          {features.length} Feature{features.length === 1 ? "" : "s"} from this region.
-        </p>
-
-        {features.length === 0 ? (
-          <p className="text-sm text-gray-400 py-10">Nothing published for {label} yet — check back soon.</p>
-        ) : (
-          <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5 mb-14">
-            {features.map((f) => (
-              <FeatureCard key={f.id} feature={f} />
-            ))}
-          </section>
-        )}
+        <p className="text-gray-500 mb-10">What&apos;s trending in {label} today, and the videos Culturix has published about it.</p>
 
         <TimeCursor region={code} regionLabel={label} coverage={coverage} initialTrends={trends} initialBrief={brief} />
+
+        <section className="mt-14">
+          <div className="mb-5 flex items-end justify-between gap-4">
+            <h2 className="text-lg font-semibold text-gray-900">Culturix World videos</h2>
+            <span className="text-xs text-gray-400">{features.length} published</span>
+          </div>
+          {features.length === 0 ? (
+            <p className="text-sm text-gray-400 py-6">No videos published for {label} yet — check back soon.</p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5">
+              {features.map((f) => (
+                <FeatureCard key={f.id} feature={f} />
+              ))}
+            </div>
+          )}
+        </section>
       </main>
 
       <MarketingFooter />

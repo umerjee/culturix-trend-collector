@@ -207,6 +207,16 @@ def _cosine_similarity(a: list, b: list) -> float:
     return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
 
 
+def _truncate_at_word(text: str, limit: int) -> str:
+    """Cuts at the last space within `limit`, not mid-word — a hard slice on persona
+    descriptions was ending live cards on fragments like "...blend everyday pragmatism with a"."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0]
+    return f"{cut.rstrip('.,;:')}…"
+
+
 def top_persona_matches(session, topics: list[dict], themes: list[str]) -> list[dict]:
     """Real, already-generated audience archetypes (app/models/persona.py — Culturix's own
     cross-platform interest clustering, run once across the whole trend corpus, not a real
@@ -247,7 +257,7 @@ def top_persona_matches(session, topics: list[dict], themes: list[str]) -> list[
     return [
         {
             "name": persona.name,
-            "description": (persona.description or "").strip()[:200],
+            "description": _truncate_at_word(persona.description or "", 200),
             # First sentence only: content_suggestions is often a short paragraph, and the card
             # this feeds has room for one concrete angle, not the whole thing.
             "content_angle": (cs.split(".")[0].strip()[:160] if (cs := (persona.content_suggestions or "").strip()) else None),

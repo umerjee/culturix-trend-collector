@@ -311,7 +311,14 @@ def list_world_trend_digest(region: str, date_from: Optional[str] = None,
             if len(group["signals"]) < 3:
                 group["signals"].append(_serialize_digest_signal(trend))
 
-        result = sorted(grouped.values(), key=lambda group: (-group["signal_count"], group["title"]))[:limit]
+        # A persisted Cluster is an actual editorial theme; an ungrouped "source" bucket is just
+        # raw signals sharing a platform, sometimes a single repeated hashtag caption with a huge
+        # signal_count (confirmed live: a bare TikTok hashtag outranking a real curated theme).
+        # Sorting on signal_count alone let that noise beat real themes to the top of the page.
+        result = sorted(
+            grouped.values(),
+            key=lambda group: (0 if group["kind"] == "cluster" else 1, -group["signal_count"], group["title"]),
+        )[:limit]
 
         # One batched, cached translation call for the whole digest (was one
         # request per string on every page view, which trips Google's rate limit).
