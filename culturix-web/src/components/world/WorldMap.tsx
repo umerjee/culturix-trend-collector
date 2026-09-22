@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
-  ComposableMap, Geographies, Geography, ZoomableGroup, Sphere, Graticule,
+  ComposableMap, Geographies, Geography, ZoomableGroup, Sphere, Graticule, Marker,
 } from "react-simple-maps";
-import { Plus, Minus, RotateCcw } from "lucide-react";
+import type { ProjectionFunction } from "react-simple-maps";
+import { geoOrthographic, geoCentroid } from "d3-geo";
+import { Plus, Minus, RotateCcw, Globe2, Map as MapIcon } from "lucide-react";
 import countries from "i18n-iso-countries";
 import enLocale from "i18n-iso-countries/langs/en.json";
 import worldTopoJson from "world-atlas/countries-110m.json";
@@ -18,9 +20,30 @@ countries.registerLocale(enLocale as any);
 // rather than hand-maintaining a numeric<->alpha2 table here.
 const GEO_URL = worldTopoJson as unknown as Parameters<typeof Geographies>[0]["geography"];
 
-const MIN_ZOOM = 1;
-const MAX_ZOOM = 8;
-const DEFAULT_POSITION = { coordinates: [0, 20] as [number, number], zoom: 1 };
+const WIDTH = 800;
+const HEIGHT = 500;
+
+const FLAT_MIN_ZOOM = 1;
+const FLAT_MAX_ZOOM = 8;
+const FLAT_DEFAULT_POSITION = { coordinates: [0, 20] as [number, number], zoom: 1 };
+
+// A rotating sphere, not a projection name: [longitude, latitude, roll]. The default frames
+// Europe/Africa/the Atlantic, the same opening view most globe UIs default to.
+type Rotation = [number, number, number];
+const GLOBE_DEFAULT_ROTATION: Rotation = [-10, -15, 0];
+const GLOBE_MIN_SCALE = 220;
+const GLOBE_MAX_SCALE = 640;
+const GLOBE_DEFAULT_SCALE = 300;
+// Degrees of longitude per pixel of drag — tuned so a full-width drag turns the globe about
+// three-quarters of the way around, which reads as "grabbing" it rather than nudging it.
+const DRAG_SENSITIVITY = 0.28;
+const AUTO_ROTATE_DEG_PER_SEC = 4;
+const IDLE_MS_BEFORE_AUTOROTATE = 2600;
+// A pointer that moved less than this between down and up was a click, not a drag — otherwise
+// every attempt to spin the globe would also navigate to whatever country was under the cursor.
+const DRAG_VS_CLICK_PX = 4;
+
+type ViewMode = "globe" | "flat";
 
 interface RegionCount {
   region: string;
@@ -49,9 +72,28 @@ function fillForCount(count: number): string {
 
 export default function WorldMap() {
   const router = useRouter();
+  // The orthographic globe's SVG path is pure floating-point math (no randomness), yet Node's SSR
+  // render and the browser's own re-render of that same math can differ in the last few decimal
+  // places — enough for React to flag a hydration mismatch on the sphere's clip path. Rendering the
+  // globe/flat map only after mount sidesteps it: server and the client's first paint both show the
+  // same static placeholder, and the real (client-only, floating-point-sensitive) map appears a tick
+  // later, which is invisible in practice.
+  const [mounted, setMounted] = useState(false);
   const [regionCounts, setRegionCounts] = useState<Record<string, RegionCount>>({});
   const [hovered, setHovered] = useState<{ code: string; x: number; y: number } | null>(null);
-  const [position, setPosition] = useState(DEFAULT_POSITION);
+  const [view, setView] = useState<ViewMode>("globe");
+  const [flatPosition, setFlatPosition] = useState(FLAT_DEFAULT_POSITION);
+  const [rotation, setRotation] = useState<Rotation>(GLOBE_DEFAULT_ROTATION);
+  const [globeScale, setGlobeScale] = useState(GLOBE_DEFAULT_SCALE);
+
+  // Refs, not state: these drive a per-frame animation loop and a drag gesture, neither of which
+  // should ever cause React to re-render on their own (the rAF loop calls setRotation itself,
+  // which is the one state update that actually needs to repaint).
+  const lastInteractionRef = useRef(Date.now());
+  const dragRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
+  const rafRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => setMounted(true), []);
 
   useEffect(() => {
     fetch("/api/world/regions")
@@ -64,83 +106,276 @@ export default function WorldMap() {
       .catch(() => setRegionCounts({}));
   }, []);
 
-  const zoomBy = useCallback((factor: number) => {
-    setPosition((pos) => ({ ...pos, zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, pos.zoom * factor)) }));
+  // The globe drifts slowly on its own — a static map is what "too flat" meant — and stops the
+  // moment someone touches it, resuming a couple of seconds after they let go.
+  useEffect(() => {
+    if (view !== "globe") return;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = (now - last) / 1000;
+      last = now;
+      if (!dragRef.current && Date.now() - lastInteractionRef.current > IDLE_MS_BEFORE_AUTOROTATE) {
+        setRotation(([lambda, phi, gamma]) => [lambda + AUTO_ROTATE_DEG_PER_SEC * dt, phi, gamma]);
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current);
+    };
+  }, [view]);
+
+  // react-simple-maps' own runtime accepts a ready-made d3 projection INSTANCE here (confirmed by
+  // reading its source: a function value is used as-is, never invoked as a factory) — but its
+  // published types model `projection` as a `(width, height, config) => GeoProjection` factory
+  // instead, so TypeScript needs a cast to accept what the library actually expects at runtime.
+  const projection = useMemo(
+    () =>
+      geoOrthographic()
+        .scale(globeScale)
+        .translate([WIDTH / 2, HEIGHT / 2])
+        .rotate(rotation)
+        .clipAngle(90) as unknown as ProjectionFunction,
+    [globeScale, rotation],
+  );
+
+  const zoomBy = useCallback(
+    (factor: number) => {
+      if (view === "globe") {
+        setGlobeScale((s) => Math.min(GLOBE_MAX_SCALE, Math.max(GLOBE_MIN_SCALE, s * factor)));
+      } else {
+        setFlatPosition((pos) => ({ ...pos, zoom: Math.min(FLAT_MAX_ZOOM, Math.max(FLAT_MIN_ZOOM, pos.zoom * factor)) }));
+      }
+    },
+    [view],
+  );
+
+  const resetView = useCallback(() => {
+    setRotation(GLOBE_DEFAULT_ROTATION);
+    setGlobeScale(GLOBE_DEFAULT_SCALE);
+    setFlatPosition(FLAT_DEFAULT_POSITION);
   }, []);
 
-  const resetView = useCallback(() => setPosition(DEFAULT_POSITION), []);
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      lastInteractionRef.current = Date.now();
+      if (view !== "globe") return;
+      dragRef.current = { x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY };
+      (e.target as Element).setPointerCapture?.(e.pointerId);
+    },
+    [view],
+  );
+
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      lastInteractionRef.current = Date.now();
+      if (hovered) setHovered((h) => (h ? { ...h, x: e.clientX, y: e.clientY } : h));
+      const drag = dragRef.current;
+      if (!drag) return;
+      const dx = e.clientX - drag.x;
+      const dy = e.clientY - drag.y;
+      drag.x = e.clientX;
+      drag.y = e.clientY;
+      // Incremental: each move nudges the CURRENT rotation by this step's own delta, rather than
+      // recomputing from the gesture's start — that keeps the globe locked to the cursor exactly,
+      // instead of drifting if a move event is skipped.
+      setRotation(([lambda, phi, gamma]) => [
+        lambda + dx * DRAG_SENSITIVITY,
+        Math.max(-90, Math.min(90, phi - dy * DRAG_SENSITIVITY)),
+        gamma,
+      ]);
+    },
+    [hovered],
+  );
+
+  const endDrag = useCallback(() => {
+    dragRef.current = null;
+  }, []);
+
+  const handleWheel = useCallback(
+    (e: React.WheelEvent) => {
+      if (view !== "globe") return;
+      e.preventDefault();
+      lastInteractionRef.current = Date.now();
+      zoomBy(e.deltaY < 0 ? 1.08 : 1 / 1.08);
+    },
+    [view, zoomBy],
+  );
+
+  const navigateIfClick = useCallback(
+    (e: React.MouseEvent, code: string) => {
+      const drag = dragRef.current;
+      const moved = drag ? Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) : 0;
+      if (moved > DRAG_VS_CLICK_PX) return; // a drag that happened to end over a country, not a click
+      router.push(`/world/region/${code}`);
+    },
+    [router],
+  );
+
+  if (!mounted) {
+    return (
+      <div
+        aria-hidden="true"
+        className="relative rounded-2xl overflow-hidden border border-gray-100 bg-gradient-to-b from-sky-100 via-sky-50 to-white animate-pulse"
+        style={{ aspectRatio: `${WIDTH} / ${HEIGHT}`, maxHeight: 480 }}
+      />
+    );
+  }
 
   return (
-    <div className="relative rounded-2xl overflow-hidden border border-gray-100 bg-gradient-to-b from-sky-50 to-white">
+    <div className="relative rounded-2xl overflow-hidden border border-gray-100 bg-gradient-to-b from-sky-100 via-sky-50 to-white shadow-[inset_0_1px_0_rgba(255,255,255,0.6)]">
+      {/* Soft radial glow behind the globe so it reads as an object floating in space, not a flat tile. */}
+      {view === "globe" && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 opacity-70"
+          style={{ background: "radial-gradient(ellipse 60% 55% at 50% 48%, rgba(129,140,248,0.18), transparent 70%)" }}
+        />
+      )}
+
       <ComposableMap
-        projectionConfig={{ scale: 148 }}
-        className="w-full h-auto"
-        style={{ maxHeight: 480 }}
-        onMouseMove={(e) => {
-          if (hovered) setHovered((h) => (h ? { ...h, x: e.clientX, y: e.clientY } : h));
-        }}
+        width={WIDTH}
+        height={HEIGHT}
+        projection={view === "globe" ? projection : "geoEqualEarth"}
+        projectionConfig={view === "flat" ? { scale: 148 } : undefined}
+        className="w-full h-auto touch-none select-none"
+        style={{ maxHeight: 480, filter: view === "globe" ? "drop-shadow(0 18px 34px rgba(30,27,75,0.22))" : undefined }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={endDrag}
+        onPointerLeave={endDrag}
+        onPointerCancel={endDrag}
+        onWheel={handleWheel}
       >
-        <ZoomableGroup
-          center={position.coordinates}
-          zoom={position.zoom}
-          minZoom={MIN_ZOOM}
-          maxZoom={MAX_ZOOM}
-          onMoveEnd={({ coordinates, zoom }) => setPosition({ coordinates, zoom })}
-        >
-          <Sphere id="world-sphere" fill="transparent" stroke="#bae6fd" strokeWidth={0.5} />
-          <Graticule stroke="#e0f2fe" strokeWidth={0.5} />
-          <Geographies geography={GEO_URL}>
-            {({ geographies }) =>
-              geographies.map((geo) => {
-                const alpha2 = countries.numericToAlpha2(geo.id as string);
-                const stats = alpha2 ? regionCounts[alpha2] : undefined;
-                const activity = stats ? stats.feature_count + Math.min(stats.trend_count, 5) : 0;
-                const hasContent = Boolean(stats && (stats.feature_count > 0 || stats.trend_count > 0));
-                return (
-                  <Geography
-                    key={geo.rsmKey}
-                    geography={geo}
-                    onMouseEnter={(e) => hasContent && alpha2 && setHovered({ code: alpha2, x: e.clientX, y: e.clientY })}
-                    onMouseLeave={() => setHovered(null)}
-                    onClick={() => hasContent && alpha2 && router.push(`/world/region/${alpha2}`)}
-                    style={{
-                      default: {
-                        fill: fillForCount(activity),
-                        stroke: "#ffffff",
-                        strokeWidth: 0.5 / position.zoom,
-                        outline: "none",
-                        cursor: hasContent ? "pointer" : "default",
-                        transition: "fill 150ms ease",
-                      },
-                      hover: {
-                        fill: hasContent ? "#4c1d95" : "#cbd5e1",
-                        stroke: "#ffffff",
-                        strokeWidth: 0.5 / position.zoom,
-                        outline: "none",
-                        cursor: hasContent ? "pointer" : "default",
-                      },
-                      pressed: {
-                        fill: "#3b0764",
-                        stroke: "#ffffff",
-                        strokeWidth: 0.5 / position.zoom,
-                        outline: "none",
-                      },
-                    }}
-                  />
-                );
-              })
-            }
-          </Geographies>
-        </ZoomableGroup>
+        <defs>
+          <radialGradient id="ocean" cx="38%" cy="32%" r="75%">
+            <stop offset="0%" stopColor="#e0f2fe" />
+            <stop offset="55%" stopColor="#bae6fd" />
+            <stop offset="100%" stopColor="#7dd3fc" />
+          </radialGradient>
+        </defs>
+
+        {view === "globe" ? (
+          <>
+            <Sphere id="world-sphere" fill="url(#ocean)" stroke="#0ea5e9" strokeWidth={0.6} strokeOpacity={0.35} />
+            <Graticule stroke="#0ea5e9" strokeWidth={0.4} strokeOpacity={0.25} />
+            <Geographies geography={GEO_URL}>
+              {({ geographies }) =>
+                geographies.map((geo) => {
+                  const alpha2 = countries.numericToAlpha2(geo.id as string);
+                  const stats = alpha2 ? regionCounts[alpha2] : undefined;
+                  const activity = stats ? stats.feature_count + Math.min(stats.trend_count, 5) : 0;
+                  const hasContent = Boolean(stats && (stats.feature_count > 0 || stats.trend_count > 0));
+                  return (
+                    <Geography
+                      key={geo.rsmKey}
+                      geography={geo}
+                      onMouseEnter={(e) => hasContent && alpha2 && setHovered({ code: alpha2, x: e.clientX, y: e.clientY })}
+                      onMouseLeave={() => setHovered(null)}
+                      onClick={(e) => hasContent && alpha2 && navigateIfClick(e, alpha2)}
+                      style={{
+                        default: {
+                          fill: fillForCount(activity),
+                          stroke: "#ffffff",
+                          strokeWidth: 0.5,
+                          outline: "none",
+                          cursor: hasContent ? "pointer" : "grab",
+                          transition: "fill 150ms ease",
+                        },
+                        hover: {
+                          fill: hasContent ? "#4c1d95" : "#94a3b8",
+                          stroke: "#ffffff",
+                          strokeWidth: 0.5,
+                          outline: "none",
+                          cursor: hasContent ? "pointer" : "grab",
+                        },
+                        pressed: { fill: "#3b0764", stroke: "#ffffff", strokeWidth: 0.5, outline: "none" },
+                      }}
+                    />
+                  );
+                })
+              }
+            </Geographies>
+            <GlobeMarkers regionCounts={regionCounts} />
+          </>
+        ) : (
+          <ZoomableGroup
+            center={flatPosition.coordinates}
+            zoom={flatPosition.zoom}
+            minZoom={FLAT_MIN_ZOOM}
+            maxZoom={FLAT_MAX_ZOOM}
+            onMoveEnd={({ coordinates, zoom }) => setFlatPosition({ coordinates, zoom })}
+          >
+            <Sphere id="world-sphere-flat" fill="url(#ocean)" stroke="#bae6fd" strokeWidth={0.5} />
+            <Graticule stroke="#7dd3fc" strokeWidth={0.4} strokeOpacity={0.5} />
+            <Geographies geography={GEO_URL}>
+              {({ geographies }) =>
+                geographies.map((geo) => {
+                  const alpha2 = countries.numericToAlpha2(geo.id as string);
+                  const stats = alpha2 ? regionCounts[alpha2] : undefined;
+                  const activity = stats ? stats.feature_count + Math.min(stats.trend_count, 5) : 0;
+                  const hasContent = Boolean(stats && (stats.feature_count > 0 || stats.trend_count > 0));
+                  return (
+                    <Geography
+                      key={geo.rsmKey}
+                      geography={geo}
+                      onMouseEnter={(e) => hasContent && alpha2 && setHovered({ code: alpha2, x: e.clientX, y: e.clientY })}
+                      onMouseLeave={() => setHovered(null)}
+                      onClick={() => hasContent && alpha2 && router.push(`/world/region/${alpha2}`)}
+                      style={{
+                        default: {
+                          fill: fillForCount(activity),
+                          stroke: "#ffffff",
+                          strokeWidth: 0.5 / flatPosition.zoom,
+                          outline: "none",
+                          cursor: hasContent ? "pointer" : "default",
+                          transition: "fill 150ms ease",
+                        },
+                        hover: {
+                          fill: hasContent ? "#4c1d95" : "#cbd5e1",
+                          stroke: "#ffffff",
+                          strokeWidth: 0.5 / flatPosition.zoom,
+                          outline: "none",
+                          cursor: hasContent ? "pointer" : "default",
+                        },
+                        pressed: { fill: "#3b0764", stroke: "#ffffff", strokeWidth: 0.5 / flatPosition.zoom, outline: "none" },
+                      }}
+                    />
+                  );
+                })
+              }
+            </Geographies>
+          </ZoomableGroup>
+        )}
       </ComposableMap>
+
+      {/* View toggle */}
+      <div className="absolute top-3 left-3 flex rounded-xl border border-gray-200 bg-white/95 backdrop-blur-sm shadow-sm overflow-hidden text-xs font-semibold">
+        <button
+          type="button"
+          onClick={() => setView("globe")}
+          aria-pressed={view === "globe"}
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 ${view === "globe" ? "bg-purple-600 text-white" : "text-gray-500 hover:bg-purple-50"}`}
+        >
+          <Globe2 className="h-3.5 w-3.5" /> Globe
+        </button>
+        <button
+          type="button"
+          onClick={() => setView("flat")}
+          aria-pressed={view === "flat"}
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 border-l border-gray-200 ${view === "flat" ? "bg-purple-600 text-white" : "text-gray-500 hover:bg-purple-50"}`}
+        >
+          <MapIcon className="h-3.5 w-3.5" /> Flat
+        </button>
+      </div>
 
       {/* Zoom controls */}
       <div className="absolute bottom-3 right-3 flex flex-col rounded-xl border border-gray-200 bg-white/95 backdrop-blur-sm shadow-sm overflow-hidden">
         <button
           type="button"
           aria-label="Zoom in"
-          onClick={() => zoomBy(1.5)}
-          disabled={position.zoom >= MAX_ZOOM}
+          onClick={() => zoomBy(1.4)}
+          disabled={view === "globe" ? globeScale >= GLOBE_MAX_SCALE : flatPosition.zoom >= FLAT_MAX_ZOOM}
           className="h-8 w-8 flex items-center justify-center text-gray-600 hover:bg-purple-50 hover:text-purple-600 disabled:opacity-30 disabled:hover:bg-transparent border-b border-gray-100"
         >
           <Plus className="h-3.5 w-3.5" />
@@ -148,8 +383,8 @@ export default function WorldMap() {
         <button
           type="button"
           aria-label="Zoom out"
-          onClick={() => zoomBy(1 / 1.5)}
-          disabled={position.zoom <= MIN_ZOOM}
+          onClick={() => zoomBy(1 / 1.4)}
+          disabled={view === "globe" ? globeScale <= GLOBE_MIN_SCALE : flatPosition.zoom <= FLAT_MIN_ZOOM}
           className="h-8 w-8 flex items-center justify-center text-gray-600 hover:bg-purple-50 hover:text-purple-600 disabled:opacity-30 disabled:hover:bg-transparent border-b border-gray-100"
         >
           <Minus className="h-3.5 w-3.5" />
@@ -187,11 +422,59 @@ export default function WorldMap() {
         </div>
       )}
 
+      {view === "globe" && (
+        <p className="absolute top-3 right-3 hidden sm:block rounded-lg bg-white/80 backdrop-blur-sm px-2 py-1 text-[10px] text-gray-400">
+          Drag to spin · scroll to zoom
+        </p>
+      )}
+
       {Object.keys(regionCounts).length === 0 && (
         <p className="absolute inset-x-0 bottom-1/2 translate-y-1/2 text-center text-sm text-gray-400">
           No World Features published yet — check back soon.
         </p>
       )}
     </div>
+  );
+}
+
+// Pulsing hotspot markers for every region with real content, positioned at that country's true
+// spherical centroid (computed from the same topology the map itself draws, so a marker is never
+// off by hand-maintained coordinates). Orthographic clipping means a marker on the far side of the
+// globe should be hidden, not drawn floating over the wrong country — react-simple-maps' own
+// <Marker> already skips coordinates the current projection can't place on screen.
+function GlobeMarkers({ regionCounts }: { regionCounts: Record<string, RegionCount> }) {
+  const [centroids, setCentroids] = useState<Record<string, [number, number]> | null>(null);
+
+  useEffect(() => {
+    // Computed once (not per render, not per rotation) from the static topology — genuinely
+    // expensive to redo every frame, cheap to do exactly once.
+    import("topojson-client").then(({ feature }) => {
+      const topo = worldTopoJson as any;
+      const collection = feature(topo, topo.objects.countries) as any;
+      const map: Record<string, [number, number]> = {};
+      for (const geo of collection.features) {
+        const alpha2 = countries.numericToAlpha2(geo.id as string);
+        if (alpha2) map[alpha2] = geoCentroid(geo) as [number, number];
+      }
+      setCentroids(map);
+    });
+  }, []);
+
+  if (!centroids) return null;
+  return (
+    <>
+      {Object.entries(regionCounts)
+        .filter(([, s]) => s.feature_count > 0 || s.trend_count > 0)
+        .map(([code]) => {
+          const coordinates = centroids[code];
+          if (!coordinates) return null;
+          return (
+            <Marker key={code} coordinates={coordinates}>
+              <circle r={5} fill="#a855f7" fillOpacity={0.35} className="animate-ping" style={{ transformOrigin: "center" }} />
+              <circle r={2.2} fill="#7c3aed" stroke="#fff" strokeWidth={0.6} />
+            </Marker>
+          );
+        })}
+    </>
   );
 }
