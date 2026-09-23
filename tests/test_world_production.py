@@ -180,6 +180,23 @@ class TestGenerateDraft:
         with pytest.raises(wp.WorldDraftExists):
             wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3)
 
+    def test_subject_category_override_reaches_host_selection(self, llm):
+        # _CATEGORY_MAP has no route from any ingestion category (here "archaeology") to
+        # "phenomenon" or "species" — an explicit override is the only way to reach them.
+        wp.generate_world_draft(None, _item(category="archaeology"), duration_seconds=30, beat_count=3,
+                                use_host=True, persist=False, subject_category="phenomenon")
+        assert llm.host.call_args.args[1] == "phenomenon"
+
+    def test_unmapped_category_without_an_override_falls_back_to_custom(self, llm):
+        wp.generate_world_draft(None, _item(category="archaeology"), duration_seconds=30, beat_count=3,
+                                use_host=True, persist=False)
+        assert llm.host.call_args.args[1] == "place"  # _CATEGORY_MAP["archaeology"]
+
+    def test_invalid_subject_category_override_is_rejected(self, llm):
+        with pytest.raises(wp.WorldDraftError):
+            wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False,
+                                    subject_category="not-a-real-category")
+
 
 class TestRegionName:
     def test_known_unknown_and_missing(self):

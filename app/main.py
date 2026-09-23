@@ -3018,14 +3018,16 @@ def plan_curated_world_feature(item_id: str):
 @app.post("/admin/curated-items/{item_id}/generate", dependencies=[Depends(require_admin_secret)])
 def generate_curated_world_feature(item_id: str, payload: Optional[dict] = None):
     """Generate a fact-checked World script for a selected subject. Optional
-    body: {duration_seconds, beat_count, use_host, visual_style, era}. `era` is the period to show in the
-    curator's own words and must name a year ("Roman Republic, 307 BC"); without it the period is worked
-    out from the source. Does not start the paid render — that is a separate action on the World
-    Production page."""
+    body: {duration_seconds, beat_count, use_host, visual_style, era, subject_category}. `era` is the
+    period to show in the curator's own words and must name a year ("Roman Republic, 307 BC"); without
+    it the period is worked out from the source. `subject_category` overrides the browse category
+    (place/phenomenon/species/tech/genz/custom) that would otherwise be auto-mapped from the item's
+    ingestion category — needed for "phenomenon"/"species", which no ingestion category maps to. Does
+    not start the paid render — that is a separate action on the World Production page."""
     import threading
     from app.db import SessionLocal
     from app.models.curated_item import CuratedItem
-    from app.services.world_production import ALLOWED_DURATIONS, WORLD_VISUAL_STYLES, find_live_draft
+    from app.services.world_production import ALLOWED_DURATIONS, WORLD_SUBJECT_CATEGORIES, WORLD_VISUAL_STYLES, find_live_draft
 
     payload = payload or {}
     duration = payload.get("duration_seconds")
@@ -3036,6 +3038,9 @@ def generate_curated_world_feature(item_id: str, payload: Optional[dict] = None)
     visual_style = payload.get("visual_style") or None
     if visual_style is not None and visual_style not in WORLD_VISUAL_STYLES:
         raise HTTPException(status_code=400, detail=f"visual_style must be one of {sorted(WORLD_VISUAL_STYLES)}")
+    subject_category = payload.get("subject_category") or None
+    if subject_category is not None and subject_category not in WORLD_SUBJECT_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"subject_category must be one of {sorted(WORLD_SUBJECT_CATEGORIES)}")
     era_text = (payload.get("era") or "").strip() or None
     if era_text:
         from app.services.world_era import EraError, era_from_text
@@ -3066,7 +3071,8 @@ def generate_curated_world_feature(item_id: str, payload: Optional[dict] = None)
         try:
             db_item = db.query(CuratedItem).filter_by(id=item_id).first()
             result = generate_world_draft(db, db_item, duration_seconds=duration, beat_count=beats,
-                                          use_host=use_host, visual_style=visual_style, era_text=era_text)
+                                          use_host=use_host, visual_style=visual_style, era_text=era_text,
+                                          subject_category=subject_category)
             logging.info("World draft generated: item=%s toon=%s grounded=%s", item_id, result.get("toon_id"),
                          result["grounding"].get("grounded"))
         except Exception:

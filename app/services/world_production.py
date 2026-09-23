@@ -41,6 +41,12 @@ _CATEGORY_MAP = {
     "innovation": "tech", "geopolitical": "custom", "trending": "custom", "humor": "custom",
 }
 
+# The browse categories culturix-web/src/lib/worldTypes.ts's CATEGORY_LABELS actually renders.
+# _CATEGORY_MAP alone can never reach "phenomenon" or "species" — none of the 8 ingestion-pipeline
+# categories map to them — so a curator generating a phenomenon/species subject must pass one of
+# these explicitly (subject_category on generate_world_draft) rather than rely on the auto-map.
+WORLD_SUBJECT_CATEGORIES = {"place", "phenomenon", "species", "tech", "genz", "custom"}
+
 
 # Scene art directions for hostless World videos (None = the default photoreal look).
 # Deliberately separate from culturetoons.ART_STYLES, whose prompts describe CHARACTERS
@@ -182,7 +188,8 @@ def find_live_draft(db, item_id):
     )
 
 
-def _start_placeholder(db, item, duration_seconds: Optional[int], visual_style: Optional[str]):
+def _start_placeholder(db, item, duration_seconds: Optional[int], visual_style: Optional[str],
+                       subject_category: Optional[str] = None):
     """The draft row, created BEFORE the slow work so it shows in World production the moment the curator
     clicks Generate (greyed, 'under production') instead of appearing minutes later or, if writing fails,
     never. Returns (toon, script)."""
@@ -190,7 +197,7 @@ def _start_placeholder(db, item, duration_seconds: Optional[int], visual_style: 
     from app.models.toon_script import ToonScript
 
     brand = _world_brand(db)
-    category = _CATEGORY_MAP.get(item.category, "custom")
+    category = subject_category or _CATEGORY_MAP.get(item.category, "custom")
     script = ToonScript(
         brand_id=brand.id, hook_line=None, tone="informative", shots=[], total_duration_seconds=duration_seconds,
         generation_source="ai", status="draft", is_world_content=True, subject_region=item.region,
@@ -388,20 +395,25 @@ def _build_judgment(composed: dict, duration_seconds: int, beat_count: int, scen
 def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_count: Optional[int] = None,
                          use_host: bool = False, persist: bool = True,
                          visual_style: Optional[str] = None, scenes: Optional[list] = None,
-                         era_text: Optional[str] = None) -> dict:
+                         era_text: Optional[str] = None, subject_category: Optional[str] = None) -> dict:
     """Plan -> grounded script -> fact-check (one auto-revision) -> editorial review (one auto-improvement
     if it does not pass) -> persist as an approved ToonScript plus an 'idea' Toon. Does NOT render:
     the paid GPU step stays a separate, explicit action. With persist=False nothing is written (dry
     run). Raises WorldDraftExists on a duplicate live draft.
 
+    subject_category overrides _CATEGORY_MAP's auto-mapping from item.category — needed for
+    "phenomenon"/"species", which no ingestion-pipeline category maps to (see WORLD_SUBJECT_CATEGORIES).
+
     The draft row exists from the start with status 'scripting' (see _start_placeholder) and becomes 'idea'
     when the script is done, or 'failed' with the reason if writing raises."""
+    if subject_category is not None and subject_category not in WORLD_SUBJECT_CATEGORIES:
+        raise WorldDraftError(f"subject_category must be one of {sorted(WORLD_SUBJECT_CATEGORIES)} or omitted")
     if persist and find_live_draft(db, item.id):
         raise WorldDraftExists("A World draft already exists for this subject")
-    placeholder = _start_placeholder(db, item, duration_seconds, visual_style) if persist else None
+    placeholder = _start_placeholder(db, item, duration_seconds, visual_style, subject_category) if persist else None
     try:
         return _generate_world_draft(db, item, duration_seconds, beat_count, use_host, persist, visual_style,
-                                     scenes, era_text, placeholder)
+                                     scenes, era_text, placeholder, subject_category)
     except Exception as exc:
         if placeholder:
             _fail_placeholder(db, placeholder, exc)
@@ -409,7 +421,7 @@ def generate_world_draft(db, item, duration_seconds: Optional[int] = None, beat_
 
 
 def _generate_world_draft(db, item, duration_seconds, beat_count, use_host, persist, visual_style, scenes,
-                          era_text, placeholder) -> dict:
+                          era_text, placeholder, subject_category=None) -> dict:
     from app.models.trend import Trend
     from app.services.culturetoon_script import select_thematic_host
     from app.services.world_era import attach_phases, determine_world_era, era_from_text
@@ -437,7 +449,7 @@ def _generate_world_draft(db, item, duration_seconds, beat_count, use_host, pers
         rows = db.query(Trend).filter(Trend.region == item.region).order_by(Trend.collected_at.desc()).limit(8).all()
         trends = [{"title": r.title, "content": r.content} for r in rows]
 
-    category = _CATEGORY_MAP.get(item.category, "custom")
+    category = subject_category or _CATEGORY_MAP.get(item.category, "custom")
     host = select_thematic_host(db, category, "informative") if use_host else None
     facts = build_source_facts(item)
     label = source_label(item)
@@ -774,7 +786,10 @@ def improve_world_draft(db, toon, note: Optional[str] = None) -> dict:
     if item.region:
         rows = db.query(Trend).filter(Trend.region == item.region).order_by(Trend.collected_at.desc()).limit(8).all()
         trends = [{"title": r.title, "content": r.content} for r in rows]
-    category = _CATEGORY_MAP.get(item.category, "custom")
+    # The category actually chosen at generation time (possibly an explicit override — see
+    # generate_world_draft's subject_category param), not re-derived from item.category: those
+    # can disagree, e.g. every phenomenon/species draft, which _CATEGORY_MAP has no route to.
+    category = script.subject_category or _CATEGORY_MAP.get(item.category, "custom")
     host = None
     if script.character_variant_id:
         from app.models.character_variant import CharacterVariant
