@@ -88,6 +88,17 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 _RELEVANCE_FLOOR = 0.17
 
 
+
+# How much a cluster's own recurrence/durability history (trend_historian.py,
+# trend_validator.py — see app.services.trend_quality.score_history) can move it
+# within the relevance-ranked list. Deliberately small relative to relevance's
+# typical spread: this breaks ties and near-ties among similarly-on-niche clusters
+# in favor of proven, recurring interests over one-off spikes, but a barely-relevant
+# sustained trend still can't leapfrog a clearly more relevant one. Never affects
+# _RELEVANCE_FLOOR — niche fit is decided on relevance alone (see that docstring).
+_DURABILITY_BLEND_WEIGHT = 0.12
+
+
 def _rank_clusters_by_relevance(clusters: list[dict], query_vec: list[float], top_n: int = 8) -> list[dict]:
     """Ranks clusters by embedding similarity to the profile's niche/tags/
     platforms query instead of the previous unconditional clusters[:8] —
@@ -104,7 +115,13 @@ def _rank_clusters_by_relevance(clusters: list[dict], query_vec: list[float], to
     days its own niche was under-represented in that day's cluster pool.
     Returning fewer than top_n (or the single best match, never zero) is
     preferable to padding with clusters nothing about the niche actually
-    matches."""
+    matches.
+
+    Within the relevance-floored set, final ordering blends in each cluster's
+    own recurrence/durability history (see _DURABILITY_BLEND_WEIGHT) — this is
+    the one place that history actually affects which clusters get turned into
+    content ideas at all; content_strategist.py's _history_note() only ever
+    rendered it into prompt text for tone, never into selection."""
     if not clusters or not query_vec:
         return clusters[:top_n]
     try:
@@ -113,17 +130,18 @@ def _rank_clusters_by_relevance(clusters: list[dict], query_vec: list[float], to
         logger.warning("Cluster relevance embedding failed, falling back to unranked slice: %s", e)
         return clusters[:top_n]
 
-    scored = sorted(
-        zip(clusters, cluster_vecs),
-        key=lambda pair: _cosine_similarity(query_vec, pair[1]),
-        reverse=True,
-    )
-    above_floor = [(c, v) for c, v in scored if _cosine_similarity(query_vec, v) >= _RELEVANCE_FLOOR]
+    relevance = {id(c): _cosine_similarity(query_vec, v) for c, v in zip(clusters, cluster_vecs)}
+    scored = sorted(zip(clusters, cluster_vecs), key=lambda pair: relevance[id(pair[0])], reverse=True)
+    above_floor = [(c, v) for c, v in scored if relevance[id(c)] >= _RELEVANCE_FLOOR]
     if not above_floor:
         # Nothing cleared the bar at all (a genuinely slow day for this
         # niche) — one weak-but-best match beats padding out with several
         # clearly-irrelevant ones, and beats returning nothing.
         above_floor = scored[:1]
+
+    from app.services.trend_quality import score_history
+    above_floor.sort(key=lambda pair: relevance[id(pair[0])] + _DURABILITY_BLEND_WEIGHT * score_history(pair[0]),
+                     reverse=True)
     return [c for c, _ in above_floor[:top_n]]
 
 

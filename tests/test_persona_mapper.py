@@ -42,6 +42,51 @@ class TestRankClustersByRelevance:
         assert ranked[0]["name"] == "Skincare routines going viral"
         assert ranked[1]["name"] == "FIFA World Cup tournaments"
 
+    def test_a_sustained_trend_outranks_an_equally_relevant_spike(self, mocker):
+        # Phase 2 of the trend/cluster quality-scoring work: among similarly
+        # on-niche clusters, a proven recurring interest should beat a one-off,
+        # since content_strategist.py's clusters[:PROACTIVE_CLUSTER_COUNT] takes
+        # this ranking's output directly — durability previously only reached
+        # the prompt as descriptive text (_history_note), never selection.
+        clusters = [
+            {"name": "One-off event spike", "description": "...",
+             "history": {"recurrence_pattern": "spike", "pattern_confidence": 0.9}},
+            {"name": "Recurring weekly interest", "description": "...",
+             "history": {"recurrence_pattern": "weekly", "pattern_confidence": 0.9}},
+        ]
+        # The spike cluster is given a very slightly HIGHER raw relevance than the
+        # weekly one, so a relevance-only sort would rank it first — isolating the
+        # durability blend as what actually flips the order.
+        mocker.patch(
+            "app.pipeline.nodes.persona_mapper._embed_clusters_as_documents",
+            return_value=[[1.0, 0.0], [1.0, 0.02]],
+        )
+        query_vec = [1.0, 0.0]
+
+        ranked = _rank_clusters_by_relevance(clusters, query_vec, top_n=2)
+
+        assert ranked[0]["name"] == "Recurring weekly interest"
+
+    def test_durability_cannot_override_a_clearly_stronger_relevance_match(self, mocker):
+        # The blend must be a tie-breaker, not a replacement for relevance: a
+        # barely-relevant sustained trend must not leapfrog a clearly more
+        # relevant spike.
+        clusters = [
+            {"name": "Barely relevant but sustained", "description": "...",
+             "history": {"recurrence_pattern": "weekly", "pattern_confidence": 0.9}},
+            {"name": "Highly relevant spike", "description": "...",
+             "history": {"recurrence_pattern": "spike", "pattern_confidence": 0.9}},
+        ]
+        mocker.patch(
+            "app.pipeline.nodes.persona_mapper._embed_clusters_as_documents",
+            return_value=[[0.2, 0.98], [1.0, 0.0]],
+        )
+        query_vec = [1.0, 0.0]
+
+        ranked = _rank_clusters_by_relevance(clusters, query_vec, top_n=2)
+
+        assert ranked[0]["name"] == "Highly relevant spike"
+
     def test_relevance_floor_excludes_clearly_off_niche_clusters(self, mocker):
         # Regression test for the second bug report: an Entertainment News
         # profile got GLP-1 drug side-effects content because ranking alone
