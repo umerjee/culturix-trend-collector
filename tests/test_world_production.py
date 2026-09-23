@@ -42,6 +42,11 @@ def llm(mocker):
         phases=mocker.patch("app.services.world_era.period_phases", return_value=[]),
         claimfix=mocker.patch(base + "fix_unsupported_claims", return_value=None),
         host=mocker.patch(base + "select_thematic_host"),
+        # Same reasoning as `era` above: determine_world_region calls _call_llm_json
+        # directly (not through a mockable wrapper module like era/write/grounding
+        # are), so without this a test with item.region=None (most of them, via
+        # _item()'s default) would reach a real, unmocked LLM call.
+        region=mocker.patch("app.services.world_production.determine_world_region", return_value=None),
     )
 
 
@@ -196,6 +201,32 @@ class TestGenerateDraft:
         with pytest.raises(wp.WorldDraftError):
             wp.generate_world_draft(None, _item(), duration_seconds=30, beat_count=3, persist=False,
                                     subject_category="not-a-real-category")
+
+
+class TestDetermineWorldRegion:
+    def test_a_named_place_returns_its_iso_code(self, mocker):
+        mocker.patch("app.services.culturetoon_script._call_llm_json",
+                    return_value={"region": "MX", "reason": "Native to Xochimilco, Mexico."})
+        assert wp.determine_world_region("Axolotl", "The axolotl is native to Lake Xochimilco, Mexico.") == "MX"
+
+    def test_no_single_home_returns_none_not_a_guess(self, mocker):
+        mocker.patch("app.services.culturetoon_script._call_llm_json",
+                    return_value={"region": None, "reason": "Found in extreme environments worldwide."})
+        assert wp.determine_world_region("Tardigrade", "Tardigrades survive in extreme conditions worldwide.") is None
+
+    def test_a_malformed_region_code_is_rejected_not_passed_through(self, mocker):
+        mocker.patch("app.services.culturetoon_script._call_llm_json",
+                    return_value={"region": "Mexico", "reason": "..."})  # a name, not an ISO code
+        assert wp.determine_world_region("Axolotl", "...") is None
+
+    def test_llm_failure_fails_open_to_none(self, mocker):
+        from app.services.culturetoon_script import ToonScriptGenerationError
+        mocker.patch("app.services.culturetoon_script._call_llm_json", side_effect=ToonScriptGenerationError("down"))
+        assert wp.determine_world_region("Axolotl", "...") is None
+
+    def test_lowercase_code_is_normalized_to_uppercase(self, mocker):
+        mocker.patch("app.services.culturetoon_script._call_llm_json", return_value={"region": "id", "reason": "..."})
+        assert wp.determine_world_region("Mimic octopus", "...") == "ID"
 
 
 class TestRegionName:
@@ -779,6 +810,30 @@ class TestUnderProduction:
         assert toon.status == "idea" and str(toon.id) == result["toon_id"]
         (script,) = db.query(ToonScript).all()
         assert script.status == "approved" and script.hook_line == "H" and script.shots and str(script.id) == result["script_id"]
+
+    def test_a_regionless_item_gets_a_determined_region_applied_to_toon_and_script(self, db, llm):
+        # Topic-driven ingestion (scripts/ingest_topic_subjects.py) always passes
+        # region=None -- this is what pins e.g. "Axolotl" to Mexico on the globe
+        # instead of leaving it stuck on "global".
+        from app.models.toon_script import ToonScript
+        llm.region.return_value = "MX"
+        result = wp.generate_world_draft(db, _item(region=None), duration_seconds=30)
+        (toon,) = self._toons(db)
+        (script,) = db.query(ToonScript).all()
+        assert toon.subject_region == "MX" and script.subject_region == "MX"
+        assert result["toon_id"] == str(toon.id)
+
+    def test_a_genuinely_regionless_subject_stays_global(self, db, llm):
+        llm.region.return_value = None  # e.g. a species found worldwide
+        wp.generate_world_draft(db, _item(region=None), duration_seconds=30)
+        (toon,) = self._toons(db)
+        assert toon.subject_region is None
+
+    def test_an_item_with_a_real_region_is_not_overridden(self, db, llm):
+        wp.generate_world_draft(db, _item(region="FR"), duration_seconds=30)
+        (toon,) = self._toons(db)
+        assert toon.subject_region == "FR"
+        llm.region.assert_not_called()
 
     def test_a_failed_script_shows_its_reason_and_can_be_generated_again(self, db, llm):
         item = _item()

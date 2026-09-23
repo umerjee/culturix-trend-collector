@@ -16,6 +16,7 @@ docs/culturix-video-pipeline.md ("Recurring failure patterns"):
   as real subject footage with narration. A host is opt-in.
 """
 import logging
+import re
 from typing import Optional
 
 from app.collectors.region_codes import region_name
@@ -89,6 +90,48 @@ def build_source_facts(item) -> str:
     if raw and raw not in parts:
         parts.append(raw)
     return "\n\n".join(parts)[:5000]
+
+
+def determine_world_region(title: str, source_facts: str) -> Optional[str]:
+    """ISO-2 country code the subject is most strongly, factually associated with, or
+    None when no single place genuinely fits — a species found worldwide (tardigrades),
+    a phenomenon with no single home (bioluminescence, generic bird migration), or a
+    technology with no clear geographic origin should stay None rather than force an
+    arbitrary pin. Topic-driven Wikipedia ingestion (scripts/ingest_topic_subjects.py)
+    always passes region=None at ingest time — unlike UNESCO/region-swept sources, a
+    standalone topic like "Axolotl" or "Brain-computer interface" isn't tied to a
+    collector region up front, but its own source text usually names a real place
+    (Mexico's Xochimilco lake; UCLA) worth pinning to the globe instead of leaving
+    every such Feature stuck on "global" by default.
+
+    No JSON allowlist against SHARED_TARGET_REGIONS deliberately: that list is which
+    countries the trend collectors target, a narrower and unrelated concept from which
+    countries a World Feature can be pinned to on the globe (any real country)."""
+    from app.services.culturetoon_script import ToonScriptGenerationError, _call_llm_json
+
+    prompt = f"""Does this subject have one real place it is most strongly associated with?
+
+Subject: {title}
+Source material: {(source_facts or '').strip()[:1500]}
+
+Return ONLY valid JSON: {{"region": string_or_null, "reason": string}}
+- region: the ISO 3166-1 alpha-2 country code (e.g. "MX", "ID", "US") of that one place, or
+  null if the subject has no single real home — found worldwide, no clear origin, or the
+  source material simply doesn't name a specific place.
+- Be conservative: a technology invented or demonstrated at one named institution/country
+  gets that country. A species native to one region gets that region. A phenomenon or
+  species found broadly across many places (deep-sea bioluminescence, tardigrades, general
+  bird migration) gets null — do not guess a country just to have an answer.
+- reason: one short sentence."""
+    try:
+        parsed = _call_llm_json(prompt, temperature=0.1, max_tokens=150)
+    except ToonScriptGenerationError as exc:
+        logger.warning("Could not determine a region for %r: %s", title, exc)
+        return None
+    region = parsed.get("region")
+    if not isinstance(region, str) or not re.fullmatch(r"[A-Za-z]{2}", region.strip()):
+        return None
+    return region.strip().upper()
 
 
 def estimate_render(duration_seconds: int) -> dict:
@@ -518,6 +561,16 @@ def _generate_world_draft(db, item, duration_seconds, beat_count, use_host, pers
     script.scene_backgrounds = scene_backgrounds
     toon.character_variant_id = host.id if host else None
     toon.status = "idea"
+    if not item.region:
+        # Topic-driven ingestion (scripts/ingest_topic_subjects.py) always passes
+        # region=None — a standalone subject like "Axolotl" isn't tied to a collector
+        # region the way a UNESCO/region-swept source is, but its own source text
+        # usually names a real place worth pinning to the globe instead of leaving
+        # it stuck on "global". None (no single real home) is left alone, not guessed.
+        region = determine_world_region(item.title, facts)
+        if region:
+            script.subject_region = region
+            toon.subject_region = region
     db.commit()
     summary.update({"toon_id": str(toon.id), "script_id": str(script.id)})
     return summary
