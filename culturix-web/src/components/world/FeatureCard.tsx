@@ -3,6 +3,15 @@ import { MapPin } from "lucide-react";
 import type { WorldFeature } from "@/lib/worldTypes";
 import { CATEGORY_LABELS } from "@/lib/worldTypes";
 
+// There is no generated poster image anywhere in the render pipeline, so this relies on
+// the <video> element's own first frame — but preload="metadata" alone often renders that
+// as solid black (confirmed live: most cards on /world showed a black box, one didn't).
+// Two likely causes, both sidestepped the same way: some browsers don't decode ANY frame
+// under preload="metadata" until playback starts, and generated clips commonly open on a
+// fade-in from black regardless. Nudging currentTime forward a moment once metadata is
+// available forces a real frame decode without playing the clip or fetching the whole file.
+const THUMBNAIL_SEEK_SECONDS = 1.2;
+
 export default function FeatureCard({ feature }: { feature: WorldFeature }) {
   return (
     <Link
@@ -17,6 +26,10 @@ export default function FeatureCard({ feature }: { feature: WorldFeature }) {
             playsInline
             preload="metadata"
             className="w-full h-full object-cover"
+            onLoadedMetadata={(e) => {
+              const video = e.currentTarget;
+              video.currentTime = Math.min(THUMBNAIL_SEEK_SECONDS, Math.max(0, (video.duration || 0) - 0.1));
+            }}
           />
         )}
       </div>

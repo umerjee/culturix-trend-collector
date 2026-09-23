@@ -41,7 +41,27 @@ export default async function WorldFeaturePage({ params }: { params: { id: strin
 
         <div className="rounded-2xl overflow-hidden bg-gray-900 mb-6">
           {feature.final_video_url && (
-            <video src={feature.final_video_url} controls playsInline className="w-full max-h-[70vh] mx-auto" />
+            <video
+              src={feature.final_video_url}
+              controls
+              playsInline
+              preload="metadata"
+              className="w-full max-h-[70vh] mx-auto"
+              // No generated poster image exists yet (see FeatureCard.tsx) — nudging past a
+              // moment into the clip forces a real frame decode instead of showing black
+              // before the viewer presses play. Unlike FeatureCard's muted, never-actually-
+              // played thumbnail, this IS the real player, so the seek must be undone the
+              // moment playback actually starts — otherwise pressing play would silently
+              // skip the first second of the video every time.
+              onLoadedMetadata={(e) => {
+                const video = e.currentTarget;
+                video.currentTime = Math.min(1.2, Math.max(0, (video.duration || 0) - 0.1));
+              }}
+              onPlay={(e) => {
+                const video = e.currentTarget;
+                if (video.currentTime < 1.3) video.currentTime = 0;
+              }}
+            />
           )}
         </div>
 

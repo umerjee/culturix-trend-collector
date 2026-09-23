@@ -188,7 +188,20 @@ Open "What will be generated" on the card first to see the exact prompts and nar
     {drafts.length > 0 && <>
       <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
         {STATUS_FILTER_OPTIONS.filter((opt) => opt.value && statusCounts[opt.value]).map((opt) => (
-          <button key={opt.value} onClick={() => setStatusFilter(statusFilter === opt.value ? "" : opt.value)}
+          <button key={opt.value} onClick={() => {
+            // A status chip's count is always the TRUE total for that status, unfiltered by
+            // category/region/search — but clicking it used to only set statusFilter, so a
+            // leftover category filter from a moment ago could silently AND against it and
+            // show "0 of 22 drafts" even though the chip just said e.g. "2 Rendering".
+            // Confirmed live: exactly this, right after filtering to Species then clicking
+            // Rendering. A status chip is a strong, standalone "show me this" click, not
+            // meant to combine with whatever was left over — so it resets the rest.
+            const next = statusFilter === opt.value ? "" : opt.value;
+            setStatusFilter(next);
+            setCategoryFilter("");
+            setRegionFilter("");
+            setSearch("");
+          }}
             className={`rounded-full px-2.5 py-1 font-semibold ${statusFilter === opt.value ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
             {statusCounts[opt.value]} {opt.label}
           </button>
