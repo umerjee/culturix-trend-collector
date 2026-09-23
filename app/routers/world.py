@@ -231,6 +231,17 @@ def _digest_topic_tokens(trend) -> set[str]:
     }
 
 
+def _digest_title_key(trend) -> str:
+    """Normalized text identity for one trend, used only to measure a group's
+    diversity (app.services.trend_quality.score_group) — distinct keys among a
+    group's signals versus its signal_count. Deliberately cruder than
+    clean_title()/_normalize_key() in region_daily_summary.py (this doesn't need
+    to produce a display-worthy title, only to tell "near-identical text" apart
+    from "genuinely different posts")."""
+    text = (trend.title or trend.content or "").lower()
+    return re.sub(r"\W+", " ", text).strip()[:60]
+
+
 def _add_source_digest_group(grouped: dict, trend) -> None:
     """Group unclustered signals by repeated title/content vocabulary.
 
@@ -256,11 +267,12 @@ def _add_source_digest_group(grouped: dict, trend) -> None:
             "title": f"{platform}: {title[:72]}",
             "summary": f"Automatic grouping of {platform} signals with overlapping topic words. Review the source examples below for the full context.",
             "signal_count": 0, "platforms": {trend.platform}, "signals": [],
-            "momentum": None, "topic_tokens": set(tokens),
+            "momentum": None, "topic_tokens": set(tokens), "title_keys": set(),
         }
         grouped[candidate["id"]] = candidate
     candidate["signal_count"] += 1
     candidate["topic_tokens"].update(tokens)
+    candidate["title_keys"].add(_digest_title_key(trend))
     if len(candidate["signals"]) < 3:
         candidate["signals"].append(_serialize_digest_signal(trend))
 
@@ -301,24 +313,30 @@ def list_world_trend_digest(region: str, date_from: Optional[str] = None,
                     "id": key, "kind": "cluster", "title": cluster.theme or "Emerging trend",
                     "summary": cluster.summary or "A recurring pattern across collected signals.",
                     "signal_count": 0, "platforms": set(), "signals": [],
-                    "momentum": cluster.momentum,
+                    "momentum": cluster.momentum, "title_keys": set(),
                 })
             else:
                 _add_source_digest_group(grouped, trend)
                 continue
             group["signal_count"] += 1
             group["platforms"].add(trend.platform)
+            group["title_keys"].add(_digest_title_key(trend))
             if len(group["signals"]) < 3:
                 group["signals"].append(_serialize_digest_signal(trend))
 
         # A persisted Cluster is an actual editorial theme; an ungrouped "source" bucket is just
         # raw signals sharing a platform, sometimes a single repeated hashtag caption with a huge
         # signal_count (confirmed live: a bare TikTok hashtag outranking a real curated theme).
-        # Sorting on signal_count alone let that noise beat real themes to the top of the page.
-        result = sorted(
-            grouped.values(),
-            key=lambda group: (0 if group["kind"] == "cluster" else 1, -group["signal_count"], group["title"]),
-        )[:limit]
+        # score_group weighs persistence (Cluster.momentum), cross-platform corroboration, and
+        # textual diversity (this exact spam case: one repeated caption, near-zero diversity)
+        # ahead of raw size — see app/services/trend_quality.py for the full rationale.
+        from app.services.trend_quality import score_group
+        for group in grouped.values():
+            group["_quality"] = score_group(
+                signal_count=group["signal_count"], platforms=group["platforms"],
+                title_keys=group["title_keys"], momentum=group["momentum"],
+            ).score
+        result = sorted(grouped.values(), key=lambda group: (-group["_quality"], group["title"]))[:limit]
 
         # One batched, cached translation call for the whole digest (was one
         # request per string on every page view, which trips Google's rate limit).
@@ -338,6 +356,8 @@ def list_world_trend_digest(region: str, date_from: Optional[str] = None,
         for group in result:
             group["platforms"] = sorted(group["platforms"])
             group.pop("topic_tokens", None)
+            group.pop("title_keys", None)
+            group.pop("_quality", None)
         return {"groups": result, "total_groups": len(grouped),
                 # failed > 0: some text is shown untranslated because translation was unavailable
                 "translation": {"lang": lang, "failed": failed}}

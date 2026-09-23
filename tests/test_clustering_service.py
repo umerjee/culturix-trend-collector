@@ -361,3 +361,62 @@ class TestLookbackWindow:
         assert cluster.momentum == "up"
         assert cluster.previous_size == 4
         session.close()
+
+
+class TestQualityScorePersistence:
+    """Phase 1 of the trend/cluster quality-scoring work: score_and_persist_cluster
+    is called from both of run_clustering's per-cluster branches (reuse and
+    creation) so Cluster.quality_score/cohesion, both previously dead, get a real
+    value. This is deliberately a thin persistence check -- the scoring formula
+    itself (persistence/corroboration/diversity/size weighting) is unit-tested in
+    tests/test_trend_quality.py without a DB at all."""
+
+    def test_a_newly_created_cluster_gets_a_real_quality_score_and_cohesion(self, mocker, clustering_db):
+        session = clustering_db()
+        for i in range(4):
+            _real_trend(session, embedding=[1.0, 0.0])  # identical embeddings -> maximal cohesion
+        session.commit()
+        session.close()
+
+        mocker.patch("app.clustering_service.cluster_embeddings_hdbscan", return_value=[0, 0, 0, 0])
+        mocker.patch("app.clustering_service._ai_label_clusters_batch",
+                     return_value={0: {"theme": "T", "summary": "S"}})
+        _stub_advisory_lock(mocker)
+
+        run_clustering(min_cluster_size=2, lookback_hours=48)
+
+        session = clustering_db()
+        cluster = session.query(Cluster).first()
+        assert cluster.cohesion == 1.0  # identical embeddings
+        assert cluster.quality_score is not None and cluster.quality_score > 0
+        assert cluster.quality_components["weights_version"] == 1
+        assert cluster.quality_computed_at is not None
+        session.close()
+
+    def test_a_reused_cluster_gets_its_quality_score_refreshed_too(self, mocker, clustering_db):
+        session = clustering_db()
+        existing = Cluster(label=0, theme="T", summary="S", size=2, fingerprint="reuse-me")
+        t1 = _real_trend(session, embedding=[1.0, 0.0])
+        t2 = _real_trend(session, embedding=[1.0, 0.0])
+        session.add(existing)
+        session.commit()
+        existing_id = existing.id
+        t1.cluster_id = existing_id
+        t2.cluster_id = existing_id
+        session.commit()
+        session.close()
+
+        # HDBSCAN reproduces the exact same membership -> _fingerprint matches ->
+        # takes the reuse branch, not the creation branch.
+        mocker.patch("app.clustering_service._fingerprint", return_value="reuse-me")
+        mocker.patch("app.clustering_service.cluster_embeddings_hdbscan", return_value=[0, 0])
+        _stub_advisory_lock(mocker)
+
+        run_clustering(min_cluster_size=2, lookback_hours=48)
+
+        session = clustering_db()
+        cluster = session.query(Cluster).first()
+        assert cluster.id == existing_id  # reused, not recreated
+        assert cluster.cohesion == 1.0
+        assert cluster.quality_score is not None
+        session.close()

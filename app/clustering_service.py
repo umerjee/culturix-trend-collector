@@ -35,6 +35,7 @@ from app.db import SessionLocal
 from app.models.trend import Trend
 from app.models.cluster import Cluster
 from app.clustering_hdbscan import cluster_embeddings_hdbscan
+from app.services.trend_quality import score_and_persist_cluster
 
 load_dotenv()
 _anthropic = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -278,6 +279,7 @@ def run_clustering(limit: int = 8000, min_cluster_size: int = 5,
                 # against itself, so this naturally comes out "neutral".
                 existing.momentum = momentum
                 existing.previous_size = previous_size
+                score_and_persist_cluster(existing, cluster_trends, [t.embedding for t in cluster_trends])
                 surviving_ids.add(existing.id)
                 reused += 1
                 continue
@@ -317,6 +319,7 @@ def run_clustering(limit: int = 8000, min_cluster_size: int = 5,
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
             )
+            score_and_persist_cluster(cluster, cluster_trends, [t.embedding for t in cluster_trends])
             session.add(cluster)
             session.flush()
 

@@ -85,6 +85,10 @@ async def lifespan(_):
             # Cluster momentum (up/down/neutral trend direction)
             "ALTER TABLE clusters ADD COLUMN IF NOT EXISTS momentum VARCHAR(10)",
             "ALTER TABLE clusters ADD COLUMN IF NOT EXISTS previous_size INTEGER",
+            # app.services.trend_quality's persisted composite score (see Cluster.quality_score)
+            "ALTER TABLE clusters ADD COLUMN IF NOT EXISTS quality_score FLOAT",
+            "ALTER TABLE clusters ADD COLUMN IF NOT EXISTS quality_components JSON",
+            "ALTER TABLE clusters ADD COLUMN IF NOT EXISTS quality_computed_at TIMESTAMP",
             # Velocity scoring pipeline (scraping/culturix_scraping/) — likes/hour proxy
             "ALTER TABLE trends ADD COLUMN IF NOT EXISTS velocity_score FLOAT",
             # ON CONFLICT (platform, external_id) in the async upsert pipeline needs

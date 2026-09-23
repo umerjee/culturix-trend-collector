@@ -1,0 +1,3 @@
+ALTER TABLE clusters ADD COLUMN IF NOT EXISTS quality_score FLOAT;
+ALTER TABLE clusters ADD COLUMN IF NOT EXISTS quality_components JSON;
+ALTER TABLE clusters ADD COLUMN IF NOT EXISTS quality_computed_at TIMESTAMP;

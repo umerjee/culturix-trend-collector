@@ -318,6 +318,37 @@ class TestListWorldTrends:
         assert groups["source"]["title"].startswith("Tiktok:")
         assert groups["source"]["summary"] == "Auto-grouped from similar signals."
 
+    def test_digest_ranks_a_real_theme_above_a_larger_near_duplicate_spam_bucket(self, db):
+        # Regression test for the live incident this quality scoring was built to fix:
+        # a single repeated TikTok caption (163 near-identical posts, one platform) with
+        # a huge signal_count outranked a real 4-signal curated Cluster theme under a
+        # pure signal_count sort.
+        from app.models.cluster import Cluster
+        session = db()
+        cluster = Cluster(label=1, theme="Nigerian News and Organizations",
+                          summary="Newspapers and security services trending.", size=4, momentum="neutral")
+        session.add(cluster)
+        session.commit()
+        session.add_all([
+            Trend(platform="google_trends", title="nigerian newspapers", content="c", region="NG", likes=5, cluster_id=cluster.id),
+            Trend(platform="google_trends", title="nigeria security and civil defence corps", content="c", region="NG", likes=4, cluster_id=cluster.id),
+            Trend(platform="tiktok", title="ok", content="c", region="NG", likes=3, cluster_id=cluster.id),
+            Trend(platform="tiktok", title="plateau state curfew update", content="c", region="NG", likes=2, cluster_id=cluster.id),
+        ])
+        # One repeated hashtag caption, many near-identical posts, one platform.
+        for i in range(20):
+            session.add(Trend(platform="tiktok", title="osmo action 6 raw clip #osmo #baguio",
+                              content="c", region="NG", likes=1))
+        session.commit()
+        session.close()
+
+        result = world.list_world_trend_digest(region="ng")
+
+        titles = [g["title"] for g in result["groups"]]
+        assert titles.index("Nigerian News and Organizations") < next(
+            i for i, t in enumerate(titles) if t.lower().startswith("tiktok:")
+        )
+
     def test_digest_accepts_supported_language(self, db, mocker):
         _make_trend(db, region="FR", title="football mondial", content="football mondial", likes=10)
         from types import SimpleNamespace
