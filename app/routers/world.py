@@ -291,6 +291,7 @@ def list_world_trend_digest(region: str, date_from: Optional[str] = None,
     from app.models.cluster import Cluster
     from app.models.trend import Trend
     from app.translation import normalize_language, translate_many
+    from app.services.region_daily_summary import clean_title
 
     limit = max(1, min(limit, 20))
     lang = normalize_language(lang) or "en"
@@ -316,6 +317,17 @@ def list_world_trend_digest(region: str, date_from: Optional[str] = None,
                     "momentum": cluster.momentum, "title_keys": set(),
                 })
             else:
+                # Confirmed live (2026-09-24): with no filter here at all, the #1 "trend" in
+                # every region checked (US/GB/FR/NG/IN/BR) was either a bare TikTok audio-tag
+                # label ("[Audio: original sound - ...]", 342 signals in US) or pure hashtag-
+                # spam with no real caption text — clean_title() already exists and is tuned
+                # for exactly this (region_daily_summary.py's daily-brief topic picker), just
+                # never applied here. Only gates ungrouped signals: a trend already inside a
+                # persisted, AI-labeled Cluster keeps counting toward it regardless of its own
+                # caption quality — the cluster's theme/summary is the real interpretation
+                # there, not any one member's raw text.
+                if clean_title(trend.title or trend.content) is None:
+                    continue
                 _add_source_digest_group(grouped, trend)
                 continue
             group["signal_count"] += 1

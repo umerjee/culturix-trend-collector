@@ -305,7 +305,7 @@ class TestListWorldTrends:
         session.add(cluster)
         session.commit()
         clustered = Trend(platform="twitter", title="Player joins new club", content="news", region="GB", likes=100, cluster_id=cluster.id)
-        unclustered = Trend(platform="tiktok", title="A dance sound", content="sound", region="GB", likes=50)
+        unclustered = Trend(platform="tiktok", title="A viral dance challenge sound", content="sound", region="GB", likes=50)
         session.add_all([clustered, unclustered])
         session.commit()
         session.close()
@@ -317,6 +317,29 @@ class TestListWorldTrends:
         assert groups["cluster"]["summary"] == "Coverage of a major player move."
         assert groups["source"]["title"].startswith("Tiktok:")
         assert groups["source"]["summary"] == "Auto-grouped from similar signals."
+
+    def test_digest_excludes_junk_signals_from_ever_becoming_their_own_group(self, db):
+        # Confirmed live (2026-09-24): with no filter, the #1 "trend" in every region
+        # checked (US/GB/FR/NG/IN/BR) was a bare TikTok audio-tag label or pure hashtag
+        # spam with no real caption text. clean_title() already existed for the daily
+        # brief; this is it finally applied to the trends digest too.
+        _make_trend(db, platform="tiktok", title="[Audio: original sound - user9m01 by tomato]",
+                   content="", region="KE", likes=500)
+        _make_trend(db, platform="tiktok", title="#SeaLife #SailorLife #ShipLife #OceanVibes",
+                   content="", region="KE", likes=400)
+        _make_trend(db, platform="tiktok", title="@leah halton", content="", region="KE", likes=300)
+        # A real, if trivial, caption survives — the filter targets non-content, not
+        # low-substance-but-real text.
+        _make_trend(db, platform="tiktok", title="Little little baby moments compilation",
+                   content="", region="KE", likes=200)
+
+        result = world.list_world_trend_digest(region="ke")
+
+        titles = [g["title"] for g in result["groups"]]
+        assert not any("audio" in t.lower() for t in titles)
+        assert not any("sealife" in t.lower() for t in titles)
+        assert not any("leah halton" in t.lower() for t in titles)
+        assert any("little little baby" in t.lower() for t in titles)
 
     def test_digest_ranks_a_real_theme_above_a_larger_near_duplicate_spam_bucket(self, db):
         # Regression test for the live incident this quality scoring was built to fix:
