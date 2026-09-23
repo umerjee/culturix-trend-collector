@@ -656,9 +656,14 @@ def process_clustered_personas():
 
 
 @app.post("/process/cluster", dependencies=[Depends(require_admin_secret)])
-def process_cluster(limit: int = 500, min_cluster_size: int = 5):
+def process_cluster(limit: Optional[int] = None, min_cluster_size: int = 5, lookback_hours: Optional[int] = None):
     from app.clustering_service import run_clustering
-    return run_clustering(limit=limit, min_cluster_size=min_cluster_size)
+    kwargs = {"min_cluster_size": min_cluster_size}
+    if limit is not None:
+        kwargs["limit"] = limit
+    if lookback_hours is not None:
+        kwargs["lookback_hours"] = lookback_hours
+    return run_clustering(**kwargs)
 
 
 # ── Trends ────────────────────────────────────────────────────────────────────

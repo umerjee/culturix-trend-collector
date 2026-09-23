@@ -25,7 +25,7 @@ import hashlib
 import logging
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import sqlalchemy as sa
 from anthropic import Anthropic
@@ -43,6 +43,19 @@ logger = logging.getLogger("culturix.clustering_service")
 # Arbitrary fixed key for a Postgres session-level advisory lock — see the
 # lock acquisition in run_clustering() for why this exists.
 _CLUSTERING_ADVISORY_LOCK_KEY = 918_273_645
+
+# How far back run_clustering looks for embedded trends. This used to be a
+# fixed row count (limit=1000 from the one real caller, legacy_cluster.py) —
+# but embedded-trend volume measured live (2026-09-23) runs 495-2086/day,
+# meaning a 1000-row "most recent" window already covered close to one full
+# day on its own. Since clustering runs once daily, each day's working set
+# barely overlapped the prior day's, so _compute_momentum's old_cluster_members
+# baseline was almost always empty and momentum silently never computed
+# (confirmed: 100% NULL across all 64 production Cluster rows). A time window
+# doesn't break as volume grows the way a row count does, and 48h reliably
+# covers two collection days at current volume, giving real day-over-day
+# overlap for momentum to compare against.
+_DEFAULT_LOOKBACK_HOURS = 48
 
 
 def _fingerprint(trends: list) -> str:
@@ -151,7 +164,8 @@ Return ONLY valid JSON: an object mapping each cluster's number (as a string key
     return result
 
 
-def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
+def run_clustering(limit: int = 8000, min_cluster_size: int = 5,
+                   lookback_hours: int = _DEFAULT_LOOKBACK_HOURS) -> dict:
     """
     Postgres session-level advisory lock guards the whole read-modify-write
     cycle below. Found while investigating clusters that showed a nonzero
@@ -165,6 +179,10 @@ def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
     clear-and-reassign racing the other's, leaving orphaned Cluster rows
     whose members got reassigned elsewhere mid-flight. The lock makes a
     second concurrent call skip immediately instead of racing.
+
+    `lookback_hours` selects the working set (see _DEFAULT_LOOKBACK_HOURS for
+    why this is a time window, not a row count); `limit` is now just a safety
+    cap against runaway growth, not the primary selector.
     """
     session = SessionLocal()
     got_lock = False
@@ -180,9 +198,10 @@ def run_clustering(limit: int = 500, min_cluster_size: int = 5) -> dict:
                 "skipped": "another run_clustering() call is already in progress",
             }
 
+        cutoff = datetime.utcnow() - timedelta(hours=lookback_hours)
         trends = (
             session.query(Trend)
-            .filter(Trend.embedding.isnot(None))
+            .filter(Trend.embedding.isnot(None), Trend.collected_at >= cutoff)
             .order_by(Trend.id.desc())
             .limit(limit)
             .all()

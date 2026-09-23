@@ -138,7 +138,7 @@ section("STEP 3 -- Clustering")
 
 try:
     from app.clustering_service import run_clustering
-    result = run_clustering(limit=500, min_cluster_size=2)
+    result = run_clustering(min_cluster_size=2)
     if "warning" in result:
         warn(result["warning"])
     else:

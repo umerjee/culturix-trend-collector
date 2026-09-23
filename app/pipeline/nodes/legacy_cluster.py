@@ -16,7 +16,7 @@ logger = logging.getLogger("culturix.pipeline.legacy_cluster")
 def cluster_and_persist(state: PipelineState) -> PipelineState:
     try:
         from app.clustering_service import run_clustering
-        result = run_clustering(limit=1000, min_cluster_size=2)
+        result = run_clustering(min_cluster_size=2)
         logger.info("Cluster persist done: %s", result)
     except Exception as e:
         logger.error("Cluster persist failed: %s", e)

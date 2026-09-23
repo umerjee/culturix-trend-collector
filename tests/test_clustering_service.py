@@ -287,3 +287,77 @@ class TestRunClusteringLockContention:
             if "pg_advisory_unlock" in str(c.args[0])
         ]
         assert len(unlock_calls) == 1
+
+
+class TestLookbackWindow:
+    """Regression coverage for the actual live bug: run_clustering used to select its
+    working set by a fixed row LIMIT (1000), but real embedded-trend volume (495-2086/day,
+    measured live 2026-09-23) meant that window rarely reached back into the PRIOR day's
+    already-clustered trends, so _compute_momentum's old_cluster_members baseline was
+    almost always empty and momentum silently stayed NULL on every one of 64 production
+    Cluster rows — even though _compute_momentum itself (tested above) was never broken."""
+
+    def test_trends_older_than_the_lookback_window_are_excluded(self, mocker, clustering_db):
+        from datetime import datetime, timedelta
+
+        session = clustering_db()
+        _real_trend(session, embedding=[1.0, 0.0], collected_at=datetime.utcnow() - timedelta(hours=100))
+        _real_trend(session, embedding=[1.0, 0.0], collected_at=datetime.utcnow() - timedelta(hours=1))
+        session.commit()
+        session.close()
+
+        hdbscan_mock = mocker.patch("app.clustering_service.cluster_embeddings_hdbscan", return_value=[-1])
+        _stub_advisory_lock(mocker)
+
+        run_clustering(min_cluster_size=1, lookback_hours=48)
+
+        # Only the trend inside the 48h window should have reached HDBSCAN.
+        passed_embeddings = hdbscan_mock.call_args[0][0]
+        assert len(passed_embeddings) == 1
+
+    def test_a_cluster_seen_again_within_the_window_gets_real_momentum(self, mocker, clustering_db):
+        from datetime import datetime, timedelta
+
+        session = clustering_db()
+        for i in range(4):
+            _real_trend(session, embedding=[float(i), 0.0], collected_at=datetime.utcnow() - timedelta(hours=2))
+        session.commit()
+        session.close()
+
+        _stub_advisory_lock(mocker)
+        mocker.patch("app.clustering_service.cluster_embeddings_hdbscan", return_value=[0, 0, 0, 0])
+        mocker.patch("app.clustering_service._ai_label_clusters_batch",
+                     return_value={0: {"theme": "T", "summary": "S"}})
+
+        first = run_clustering(min_cluster_size=2, lookback_hours=48)
+        assert first["clusters_created"] == 1
+
+        session = clustering_db()
+        assert session.query(Cluster).first().momentum is None  # first sighting: no prior baseline
+        session.close()
+
+        # A second run a couple hours later: the same 4 trends are still inside the 48h
+        # window (this is the exact mechanism that was broken — with the old fixed-limit
+        # selection, a busy day could push them out of a 1000-row window even though
+        # they're well within any reasonable time range), plus 4 more on the same topic.
+        session = clustering_db()
+        for i in range(4, 8):
+            _real_trend(session, embedding=[float(i), 0.0], collected_at=datetime.utcnow() - timedelta(hours=1))
+        session.commit()
+        session.close()
+
+        mocker.patch("app.clustering_service.cluster_embeddings_hdbscan", return_value=[0, 0, 0, 0, 0, 0, 0, 0])
+        run_clustering(min_cluster_size=2, lookback_hours=48)
+
+        session = clustering_db()
+        # Membership grew from 4 to 8 -> a different fingerprint -> the surviving cluster
+        # is the newly-labeled one, and the stale 4-member cluster is cleaned up (existing,
+        # already-tested behavior) -- exactly one Cluster row remains.
+        assert session.query(Cluster).count() == 1
+        cluster = session.query(Cluster).first()
+        # This is the fix in action: the second run's old_cluster_members correctly found
+        # the first run's 4-member cluster (still inside the window) and computed momentum
+        # from it, instead of finding nothing and leaving momentum NULL forever.
+        assert cluster.momentum == "up"
+        assert cluster.previous_size == 4
+        session.close()
