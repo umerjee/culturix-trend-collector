@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, EyeOff, Film, Loader2, Play, RefreshCw, Archive, Upload } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, CheckCircle2, EyeOff, Film, Loader2, Play, RefreshCw, Archive, Upload, Search } from "lucide-react";
 import { fetchAdminData } from "@/lib/admin/fetchAdmin";
+import { CATEGORY_LABELS } from "@/lib/worldTypes";
 import WorldScriptReview, { ScoreChip, type Review } from "@/components/admin/WorldScriptReview";
 import WorldVideoPrompt from "@/components/admin/WorldVideoPrompt";
 import WorldNarrationEditor, { FixClaimsButton, type NarrationLine } from "@/components/admin/WorldNarrationEditor";
@@ -20,6 +21,39 @@ type Draft = {
 const STATUS_LABEL: Record<string, string> = { scripting: "Under production", idea: "Script ready", animating: "Rendering", ready: "Rendered", failed: "Render failed", posted: "Posted" };
 
 const STYLE_LABEL: Record<string, string> = { illustrated_history: "Illustrated", graphic_novel: "Graphic novel" };
+
+// A draft's "ready" status splits into two very different states a curator cares about
+// separately (needs a publish decision vs. already live) — the status filter below treats
+// them as distinct options even though the backend stores one status value for both.
+const STATUS_FILTER_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "All statuses" },
+  { value: "scripting", label: "Under production" },
+  { value: "idea", label: "Script ready" },
+  { value: "animating", label: "Rendering" },
+  { value: "ready_unpublished", label: "Rendered, awaiting publish" },
+  { value: "published", label: "Published" },
+  { value: "failed", label: "Render failed" },
+  { value: "posted", label: "Posted" },
+];
+
+function matchesStatusFilter(draft: Draft, filter: string): boolean {
+  if (!filter) return true;
+  if (filter === "published") return draft.status === "ready" && draft.published;
+  if (filter === "ready_unpublished") return draft.status === "ready" && !draft.published;
+  return draft.status === filter;
+}
+
+type SortMode = "newest" | "score" | "cost_asc" | "cost_desc" | "title";
+
+function sortDrafts(drafts: Draft[], sortBy: SortMode): Draft[] {
+  if (sortBy === "newest") return drafts; // API already returns newest first
+  const sorted = [...drafts];
+  if (sortBy === "score") sorted.sort((a, b) => (b.review?.score ?? -1) - (a.review?.score ?? -1));
+  else if (sortBy === "cost_asc") sorted.sort((a, b) => (a.render_estimate?.cost_usd ?? Infinity) - (b.render_estimate?.cost_usd ?? Infinity));
+  else if (sortBy === "cost_desc") sorted.sort((a, b) => (b.render_estimate?.cost_usd ?? -Infinity) - (a.render_estimate?.cost_usd ?? -Infinity));
+  else if (sortBy === "title") sorted.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
+  return sorted;
+}
 
 function formatDay(iso: string | null): string {
   return iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
@@ -63,6 +97,11 @@ export default function WorldProductionPage() {
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState<string | null>(null);
   const [archived, setArchived] = useState<Draft[]>([]);
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const [regionFilter, setRegionFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState<SortMode>("newest");
 
   function load() {
     setLoading(true);
@@ -71,6 +110,36 @@ export default function WorldProductionPage() {
   }
   useEffect(() => { load(); }, []);
   const versions = versionLabels([...drafts, ...archived]);
+
+  const categoryOptions = useMemo(
+    () => Array.from(new Set(drafts.map((d) => d.subject_category || "custom"))).sort(),
+    [drafts],
+  );
+  const regionOptions = useMemo(
+    () => Array.from(new Set(drafts.map((d) => d.subject_region || "global"))).sort(),
+    [drafts],
+  );
+  const visibleDrafts = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const filtered = drafts.filter((d) => {
+      if (categoryFilter && (d.subject_category || "custom") !== categoryFilter) return false;
+      if (regionFilter && (d.subject_region || "global") !== regionFilter) return false;
+      if (!matchesStatusFilter(d, statusFilter)) return false;
+      if (q && !(d.title || "").toLowerCase().includes(q) && !(d.hook_line || "").toLowerCase().includes(q)) return false;
+      return true;
+    });
+    return sortDrafts(filtered, sortBy);
+  }, [drafts, categoryFilter, regionFilter, statusFilter, search, sortBy]);
+  const hasActiveFilters = Boolean(categoryFilter || regionFilter || statusFilter || search);
+  const statusCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const d of drafts) {
+      const key = d.status === "ready" ? (d.published ? "published" : "ready_unpublished") : d.status;
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    return counts;
+  }, [drafts]);
+
   useEffect(() => {
     if (!drafts.some((draft) => draft.status === "animating" || draft.status === "scripting")) return;
     const timer = setInterval(load, drafts.some((draft) => draft.status === "scripting") ? 6000 : 20000);
@@ -115,7 +184,47 @@ Open "What will be generated" on the card first to see the exact prompts and nar
   return <div className="max-w-6xl">
     <div className="mb-6 sm:mb-8 flex flex-wrap items-start justify-between gap-3 sm:gap-4"><div><div className="flex items-center gap-2 text-primary-600 text-xs font-bold uppercase tracking-wider"><Film className="h-4 w-4" /> World production</div><h1 className="mt-2 text-2xl font-bold text-gray-900">World video drafts</h1><p className="mt-1 text-sm text-gray-500">Review each fact-checked script, then start the render. A finished render stays private until you publish it.</p></div><button onClick={load} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700"><RefreshCw className="h-4 w-4" /> Refresh</button></div>
     {message && <p className="mb-5 rounded-lg bg-green-50 px-4 py-3 text-sm text-green-700">{message}</p>}
-    {loading && drafts.length === 0 ? <p className="text-sm text-gray-400">Loading World drafts...</p> : drafts.length === 0 ? <p className="rounded-xl border border-dashed border-gray-200 p-8 text-sm text-gray-400">No World drafts yet. Select a subject in the Subject Library first.</p> : <div className="space-y-3">{drafts.map((draft) => {
+
+    {drafts.length > 0 && <>
+      <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
+        {STATUS_FILTER_OPTIONS.filter((opt) => opt.value && statusCounts[opt.value]).map((opt) => (
+          <button key={opt.value} onClick={() => setStatusFilter(statusFilter === opt.value ? "" : opt.value)}
+            className={`rounded-full px-2.5 py-1 font-semibold ${statusFilter === opt.value ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
+            {statusCounts[opt.value]} {opt.label}
+          </button>
+        ))}
+      </div>
+      <div className="mb-5 flex flex-wrap items-center gap-2 rounded-xl border border-gray-100 bg-white p-3">
+        <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-gray-400">Browse</span>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search title..."
+            className="w-44 rounded-lg border border-gray-200 bg-white py-2 pl-8 pr-3 text-sm text-gray-700" aria-label="Search by title" />
+        </div>
+        <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700" aria-label="Filter by category">
+          <option value="">All categories</option>
+          {categoryOptions.map((cat) => <option key={cat} value={cat}>{CATEGORY_LABELS[cat] || cat}</option>)}
+        </select>
+        <select value={regionFilter} onChange={(e) => setRegionFilter(e.target.value)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700" aria-label="Filter by region">
+          <option value="">All regions</option>
+          {regionOptions.map((r) => <option key={r} value={r}>{r === "global" ? "Global" : r}</option>)}
+        </select>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700" aria-label="Filter by status">
+          {STATUS_FILTER_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+        </select>
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value as SortMode)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700" aria-label="Sort by">
+          <option value="newest">Newest first</option>
+          <option value="score">Highest script score</option>
+          <option value="cost_asc">Cheapest to render</option>
+          <option value="cost_desc">Most expensive to render</option>
+          <option value="title">Title A-Z</option>
+        </select>
+        {hasActiveFilters && <button onClick={() => { setCategoryFilter(""); setRegionFilter(""); setStatusFilter(""); setSearch(""); }} className="px-2 py-2 text-xs font-medium text-primary-600 hover:text-primary-800">Clear filters</button>}
+        <span className="ml-auto text-xs text-gray-400">{visibleDrafts.length} of {drafts.length} drafts</span>
+      </div>
+    </>}
+
+    {loading && drafts.length === 0 ? <p className="text-sm text-gray-400">Loading World drafts...</p> : drafts.length === 0 ? <p className="rounded-xl border border-dashed border-gray-200 p-8 text-sm text-gray-400">No World drafts yet. Select a subject in the Subject Library first.</p> : visibleDrafts.length === 0 ? <p className="rounded-xl border border-dashed border-gray-200 p-8 text-sm text-gray-400">No drafts match these filters.</p> : <div className="space-y-3">{visibleDrafts.map((draft) => {
       const unsupported = draft.grounding?.unsupported_claims?.length ?? 0;
       if (draft.status === "scripting") return <article key={draft.id} aria-busy="true" className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-4 sm:p-5">
         <div className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase text-gray-400"><span>{draft.subject_region || "global"}</span><span>{draft.subject_category || "subject"}</span><span className="inline-flex items-center gap-1 text-amber-600"><Loader2 className="h-3 w-3 animate-spin" /> Under production</span></div>
