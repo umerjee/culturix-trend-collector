@@ -16,3 +16,18 @@ Postgres database, and that schema is managed by SQLAlchemy —
 own tables, read `app/models/*.py` and `app/main.py`'s lifespan block, not
 SQL files in this repo — there is no migration-file source of truth for the
 Railway database today.
+
+**Before adding a file here, confirm the table already has a `CREATE TABLE`
+in this directory.** A 2026-09-24 audit found two migrations
+(`region_daily_summaries`, `clusters`) that had been silently blocking every
+subsequent Supabase push for two days — `ALTER TABLE`s for Railway-only
+tables that were never created here in the first place, so
+`supabase db push` failed immediately on the first one and never reached
+anything queued behind it. As of that audit, exactly six tables are meant to
+exist on Supabase at all: `users`, `subscriptions`, `user_profiles`,
+`raw_signals`, `generated_content`, `curated_items` — the first three tied to
+the `on_auth_user_created` trigger below, the rest added later for reasons
+now lost to time. If your table isn't one of those six, it does not belong
+in this directory; add your `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` to
+`app/main.py`'s `lifespan()` instead, matching every other Railway-side
+column.
