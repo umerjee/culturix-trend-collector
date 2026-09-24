@@ -103,17 +103,27 @@ def list_world_regions():
 
     session = SessionLocal()
     try:
+        base_filters = [
+            Toon.is_world_content.is_(True),
+            Toon.status == "ready",
+            _publicly_visible(),
+            Toon.final_video_url.isnot(None),
+        ]
         feature_rows = (
             session.query(Toon.subject_region, func.count(Toon.id))
-            .filter(
-                Toon.is_world_content.is_(True),
-                Toon.status == "ready",
-                _publicly_visible(),
-                Toon.final_video_url.isnot(None),
-                Toon.subject_region.isnot(None),
-            )
+            .filter(*base_filters, Toon.subject_region.isnot(None))
             .group_by(Toon.subject_region)
             .all()
+        )
+        # Genuinely global subjects (a species/phenomenon found worldwide, or a technology
+        # with no single origin — see determine_world_region in world_production.py) are
+        # deliberately never pinned to a country: a map marker implies "this happened here,"
+        # and forcing one would misrepresent them. They're still fully real, published
+        # Features though, just not geography-bound — surfaced to the map via this count
+        # instead of a pin, so the globe can point to where they actually live (the
+        # category browse grid on the same page) rather than going silently missing.
+        global_feature_count = (
+            session.query(func.count(Toon.id)).filter(*base_filters, Toon.subject_region.is_(None)).scalar()
         )
         trend_rows = (
             session.query(Trend.region, func.count(Trend.id), func.count(func.distinct(func.date(Trend.collected_at))))
@@ -128,7 +138,10 @@ def list_world_regions():
             regions.setdefault(region, {"region": region, "count": 0, "feature_count": 0, "trend_count": 0, "trend_days": 0})
             regions[region]["trend_count"] = count
             regions[region]["trend_days"] = days
-        return {"regions": sorted(regions.values(), key=lambda item: item["region"])}
+        return {
+            "regions": sorted(regions.values(), key=lambda item: item["region"]),
+            "global_feature_count": global_feature_count or 0,
+        }
     finally:
         session.close()
 

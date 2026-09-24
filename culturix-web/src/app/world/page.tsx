@@ -59,7 +59,7 @@ export default async function WorldPage({
           <WorldMap />
         </section>
 
-        <section className="mb-10">
+        <section id="categories" className="mb-10 scroll-mt-20">
           <CategoryGrid />
         </section>
 

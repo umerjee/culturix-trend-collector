@@ -80,6 +80,7 @@ export default function WorldMap() {
   // later, which is invisible in practice.
   const [mounted, setMounted] = useState(false);
   const [regionCounts, setRegionCounts] = useState<Record<string, RegionCount>>({});
+  const [globalFeatureCount, setGlobalFeatureCount] = useState(0);
   const [hovered, setHovered] = useState<{ code: string; x: number; y: number } | null>(null);
   const [view, setView] = useState<ViewMode>("globe");
   const [flatPosition, setFlatPosition] = useState(FLAT_DEFAULT_POSITION);
@@ -97,11 +98,12 @@ export default function WorldMap() {
 
   useEffect(() => {
     fetch("/api/world/regions")
-      .then((r) => (r.ok ? r.json() : { regions: [] }))
-      .then((data: { regions: RegionCount[] }) => {
+      .then((r) => (r.ok ? r.json() : { regions: [], global_feature_count: 0 }))
+      .then((data: { regions: RegionCount[]; global_feature_count?: number }) => {
         const map: Record<string, RegionCount> = {};
         for (const r of data.regions || []) map[r.region] = r;
         setRegionCounts(map);
+        setGlobalFeatureCount(data.global_feature_count || 0);
       })
       .catch(() => setRegionCounts({}));
   }, []);
@@ -223,6 +225,7 @@ export default function WorldMap() {
   }
 
   return (
+    <div>
     <div className="relative rounded-2xl overflow-hidden border border-gray-100 bg-gradient-to-b from-sky-100 via-sky-50 to-white shadow-[inset_0_1px_0_rgba(255,255,255,0.6)]">
       {/* Soft radial glow behind the globe so it reads as an object floating in space, not a flat tile. */}
       {view === "globe" && (
@@ -433,6 +436,21 @@ export default function WorldMap() {
           No World Features published yet — check back soon.
         </p>
       )}
+    </div>
+    {globalFeatureCount > 0 && (
+      // Species/phenomena/technologies with no single real home (see
+      // determine_world_region in world_production.py) are deliberately never pinned
+      // to a country here — a marker would misrepresent them as happening in one
+      // place. Still real, published Features, so this points to where they
+      // actually live (the category grid just below, which lists every Feature
+      // unfiltered by region) instead of letting them go quietly missing from the map.
+      <p className="mt-3 text-center text-xs text-gray-400">
+        +{globalFeatureCount} more worldwide — not tied to one place.{" "}
+        <a href="#categories" className="font-medium text-purple-600 hover:underline">
+          Browse by theme
+        </a>
+      </p>
+    )}
     </div>
   );
 }

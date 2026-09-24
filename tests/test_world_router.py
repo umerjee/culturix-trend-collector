@@ -141,6 +141,25 @@ class TestListWorldRegions:
         assert japan["trend_count"] == 1
         assert japan["trend_days"] == 1
 
+    def test_globally_scoped_features_are_counted_separately_not_as_a_region(self, db):
+        # A species/phenomenon with no single home (determine_world_region in
+        # world_production.py) has subject_region=None -- never pinned to a country,
+        # since a map marker would misrepresent it as happening in one place. Still a
+        # real published Feature, so it must be visible via this count, not silently
+        # dropped from both the region list AND any other total.
+        _make_toon(db, subject_region="IR")
+        _make_toon(db, subject_region=None)
+        _make_toon(db, subject_region=None)
+
+        result = world.list_world_regions()
+
+        assert result["global_feature_count"] == 2
+        assert None not in [r["region"] for r in result["regions"]]
+
+    def test_unpublished_globally_scoped_features_are_not_counted(self, db):
+        _make_toon(db, subject_region=None, world_published=False)
+        assert world.list_world_regions()["global_feature_count"] == 0
+
 
 class TestGetWorldFeature:
     def test_returns_feature_with_hook_line(self, db):
