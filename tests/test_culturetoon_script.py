@@ -1581,6 +1581,19 @@ class TestWorldPlausibilityRule:
         visual = "The plant shows visible signs of transformation after treatment"
         assert check_world_plausibility([self._shot(visual, focus="character")]) == []
 
+    def test_vehicle_stopped_on_a_crosswalk_is_a_problem(self):
+        # Regression coverage: a live Waymo Feature described "a taxi standing on the zebra
+        # crossing" — a visible traffic-rule violation, confirmed reported by the user.
+        from app.services.culturetoon_script import check_world_plausibility
+        visual = "The Waymo taxi stops on the zebra crossing as a passenger gets out"
+        problems = check_world_plausibility([self._shot(visual)])
+        assert len(problems) == 1 and "Shot 1" in problems[0] and "crossing" in problems[0]
+
+    def test_stopping_at_the_curb_is_not_a_problem(self):
+        from app.services.culturetoon_script import check_world_plausibility
+        visual = "The Waymo taxi pulls up and stops at the curb, clear of the crosswalk"
+        assert check_world_plausibility([self._shot(visual)]) == []
+
     def test_the_prompt_warns_against_visible_transformations(self, mocker):
         from app.services.culturetoon_script import generate_world_script
         client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
@@ -1625,6 +1638,20 @@ class TestWorldAutonomyRule:
         visual = "A driver's seat is visible"
         assert check_world_autonomy([self._shot(visual, focus="character")], "Driverless Taxis") == []
 
+    def test_a_passenger_moving_into_the_driver_seat_is_a_problem(self):
+        # Regression coverage: a live Waymo Feature described "a woman passenger moves over to
+        # the driverless seat" — implausible (real taxi passengers ride in back) and reported by
+        # the user as coinciding with the passenger's rendered gender changing mid-shot.
+        from app.services.culturetoon_script import check_world_autonomy
+        visual = "A passenger moves over to the driver's seat as the taxi pulls away"
+        problems = check_world_autonomy([self._shot(visual)], "Waymo's Driverless Taxis")
+        assert any("back seat" in p for p in problems)
+
+    def test_a_passenger_in_the_back_seat_is_not_a_problem(self):
+        from app.services.culturetoon_script import check_world_autonomy
+        visual = "A passenger sits in the back seat, looking out the window as the empty driver's seat stays still"
+        assert check_world_autonomy([self._shot(visual)], "Waymo's Driverless Taxis") == []
+
     def test_the_prompt_asks_for_an_explicit_empty_seat(self, mocker):
         from app.services.culturetoon_script import generate_world_script
         client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
@@ -1640,6 +1667,35 @@ class TestWorldAutonomyRule:
         # "landscape" must not count as "land", "first" must not count as "fire"
         from app.services.culturetoon_script import check_world_motion
         assert any("still scene" in p for p in check_world_motion([self._shot(visual)]))
+
+
+class TestModernPeopleWords:
+    """Regression coverage for the same 2026-09-24 audit as TestWorldMotionRule: _PEOPLE_WORDS
+    was calibrated on one D-Day/military script and had no vocabulary for the modern/civilian
+    subjects this pipeline actually writes about, so a visual mentioning "a passenger" with
+    people="none" sailed through check_world_visuals uncaught — a live Waymo shot did exactly
+    this, producing a render prompt that simultaneously showed and denied a person."""
+
+    @staticmethod
+    def _shot(visual, people="none", n=1):
+        return {"shot_number": n, "shot_focus": "subject", "subject_visual": visual, "people": people}
+
+    @pytest.mark.parametrize("word", [
+        "passenger", "driver", "rider", "pedestrian", "commuter", "customer", "tourist",
+        "scientist", "technician", "engineer", "researcher", "worker", "shopper",
+    ])
+    def test_modern_people_words_are_flagged_when_people_is_none(self, word):
+        from app.services.culturetoon_script import check_world_visuals
+        visual = f"A {word} walks into frame and looks around"
+        assert check_world_visuals([self._shot(visual)]) != []
+
+    def test_normalize_upgrades_a_passenger_shot_from_none_to_distant(self):
+        # The exact live Waymo text.
+        from app.services.culturetoon_script import normalize_world_people
+        shots = [self._shot("The taxi pulls up and a passenger gets out")]
+        out, warnings = normalize_world_people(shots)
+        assert out[0]["people"] == "distant"
+        assert warnings != []
 
 
 class TestReferencePeopleMode:

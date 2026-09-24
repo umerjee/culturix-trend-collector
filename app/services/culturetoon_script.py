@@ -1732,14 +1732,29 @@ def select_thematic_host(session, category: Optional[str], tone: str):
     return variant
 
 
-_PEOPLE_WORDS = re.compile(
-    r"\b(soldiers?|troops?|infantry(?:men)?|paratroopers?|marines?|sailors?|airmen|men|women|people|persons?|"
-    r"crowds?|civilians?|children|figures?|crews?|teams?|faces?|hands?)\b", re.IGNORECASE)
+# The single source of truth for "does this visual mention a person" across every check below —
+# _PEOPLE_WORDS and _CLOSEUP_OF_PEOPLE used to keep independent, duplicated word lists, and both
+# were calibrated on one D-Day/military script with no vocabulary for the modern/civilian/
+# scientific subjects this pipeline actually writes about. That gap silently broke
+# check_world_visuals for a live Waymo script ("a passenger gets out" with people="none" — a
+# render prompt that simultaneously showed and denied a person, a plausible direct cause of the
+# reported identity instability, i.e. the passenger's apparent gender shifting mid-shot). Fixing
+# one list and not the other would just relocate the same bug, so both are built from this one
+# list now — the next new person-word only needs to be added once. (2026-09-24 audit.)
+_PEOPLE_WORD_LIST = (
+    r"soldiers?|troops?|infantry(?:men)?|paratroopers?|marines?|sailors?|airmen|men|women|people|persons?|"
+    r"crowds?|civilians?|children|figures?|crews?|teams?|hands?|"
+    r"passengers?|drivers?|riders?|pedestrians?|commuters?|customers?|tourists?|scientists?|technicians?|"
+    r"engineers?|researchers?|workers?|shoppers?|travell?ers?|visitors?|residents?|staff|employees?|"
+    r"students?|teachers?|doctors?|patients?|operators?|pilots?|guides?|farmers?|fishermen|fisherman|"
+    r"divers?|hikers?"
+)
+_PEOPLE_WORDS = re.compile(r"\b(" + _PEOPLE_WORD_LIST + r"|faces?)\b", re.IGNORECASE)
 _FACE_WORDS = re.compile(r"\b(faces?|facial|eyes|expressions?)\b", re.IGNORECASE)
 # "Close-up of the beach" is fine; a close-up is only a problem when it is of people.
 _CLOSEUP_OF_PEOPLE = re.compile(
-    r"close-?ups?\b[^.]{0,60}\b(soldiers?|troops?|men|women|people|figures?|crowds?|faces?)\b|"
-    r"\b(soldiers?|troops?|men|women|people|figures?|crowds?)\b[^.]{0,60}\bclose-?ups?\b", re.IGNORECASE)
+    r"close-?ups?\b[^.]{0,60}\b(" + _PEOPLE_WORD_LIST + r"|faces?)\b|"
+    r"\b(" + _PEOPLE_WORD_LIST + r")\b[^.]{0,60}\bclose-?ups?\b", re.IGNORECASE)
 
 
 def _mentions_faces(visual: str) -> bool:
@@ -1891,6 +1906,23 @@ _VISIBLE_CHANGE = re.compile(
     r"transforms? before|visible transformation)\b", re.IGNORECASE)
 
 
+# A vehicle stopped ON a marked pedestrian crossing rather than at the curb/a pickup zone —
+# confirmed live on a Waymo Feature shot ("a taxi standing on the zebra crossing"). Not gated
+# to autonomous-vehicle subjects: any vehicle parked across a crosswalk reads as a visible
+# traffic-rule violation, which is a distracting, implausible detail for a video that isn't
+# about that.
+_CROSSWALK_STOP = re.compile(
+    r"\b(?:stops?|stopped|stopping|parks?|parked|parking|waits?|waiting|idles?|idling|halts?|halted|"
+    r"stand(?:s|ing)?)\b[^.]{0,40}\b(?:crosswalk|zebra crossing|pedestrian crossing)\b|"
+    r"\b(?:crosswalk|zebra crossing|pedestrian crossing)\b[^.]{0,40}"
+    r"\b(?:stops?|stopped|stopping|parks?|parked|parking|waits?|waiting|idles?|idling|halts?|halted|"
+    r"stand(?:s|ing)?)\b", re.IGNORECASE)
+# "Stops at the curb, clear of the crosswalk" is the desired behavior, not the bug — a match
+# is only a real problem if nothing between the stop-word and the crossing word says the
+# vehicle is clear of/away from/not on it.
+_CROSSWALK_CLEAR = re.compile(r"\b(?:clear of|away from|not on|off)\b", re.IGNORECASE)
+
+
 def check_world_plausibility(shots: Optional[list]) -> list[str]:
     """A subject visual asking for a biological or physical transformation to become visible
     WITHIN the ~8-second shot, as the direct result of one action in it (an injection followed
@@ -1908,6 +1940,11 @@ def check_world_plausibility(shots: Optional[list]) -> list[str]:
                             "become visible within this one shot — that does not happen at video timescale and "
                             "renders as a glitching mess. Show a stable moment instead: the action itself, or a "
                             "believable side-by-side of a treated sample next to an untreated one.")
+        crossing = _CROSSWALK_STOP.search(visual)
+        if crossing and not _CROSSWALK_CLEAR.search(crossing.group(0)):
+            problems.append(f'Shot {shot.get("shot_number")}: "{crossing.group(0)}" puts the vehicle stopped on a '
+                            "marked pedestrian crossing — a visible traffic-rule violation that reads as a mistake, "
+                            "not a detail. Have it stop at the curb or a marked pickup zone, clear of the crossing.")
     return problems
 
 
@@ -1922,6 +1959,16 @@ _AUTONOMY_SUBJECT = re.compile(
     r"\b(self-?driving|driverless|autonomous (?:vehicle|car|taxi|drone|robot))\b", re.IGNORECASE)
 _EMPTY_SEAT_STATED = re.compile(
     r"\b(empty|no\s*(?:one|body|driver|human)|nobody|unmanned|unoccupied|vacant)\b", re.IGNORECASE)
+# A passenger described moving into, sitting in, or occupying the driver's seat/front position —
+# confirmed live on the same Waymo shot as _DRIVER_VANTAGE above: "a passenger moves over to the
+# driverless seat" is itself the implausible detail (real driverless-taxi passengers ride in the
+# back), and independently a plausible trigger for the identity-instability artifact the user
+# reported (a person rendered occupying a seat position the model has other, conflicting signals
+# about).
+_PASSENGER_TAKES_DRIVER_SEAT = re.compile(
+    r"\bpassengers?\b[^.]{0,40}\b(?:moves?|slides?|climbs?|steps?|gets?)\b[^.]{0,20}"
+    r"\b(?:into|to|over to|behind)\b[^.]{0,20}\b(?:driver'?s?\s*seat|the\s*wheel|front seat|driving seat)\b",
+    re.IGNORECASE)
 
 
 def check_world_autonomy(shots: Optional[list], subject_text: str) -> list[str]:
@@ -1942,6 +1989,12 @@ def check_world_autonomy(shots: Optional[list], subject_text: str) -> list[str]:
                             "in frame but never says it is empty — for a driverless/autonomous subject this "
                             "renders as a normal human driver, contradicting the subject. Explicitly state the "
                             "seat is empty or otherwise make the absence of a human operator visually explicit.")
+        seat_swap = _PASSENGER_TAKES_DRIVER_SEAT.search(visual)
+        if seat_swap:
+            problems.append(f'Shot {shot.get("shot_number")}: "{seat_swap.group(0)}" shows a passenger moving into '
+                            "the driver's seat/front position — implausible (driverless-taxi passengers ride in "
+                            "the back) and a likely trigger for render instability. Keep passengers seated in the "
+                            "back seat throughout.")
     return problems
 
 
@@ -2095,7 +2148,11 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
             "unstated, it defaults to rendering a normal human driver, contradicting the subject. Every shot "
             "that shows the vehicle from an angle where a driver's seat or operator's position would "
             "normally be visible must explicitly say it is EMPTY (\"the driver's seat is empty, no one at "
-            "the wheel\") or otherwise make the absence of a human operator visually explicit."
+            "the wheel\") or otherwise make the absence of a human operator visually explicit. If a "
+            "passenger appears, keep them seated in the BACK seat throughout — never moving into or "
+            "occupying the driver's seat/front position, which is both implausible and a common trigger "
+            "for the person's appearance glitching mid-shot. Never stop or park the vehicle on a marked "
+            "pedestrian crossing/zebra crossing — have it stop at the curb or a marked pickup zone instead."
         )
     prompt = _build_prompt_from_context("real-world region/subject", context, variants, tone,
                                          num_shots, target_duration_seconds)
