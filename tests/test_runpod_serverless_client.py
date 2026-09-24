@@ -92,8 +92,19 @@ class TestRunInferenceJob:
         mocker.patch("httpx.post", return_value=submit_resp)
         mocker.patch("httpx.get", return_value=queued_resp)
         mocker.patch("time.sleep")
-        fake_time = mocker.patch("time.time")
-        fake_time.side_effect = [0, 0, 1000]
+        # [0, 0] establishes the deadline and passes the first while-check (poll once,
+        # "IN_QUEUE"); every call after that returns 1000, comfortably past the 30s
+        # deadline, so the loop exits on its next check. A side_effect sized to the
+        # *exact* minimum expected call count (the original [0, 0, 1000]) is fragile —
+        # confirmed live in CI (github.com Actions run, ubuntu/Python 3.11, this exact
+        # test): it raised StopIteration instead of TimeoutError, meaning something in
+        # that environment made one more time.time() call than this local run does.
+        # Not reproducible locally in isolation or as part of the full suite (Windows/
+        # Python 3.14) despite direct instrumentation of the real call path, so this
+        # pads generously rather than chasing an exact count this test does not
+        # actually care about — the assertion is "did it time out correctly," not
+        # "exactly how many times was time.time() called."
+        mocker.patch("time.time", side_effect=[0, 0] + [1000] * 20)
 
         with pytest.raises(TimeoutError):
             run_inference_job("endpoint-1", {"1": {}}, timeout_seconds=30)
@@ -107,8 +118,7 @@ class TestRunInferenceJob:
         mocker.patch("httpx.post", return_value=submit_resp)
         mocker.patch("httpx.get", return_value=queued_resp)
         mocker.patch("time.sleep")
-        fake_time = mocker.patch("time.time")
-        fake_time.side_effect = [0, 0, 1000]
+        mocker.patch("time.time", side_effect=[0, 0] + [1000] * 20)  # see test_timeout_raises
 
         with pytest.raises(TimeoutError) as exc_info:
             run_inference_job("endpoint-1", {"1": {}}, timeout_seconds=30)
