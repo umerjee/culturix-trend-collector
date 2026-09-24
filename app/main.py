@@ -383,6 +383,7 @@ async def lifespan(_):
             "ALTER TABLE curated_items ADD COLUMN IF NOT EXISTS source_url TEXT",
             "ALTER TABLE region_daily_summaries ADD COLUMN IF NOT EXISTS audience_matches JSON",
             "ALTER TABLE curated_items ADD COLUMN IF NOT EXISTS thumbnail_url TEXT",
+            "ALTER TABLE curated_items ADD COLUMN IF NOT EXISTS subject_category VARCHAR(20)",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -2912,7 +2913,7 @@ def list_curated_items(limit: int = 100, region: Optional[str] = None, decision:
             "region": row.region, "title": row.title, "summary": row.summary,
             "category": row.category, "priority_score": row.priority_score,
             "challenge_notes": row.challenge_notes, "pipeline_decision": row.pipeline_decision,
-            "source_url": row.source_url,
+            "source_url": row.source_url, "subject_category": row.subject_category,
             "created_at": row.created_at.isoformat() if row.created_at else None,
         } for row in rows]
     finally:
@@ -2937,10 +2938,14 @@ def ingest_curated_source(payload: dict):
     from app.collectors.wikipedia_extracts import fetch_wikipedia_extract
     from app.db import SessionLocal
     from app.services.culturix_ingestion import ingest
+    from app.services.world_production import WORLD_SUBJECT_CATEGORIES
 
     source_type = payload.get("source_type")
     region = (payload.get("region") or "").strip().upper() or None
     max_items = max(1, min(int(payload.get("max_items", 5)), 10))
+    subject_category = payload.get("subject_category") or None
+    if subject_category is not None and subject_category not in WORLD_SUBJECT_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"subject_category must be one of {sorted(WORLD_SUBJECT_CATEGORIES)}")
 
     sources = []  # (source_ref, raw_text, source_url, thumbnail_url)
     if source_type == "wikipedia":
@@ -2966,7 +2971,7 @@ def ingest_curated_source(payload: dict):
             for source_ref, raw_text, source_url, thumbnail_url in sources:
                 created += len(ingest(source_type, region, raw_text, db, max_items=max_items,
                                       source_ref=source_ref, source_url=source_url,
-                                      thumbnail_url=thumbnail_url))
+                                      thumbnail_url=thumbnail_url, subject_category=subject_category))
             logging.info("Curated ingestion finished: source_type=%s region=%s sources=%d items=%d",
                          source_type, region, len(sources), created)
         except Exception:
@@ -2981,6 +2986,17 @@ def ingest_curated_source(payload: dict):
         "sources_fetched": len(sources),
         "message": f"Scoring {len(sources)} source(s) in the background — refresh the list shortly.",
     }
+
+
+@app.get("/admin/curated-items/suggested-topics", dependencies=[Depends(require_admin_secret)])
+def list_suggested_topics():
+    """Hand-picked Wikipedia titles for the categories the per-country sweep can't reach
+    (phenomenon/species/tech) — powers the admin UI's one-click "add a topic" panel so a
+    curator doesn't have to think up a Wikipedia title from scratch. See
+    app/services/world_topic_suggestions.py; already-ingested titles are left in the list
+    (POST .../ingest already dedupes by source_ref, so clicking one twice is harmless)."""
+    from app.services.world_topic_suggestions import TOPIC_SUGGESTIONS
+    return TOPIC_SUGGESTIONS
 
 
 @app.post("/admin/curated-items/{item_id}/decision", dependencies=[Depends(require_admin_secret)])
@@ -3008,7 +3024,7 @@ def plan_curated_world_feature(item_id: str):
     from app.db import SessionLocal
     from app.models.curated_item import CuratedItem
     from app.services.world_era import determine_world_era
-    from app.services.world_production import build_source_facts, plan_world_video, find_live_draft
+    from app.services.world_production import _CATEGORY_MAP, build_source_facts, plan_world_video, find_live_draft
 
     session = SessionLocal()
     try:
@@ -3021,6 +3037,11 @@ def plan_curated_world_feature(item_id: str):
         # it decides which objects the script and the video may contain.
         era = determine_world_era(item.title, build_source_facts(item))
         plan["era"] = era["label"] if era else None
+        # What generate_world_draft would pick if the curator doesn't override it: the category
+        # chosen at ingest time (see CuratedItem.subject_category), else the same auto-map
+        # generate_world_draft itself falls back to. Surfaced so the UI can pre-select the right
+        # option instead of defaulting to "custom" for every phenomenon/species item.
+        plan["suggested_subject_category"] = item.subject_category or _CATEGORY_MAP.get(item.category, "custom")
         return plan
     finally:
         session.close()
@@ -3032,9 +3053,10 @@ def generate_curated_world_feature(item_id: str, payload: Optional[dict] = None)
     body: {duration_seconds, beat_count, use_host, visual_style, era, subject_category}. `era` is the
     period to show in the curator's own words and must name a year ("Roman Republic, 307 BC"); without
     it the period is worked out from the source. `subject_category` overrides the browse category
-    (place/phenomenon/species/tech/genz/custom) that would otherwise be auto-mapped from the item's
-    ingestion category — needed for "phenomenon"/"species", which no ingestion category maps to. Does
-    not start the paid render — that is a separate action on the World Production page."""
+    (place/phenomenon/species/tech/genz/custom); when omitted this falls back to the category chosen
+    at ingest time (CuratedItem.subject_category), then to an auto-map from the item's ingestion
+    category — needed for "phenomenon"/"species", which no ingestion category maps to. Does not start
+    the paid render — that is a separate action on the World Production page."""
     import threading
     from app.db import SessionLocal
     from app.models.curated_item import CuratedItem
@@ -3069,6 +3091,11 @@ def generate_curated_world_feature(item_id: str, payload: Optional[dict] = None)
             raise HTTPException(status_code=400, detail="Excluded subjects cannot be generated")
         if find_live_draft(session, item.id):
             raise HTTPException(status_code=409, detail="A World draft already exists for this subject. Archive it first to regenerate.")
+        # The payload's explicit choice wins; otherwise fall back to whatever the curator picked
+        # at ingest time (CuratedItem.subject_category) before generate_world_draft's own
+        # ingestion-category auto-map, which has no route to "phenomenon"/"species" at all.
+        if subject_category is None:
+            subject_category = item.subject_category
         item.pipeline_decision = "include"
         session.commit()
     finally:

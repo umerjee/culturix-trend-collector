@@ -2,11 +2,14 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Check, Clock3, Database, Download, X } from "lucide-react";
+import { Check, Clock3, Database, Download, Sparkles, X } from "lucide-react";
 import { fetchAdminData } from "@/lib/admin/fetchAdmin";
+import { CATEGORY_LABELS } from "@/lib/worldTypes";
 
-type Item = { id: string; source_type: string; region: string | null; title: string; summary: string; category: string; priority_score: number | null; challenge_notes: string | null; pipeline_decision: string | null; source_url: string | null; created_at: string | null };
-type Plan = { era?: string | null; duration_seconds: number; beat_count: number; rationale: string; allowed_durations: number[]; source_chars: number; thin_source: boolean; existing_draft: boolean; visual_styles: { key: string; label: string }[]; estimate: Record<string, { gpu_seconds: number; cost_usd: number }> };
+type Item = { id: string; source_type: string; region: string | null; title: string; summary: string; category: string; priority_score: number | null; challenge_notes: string | null; pipeline_decision: string | null; source_url: string | null; subject_category: string | null; created_at: string | null };
+type Plan = { era?: string | null; duration_seconds: number; beat_count: number; rationale: string; allowed_durations: number[]; source_chars: number; thin_source: boolean; existing_draft: boolean; visual_styles: { key: string; label: string }[]; estimate: Record<string, { gpu_seconds: number; cost_usd: number }>; suggested_subject_category?: string | null };
+// { phenomenon: ["Aurora", ...], species: [...], tech: [...] } — GET /admin/curated-items/suggested-topics.
+type TopicSuggestions = Record<string, string[]>;
 
 const COUNTRY_INFO: Record<string, { name: string; continent: string }> = {
   US: { name: "United States", continent: "North America" }, CN: { name: "China", continent: "Asia" },
@@ -27,6 +30,7 @@ export default function CuratedItemsPage() {
   const [message, setMessage] = useState("");
   const [region, setRegion] = useState("IT");
   const [wikipediaTitle, setWikipediaTitle] = useState("History of Italy");
+  const [wikipediaCategory, setWikipediaCategory] = useState("");
   const [unescoLimit, setUnescoLimit] = useState("5");
   const [continentFilter, setContinentFilter] = useState("");
   const [countryFilter, setCountryFilter] = useState("");
@@ -38,10 +42,15 @@ export default function CuratedItemsPage() {
   const [useHost, setUseHost] = useState(false);
   const [visualStyle, setVisualStyle] = useState("");
   const [era, setEra] = useState("");
+  const [planCategory, setPlanCategory] = useState("");
   const [generating, setGenerating] = useState(false);
+  const [suggestions, setSuggestions] = useState<TopicSuggestions>({});
 
   function load() { fetchAdminData<Item[]>("curated-items").then(setItems).catch(() => setItems([])); }
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    fetchAdminData<TopicSuggestions>("curated-item-topic-suggestions").then(setSuggestions).catch(() => setSuggestions({}));
+  }, []);
 
   const continents = Array.from(new Set(Object.values(COUNTRY_INFO).map((country) => country.continent))).sort();
   const countries = Object.entries(COUNTRY_INFO)
@@ -54,11 +63,13 @@ export default function CuratedItemsPage() {
     return true;
   });
 
-  async function ingest(source_type: "unesco" | "wikipedia") {
+  async function ingest(source_type: "unesco" | "wikipedia", override?: { title: string; subject_category: string }) {
     setBusy(true); setMessage("");
+    const title = override?.title ?? wikipediaTitle;
+    const subjectCategory = override?.subject_category ?? wikipediaCategory;
     const body = source_type === "unesco"
       ? { source_type, region, limit: Number(unescoLimit), max_items: 3 }
-      : { source_type, region, title: wikipediaTitle, max_items: 5 };
+      : { source_type, region, title, max_items: 5, ...(subjectCategory ? { subject_category: subjectCategory } : {}) };
     try {
       const res = await fetch("/api/admin/curated-items", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json();
@@ -77,6 +88,11 @@ export default function CuratedItemsPage() {
     } catch { setMessage("Ingestion failed."); } finally { setBusy(false); }
   }
 
+  function addSuggestedTopic(category: string, title: string) {
+    setWikipediaTitle(title); setWikipediaCategory(category);
+    ingest("wikipedia", { title, subject_category: category });
+  }
+
   async function decide(id: string, decision: string) {
     if (decision === "include") {
       const item = items.find((candidate) => candidate.id === id);
@@ -88,12 +104,13 @@ export default function CuratedItemsPage() {
   }
 
   async function openPlan(item: Item) {
-    setPlanItem(item); setPlan(null); setPlanError(""); setUseHost(false); setVisualStyle(""); setEra("");
+    setPlanItem(item); setPlan(null); setPlanError(""); setUseHost(false); setVisualStyle(""); setEra(""); setPlanCategory("");
     try {
       const res = await fetch(`/api/admin/curated-items/${item.id}/plan`);
       const data = await res.json();
       if (!res.ok) { setPlanError(data.detail || "Could not plan this subject."); return; }
       setPlan(data); setDuration(data.duration_seconds); setEra(data.era || "");
+      setPlanCategory(data.suggested_subject_category || "");
     } catch { setPlanError("Could not plan this subject."); }
   }
 
@@ -103,6 +120,7 @@ export default function CuratedItemsPage() {
     const body: Record<string, unknown> = { duration_seconds: duration, use_host: useHost };
     if (visualStyle) body.visual_style = visualStyle;
     if (era.trim()) body.era = era.trim();
+    if (planCategory) body.subject_category = planCategory;
     if (duration === plan.duration_seconds) body.beat_count = plan.beat_count;
     const res = await fetch(`/api/admin/curated-items/${planItem.id}/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
@@ -126,10 +144,23 @@ export default function CuratedItemsPage() {
         <input value={unescoLimit} onChange={(e) => setUnescoLimit(e.target.value)} type="number" min="1" max="10" className="w-20 rounded-lg border border-gray-200 px-3 py-2 text-sm" aria-label="UNESCO site count" title="UNESCO sites to fetch" />
         <button disabled={busy} onClick={() => ingest("unesco")} className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"><Download className="h-4 w-4" /> Fetch UNESCO</button>
         <input value={wikipediaTitle} onChange={(e) => setWikipediaTitle(e.target.value)} className="w-44 rounded-lg border border-gray-200 px-3 py-2 text-sm" aria-label="Wikipedia title" placeholder="Wikipedia title" />
+        <select value={wikipediaCategory} onChange={(e) => setWikipediaCategory(e.target.value)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700" aria-label="Browse category for this Wikipedia fetch" title='Set this for Phenomena/Species/Technology topics — nothing else can tell them apart from a general "custom" subject'>
+          <option value="">Category: auto-detect</option>
+          {Object.entries(CATEGORY_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+        </select>
         <button disabled={busy} onClick={() => ingest("wikipedia")} className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 disabled:opacity-50">Fetch Wikipedia</button>
       </div>
     </div>
     {message && <p className="mb-5 rounded-lg bg-green-50 px-4 py-3 text-sm text-green-700">{message}</p>}
+    {Object.keys(suggestions).length > 0 && <div className="mb-5 rounded-xl border border-gray-100 bg-white p-3">
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-400"><Sparkles className="h-3.5 w-3.5" /> Suggested topics — one click fetches and scores it</div>
+      <div className="space-y-2">
+        {Object.entries(suggestions).map(([category, titles]) => <div key={category} className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-xs font-semibold text-gray-500">{CATEGORY_LABELS[category] || category}</span>
+          {titles.map((title) => <button key={title} disabled={busy} onClick={() => addSuggestedTopic(category, title)} className="rounded-full border border-gray-200 px-2.5 py-1 text-xs text-gray-600 hover:border-primary-300 hover:text-primary-700 disabled:opacity-50">{title}</button>)}
+        </div>)}
+      </div>
+    </div>}
     <div className="mb-5 flex flex-wrap items-center gap-2 rounded-xl border border-gray-100 bg-white p-3">
       <span className="mr-1 text-xs font-semibold uppercase tracking-wide text-gray-400">Browse</span>
       <select value={continentFilter} onChange={(e) => { setContinentFilter(e.target.value); setCountryFilter(""); }} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700" aria-label="Filter by continent">
@@ -147,7 +178,7 @@ export default function CuratedItemsPage() {
       {(continentFilter || countryFilter || minimumPriority !== "0") && <button onClick={() => { setContinentFilter(""); setCountryFilter(""); setMinimumPriority("0"); }} className="px-2 py-2 text-xs font-medium text-primary-600 hover:text-primary-800">Clear filters</button>}
       <span className="ml-auto text-xs text-gray-400">{visibleItems.length} of {items.length} subjects</span>
     </div>
-    <div className="space-y-3">{visibleItems.map((item) => <article key={item.id} className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm"><div className="flex items-start justify-between gap-4"><div><div className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase text-gray-400"><span>{item.source_type}</span><span>{item.region ? `${COUNTRY_INFO[item.region]?.name || item.region} (${item.region})` : "global"}</span><span>{item.category}</span>{item.source_url && <a href={item.source_url} target="_blank" rel="noreferrer" className="text-primary-600 normal-case hover:underline">View source</a>}{item.created_at && <span>Fetched {new Date(item.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>}</div><h2 className="mt-1 text-base font-semibold text-gray-900">{item.title}</h2></div><span className="text-sm font-bold text-primary-600">{item.priority_score ?? "-"}/100</span></div><p className="mt-2 text-sm text-gray-600">{item.summary}</p>{item.challenge_notes && <p className="mt-2 text-xs text-gray-400">Review: {item.challenge_notes}</p>}<div className="mt-4 flex items-center gap-2"><button onClick={() => decide(item.id, "include")} className="inline-flex items-center gap-1 rounded-md bg-green-50 px-2.5 py-1.5 text-xs font-semibold text-green-700"><Check className="h-3.5 w-3.5" /> Select subject</button><button onClick={() => decide(item.id, "store_for_later")} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-700"><Clock3 className="h-3.5 w-3.5" /> Later</button><button onClick={() => decide(item.id, "exclude")} className="inline-flex items-center gap-1 rounded-md bg-gray-100 px-2.5 py-1.5 text-xs font-semibold text-gray-600"><X className="h-3.5 w-3.5" /> Exclude</button><span className="ml-auto text-xs text-gray-400">{item.pipeline_decision || "unreviewed"}</span></div></article>)}</div>
+    <div className="space-y-3">{visibleItems.map((item) => <article key={item.id} className="rounded-xl border border-gray-100 bg-white p-5 shadow-sm"><div className="flex items-start justify-between gap-4"><div><div className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase text-gray-400"><span>{item.source_type}</span><span>{item.region ? `${COUNTRY_INFO[item.region]?.name || item.region} (${item.region})` : "global"}</span><span>{item.category}</span>{item.subject_category && <span className="text-primary-500">{CATEGORY_LABELS[item.subject_category] || item.subject_category}</span>}{item.source_url && <a href={item.source_url} target="_blank" rel="noreferrer" className="text-primary-600 normal-case hover:underline">View source</a>}{item.created_at && <span>Fetched {new Date(item.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>}</div><h2 className="mt-1 text-base font-semibold text-gray-900">{item.title}</h2></div><span className="text-sm font-bold text-primary-600">{item.priority_score ?? "-"}/100</span></div><p className="mt-2 text-sm text-gray-600">{item.summary}</p>{item.challenge_notes && <p className="mt-2 text-xs text-gray-400">Review: {item.challenge_notes}</p>}<div className="mt-4 flex items-center gap-2"><button onClick={() => decide(item.id, "include")} className="inline-flex items-center gap-1 rounded-md bg-green-50 px-2.5 py-1.5 text-xs font-semibold text-green-700"><Check className="h-3.5 w-3.5" /> Select subject</button><button onClick={() => decide(item.id, "store_for_later")} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-700"><Clock3 className="h-3.5 w-3.5" /> Later</button><button onClick={() => decide(item.id, "exclude")} className="inline-flex items-center gap-1 rounded-md bg-gray-100 px-2.5 py-1.5 text-xs font-semibold text-gray-600"><X className="h-3.5 w-3.5" /> Exclude</button><span className="ml-auto text-xs text-gray-400">{item.pipeline_decision || "unreviewed"}</span></div></article>)}</div>
 
     {planItem && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label="Plan World video">
       <div className="w-full max-w-lg max-h-[90dvh] overflow-y-auto rounded-2xl bg-white p-5 sm:p-6 shadow-xl">
@@ -163,6 +194,12 @@ export default function CuratedItemsPage() {
           <label className="mt-4 block text-sm text-gray-600">Period shown
             <input value={era} onChange={(e) => setEra(e.target.value)} maxLength={120} placeholder='For example: Roman Republic, 307 BC' className="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm placeholder:text-gray-300" />
             <span className="mt-1 block text-xs text-gray-400">Decides what may appear: only things that existed then. Include a year. Change it if the suggestion is wrong; leave it empty to let the AI decide.</span>
+          </label>
+          <label className="mt-4 block text-sm text-gray-600">Browse category
+            <select value={planCategory} onChange={(e) => setPlanCategory(e.target.value)} className="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm">
+              {Object.entries(CATEGORY_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+            </select>
+            <span className="mt-1 block text-xs text-gray-400">Where this shows up on /world. Pre-filled from the ingest choice when there was one; change it if it's wrong.</span>
           </label>
           <label className="mt-4 block text-sm text-gray-600">Look
             <select value={visualStyle} onChange={(e) => setVisualStyle(e.target.value)} className="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm">

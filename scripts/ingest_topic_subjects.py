@@ -32,34 +32,7 @@ load_dotenv(".env")
 
 logger = logging.getLogger("culturix.ingest_topic_subjects")
 
-# (Wikipedia title, subject_category). Picked for real documentation depth (a thin stub makes a
-# poor source) and range within each category, not just the most obvious pick each time.
-TOPICS: dict[str, list[str]] = {
-    "phenomenon": [
-        "Aurora",
-        "Bioluminescence",
-        "St. Elmo's Fire",
-        "Volcanic lightning",
-        "Bird migration",
-        "Tsunami",
-    ],
-    "species": [
-        "Axolotl",
-        "Mimic octopus",
-        "Tardigrade",
-        "Komodo dragon",
-        "Giant sequoia",
-        "Blue whale",
-    ],
-    "tech": [
-        "CRISPR gene editing",
-        "Quantum computing",
-        "Fusion power",
-        "Brain–computer interface",
-        "3D printing",
-        "Self-driving car",
-    ],
-}
+from app.services.world_topic_suggestions import TOPIC_SUGGESTIONS as TOPICS  # noqa: E402
 
 
 def ingest_topic(title: str, subject_category: str, max_items: int):
@@ -75,7 +48,7 @@ def ingest_topic(title: str, subject_category: str, max_items: int):
     try:
         rows = ingest("wikipedia", None, source["extract"], session, max_items=max_items,
                       source_ref=source["title"], source_url=source.get("url"),
-                      thumbnail_url=source.get("thumbnail_url"))
+                      thumbnail_url=source.get("thumbnail_url"), subject_category=subject_category)
     finally:
         session.close()
     return rows

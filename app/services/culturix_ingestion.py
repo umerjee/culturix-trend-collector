@@ -212,17 +212,30 @@ def compute_priority_score(scores: dict) -> int:
 
 def ingest(source_type: str, region: str | None, raw_text: str, session, max_items: int = 5,
            source_ref: str | None = None, source_url: str | None = None,
-           thumbnail_url: str | None = None) -> list:
+           thumbnail_url: str | None = None, subject_category: str | None = None) -> list:
     """Runs the full extract -> score+challenge -> priority -> lifecycle
     pipeline over one raw text and persists the results as CuratedItem
     rows, deduped by (source_type, source_ref). When an upstream source
     reference is supplied, the stored key combines it with the extracted
     title so one source document can yield several distinct items without
     suppressing later items on re-ingestion.
+
+    subject_category, when given, is stored on each created row as the World browse
+    category (place/phenomenon/species/tech/genz/custom) — see WORLD_SUBJECT_CATEGORIES
+    in world_production.py. Optional because most callers don't know it yet (the
+    per-country UNESCO/"History of X" sweep auto-maps fine from the ingestion category);
+    it exists so a curator adding a phenomenon/species/tech topic by hand can set it once,
+    here, instead of remembering to override it again at generate time.
+
     Returns the list of newly-created CuratedItem rows (skips duplicates,
     does not update existing ones — re-ingesting is a deliberate refresh
     action, not implicit)."""
     from app.models.curated_item import CuratedItem
+
+    if subject_category is not None:
+        from app.services.world_production import WORLD_SUBJECT_CATEGORIES
+        if subject_category not in WORLD_SUBJECT_CATEGORIES:
+            raise IngestionError(f"subject_category must be one of {sorted(WORLD_SUBJECT_CATEGORIES)} or omitted")
 
     items = extract_items(source_type, region, raw_text, max_items=max_items)
     if not items:
@@ -258,7 +271,7 @@ def ingest(source_type: str, region: str | None, raw_text: str, session, max_ite
         now = datetime.utcnow()
         rows.append(CuratedItem(
             source_type=source_type, source_ref=stable_ref, region=region, source_url=source_url,
-            thumbnail_url=thumbnail_url,
+            thumbnail_url=thumbnail_url, subject_category=subject_category,
             title=item["title"], summary=item["summary"], raw_text=raw_text[:6000],
             category=item["category"],
             recency_score=scores["recency_score"], popularity_score=scores["popularity_score"],

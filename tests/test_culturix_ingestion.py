@@ -154,6 +154,29 @@ class TestIngestionRules:
 
         assert rows[0].thumbnail_url == "https://upload.wikimedia.org/axolotl.jpg"
 
+    def test_ingest_persists_the_subject_category_passed_through(self, mocker):
+        mocker.patch("app.services.culturix_ingestion.extract_items", return_value=[{
+            "title": "Axolotl", "summary": "Summary", "category": "innovation",
+        }])
+        mocker.patch("app.services.culturix_ingestion.score_and_challenge", return_value={
+            "recency_score": 50, "popularity_score": 50,
+            "cultural_weight": 50, "evergreen_value": 50,
+            "challenge_notes": "Fine.", "pipeline_decision": "include",
+        })
+        session = MagicMock()
+        session.query.return_value.filter_by.return_value.first.return_value = None
+
+        rows = culturix_ingestion.ingest("wikipedia", None, "raw", session, source_ref="Axolotl",
+                                         subject_category="species")
+
+        assert rows[0].subject_category == "species"
+
+    def test_ingest_rejects_an_unknown_subject_category(self):
+        session = MagicMock()
+        with pytest.raises(culturix_ingestion.IngestionError):
+            culturix_ingestion.ingest("wikipedia", None, "raw", session, source_ref="Axolotl",
+                                      subject_category="not-a-real-category")
+
     def test_ingest_thumbnail_url_defaults_to_none(self, mocker):
         mocker.patch("app.services.culturix_ingestion.extract_items", return_value=[{
             "title": "A Cultural Site", "summary": "Summary", "category": "history",

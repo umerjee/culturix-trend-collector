@@ -38,6 +38,13 @@ class CuratedItem(Base):
     # (that collector has no image field) or a Wikipedia article with no lead image;
     # world.py/FeatureCard.tsx fall back to the video-frame thumbnail in that case.
     thumbnail_url = Column(Text, nullable=True)
+    # The World browse category (place|phenomenon|species|tech|genz|custom) a curator picked at
+    # ingest time — see WORLD_SUBJECT_CATEGORIES in app/services/world_production.py. Distinct
+    # from `category` above (the ingestion-pipeline classification): that one has no route to
+    # "phenomenon" or "species" at all, which silently broke script generation for those two
+    # until a curator remembered to override it by hand on every single generate call. Storing
+    # the choice here, once, at ingest time, is what lets the generate step just default to it.
+    subject_category = Column(String(20), nullable=True)
 
     title = Column(Text, nullable=False)
     summary = Column(Text, nullable=False)
