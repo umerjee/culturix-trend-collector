@@ -59,5 +59,14 @@ class Character(Base):
     # above (per-brand cast anchor) — a character can be is_main for their
     # own brand AND separately eligible as a cross-brand World host.
     thematic_role = Column(String(20), nullable=True)
+    # Added 2026-09-24 for a "regional cast" — the country/culture this character is
+    # written as being FROM, distinct from thematic_role (what kind of content they
+    # host). ISO-2 code (see app.collectors.region_codes.REGION_NAMES) or NULL, meaning
+    # "not tied to one place" — the common case: a character like Kumar (written as an
+    # expat/traveler) is deliberately NOT pinned to a single home_region, since his
+    # premise is visiting new places, not representing one. Casting a character as a
+    # specific country's "local" is a creative/brand decision made explicitly per
+    # character, never inferred or auto-assigned.
+    home_region = Column(String(2), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

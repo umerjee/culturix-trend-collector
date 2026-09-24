@@ -334,7 +334,7 @@ def _serialize_character(c) -> dict:
         "previous_image_urls": c.previous_image_urls or [],
         "art_style": c.art_style, "personality": c.personality,
         "is_active": c.is_active, "is_main": c.is_main,
-        "thematic_role": c.thematic_role,
+        "thematic_role": c.thematic_role, "home_region": c.home_region,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }
@@ -871,7 +871,7 @@ def generate_cast(brand_id: str, body: dict):
 
 
 @router.get("/characters")
-def list_characters(user_id: str, brand_id: str, active_only: bool = True):
+def list_characters(user_id: str, brand_id: str, active_only: bool = True, home_region: Optional[str] = None):
     from app.db import SessionLocal
     from app.models.character import Character
     session = SessionLocal()
@@ -880,6 +880,12 @@ def list_characters(user_id: str, brand_id: str, active_only: bool = True):
         query = session.query(Character).filter_by(brand_id=brand.id)
         if active_only:
             query = query.filter_by(is_active=True)
+        if home_region:
+            # Casting lookup: "who's already written as being from this region" — used
+            # when picking a character for a regional-cast script (see world_topic_
+            # suggestions.py's sibling concept for World subjects; this is the same idea
+            # for CultureToons casting).
+            query = query.filter_by(home_region=home_region.strip().upper())
         characters = query.order_by(Character.created_at.asc()).all()
         return [_serialize_character(c) for c in characters]
     finally:
@@ -901,6 +907,11 @@ def update_character(character_id: str, body: dict):
             _validate_personality(body["personality"])
         if body.get("thematic_role") and body["thematic_role"] not in THEMATIC_ROLES:
             raise HTTPException(status_code=400, detail=f"Unknown thematic_role: {body['thematic_role']}")
+        if "home_region" in body and body["home_region"] is not None:
+            region = str(body["home_region"]).strip().upper()
+            if len(region) != 2 or not region.isalpha():
+                raise HTTPException(status_code=400, detail="home_region must be a 2-letter ISO code, or null")
+            body = {**body, "home_region": region}
         if body.get("is_main"):
             # At most one main character per brand — reassigning clears the
             # flag on whichever character had it before, enforced here
@@ -909,7 +920,7 @@ def update_character(character_id: str, body: dict):
             session.query(Character).filter(
                 Character.brand_id == character.brand_id, Character.id != character.id,
             ).update({"is_main": False})
-        for field in ("name", "description", "is_active", "art_style", "personality", "is_main", "thematic_role"):
+        for field in ("name", "description", "is_active", "art_style", "personality", "is_main", "thematic_role", "home_region"):
             if field in body:
                 setattr(character, field, body[field])
         session.commit()

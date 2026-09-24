@@ -307,6 +307,52 @@ class TestCharactersRequireBrand:
         assert archived[0]["is_active"] is False
 
 
+class TestCharacterHomeRegion:
+    """home_region is a "regional cast" tag — the country a character is written as being
+    FROM, set explicitly per character (never inferred), distinct from thematic_role."""
+
+    def test_defaults_to_none(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        character = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Kumar"})
+        assert character["home_region"] is None
+
+    def test_can_be_set_and_is_normalized_uppercase(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        character = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Base Character"})
+        updated = culturetoons.update_character(character["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "home_region": "us",
+        })
+        assert updated["home_region"] == "US"
+
+    def test_can_be_cleared_back_to_none(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        character = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Base Character"})
+        culturetoons.update_character(character["id"], {"user_id": user_id, "brand_id": brand["id"], "home_region": "FR"})
+        cleared = culturetoons.update_character(character["id"], {
+            "user_id": user_id, "brand_id": brand["id"], "home_region": None,
+        })
+        assert cleared["home_region"] is None
+
+    @pytest.mark.parametrize("bad", ["USA", "U", "1", "12"])
+    def test_rejects_a_non_iso2_value(self, db, user_id, bad):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        character = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Base Character"})
+        with pytest.raises(HTTPException) as exc_info:
+            culturetoons.update_character(character["id"], {
+                "user_id": user_id, "brand_id": brand["id"], "home_region": bad,
+            })
+        assert exc_info.value.status_code == 400
+
+    def test_list_characters_filters_by_home_region(self, db, user_id):
+        brand = culturetoons.create_brand({"user_id": user_id})
+        us_char = culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "American"})
+        culturetoons.update_character(us_char["id"], {"user_id": user_id, "brand_id": brand["id"], "home_region": "US"})
+        culturetoons.create_character({"user_id": user_id, "brand_id": brand["id"], "name": "Unassigned"})
+
+        result = culturetoons.list_characters(user_id, brand["id"], home_region="us")
+        assert [c["id"] for c in result] == [us_char["id"]]
+
+
 class TestMainCharacter:
     def test_first_character_auto_becomes_main(self, db, user_id):
         brand = culturetoons.create_brand({"user_id": user_id})
