@@ -179,12 +179,14 @@ def get_region_summary(code: str, date: Optional[str] = None, lang: str = "en"):
     from app.collectors.region_codes import region_name
     from app.translation import normalize_language, translate
     from app.models.region_daily_summary import RegionDailySummary
+    from app.services.world_region_facts import region_facts
 
     region = code.strip().upper()
     if len(region) != 2 or not region.isalpha():
         raise HTTPException(status_code=400, detail="Invalid region code")
     lang = normalize_language(lang) or "en"
     wanted = _parse_date(date).date() if date else None
+    facts = region_facts(region)
 
     session = SessionLocal()
     try:
@@ -197,7 +199,7 @@ def get_region_summary(code: str, date: Optional[str] = None, lang: str = "en"):
         empty = {"region": region, "region_name": region_name(region), "date": wanted.isoformat() if wanted else None,
                  "summary": None, "source": None, "calendar": [], "signal_count": 0, "platforms": [],
                  "mood": None, "sentiment": None, "alignment": None, "vs_usual": None, "generated_at": None,
-                 "audience_matches": []}
+                 "audience_matches": [], "facts": facts}
         if not row:
             return empty
         # Summaries are written in English; a failed translation is reported, not hidden.
@@ -215,6 +217,9 @@ def get_region_summary(code: str, date: Optional[str] = None, lang: str = "en"):
             # Real audience archetypes matched against today's trends — see
             # region_daily_summary.py::top_persona_matches. Deterministic, not LLM-written.
             "audience_matches": row.audience_matches or [],
+            # Static reference facts (capital/population/languages/currency) — see
+            # app/services/world_region_facts.py. None when this region has no entry yet.
+            "facts": facts,
         }
     finally:
         session.close()

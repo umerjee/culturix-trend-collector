@@ -407,6 +407,15 @@ class TestSummaryEndpoint:
         out = world.get_region_summary("JP")
         assert out["summary"] is None and out["region_name"] == "Japan" and out["calendar"] == []
         assert out["audience_matches"] == []
+        # facts are static reference data, independent of whether a daily summary exists.
+        assert out["facts"]["capital"] == "Tokyo"
+
+    def test_facts_are_included_alongside_a_real_summary(self, db):
+        _store(db)
+        assert world.get_region_summary("FR", date="2026-09-18")["facts"]["currency_code"] == "EUR"
+
+    def test_a_region_with_no_facts_on_file_returns_none_not_an_error(self, db):
+        assert world.get_region_summary("MC")["facts"] is None
 
     def test_audience_matches_are_returned(self, db):
         _store(db)

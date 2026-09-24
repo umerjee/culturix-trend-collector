@@ -91,6 +91,12 @@ export interface WorldRegionSummary {
   // Real audience archetypes (Culturix's own cross-trend clustering) matched against today's
   // trends — never a real individual, never LLM-written. [] when nothing matched well.
   audience_matches: { name: string; description: string; content_angle: string | null; score: number }[];
+  // Static reference facts (see app/services/world_region_facts.py) — null when this region
+  // has no entry on file yet, a normal state, not an error.
+  facts: {
+    capital: string; population_millions: number; languages: string[];
+    currency: string; currency_code: string; flag_emoji: string | null;
+  } | null;
 }
 
 // One merged filter vocabulary covering both WHAT a Feature is about

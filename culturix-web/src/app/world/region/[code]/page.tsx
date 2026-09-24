@@ -5,6 +5,7 @@ import enLocale from "i18n-iso-countries/langs/en.json";
 import MarketingHeader from "@/components/marketing/MarketingHeader";
 import MarketingFooter from "@/components/marketing/MarketingFooter";
 import FeatureCard from "@/components/world/FeatureCard";
+import RegionFactsStrip from "@/components/world/RegionFactsStrip";
 import TimeCursor from "@/components/world/TimeCursor";
 import { RAILWAY_API_BASE } from "@/lib/config/api";
 import type { WorldFeature, WorldRegionSummary, WorldTrend, WorldTrendsCoverage } from "@/lib/worldTypes";
@@ -55,7 +56,9 @@ async function fetchBrief(region: string): Promise<WorldRegionSummary | null> {
     const res = await fetch(`${RAILWAY_API_BASE}/world/regions/${encodeURIComponent(region)}/summary`, { cache: "no-store" });
     if (!res.ok) return null;
     const data = await res.json();
-    return data?.summary ? data : null;
+    // `facts` is static reference data, independent of whether a daily summary has been
+    // generated yet — a region with no brief today can still have a capital/population/etc.
+    return data?.summary || data?.facts ? data : null;
   } catch {
     return null;
   }
@@ -82,6 +85,8 @@ export default async function WorldRegionPage({ params }: { params: { code: stri
 
         <h1 className="text-3xl font-bold text-gray-900 mb-2">{label}</h1>
         <p className="text-gray-500 mb-10">What&apos;s trending in {label} today, and the videos Culturix has published about it.</p>
+
+        <RegionFactsStrip facts={brief?.facts ?? null} />
 
         <TimeCursor region={code} regionLabel={label} coverage={coverage} initialTrends={trends} initialBrief={brief} />
 

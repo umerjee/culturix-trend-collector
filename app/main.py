@@ -384,6 +384,7 @@ async def lifespan(_):
             "ALTER TABLE region_daily_summaries ADD COLUMN IF NOT EXISTS audience_matches JSON",
             "ALTER TABLE curated_items ADD COLUMN IF NOT EXISTS thumbnail_url TEXT",
             "ALTER TABLE curated_items ADD COLUMN IF NOT EXISTS subject_category VARCHAR(20)",
+            "ALTER TABLE characters ADD COLUMN IF NOT EXISTS home_region VARCHAR(2)",
         ]:
             try:
                 _conn.execute(_text(_stmt))
