@@ -1520,6 +1520,34 @@ class TestWorldMotionRule:
         from app.services.culturetoon_script import check_world_motion
         assert check_world_motion([self._shot(visual)]) == []
 
+    @pytest.mark.parametrize("visual", [
+        "An axolotl swims gracefully through the water, its caudal fin moving rhythmically",
+        "The axolotl swims towards a small fish, then regrows a part of its limb",
+        "The mimic octopus transitions from the flatfish form, slithering across the sand",
+        "The door of the driverless taxi opens, and a passenger steps out",
+        "A digital microscope slowly zooms in on a petri dish. The camera pushes in to reveal the DNA",
+        "A digital display compares two DNA sequences. The camera pans left to right, highlighting the changes",
+        "The driverless taxi drives away, blending into traffic, navigating a busy intersection",
+        "A laser beam travels through a series of mirrors, converging on a fuel pellet",
+        "The mast of the ship glows, the violet light intensifying and spreading along the metal",
+        "The aurora continues to dance and flicker, illuminating the sky as a spiral pattern forms and dissipates",
+    ])
+    def test_real_shots_a_live_audit_found_flagged_are_no_longer_flagged(self, visual):
+        # Regression coverage for a 2026-09-24 live audit: check_world_motion, calibrated on one
+        # historical/war-footage script, flagged ~50 real shots across the World catalog as "still
+        # scenes" despite each one describing obvious motion -- these are verbatim (trimmed) samples
+        # from that audit. _MOTION_VERBS grew to cover camera/reveal verbs, everyday action, organic/
+        # biological change, and light/phenomena change that the original list had no words for.
+        from app.services.culturetoon_script import check_world_motion
+        assert check_world_motion([self._shot(visual)]) == []
+
+    def test_a_genuinely_static_establishing_shot_is_still_correctly_flagged(self):
+        # The same audit found real still shots too (Strait of Hormuz's establishing aerial), and
+        # the expanded verb list must not swallow those along with the false positives.
+        from app.services.culturetoon_script import check_world_motion
+        visual = "An even closer aerial shot focusing on a single cargo ship, with the coastline clearly visible in the background"
+        assert check_world_motion([self._shot(visual)]) != []
+
 
 class TestWorldPlausibilityRule:
     """Regression coverage: a live CRISPR Feature asked for a plant to visibly transform

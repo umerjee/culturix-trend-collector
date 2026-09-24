@@ -1752,7 +1752,28 @@ _MOTION_VERBS = (
     "tumble lurch slam spray splash churn thunder hurtle whip dive circle descend leap jump dodge spill emerge "
     "approach storm burn blaze shake rumble skim swing sink launch scatter scramble crawl dash link fade clear "
     "break lift pull sway shoot blast strike stream cascade swell spin twist gather cross ride track rip tear "
-    "billow sprint hurl bound stagger struggle heave paddle row steam cruise soar swoop plunge rain fill"
+    "billow sprint hurl bound stagger struggle heave paddle row steam cruise soar swoop plunge rain fill "
+    # Added after a live audit (2026-09-24) of every shot check_world_motion had flagged across the
+    # published/drafted World catalog: ~50 flagged shots, nearly all describing obvious, real motion
+    # ("an axolotl swims... regrows a part of its limb", "the camera zooms in... pushes in", "a mimic
+    # octopus transitions... slithering across the sand") that this list, calibrated on one earlier
+    # historical/war-footage script, had no words for. Grouped by where the gap actually was rather
+    # than added ad hoc, so the next genuinely new subject is less likely to reopen the same gap:
+    # camera/reveal verbs
+    "zoom pan tilt reveal focus "
+    # everyday human action, missing even for very common verbs (a script about signing a document
+    # or a scientist adjusting a dial had nothing to match)
+    "open close step walk write sign seal point pick place leave gesture debate haggle clink unroll "
+    "disappear generate shatter adjust raise guide complete "
+    # biological/organic change (species and phenomena subjects overwhelmingly need these)
+    "swim regrow mimic transition slither inflate hover trail shift hesitate deform thaw float lunge "
+    "pulse survey "
+    # light, energy and natural-phenomena change (aurora, lightning, bioluminescence, fusion subjects)
+    "glow intensify spread hiss buzz flicker dance dissipate form illuminate shimmer converge compress "
+    "heat emit freeze "
+    # mechanical/vehicle motion and camera-adjacent verbs still missing after the first pass above
+    # (found by re-running the same audit against the expanded list)
+    "drive navigate blend travel highlight"
 ).split()
 
 
