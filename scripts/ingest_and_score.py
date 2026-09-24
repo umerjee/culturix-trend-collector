@@ -34,7 +34,8 @@ def _ingest_wikipedia(session, title: str, region: str | None, max_items: int) -
         print(f"No Wikipedia extract found for {title!r}.")
         return 0
     rows = ingest("wikipedia", region, source["extract"], session, max_items=max_items,
-                  source_ref=source["title"], source_url=source.get("url"))
+                  source_ref=source["title"], source_url=source.get("url"),
+                  thumbnail_url=source.get("thumbnail_url"))
     print(f"Wikipedia {source['title']!r}: created {len(rows)} curated item(s).")
     return len(rows)
 

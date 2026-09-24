@@ -46,10 +46,16 @@ def _fetch_article_text(title: str, max_chars: int) -> str | None:
 
 
 def fetch_wikipedia_extract(title: str, full_text: bool = False, max_chars: int = 6000) -> dict | None:
-    """Returns {title, extract, url, coordinates: {lat, lon} | None} for a
+    """Returns {title, extract, url, thumbnail_url, coordinates: {lat, lon} | None} for a
     real Wikipedia article, or None on any failure (unknown title, disambig
     page with no extract, network error) — never raises, matching every
-    other collector's fetch_* convention in this package."""
+    other collector's fetch_* convention in this package.
+
+    thumbnail_url is the article's own lead image — the REST summary API returns it for
+    free in the same response as the extract, so capturing it costs nothing extra and
+    gives every World subject a real, topic-representative photo instead of relying on a
+    frame grabbed from the eventually-generated video. None when the article has no lead
+    image (common for abstract/phenomenon topics)."""
     try:
         resp = httpx.get(f"{_BASE}/{title.replace(' ', '_')}", headers=_HEADERS, timeout=15.0)
         if not resp.is_success:
@@ -76,6 +82,7 @@ def fetch_wikipedia_extract(title: str, full_text: bool = False, max_chars: int 
         "title": data.get("title") or title,
         "extract": extract,
         "url": (data.get("content_urls") or {}).get("desktop", {}).get("page"),
+        "thumbnail_url": (data.get("thumbnail") or {}).get("source"),
         "coordinates": {"lat": coords["lat"], "lon": coords["lon"]} if "lat" in coords and "lon" in coords else None,
     }
 

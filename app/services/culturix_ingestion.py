@@ -211,7 +211,8 @@ def compute_priority_score(scores: dict) -> int:
 
 
 def ingest(source_type: str, region: str | None, raw_text: str, session, max_items: int = 5,
-           source_ref: str | None = None, source_url: str | None = None) -> list:
+           source_ref: str | None = None, source_url: str | None = None,
+           thumbnail_url: str | None = None) -> list:
     """Runs the full extract -> score+challenge -> priority -> lifecycle
     pipeline over one raw text and persists the results as CuratedItem
     rows, deduped by (source_type, source_ref). When an upstream source
@@ -257,6 +258,7 @@ def ingest(source_type: str, region: str | None, raw_text: str, session, max_ite
         now = datetime.utcnow()
         rows.append(CuratedItem(
             source_type=source_type, source_ref=stable_ref, region=region, source_url=source_url,
+            thumbnail_url=thumbnail_url,
             title=item["title"], summary=item["summary"], raw_text=raw_text[:6000],
             category=item["category"],
             recency_score=scores["recency_score"], popularity_score=scores["popularity_score"],

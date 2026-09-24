@@ -46,18 +46,23 @@ export default async function WorldFeaturePage({ params }: { params: { id: strin
               controls
               playsInline
               preload="metadata"
+              poster={feature.thumbnail_url || undefined}
               className="w-full max-h-[70vh] mx-auto"
-              // No generated poster image exists yet (see FeatureCard.tsx) — nudging past a
-              // moment into the clip forces a real frame decode instead of showing black
-              // before the viewer presses play. Unlike FeatureCard's muted, never-actually-
-              // played thumbnail, this IS the real player, so the seek must be undone the
-              // moment playback actually starts — otherwise pressing play would silently
-              // skip the first second of the video every time.
+              // feature.thumbnail_url (the source article's own lead image, see FeatureCard.tsx)
+              // is passed as `poster` above when present — the browser shows it natively before
+              // playback starts, no seek trick needed. Only Features with no thumbnail_url (no
+              // Wikipedia lead image, or ingested before this field existed) fall back to nudging
+              // past a moment into the clip to force a real frame decode instead of showing black.
+              // Unlike FeatureCard's muted, never-actually-played thumbnail, this IS the real
+              // player, so the seek must be undone the moment playback actually starts —
+              // otherwise pressing play would silently skip the first second every time.
               onLoadedMetadata={(e) => {
+                if (feature.thumbnail_url) return;
                 const video = e.currentTarget;
                 video.currentTime = Math.min(1.2, Math.max(0, (video.duration || 0) - 0.1));
               }}
               onPlay={(e) => {
+                if (feature.thumbnail_url) return;
                 const video = e.currentTarget;
                 if (video.currentTime < 1.3) video.currentTime = 0;
               }}

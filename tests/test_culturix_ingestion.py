@@ -30,6 +30,30 @@ class TestSourceCollectors:
 
         assert fetch_wikipedia_extract("Unknown") is None
 
+    def test_wikipedia_extract_captures_the_lead_image_for_free(self, mocker):
+        # The REST summary API returns `thumbnail` in the same response as the extract text
+        # already being fetched — capturing it costs nothing extra and gives World subjects a
+        # real, topic-representative photo instead of a frame grabbed from the generated video.
+        mocker.patch("httpx.get", return_value=MagicMock(
+            is_success=True,
+            json=lambda: {
+                "title": "Axolotl",
+                "extract": "A neotenic salamander.",
+                "thumbnail": {"source": "https://upload.wikimedia.org/axolotl.jpg", "width": 320, "height": 240},
+            },
+        ))
+
+        result = fetch_wikipedia_extract("Axolotl")
+
+        assert result["thumbnail_url"] == "https://upload.wikimedia.org/axolotl.jpg"
+
+    def test_wikipedia_extract_thumbnail_is_none_without_a_lead_image(self, mocker):
+        mocker.patch("httpx.get", return_value=MagicMock(
+            is_success=True, json=lambda: {"title": "Abstract Concept", "extract": "Text."},
+        ))
+
+        assert fetch_wikipedia_extract("Abstract Concept")["thumbnail_url"] is None
+
     def test_unesco_maps_site_fields_and_region_filter(self, mocker):
         mock_get = mocker.patch("httpx.get", return_value=MagicMock(
             json=lambda: {"results": [{
@@ -112,6 +136,39 @@ class TestIngestionRules:
         assert len(rows) == 1
         assert rows[0].source_ref == "123:Site history"
         session.commit.assert_called_once()
+
+    def test_ingest_persists_the_thumbnail_url_passed_through(self, mocker):
+        mocker.patch("app.services.culturix_ingestion.extract_items", return_value=[{
+            "title": "Axolotl", "summary": "Summary", "category": "innovation",
+        }])
+        mocker.patch("app.services.culturix_ingestion.score_and_challenge", return_value={
+            "recency_score": 50, "popularity_score": 50,
+            "cultural_weight": 50, "evergreen_value": 50,
+            "challenge_notes": "Fine.", "pipeline_decision": "include",
+        })
+        session = MagicMock()
+        session.query.return_value.filter_by.return_value.first.return_value = None
+
+        rows = culturix_ingestion.ingest("wikipedia", None, "raw", session, source_ref="Axolotl",
+                                         thumbnail_url="https://upload.wikimedia.org/axolotl.jpg")
+
+        assert rows[0].thumbnail_url == "https://upload.wikimedia.org/axolotl.jpg"
+
+    def test_ingest_thumbnail_url_defaults_to_none(self, mocker):
+        mocker.patch("app.services.culturix_ingestion.extract_items", return_value=[{
+            "title": "A Cultural Site", "summary": "Summary", "category": "history",
+        }])
+        mocker.patch("app.services.culturix_ingestion.score_and_challenge", return_value={
+            "recency_score": 50, "popularity_score": 50,
+            "cultural_weight": 50, "evergreen_value": 50,
+            "challenge_notes": "Fine.", "pipeline_decision": "include",
+        })
+        session = MagicMock()
+        session.query.return_value.filter_by.return_value.first.return_value = None
+
+        rows = culturix_ingestion.ingest("unesco", "IT", "raw", session, source_ref="123")
+
+        assert rows[0].thumbnail_url is None
 
     def test_score_failure_stores_for_later(self, mocker):
         mocker.patch(

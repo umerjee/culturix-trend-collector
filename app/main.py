@@ -382,6 +382,7 @@ async def lifespan(_):
             "CREATE INDEX IF NOT EXISTS ix_toons_curated_item_id ON toons (curated_item_id)",
             "ALTER TABLE curated_items ADD COLUMN IF NOT EXISTS source_url TEXT",
             "ALTER TABLE region_daily_summaries ADD COLUMN IF NOT EXISTS audience_matches JSON",
+            "ALTER TABLE curated_items ADD COLUMN IF NOT EXISTS thumbnail_url TEXT",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -2941,20 +2942,20 @@ def ingest_curated_source(payload: dict):
     region = (payload.get("region") or "").strip().upper() or None
     max_items = max(1, min(int(payload.get("max_items", 5)), 10))
 
-    sources = []  # (source_ref, raw_text, source_url)
+    sources = []  # (source_ref, raw_text, source_url, thumbnail_url)
     if source_type == "wikipedia":
         title = (payload.get("title") or "").strip()
         if not title:
             raise HTTPException(status_code=400, detail="Wikipedia title is required")
         source = fetch_wikipedia_extract(title, full_text=True)
         if source:
-            sources.append((source["title"], source["extract"], source.get("url")))
+            sources.append((source["title"], source["extract"], source.get("url"), source.get("thumbnail_url")))
     elif source_type == "unesco":
         for site in fetch_unesco_sites(region, limit=max(1, min(int(payload.get("limit", 10)), 20))):
             source_ref = str(site.get("id_no") or site.get("title") or "")
             raw_text = unesco_source_text(site)
             if source_ref and raw_text:
-                sources.append((source_ref, raw_text, site.get("url")))
+                sources.append((source_ref, raw_text, site.get("url"), None))
     else:
         raise HTTPException(status_code=400, detail="source_type must be wikipedia or unesco")
 
@@ -2962,9 +2963,10 @@ def ingest_curated_source(payload: dict):
         db = SessionLocal()
         try:
             created = 0
-            for source_ref, raw_text, source_url in sources:
+            for source_ref, raw_text, source_url, thumbnail_url in sources:
                 created += len(ingest(source_type, region, raw_text, db, max_items=max_items,
-                                      source_ref=source_ref, source_url=source_url))
+                                      source_ref=source_ref, source_url=source_url,
+                                      thumbnail_url=thumbnail_url))
             logging.info("Curated ingestion finished: source_type=%s region=%s sources=%d items=%d",
                          source_type, region, len(sources), created)
         except Exception:

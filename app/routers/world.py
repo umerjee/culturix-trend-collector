@@ -30,7 +30,7 @@ def _publicly_visible():
     return or_(Toon.world_published.is_(None), Toon.world_published.is_(True))
 
 
-def _serialize_feature(t) -> dict:
+def _serialize_feature(t, thumbnail_url: Optional[str] = None) -> dict:
     return {
         "id": str(t.id),
         "title": t.title,
@@ -38,10 +38,24 @@ def _serialize_feature(t) -> dict:
         "subject_text": t.subject_text,
         "subject_category": t.subject_category,
         "final_video_url": t.final_video_url,
+        # The source article's own lead image (see CuratedItem.thumbnail_url) — a real,
+        # topic-representative photo. None for hand-made Features or a source with no lead
+        # image; the frontend falls back to a frame grabbed from final_video_url then.
+        "thumbnail_url": thumbnail_url,
         "era_label": t.era_label,
         "era_year": t.era_year,
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
+
+
+def _thumbnails_for(session, toons) -> dict:
+    """{curated_item_id: thumbnail_url} for a batch of Toons — one query instead of N."""
+    from app.models.curated_item import CuratedItem
+    ids = {t.curated_item_id for t in toons if t.curated_item_id}
+    if not ids:
+        return {}
+    rows = session.query(CuratedItem.id, CuratedItem.thumbnail_url).filter(CuratedItem.id.in_(ids)).all()
+    return {row[0]: row[1] for row in rows if row[1]}
 
 
 @router.get("/features")
@@ -82,7 +96,9 @@ def list_world_features(region: Optional[str] = None, category: Optional[str] = 
         total = query.count()
         order = Toon.era_year.asc() if (era_only or era_year_min is not None or era_year_max is not None) else Toon.created_at.desc()
         rows = query.order_by(order).offset(offset).limit(limit).all()
-        return {"features": [_serialize_feature(t) for t in rows], "total": total, "limit": limit, "offset": offset}
+        thumbnails = _thumbnails_for(session, rows)
+        return {"features": [_serialize_feature(t, thumbnails.get(t.curated_item_id)) for t in rows],
+                "total": total, "limit": limit, "offset": offset}
     finally:
         session.close()
 
@@ -491,7 +507,7 @@ def get_world_feature(feature_id: str, lang: str = "en"):
                 or toon.world_published is False):
             raise HTTPException(status_code=404, detail="Feature not found")
         script = session.query(ToonScript).filter_by(id=toon.script_id).first()
-        result = _serialize_feature(toon)
+        result = _serialize_feature(toon, _thumbnails_for(session, [toon]).get(toon.curated_item_id))
         hook_line = script.hook_line if script else None
         transcript = [line for sh in ((script.shots if script else None) or [])
                       if (line := (sh.get("dialogue") or "").strip())]

@@ -7,6 +7,10 @@ export interface WorldFeature {
   subject_text: string | null;
   subject_category: string | null;
   final_video_url: string | null;
+  // The source article's own lead image — a real, topic-representative photo (see
+  // CuratedItem.thumbnail_url on the backend). null for hand-made Features or a source
+  // with no lead image; components fall back to a frame grabbed from final_video_url then.
+  thumbnail_url: string | null;
   era_label: string | null;
   era_year: number | null;
   created_at: string | null;

@@ -32,6 +32,12 @@ class CuratedItem(Base):
     # Public page for the source (Wikipedia article / UNESCO list entry) —
     # shown as attribution on any World Feature produced from this item.
     source_url = Column(Text, nullable=True)
+    # The source's own lead image (Wikipedia's REST summary API returns this for free,
+    # alongside the extract text already being fetched) — a real, topic-representative
+    # photo, not a frame grabbed from the generated video. NULL for UNESCO-sourced items
+    # (that collector has no image field) or a Wikipedia article with no lead image;
+    # world.py/FeatureCard.tsx fall back to the video-frame thumbnail in that case.
+    thumbnail_url = Column(Text, nullable=True)
 
     title = Column(Text, nullable=False)
     summary = Column(Text, nullable=False)

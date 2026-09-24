@@ -16,22 +16,36 @@ from app.models.toon import Toon
 from app.models.toon_script import ToonScript
 from app.models.trend import Trend
 from app.models.cluster import Cluster
+from app.models.curated_item import CuratedItem
 from app.routers import world
 
 
 @pytest.fixture
 def db(mocker):
     engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(bind=engine, tables=[Toon.__table__, ToonScript.__table__, Trend.__table__, Cluster.__table__])
+    Base.metadata.create_all(bind=engine, tables=[Toon.__table__, ToonScript.__table__, Trend.__table__,
+                                                  Cluster.__table__, CuratedItem.__table__])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)
     return TestSessionLocal
 
 
+def _make_curated_item(db, *, thumbnail_url=None):
+    session = db()
+    item = CuratedItem(source_type="wikipedia", source_ref="Axolotl", title="Axolotl", summary="Summary.",
+                       category="innovation", thumbnail_url=thumbnail_url)
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    item_id = item.id
+    session.close()
+    return item_id
+
+
 def _make_toon(db, *, is_world_content=True, status="ready", final_video_url="https://cdn/x.mp4",
                subject_region="IR", subject_text="The Strait of Hormuz", subject_category="place",
                title="The Strait of Hormuz", hook_line="A vital chokepoint.",
-               era_label=None, era_year=None, world_published=True, shots=None):
+               era_label=None, era_year=None, world_published=True, shots=None, curated_item_id=None):
     session = db()
     script = ToonScript(brand_id=uuid.uuid4(), hook_line=hook_line, generation_source="ai", status="approved", shots=shots)
     session.add(script)
@@ -42,6 +56,7 @@ def _make_toon(db, *, is_world_content=True, status="ready", final_video_url="ht
         final_video_url=final_video_url, is_world_content=is_world_content,
         subject_region=subject_region, subject_text=subject_text, subject_category=subject_category,
         era_label=era_label, era_year=era_year, world_published=world_published,
+        curated_item_id=curated_item_id,
     )
     session.add(toon)
     session.commit()
@@ -118,6 +133,32 @@ class TestListWorldFeatures:
         result = world.list_world_features(q="fuji")
         assert len(result["features"]) == 1
         assert result["features"][0]["subject_text"] == "Mount Fuji"
+
+
+class TestFeatureThumbnails:
+    """thumbnail_url is the source article's own lead image (CuratedItem.thumbnail_url),
+    joined in by curated_item_id — a real, topic-representative photo, not a frame grabbed
+    from the generated video (see FeatureCard.tsx)."""
+
+    def test_a_feature_with_a_curated_item_thumbnail_returns_it(self, db):
+        item_id = _make_curated_item(db, thumbnail_url="https://upload.wikimedia.org/axolotl.jpg")
+        toon_id = _make_toon(db, curated_item_id=item_id)
+
+        listed = world.list_world_features()["features"][0]
+        assert listed["thumbnail_url"] == "https://upload.wikimedia.org/axolotl.jpg"
+        assert world.get_world_feature(toon_id)["thumbnail_url"] == "https://upload.wikimedia.org/axolotl.jpg"
+
+    def test_a_feature_with_no_curated_item_returns_none(self, db):
+        toon_id = _make_toon(db, curated_item_id=None)
+
+        assert world.list_world_features()["features"][0]["thumbnail_url"] is None
+        assert world.get_world_feature(toon_id)["thumbnail_url"] is None
+
+    def test_a_curated_item_with_no_lead_image_returns_none(self, db):
+        item_id = _make_curated_item(db, thumbnail_url=None)
+        _make_toon(db, curated_item_id=item_id)
+
+        assert world.list_world_features()["features"][0]["thumbnail_url"] is None
 
 
 class TestListWorldRegions:

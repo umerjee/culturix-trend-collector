@@ -68,7 +68,8 @@ def ingest_wikipedia(region: str, country: str, max_items: int) -> int:
     session = SessionLocal()
     try:
         rows = ingest("wikipedia", region, source["extract"], session,
-                      max_items=max_items, source_ref=source["title"], source_url=source.get("url"))
+                      max_items=max_items, source_ref=source["title"], source_url=source.get("url"),
+                      thumbnail_url=source.get("thumbnail_url"))
     finally:
         session.close()
     return len(rows)
