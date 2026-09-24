@@ -1,7 +1,15 @@
+"use client";
+
 import Link from "next/link";
 import { MapPin } from "lucide-react";
 import type { WorldFeature } from "@/lib/worldTypes";
 import { CATEGORY_LABELS } from "@/lib/worldTypes";
+
+// This card is rendered from server components (the /world grid, region pages) but must be
+// a client component itself: the video thumbnail fix below passes onLoadedMetadata, an event
+// handler, as a prop — Next.js does not allow passing functions as props across the server/
+// client boundary ("Event handlers cannot be passed to Client Component props"), which broke
+// EVERY page rendering this card with a hard 500 the moment that fix shipped. Confirmed live.
 
 // There is no generated poster image anywhere in the render pipeline, so this relies on
 // the <video> element's own first frame — but preload="metadata" alone often renders that
