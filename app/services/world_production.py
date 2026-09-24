@@ -288,15 +288,16 @@ def _compose_script(db, item, *, duration_seconds: int, beat_count: int, host, s
     With `previous` and `improvements` the writer revises that draft instead of starting fresh.
     Returns {result, grounding, visual_warnings, review}."""
     from app.services.culturetoon_script import (
-        check_world_action, check_world_motion, check_world_visuals, generate_world_script,
-        judge_world_grounding, normalize_world_people,
+        check_world_action, check_world_autonomy, check_world_motion, check_world_plausibility,
+        check_world_visuals, generate_world_script, judge_world_grounding, normalize_world_people,
     )
     from app.services.world_era import assign_shot_periods, check_world_anachronisms, widen_to_narration
     from app.services.world_review import review_world_script
 
     def _problems(shots):
         found = (check_world_visuals(shots) + check_world_motion(shots) + check_world_action(shots)
-                 + check_world_anachronisms(shots, era))
+                 + check_world_anachronisms(shots, era) + check_world_plausibility(shots)
+                 + check_world_autonomy(shots, item.title))
         if scenes is not None and len(shots or []) != len(scenes):
             found.append(f"Write exactly {len(scenes)} shots, one per scene, in the order given "
                          f"(you wrote {len(shots or [])}).")
@@ -319,7 +320,9 @@ def _compose_script(db, item, *, duration_seconds: int, beat_count: int, host, s
         script["shots"] = _use_reference_people(script["shots"], scenes)
         script["shots"] = assign_shot_periods(script["shots"], era)
         return script, (warnings + check_world_motion(script.get("shots")) + check_world_action(script.get("shots"))
-                        + check_world_anachronisms(script.get("shots"), era))
+                        + check_world_anachronisms(script.get("shots"), era)
+                        + check_world_plausibility(script.get("shots"))
+                        + check_world_autonomy(script.get("shots"), item.title))
 
     result = _write()
     # The renderer says "no people in frame" unless a shot has people="distant", and a visual with a modern

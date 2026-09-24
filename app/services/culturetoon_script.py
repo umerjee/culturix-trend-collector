@@ -1859,6 +1859,71 @@ def check_world_visuals(shots: Optional[list]) -> list[str]:
     return problems
 
 
+# A biological/physical CHANGE word near a word implying it becomes visible/happens within
+# the shot — as opposed to being described as an already-completed state (e.g. "an edited
+# gene sequence", past tense) — flags the exact live-transformation pattern confirmed live to
+# render as a warped mess: a CRISPR shot asking for a plant to visibly grow/change color right
+# after an injection.
+_VISIBLE_CHANGE = re.compile(
+    r"\b(shows? (?:visible )?signs? of|visibly (?:grows?|changes?|transforms?|heals?)|"
+    r"begins? to (?:grow|change|transform|heal)|(?:new growth|color change) (?:appears?|occurs?|begins?)|"
+    r"transforms? before|visible transformation)\b", re.IGNORECASE)
+
+
+def check_world_plausibility(shots: Optional[list]) -> list[str]:
+    """A subject visual asking for a biological or physical transformation to become visible
+    WITHIN the ~8-second shot, as the direct result of one action in it (an injection followed
+    by visible plant growth, a wound visibly healing). That does not happen at video timescale
+    — a video model asked to render it produces a warped, glitching result, not a time-lapse.
+    [] when every visual describes a stable moment instead."""
+    problems = []
+    for shot in shots or []:
+        if (shot.get("shot_focus") or "").strip().lower() != "subject":
+            continue
+        visual = shot.get("subject_visual") or ""
+        match = _VISIBLE_CHANGE.search(visual)
+        if match:
+            problems.append(f'Shot {shot.get("shot_number")}: "{match.group(0)}" asks for a transformation to '
+                            "become visible within this one shot — that does not happen at video timescale and "
+                            "renders as a glitching mess. Show a stable moment instead: the action itself, or a "
+                            "believable side-by-side of a treated sample next to an untreated one.")
+    return problems
+
+
+# Vehicle/vantage words that would normally put a driver's seat or operator's position in
+# frame — paired with the subject actually being about autonomous/driverless technology (see
+# check_world_autonomy), a shot mentioning one of these without also saying the seat/position
+# is empty defaults, in a video model with no other instruction, to rendering a normal human
+# driver — confirmed live on a Waymo Feature ("driverless taxis") whose shots never said so.
+_DRIVER_VANTAGE = re.compile(
+    r"\b(driver'?s?\s*seat|behind the wheel|at the wheel|cockpit|driving seat|cab(?:in)?)\b", re.IGNORECASE)
+_AUTONOMY_SUBJECT = re.compile(
+    r"\b(self-?driving|driverless|autonomous (?:vehicle|car|taxi|drone|robot))\b", re.IGNORECASE)
+_EMPTY_SEAT_STATED = re.compile(
+    r"\b(empty|no\s*(?:one|body|driver|human)|nobody|unmanned|unoccupied|vacant)\b", re.IGNORECASE)
+
+
+def check_world_autonomy(shots: Optional[list], subject_text: str) -> list[str]:
+    """When the subject itself is about self-driving/driverless/autonomous technology, a shot
+    that puts a driver's seat or operator's position in frame without explicitly saying it is
+    empty silently contradicts the subject — a video model has no built-in notion that
+    "driverless" means it should omit the driver, and defaults to rendering one. [] when the
+    subject isn't about autonomy, or every such shot already states the seat is empty."""
+    if not _AUTONOMY_SUBJECT.search(subject_text or ""):
+        return []
+    problems = []
+    for shot in shots or []:
+        if (shot.get("shot_focus") or "").strip().lower() != "subject":
+            continue
+        visual = shot.get("subject_visual") or ""
+        if _DRIVER_VANTAGE.search(visual) and not _EMPTY_SEAT_STATED.search(visual):
+            problems.append(f'Shot {shot.get("shot_number")}: the visual puts a driver\'s seat/operator position '
+                            "in frame but never says it is empty — for a driverless/autonomous subject this "
+                            "renders as a normal human driver, contradicting the subject. Explicitly state the "
+                            "seat is empty or otherwise make the absence of a human operator visually explicit.")
+    return problems
+
+
 def normalize_world_people(shots: Optional[list]) -> tuple[list, list[str]]:
     """Make each subject shot's `people` value consistent with its visual, so the render prompt
     never contradicts itself. Unknown values become "none"; a visual that shows people gets
@@ -1995,7 +2060,21 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
             "appears out of haze, a ramp drops and men pour out, a wall of smoke swallows the shore), told "
             "as an event, not a scene. Vary scale and angle shot to shot (wide establishing, low tracking "
             "along the action, a close detail of machinery or water, an aerial), and let each visual show "
-            "what its narration line has just said."
+            "what its narration line has just said.\n"
+            "PLAUSIBILITY: never describe a biological or physical transformation becoming VISIBLE within "
+            "one ~8-second shot as the direct result of a single action (a plant 'shows signs of "
+            "transformation' right after an injection, a wound visibly healing, a cell visibly dividing "
+            "into a different organism) — that does not happen at video timescale, and asking a video model "
+            "to render it produces a warped, glitching mess, not a time-lapse. Show a real, STABLE moment "
+            "instead: the action itself (the injection, the cut, the measurement), or a believable "
+            "side-by-side of a treated sample next to an untreated one, never the transformation itself "
+            "occurring on camera.\n"
+            "AUTONOMY: if the subject is about a self-driving, driverless or autonomous vehicle or system, "
+            "a video model has no built-in notion that 'driverless' means it should omit the driver — left "
+            "unstated, it defaults to rendering a normal human driver, contradicting the subject. Every shot "
+            "that shows the vehicle from an angle where a driver's seat or operator's position would "
+            "normally be visible must explicitly say it is EMPTY (\"the driver's seat is empty, no one at "
+            "the wheel\") or otherwise make the absence of a human operator visually explicit."
         )
     prompt = _build_prompt_from_context("real-world region/subject", context, variants, tone,
                                          num_shots, target_duration_seconds)

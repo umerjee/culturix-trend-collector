@@ -1520,6 +1520,90 @@ class TestWorldMotionRule:
         from app.services.culturetoon_script import check_world_motion
         assert check_world_motion([self._shot(visual)]) == []
 
+
+class TestWorldPlausibilityRule:
+    """Regression coverage: a live CRISPR Feature asked for a plant to visibly transform
+    right after an injection, in one ~8-second shot — confirmed to render as a warped,
+    glitching mess rather than a believable result, since that doesn't happen at video
+    timescale."""
+
+    @staticmethod
+    def _shot(visual, n=1, focus="subject"):
+        return {"shot_number": n, "shot_focus": focus, "subject_visual": visual}
+
+    def test_visible_transformation_within_the_shot_is_a_problem(self):
+        from app.services.culturetoon_script import check_world_plausibility
+        visual = ("A vial of CRISPR-Cas9 solution is injected into a living plant. The plant shows "
+                 "visible signs of transformation, such as new growth or color change.")
+        problems = check_world_plausibility([self._shot(visual)])
+        assert len(problems) == 1 and "Shot 1" in problems[0] and "video timescale" in problems[0]
+
+    def test_a_stable_moment_is_not_a_problem(self):
+        from app.services.culturetoon_script import check_world_plausibility
+        visual = "A gloved hand holds a vial next to a tray of labeled seedlings, one row marked control"
+        assert check_world_plausibility([self._shot(visual)]) == []
+
+    def test_a_completed_past_tense_state_is_not_flagged(self):
+        from app.services.culturetoon_script import check_world_plausibility
+        visual = "A computer screen displays an edited gene sequence next to the original, highlighted in red"
+        assert check_world_plausibility([self._shot(visual)]) == []
+
+    def test_character_shots_are_not_checked(self):
+        from app.services.culturetoon_script import check_world_plausibility
+        visual = "The plant shows visible signs of transformation after treatment"
+        assert check_world_plausibility([self._shot(visual, focus="character")]) == []
+
+    def test_the_prompt_warns_against_visible_transformations(self, mocker):
+        from app.services.culturetoon_script import generate_world_script
+        client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_world_script(region_code="US", region_label="United States", subject_text="CRISPR gene editing")
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "PLAUSIBILITY" in prompt and "video timescale" in prompt
+
+
+class TestWorldAutonomyRule:
+    """Regression coverage: a live Waymo ("driverless taxis") Feature never once said a
+    driver's seat was empty in any shot — confirmed rendering with a normal human driver,
+    directly contradicting the subject, since a video model has no built-in notion that
+    "driverless" means it should omit one."""
+
+    @staticmethod
+    def _shot(visual, n=1, focus="subject"):
+        return {"shot_number": n, "shot_focus": focus, "subject_visual": visual}
+
+    def test_a_driver_vantage_without_stating_it_is_empty_is_a_problem(self):
+        from app.services.culturetoon_script import check_world_autonomy
+        visual = "The Waymo taxi's driver's seat is visible as it navigates a busy intersection"
+        problems = check_world_autonomy([self._shot(visual)], "Waymo's Driverless Taxis")
+        assert len(problems) == 1 and "Shot 1" in problems[0] and "empty" in problems[0]
+
+    def test_explicitly_stating_the_seat_is_empty_is_not_a_problem(self):
+        from app.services.culturetoon_script import check_world_autonomy
+        visual = "The Waymo taxi turns a corner, its driver's seat empty, no one at the wheel"
+        assert check_world_autonomy([self._shot(visual)], "Waymo's Driverless Taxis") == []
+
+    def test_a_shot_with_no_driver_vantage_at_all_is_not_a_problem(self):
+        from app.services.culturetoon_script import check_world_autonomy
+        visual = "The Waymo taxi's LiDAR sensors spin on the roof as it moves through traffic"
+        assert check_world_autonomy([self._shot(visual)], "Waymo's Driverless Taxis") == []
+
+    def test_a_subject_not_about_autonomy_is_never_checked(self):
+        from app.services.culturetoon_script import check_world_autonomy
+        visual = "A taxi driver's seat is visible as the car navigates the city"
+        assert check_world_autonomy([self._shot(visual)], "The History of the New York Taxi") == []
+
+    def test_character_shots_are_not_checked(self):
+        from app.services.culturetoon_script import check_world_autonomy
+        visual = "A driver's seat is visible"
+        assert check_world_autonomy([self._shot(visual, focus="character")], "Driverless Taxis") == []
+
+    def test_the_prompt_asks_for_an_explicit_empty_seat(self, mocker):
+        from app.services.culturetoon_script import generate_world_script
+        client = _mock_qwen_response(mocker, {"hook_line": "H", "shots": _VALID_SHOTS})
+        generate_world_script(region_code="US", region_label="United States", subject_text="Waymo driverless taxis")
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "AUTONOMY" in prompt and "EMPTY" in prompt
+
     @pytest.mark.parametrize("visual", [
         "A wide beach with cliffs and a landscape of dunes under a first light sky",
         "The Normandy coast, showing the vast expanse of the beach and the distant cliffs",
