@@ -11,17 +11,28 @@ type Plan = { era?: string | null; duration_seconds: number; beat_count: number;
 // { phenomenon: ["Aurora", ...], species: [...], tech: [...] } — GET /admin/curated-items/suggested-topics.
 type TopicSuggestions = Record<string, string[]>;
 
+// Mirrors app/collectors/region_codes.py's REGION_NAMES (36 codes) — the full set the
+// backend's trend collectors and World pipeline actually support, not just a curated
+// subset. Kept here rather than fetched, matching this page's existing convention.
 const COUNTRY_INFO: Record<string, { name: string; continent: string }> = {
-  US: { name: "United States", continent: "North America" }, CN: { name: "China", continent: "Asia" },
-  IN: { name: "India", continent: "Asia" }, JP: { name: "Japan", continent: "Asia" },
-  DE: { name: "Germany", continent: "Europe" }, FR: { name: "France", continent: "Europe" },
+  US: { name: "United States", continent: "North America" }, GB: { name: "United Kingdom", continent: "Europe" },
+  FR: { name: "France", continent: "Europe" }, DE: { name: "Germany", continent: "Europe" },
   IT: { name: "Italy", continent: "Europe" }, ES: { name: "Spain", continent: "Europe" },
-  GB: { name: "United Kingdom", continent: "Europe" }, MX: { name: "Mexico", continent: "North America" },
-  BR: { name: "Brazil", continent: "South America" }, CA: { name: "Canada", continent: "North America" },
-  AU: { name: "Australia", continent: "Oceania" }, TR: { name: "Turkey", continent: "Asia" },
-  KR: { name: "South Korea", continent: "Asia" }, SA: { name: "Saudi Arabia", continent: "Asia" },
-  EG: { name: "Egypt", continent: "Africa" }, GR: { name: "Greece", continent: "Europe" },
-  PT: { name: "Portugal", continent: "Europe" }, IR: { name: "Iran", continent: "Asia" },
+  PT: { name: "Portugal", continent: "Europe" }, CA: { name: "Canada", continent: "North America" },
+  AU: { name: "Australia", continent: "Oceania" }, JP: { name: "Japan", continent: "Asia" },
+  KR: { name: "South Korea", continent: "Asia" }, IN: { name: "India", continent: "Asia" },
+  BR: { name: "Brazil", continent: "South America" }, TR: { name: "Turkey", continent: "Asia" },
+  SA: { name: "Saudi Arabia", continent: "Asia" }, AE: { name: "UAE", continent: "Asia" },
+  IL: { name: "Israel", continent: "Asia" }, IR: { name: "Iran", continent: "Asia" },
+  NG: { name: "Nigeria", continent: "Africa" }, ZA: { name: "South Africa", continent: "Africa" },
+  EG: { name: "Egypt", continent: "Africa" }, KE: { name: "Kenya", continent: "Africa" },
+  ID: { name: "Indonesia", continent: "Asia" }, PH: { name: "Philippines", continent: "Asia" },
+  TH: { name: "Thailand", continent: "Asia" }, VN: { name: "Vietnam", continent: "Asia" },
+  MY: { name: "Malaysia", continent: "Asia" }, MX: { name: "Mexico", continent: "North America" },
+  AR: { name: "Argentina", continent: "South America" }, CO: { name: "Colombia", continent: "South America" },
+  CL: { name: "Chile", continent: "South America" }, PL: { name: "Poland", continent: "Europe" },
+  UA: { name: "Ukraine", continent: "Europe" }, PK: { name: "Pakistan", continent: "Asia" },
+  CN: { name: "China", continent: "Asia" }, GR: { name: "Greece", continent: "Europe" },
 };
 
 export default function CuratedItemsPage() {
@@ -29,7 +40,9 @@ export default function CuratedItemsPage() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [region, setRegion] = useState("IT");
+  const [ingestContinent, setIngestContinent] = useState("Europe");
   const [wikipediaTitle, setWikipediaTitle] = useState("History of Italy");
+  const [wikipediaTitleTouched, setWikipediaTitleTouched] = useState(false);
   const [wikipediaCategory, setWikipediaCategory] = useState("");
   const [unescoLimit, setUnescoLimit] = useState("5");
   const [continentFilter, setContinentFilter] = useState("");
@@ -56,6 +69,17 @@ export default function CuratedItemsPage() {
   const countries = Object.entries(COUNTRY_INFO)
     .filter(([, country]) => !continentFilter || country.continent === continentFilter)
     .sort(([, left], [, right]) => left.name.localeCompare(right.name));
+  const ingestCountries = Object.entries(COUNTRY_INFO)
+    .filter(([, country]) => country.continent === ingestContinent)
+    .sort(([, left], [, right]) => left.name.localeCompare(right.name));
+
+  function selectIngestRegion(code: string) {
+    setRegion(code);
+    // A curator who hasn't typed a custom title yet almost always wants "History of
+    // {country}" for that country — pre-fill it as a convenience, but never overwrite
+    // something they've already deliberately typed.
+    if (!wikipediaTitleTouched) setWikipediaTitle(`History of ${COUNTRY_INFO[code]?.name || code}`);
+  }
   const visibleItems = items.filter((item) => {
     if (countryFilter && item.region !== countryFilter) return false;
     if (continentFilter && (!item.region || COUNTRY_INFO[item.region]?.continent !== continentFilter)) return false;
@@ -139,16 +163,48 @@ export default function CuratedItemsPage() {
     <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
       <div><div className="flex items-center gap-2 text-primary-600 text-xs font-bold uppercase tracking-wider"><Database className="h-4 w-4" /> World subjects</div><h1 className="mt-2 text-2xl font-bold text-gray-900">Subject library</h1><p className="mt-1 text-sm text-gray-500">Select the real event, place, or idea first. A toon host is an optional treatment added after the subject is chosen.</p></div>
       <Link href="/admin/world-production" className="rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-sm font-semibold text-primary-700 hover:bg-primary-100">World Production</Link>
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <input value={region} onChange={(e) => setRegion(e.target.value.toUpperCase())} maxLength={2} className="w-16 rounded-lg border border-gray-200 px-3 py-2 text-sm uppercase" aria-label="ISO region for fetching" title="ISO country code used for new fetches" />
-        <input value={unescoLimit} onChange={(e) => setUnescoLimit(e.target.value)} type="number" min="1" max="10" className="w-20 rounded-lg border border-gray-200 px-3 py-2 text-sm" aria-label="UNESCO site count" title="UNESCO sites to fetch" />
-        <button disabled={busy} onClick={() => ingest("unesco")} className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"><Download className="h-4 w-4" /> Fetch UNESCO</button>
-        <input value={wikipediaTitle} onChange={(e) => setWikipediaTitle(e.target.value)} className="w-44 rounded-lg border border-gray-200 px-3 py-2 text-sm" aria-label="Wikipedia title" placeholder="Wikipedia title" />
-        <select value={wikipediaCategory} onChange={(e) => setWikipediaCategory(e.target.value)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700" aria-label="Browse category for this Wikipedia fetch" title='Set this for Phenomena/Species/Technology topics — nothing else can tell them apart from a general "custom" subject'>
-          <option value="">Category: auto-detect</option>
-          {Object.entries(CATEGORY_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-        </select>
-        <button disabled={busy} onClick={() => ingest("wikipedia")} className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 disabled:opacity-50">Fetch Wikipedia</button>
+      <div className="w-full rounded-xl border border-gray-100 bg-white p-3">
+        <span className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-400">Fetch a new subject for</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={ingestContinent}
+            onChange={(e) => {
+              const nextContinent = e.target.value;
+              setIngestContinent(nextContinent);
+              const firstInContinent = Object.entries(COUNTRY_INFO).find(([, c]) => c.continent === nextContinent);
+              if (firstInContinent) selectIngestRegion(firstInContinent[0]);
+            }}
+            className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700"
+            aria-label="Continent for the new fetch"
+          >
+            {continents.map((continent) => <option key={continent} value={continent}>{continent}</option>)}
+          </select>
+          <select
+            value={region}
+            onChange={(e) => selectIngestRegion(e.target.value)}
+            className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700"
+            aria-label="Country for the new fetch"
+          >
+            {ingestCountries.map(([code, country]) => <option key={code} value={code}>{country.name}</option>)}
+          </select>
+          <span className="mx-1 h-5 w-px bg-gray-200" aria-hidden="true" />
+          <input value={unescoLimit} onChange={(e) => setUnescoLimit(e.target.value)} type="number" min="1" max="10" className="w-16 rounded-lg border border-gray-200 px-3 py-2 text-sm" aria-label="UNESCO site count" title="Number of UNESCO sites to fetch" />
+          <button disabled={busy} onClick={() => ingest("unesco")} className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"><Download className="h-4 w-4" /> Fetch UNESCO sites</button>
+          <span className="mx-1 h-5 w-px bg-gray-200" aria-hidden="true" />
+          <input
+            value={wikipediaTitle}
+            onChange={(e) => { setWikipediaTitle(e.target.value); setWikipediaTitleTouched(true); }}
+            className="w-52 rounded-lg border border-gray-200 px-3 py-2 text-sm"
+            aria-label="Wikipedia article title"
+            placeholder="Wikipedia title"
+            title='Pre-filled from the country above as "History of {country}" — edit freely for a different article'
+          />
+          <select value={wikipediaCategory} onChange={(e) => setWikipediaCategory(e.target.value)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700" aria-label="Browse category for this Wikipedia fetch" title='Set this for Phenomena/Species/Technology topics — nothing else can tell them apart from a general "custom" subject'>
+            <option value="">Category: auto-detect</option>
+            {Object.entries(CATEGORY_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select>
+          <button disabled={busy} onClick={() => ingest("wikipedia")} className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 disabled:opacity-50">Fetch Wikipedia</button>
+        </div>
       </div>
     </div>
     {message && <p className="mb-5 rounded-lg bg-green-50 px-4 py-3 text-sm text-green-700">{message}</p>}
