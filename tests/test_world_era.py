@@ -193,6 +193,23 @@ class TestDetermine:
         era = we.determine_world_era("Rome", "no years here")
         assert (era["start_year"], era["end_year"]) == (-753, -27)
 
+    def test_a_label_with_no_year_gets_one_appended_so_it_stays_submittable(self, mocker):
+        # Confirmed live: a UNESCO subject spanning centuries ("Byzantine to Ottoman") got a
+        # correctly-computed start_year/end_year but a label with no digits at all — which a
+        # curator then can't submit as-is, since era_from_text() only has the label text to
+        # re-parse (it never sees start_year/end_year) and rejects anything with no year.
+        self._llm(mocker, {"label": "Istanbul, Byzantine to Ottoman", "start_year": 330, "end_year": 1922})
+        era = we.determine_world_era("Threats to Istanbul's Masterpieces", "Byzantine and Ottoman heritage.")
+        assert we.parse_years(era["label"], allow_bare=True)
+        # The fix must not just be submittable — it must re-parse to the SAME years already computed.
+        resubmitted = we.era_from_text(era["label"])
+        assert (resubmitted["start_year"], resubmitted["end_year"]) == (330, 1922)
+
+    def test_a_label_that_already_has_a_year_is_left_exactly_as_the_model_wrote_it(self, mocker):
+        self._llm(mocker, {"label": "Ancient Rome, 753 BC to 27 BC", "start_year": -753, "end_year": -27})
+        era = we.determine_world_era("Rise of the Roman Empire", "Rome, founded in 753 BC ... 27 BC")
+        assert era["label"] == "Ancient Rome, 753 BC to 27 BC"
+
 
 KINGDOM = {"from_year": -753, "to_year": -509, "label": "Roman Kingdom",
            "look": "Simple huts of wattle and daub with thatched roofs. Narrow unpaved dirt paths.",

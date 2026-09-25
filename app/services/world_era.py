@@ -377,4 +377,14 @@ Return ONLY valid JSON: {{"label": string, "start_year": integer, "end_year": in
                        start, end, title, named)
         start, end = min(named), max(named)
         label = f"{label.split(',')[0].strip()}, {year_text(start)}" + (f" to {year_text(end)}" if end != start else "")
+    # The prompt asks the model to write the year into the label itself, but it doesn't always —
+    # confirmed live: a UNESCO subject spanning centuries ("Byzantine to Ottoman") came back with a
+    # correctly-computed start_year/end_year but a label with no digits in it at all. This label is
+    # what a curator sees pre-filled in the "Period shown" field and what era_from_text() re-parses
+    # on submit — era_from_text has no access to start_year/end_year, only the label text, so a
+    # label with no parseable year makes the curator hit "Include at least one year" on an AI
+    # suggestion that already knew the year internally. Guarantee the label always parses, the same
+    # way the disagreement-correction above already does.
+    if not parse_years(label, allow_bare=True):
+        label = f"{label}, {year_text(start)}" + (f" to {year_text(end)}" if end != start else "")
     return {"label": label[:120], "start_year": start, "end_year": end, "source": "ai"}
