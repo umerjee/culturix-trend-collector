@@ -12,7 +12,12 @@ load_dotenv()
 
 from sqlalchemy import create_engine, text
 
-engine = create_engine(os.environ["DATABASE_URL"], connect_args={"connect_timeout": 10})
+# Force the driver explicitly — see app/db.py's own comment on the same fix.
+_database_url = os.environ["DATABASE_URL"]
+if _database_url.startswith("postgresql://"):
+    _database_url = _database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+
+engine = create_engine(_database_url, connect_args={"connect_timeout": 10})
 
 with engine.connect() as conn:
     total = conn.execute(text("SELECT pg_size_pretty(pg_database_size(current_database()))")).scalar()

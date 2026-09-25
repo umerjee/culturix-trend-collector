@@ -1,7 +1,7 @@
 fastapi
 uvicorn[standard]
-SQLAlchemy
-psycopg2-binary
+SQLAlchemy==2.0.50
+psycopg2-binary==2.9.12
 httpx
 python-dotenv
 anthropic

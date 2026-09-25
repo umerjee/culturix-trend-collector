@@ -45,6 +45,11 @@ def main() -> int:
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
         raise SystemExit("DATABASE_URL is required")
+    # Force the driver explicitly — see app/db.py's own comment on the same fix: a bare
+    # "postgresql://" left SQLAlchemy's dialect resolution to chance and broke live in CI
+    # when it picked psycopg (v3, not installed) instead of psycopg2.
+    if database_url.startswith("postgresql://"):
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
     engine = create_engine(database_url, pool_pre_ping=True)
     with engine.begin() as connection:

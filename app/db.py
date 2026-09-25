@@ -9,6 +9,24 @@ load_dotenv()
 # 2. Read DATABASE_URL
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# A bare "postgresql://" (no explicit "+driver") leaves SQLAlchemy to pick a postgres DBAPI
+# on its own — confirmed live in CI (2026-09-25): a fresh `pip install` with SQLAlchemy left
+# unpinned in requirements.txt resolved to the psycopg (v3) dialect instead of psycopg2, and
+# only psycopg2-binary is an actual dependency here, so every test module importing this file
+# failed with "No module named 'psycopg'" — 41 collection errors, all from this one line.
+# Both this app's real Railway DATABASE_URL and the CI/dev placeholder use the bare scheme,
+# so production was equally exposed to the same break on its next fresh dependency install,
+# not just CI. Forcing the driver explicitly makes the choice deterministic regardless of
+# which SQLAlchemy version ends up installed, rather than depending on its internal
+# preference/fallback order.
+def _force_psycopg2_driver(url: str | None) -> str | None:
+    if url and url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return url
+
+
+DATABASE_URL = _force_psycopg2_driver(DATABASE_URL)
+
 # 3. Create engine
 # pool_pre_ping: confirmed live 2026-08-20 — a long-running background task
 # (LoRA training, which holds one session open across several minutes of
