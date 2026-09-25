@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, EyeOff, Film, Loader2, Play, RefreshCw, Archive, Upload, Search } from "lucide-react";
 import { fetchAdminData } from "@/lib/admin/fetchAdmin";
@@ -182,7 +183,7 @@ Open "What will be generated" on the card first to see the exact prompts and nar
   }
 
   return <div className="max-w-6xl">
-    <div className="mb-6 sm:mb-8 flex flex-wrap items-start justify-between gap-3 sm:gap-4"><div><div className="flex items-center gap-2 text-primary-600 text-xs font-bold uppercase tracking-wider"><Film className="h-4 w-4" /> World production</div><h1 className="mt-2 text-2xl font-bold text-gray-900">World video drafts</h1><p className="mt-1 text-sm text-gray-500">Review each fact-checked script, then start the render. A finished render stays private until you publish it.</p></div><button onClick={load} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700"><RefreshCw className="h-4 w-4" /> Refresh</button></div>
+    <div className="mb-6 sm:mb-8 flex flex-wrap items-start justify-between gap-3 sm:gap-4"><div><div className="flex items-center gap-2 text-primary-600 text-xs font-bold uppercase tracking-wider"><Film className="h-4 w-4" /> World production</div><h1 className="mt-2 text-2xl font-bold text-gray-900">World video drafts</h1><p className="mt-1 text-sm text-gray-500">Review each fact-checked script, then start the render. A finished render stays private until you publish it.</p></div><div className="flex items-center gap-2"><Link href="/admin/curated-items" className="inline-flex items-center gap-2 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-sm font-semibold text-primary-700 hover:bg-primary-100">+ New subject</Link><button onClick={load} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700"><RefreshCw className="h-4 w-4" /> Refresh</button></div></div>
     {message && <p className="mb-5 rounded-lg bg-green-50 px-4 py-3 text-sm text-green-700">{message}</p>}
 
     {drafts.length > 0 && <>
