@@ -33,13 +33,20 @@ export default function FeatureCard({ feature }: { feature: WorldFeature }) {
       href={`/world/feature/${feature.id}`}
       className="group rounded-2xl border border-gray-100 overflow-hidden hover:border-purple-200 transition-colors block"
     >
-      <div className="aspect-[9/16] bg-gray-900">
+      <div className="relative aspect-[9/16] bg-gray-900 overflow-hidden">
         {feature.thumbnail_url ? (
           // eslint-disable-next-line @next/next/no-img-element -- external Wikipedia URL, not in next/image's domain allowlist
           <img
             src={feature.thumbnail_url}
             alt={feature.title || feature.subject_text || ""}
-            className="w-full h-full object-cover"
+            // Real Wikipedia lead images span wildly different content types side by side in
+            // one grid — a 19th-century map next to a macro photo next to a scientific ribbon
+            // diagram next to a coat of arms — each individually accurate but, unfiltered,
+            // reading as visually chaotic together (confirmed live). A slight desaturation
+            // plus the purple duotone wash below (multiply-blended, so it unifies tone without
+            // flattening detail) gives every card one consistent visual identity regardless of
+            // what the source image actually looks like.
+            className="w-full h-full object-cover saturate-[0.82] contrast-[1.04]"
           />
         ) : feature.final_video_url && (
           <video
@@ -47,11 +54,18 @@ export default function FeatureCard({ feature }: { feature: WorldFeature }) {
             muted
             playsInline
             preload="metadata"
-            className="w-full h-full object-cover"
+            className="w-full h-full object-cover saturate-[0.82] contrast-[1.04]"
             onLoadedMetadata={(e) => {
               const video = e.currentTarget;
               video.currentTime = Math.min(THUMBNAIL_SEEK_SECONDS, Math.max(0, (video.duration || 0) - 0.1));
             }}
+          />
+        )}
+        {(feature.thumbnail_url || feature.final_video_url) && (
+          <div
+            className="pointer-events-none absolute inset-0 bg-gradient-to-t from-purple-950/70 via-purple-900/15 to-purple-950/25"
+            style={{ mixBlendMode: "multiply" }}
+            aria-hidden="true"
           />
         )}
       </div>
