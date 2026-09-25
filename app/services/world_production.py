@@ -574,6 +574,16 @@ def _generate_world_draft(db, item, duration_seconds, beat_count, use_host, pers
         if region:
             script.subject_region = region
             toon.subject_region = region
+    # A dedicated, style-consistent thumbnail — see world_thumbnail.py for why this is
+    # separate from CuratedItem.thumbnail_url (the source article's own lead image, real
+    # but wildly inconsistent in style from one subject to the next). Best-effort: this
+    # already runs inside a background thread (see the /admin/curated-items/{id}/generate
+    # endpoint), so a slow or failed generation here never blocks the curator from seeing
+    # their script — failure just leaves thumbnail_url null, same as before this existed.
+    from app.services.world_thumbnail import generate_world_thumbnail
+    thumbnail_url = generate_world_thumbnail(str(toon.id), item.title)
+    if thumbnail_url:
+        toon.thumbnail_url = thumbnail_url
     db.commit()
     summary.update({"toon_id": str(toon.id), "script_id": str(script.id)})
     return summary

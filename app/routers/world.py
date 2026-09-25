@@ -30,7 +30,7 @@ def _publicly_visible():
     return or_(Toon.world_published.is_(None), Toon.world_published.is_(True))
 
 
-def _serialize_feature(t, thumbnail_url: Optional[str] = None) -> dict:
+def _serialize_feature(t, fallback_thumbnail_url: Optional[str] = None) -> dict:
     return {
         "id": str(t.id),
         "title": t.title,
@@ -38,10 +38,12 @@ def _serialize_feature(t, thumbnail_url: Optional[str] = None) -> dict:
         "subject_text": t.subject_text,
         "subject_category": t.subject_category,
         "final_video_url": t.final_video_url,
-        # The source article's own lead image (see CuratedItem.thumbnail_url) — a real,
-        # topic-representative photo. None for hand-made Features or a source with no lead
-        # image; the frontend falls back to a frame grabbed from final_video_url then.
-        "thumbnail_url": thumbnail_url,
+        # Toon.thumbnail_url is a dedicated, style-consistent generated image (see
+        # app/services/world_thumbnail.py) — preferred whenever it exists. Falls back to
+        # the source article's own lead image (real but wildly inconsistent in style from
+        # one subject to the next), then to null; the frontend falls back further to a
+        # frame grabbed from final_video_url when even that's missing.
+        "thumbnail_url": t.thumbnail_url or fallback_thumbnail_url,
         "era_label": t.era_label,
         "era_year": t.era_year,
         "created_at": t.created_at.isoformat() if t.created_at else None,

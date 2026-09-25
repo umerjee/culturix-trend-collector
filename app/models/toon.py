@@ -118,6 +118,16 @@ class Toon(Base):
     # Feature page (see app/routers/world.py) when this Toon's character has a matching
     # home_region — see app/models/character.py.
     public_showcase = Column(Boolean, nullable=False, default=False)
+    # A dedicated, purpose-built thumbnail image for this World Feature — see
+    # app/services/world_thumbnail.py. Distinct from CuratedItem.thumbnail_url (the source
+    # article's own lead image, scraped from Wikipedia): that image is real but wildly
+    # inconsistent in style from one subject to the next (a map next to a macro photo next
+    # to a coat of arms, confirmed live) and doesn't exist at all for hand-made Features
+    # with no CuratedItem. Every thumbnail here is generated from ONE fixed, branded prompt
+    # style shared by the whole catalog — the point is a consistent look across every
+    # thumbnail, not per-subject accuracy, which the source-image approach already covers
+    # honestly. _serialize_feature prefers this over CuratedItem.thumbnail_url when set.
+    thumbnail_url = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

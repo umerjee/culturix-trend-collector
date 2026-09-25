@@ -48,3 +48,20 @@ def _array_result_processor_with_sqlite_fallback(self, dialect, coltype):
 
 ARRAY.bind_processor = _array_bind_processor_with_sqlite_fallback
 ARRAY.result_processor = _array_result_processor_with_sqlite_fallback
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _never_generate_a_real_world_thumbnail(mocker):
+    """World script generation (app/services/world_production.py) calls out to a real
+    image-generation provider (Cloudflare Workers AI, falling back to paid Qwen-Image) for
+    every persisted draft — added 2026-09-25. Every other external call in that same code
+    path (the LLM script writer, era determination, etc.) is already mocked per-test, but
+    this one wasn't, and a dev machine with real credentials in .env running the test suite
+    locally would silently make real, billed network calls on every test that reaches that
+    path — confirmed happening during this exact feature's own development. Autouse so no
+    test can trigger this by omission; a test that specifically wants to exercise the real
+    call path overrides this mock explicitly, same as any other autouse fixture."""
+    mocker.patch("app.services.world_thumbnail.generate_world_thumbnail", return_value=None)

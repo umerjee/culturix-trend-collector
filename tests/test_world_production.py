@@ -811,6 +811,22 @@ class TestUnderProduction:
         (script,) = db.query(ToonScript).all()
         assert script.status == "approved" and script.hook_line == "H" and script.shots and str(script.id) == result["script_id"]
 
+    def test_a_generated_thumbnail_is_saved_on_the_toon(self, db, llm, mocker):
+        mocker.patch("app.services.world_thumbnail.generate_world_thumbnail",
+                    return_value="https://cdn/world-thumbnails/x.png")
+        wp.generate_world_draft(db, _item(), duration_seconds=30)
+        (toon,) = self._toons(db)
+        assert toon.thumbnail_url == "https://cdn/world-thumbnails/x.png"
+
+    def test_a_failed_thumbnail_generation_does_not_block_the_draft(self, db, llm, mocker):
+        # The autouse _never_generate_a_real_world_thumbnail fixture already returns None by
+        # default (see tests/conftest.py) — this just asserts that None is handled gracefully
+        # rather than merely untested.
+        result = wp.generate_world_draft(db, _item(), duration_seconds=30)
+        (toon,) = self._toons(db)
+        assert toon.thumbnail_url is None
+        assert result["toon_id"] == str(toon.id)  # the draft itself still succeeded
+
     def test_a_regionless_item_gets_a_determined_region_applied_to_toon_and_script(self, db, llm):
         # Topic-driven ingestion (scripts/ingest_topic_subjects.py) always passes
         # region=None -- this is what pins e.g. "Axolotl" to Mexico on the globe
