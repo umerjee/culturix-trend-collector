@@ -225,6 +225,81 @@ def get_region_summary(code: str, date: Optional[str] = None, lang: str = "en"):
         session.close()
 
 
+@router.get("/regions/{code}/sentiment-history")
+def get_region_sentiment_history(code: str, days: int = 30):
+    """Up to `days` of this region's real daily mood/sentiment — the same RegionDailySummary
+    rows the daily brief already reads, just returned as a series instead of only "today vs
+    usual". A day with no summary yet is simply absent, not a zero — a gap in the sparkline
+    is honest; a zero would misrepresent a day nothing was computed for."""
+    from app.db import SessionLocal
+    from app.models.region_daily_summary import RegionDailySummary
+
+    region = code.strip().upper()
+    if len(region) != 2 or not region.isalpha():
+        raise HTTPException(status_code=400, detail="Invalid region code")
+    days = max(1, min(days, 90))
+
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(RegionDailySummary)
+            .filter(RegionDailySummary.region == region, RegionDailySummary.sentiment.isnot(None))
+            .order_by(RegionDailySummary.summary_date.desc())
+            .limit(days)
+            .all()
+        )
+        rows.reverse()  # oldest first, the order a sparkline reads left-to-right
+        return {
+            "region": region,
+            "days": [
+                {"date": r.summary_date.isoformat(), "sentiment": r.sentiment, "mood": r.mood}
+                for r in rows
+            ],
+        }
+    finally:
+        session.close()
+
+
+@router.get("/regions/{code}/coverage")
+def get_region_feature_coverage(code: str):
+    """How much of this region's published catalog falls in each browse category, and what
+    era span it covers — a curator/visitor-facing summary of what's already been made,
+    computed from Toon rows already in the database (no new collection)."""
+    from sqlalchemy import func
+    from app.db import SessionLocal
+    from app.models.toon import Toon
+
+    region = code.strip().upper()
+    if len(region) != 2 or not region.isalpha():
+        raise HTTPException(status_code=400, detail="Invalid region code")
+
+    session = SessionLocal()
+    try:
+        base_filters = [
+            Toon.is_world_content.is_(True), Toon.status == "ready", Toon.subject_region == region,
+            Toon.final_video_url.isnot(None), _publicly_visible(),
+        ]
+        category_rows = (
+            session.query(Toon.subject_category, func.count(Toon.id))
+            .filter(*base_filters)
+            .group_by(Toon.subject_category)
+            .all()
+        )
+        era_bounds = (
+            session.query(func.min(Toon.era_year), func.max(Toon.era_year))
+            .filter(*base_filters, Toon.era_year.isnot(None))
+            .first()
+        )
+        return {
+            "region": region,
+            "categories": {(cat or "uncategorized"): count for cat, count in category_rows},
+            "era_year_min": era_bounds[0] if era_bounds else None,
+            "era_year_max": era_bounds[1] if era_bounds else None,
+        }
+    finally:
+        session.close()
+
+
 def _serialize_trend(t) -> dict:
     return {
         "id": t.id,

@@ -24,6 +24,23 @@ export interface WorldFeature {
   translation_failed?: boolean;
 }
 
+// Mirrors app/routers/world.py's get_region_sentiment_history — real daily mood/sentiment
+// rows for a region, oldest first. A day with no summary computed is simply absent, never
+// a fabricated zero.
+export interface WorldSentimentHistory {
+  region: string;
+  days: { date: string; sentiment: number | null; mood: string | null }[];
+}
+
+// Mirrors app/routers/world.py's get_region_feature_coverage — category/era breakdown of a
+// region's published catalog.
+export interface WorldFeatureCoverage {
+  region: string;
+  categories: Record<string, number>;
+  era_year_min: number | null;
+  era_year_max: number | null;
+}
+
 // Mirrors app/routers/world.py's get_world_trends_coverage — real
 // earliest/latest/day-count for one region's Trend rows, used to size
 // TimeCursor's "recent" zone honestly instead of a misleading fixed range.

@@ -4,11 +4,16 @@ import countries from "i18n-iso-countries";
 import enLocale from "i18n-iso-countries/langs/en.json";
 import MarketingHeader from "@/components/marketing/MarketingHeader";
 import MarketingFooter from "@/components/marketing/MarketingFooter";
+import CoverageBadges from "@/components/world/CoverageBadges";
 import FeatureCard from "@/components/world/FeatureCard";
 import RegionFactsStrip from "@/components/world/RegionFactsStrip";
+import SentimentSparkline from "@/components/world/SentimentSparkline";
 import TimeCursor from "@/components/world/TimeCursor";
 import { RAILWAY_API_BASE } from "@/lib/config/api";
-import type { WorldFeature, WorldRegionSummary, WorldTrend, WorldTrendsCoverage } from "@/lib/worldTypes";
+import type {
+  WorldFeature, WorldFeatureCoverage, WorldRegionSummary, WorldSentimentHistory, WorldTrend,
+  WorldTrendsCoverage,
+} from "@/lib/worldTypes";
 
 countries.registerLocale(enLocale as any);
 
@@ -51,6 +56,30 @@ async function fetchCoverage(region: string): Promise<WorldTrendsCoverage> {
   }
 }
 
+async function fetchSentimentHistory(region: string): Promise<WorldSentimentHistory | null> {
+  try {
+    const res = await fetch(`${RAILWAY_API_BASE}/world/regions/${encodeURIComponent(region)}/sentiment-history`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchFeatureCoverage(region: string): Promise<WorldFeatureCoverage | null> {
+  try {
+    const res = await fetch(`${RAILWAY_API_BASE}/world/regions/${encodeURIComponent(region)}/coverage`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 async function fetchBrief(region: string): Promise<WorldRegionSummary | null> {
   try {
     const res = await fetch(`${RAILWAY_API_BASE}/world/regions/${encodeURIComponent(region)}/summary`, { cache: "no-store" });
@@ -72,7 +101,10 @@ export async function generateMetadata({ params }: { params: { code: string } })
 export default async function WorldRegionPage({ params }: { params: { code: string } }) {
   const code = params.code.toUpperCase();
   const label = countries.getName(code, "en") || code;
-  const [features, trends, coverage, brief] = await Promise.all([fetchFeatures(code), fetchTrends(code), fetchCoverage(code), fetchBrief(code)]);
+  const [features, trends, coverage, brief, sentimentHistory, featureCoverage] = await Promise.all([
+    fetchFeatures(code), fetchTrends(code), fetchCoverage(code), fetchBrief(code),
+    fetchSentimentHistory(code), fetchFeatureCoverage(code),
+  ]);
 
   return (
     <div className="min-h-screen bg-white">
@@ -87,6 +119,7 @@ export default async function WorldRegionPage({ params }: { params: { code: stri
         <p className="text-gray-500 mb-10">What&apos;s trending in {label} today, and the videos Culturix has published about it.</p>
 
         <RegionFactsStrip facts={brief?.facts ?? null} />
+        <SentimentSparkline history={sentimentHistory} />
 
         <TimeCursor region={code} regionLabel={label} coverage={coverage} initialTrends={trends} initialBrief={brief} />
 
@@ -95,6 +128,7 @@ export default async function WorldRegionPage({ params }: { params: { code: stri
             <h2 className="text-lg font-semibold text-gray-900">Culturix World videos</h2>
             <span className="text-xs text-gray-400">{features.length} published</span>
           </div>
+          <CoverageBadges coverage={featureCoverage} />
           {features.length === 0 ? (
             <p className="text-sm text-gray-400 py-6">No videos published for {label} yet — check back soon.</p>
           ) : (

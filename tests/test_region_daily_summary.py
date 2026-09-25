@@ -289,7 +289,8 @@ def _store(db, region="FR", day=DAY, **over):
     s = db()
     s.add(RegionDailySummary(region=region, summary_date=day, summary=over.pop("summary", "A brief."),
                              source="ai", signal_count=40, platforms=["tiktok"], news=["SECRET HEADLINE"],
-                             calendar=[{"name": "Bastille Day"}], mood="playful", sentiment=1,
+                             calendar=[{"name": "Bastille Day"}], mood=over.pop("mood", "playful"),
+                             sentiment=over.pop("sentiment", 1),
                              alignment="diverged", baseline={"volume_dir": "busier"},
                              audience_matches=over.pop("audience_matches", [{"name": "Reality TV Stan", "description": "d", "content_angle": "a", "score": 0.6}]), **over))
     s.commit()
@@ -449,3 +450,50 @@ class TestSummaryEndpoint:
         assert world._vs_usual_label({"volume_dir": "quieter"}) == "quieter"
         assert world._vs_usual_label({"volume_dir": "normal"}) == "normal"
         assert world._vs_usual_label({"enough": False}) is None and world._vs_usual_label(None) is None
+
+
+class TestSentimentHistory:
+    """GET /world/regions/{code}/sentiment-history — the same RegionDailySummary rows the
+    daily brief already reads, returned as a series instead of only "today vs usual"."""
+
+    def test_returns_real_days_oldest_first(self, db):
+        _store(db, day=date(2026, 9, 10), sentiment=1, mood="playful")
+        _store(db, day=date(2026, 9, 17), sentiment=-1, mood="tense")
+
+        out = world.get_region_sentiment_history("fr")
+
+        assert out["region"] == "FR"
+        assert [d["date"] for d in out["days"]] == ["2026-09-10", "2026-09-17"]
+        assert out["days"][1]["sentiment"] == -1 and out["days"][1]["mood"] == "tense"
+
+    def test_a_day_with_no_summary_is_simply_absent_not_a_zero(self, db):
+        _store(db, day=date(2026, 9, 10), sentiment=2)
+        out = world.get_region_sentiment_history("FR")
+        assert len(out["days"]) == 1  # no fabricated gap-filling to zero
+
+    def test_a_row_with_no_sentiment_computed_is_excluded(self, db):
+        _store(db, day=date(2026, 9, 10), sentiment=None)
+        assert world.get_region_sentiment_history("FR")["days"] == []
+
+    def test_days_param_caps_how_far_back_it_looks(self, db):
+        for i in range(5):
+            _store(db, day=date(2026, 9, 10 + i), sentiment=0)
+        out = world.get_region_sentiment_history("FR", days=2)
+        assert len(out["days"]) == 2
+        assert out["days"][-1]["date"] == "2026-09-14"  # the most recent 2, still oldest-first
+
+    def test_days_is_clamped_to_a_sane_range(self, db):
+        # No error for an absurd request — just capped, matching every other limit= param
+        # in this router.
+        _store(db)
+        out = world.get_region_sentiment_history("FR", days=99999)
+        assert len(out["days"]) <= 90
+
+    @pytest.mark.parametrize("bad", ["", "F", "FRA", "12"])
+    def test_invalid_region_codes_are_rejected(self, db, bad):
+        with pytest.raises(world.HTTPException) as exc:
+            world.get_region_sentiment_history(bad)
+        assert exc.value.status_code == 400
+
+    def test_no_data_at_all_is_an_empty_list_not_an_error(self, db):
+        assert world.get_region_sentiment_history("JP")["days"] == []

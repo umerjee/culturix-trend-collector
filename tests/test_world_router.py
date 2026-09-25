@@ -135,6 +135,56 @@ class TestListWorldFeatures:
         assert result["features"][0]["subject_text"] == "Mount Fuji"
 
 
+class TestRegionFeatureCoverage:
+    """GET /world/regions/{code}/coverage — category/era breakdown of a region's published
+    catalog, computed from existing Toon rows (no new collection)."""
+
+    def test_counts_by_category_for_the_region_only(self, db):
+        _make_toon(db, subject_region="JP", subject_category="place")
+        _make_toon(db, subject_region="JP", subject_category="place", subject_text="Second place")
+        _make_toon(db, subject_region="JP", subject_category="species", subject_text="A species")
+        _make_toon(db, subject_region="FR", subject_category="tech", subject_text="Wrong region")
+
+        out = world.get_region_feature_coverage("jp")
+
+        assert out["region"] == "JP"
+        assert out["categories"] == {"place": 2, "species": 1}
+
+    def test_era_min_and_max_across_the_region(self, db):
+        _make_toon(db, subject_region="IT", era_year=-753, subject_text="Ancient")
+        _make_toon(db, subject_region="IT", era_year=2020, subject_text="Modern")
+        _make_toon(db, subject_region="IT", era_year=None, subject_text="No era")
+
+        out = world.get_region_feature_coverage("IT")
+        assert out["era_year_min"] == -753 and out["era_year_max"] == 2020
+
+    def test_no_era_tagged_features_returns_none_not_zero(self, db):
+        _make_toon(db, subject_region="JP", era_year=None)
+        out = world.get_region_feature_coverage("JP")
+        assert out["era_year_min"] is None and out["era_year_max"] is None
+
+    def test_unpublished_and_non_world_content_are_excluded(self, db):
+        _make_toon(db, subject_region="JP", world_published=False)
+        _make_toon(db, subject_region="JP", is_world_content=False)
+        out = world.get_region_feature_coverage("JP")
+        assert out["categories"] == {}
+
+    def test_a_category_less_toon_is_labeled_uncategorized(self, db):
+        _make_toon(db, subject_region="JP", subject_category=None)
+        out = world.get_region_feature_coverage("JP")
+        assert out["categories"] == {"uncategorized": 1}
+
+    @pytest.mark.parametrize("bad", ["", "J", "JPN", "12"])
+    def test_invalid_region_codes_are_rejected(self, db, bad):
+        with pytest.raises(world.HTTPException) as exc:
+            world.get_region_feature_coverage(bad)
+        assert exc.value.status_code == 400
+
+    def test_no_features_at_all_is_empty_not_an_error(self, db):
+        out = world.get_region_feature_coverage("JP")
+        assert out["categories"] == {} and out["era_year_min"] is None
+
+
 class TestFeatureThumbnails:
     """thumbnail_url is the source article's own lead image (CuratedItem.thumbnail_url),
     joined in by curated_item_id — a real, topic-representative photo, not a frame grabbed
