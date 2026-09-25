@@ -4,6 +4,7 @@ import { ArrowLeft, MapPin } from "lucide-react";
 import MarketingHeader from "@/components/marketing/MarketingHeader";
 import MarketingFooter from "@/components/marketing/MarketingFooter";
 import FeatureTranscript from "@/components/world/FeatureTranscript";
+import RelatedShowcaseStrip from "@/components/world/RelatedShowcaseStrip";
 import { RAILWAY_API_BASE } from "@/lib/config/api";
 import { CATEGORY_LABELS } from "@/lib/worldTypes";
 import type { WorldFeature } from "@/lib/worldTypes";
@@ -86,6 +87,8 @@ export default async function WorldFeaturePage({ params }: { params: { id: strin
         {feature.hook_line && <p className="text-gray-500 leading-relaxed">{feature.hook_line}</p>}
 
         <FeatureTranscript featureId={feature.id} initial={feature.transcript || []} />
+
+        <RelatedShowcaseStrip toons={feature.related_toons} />
 
         {feature.source && (
           <p className="mt-6 text-xs text-gray-400">

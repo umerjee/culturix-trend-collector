@@ -385,6 +385,7 @@ async def lifespan(_):
             "ALTER TABLE curated_items ADD COLUMN IF NOT EXISTS thumbnail_url TEXT",
             "ALTER TABLE curated_items ADD COLUMN IF NOT EXISTS subject_category VARCHAR(20)",
             "ALTER TABLE characters ADD COLUMN IF NOT EXISTS home_region VARCHAR(2)",
+            "ALTER TABLE toons ADD COLUMN IF NOT EXISTS public_showcase BOOLEAN NOT NULL DEFAULT FALSE",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -3374,6 +3375,69 @@ def unpublish_world_production(toon_id: str):
         toon.world_published = False
         session.commit()
         return {"status": "unpublished", "toon_id": toon_id}
+    finally:
+        session.close()
+
+
+@app.post("/admin/toons/{toon_id}/publish-showcase", dependencies=[Depends(require_admin_secret)])
+def publish_toon_showcase(toon_id: str):
+    """Make an ordinary (non-World) Toon publicly visible via the World Feature page's
+    "More from this region" strip — see Toon.public_showcase's own docstring for why this
+    is a deliberate, per-Toon admin action, not something inferred or bulk-set. Requires a
+    finished render (same bar as a World Feature's own publish gate) and a character with a
+    home_region set — a Toon whose character has no home_region has nowhere to be shown."""
+    import uuid as _uuid
+    from app.db import SessionLocal
+    from app.models.toon import Toon
+    from app.models.character import Character
+    from app.models.character_variant import CharacterVariant
+
+    session = SessionLocal()
+    try:
+        try:
+            toon = session.query(Toon).filter_by(id=_uuid.UUID(toon_id)).first()
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Toon not found")
+        if not toon:
+            raise HTTPException(status_code=404, detail="Toon not found")
+        if toon.status != "ready" or not toon.final_video_url:
+            raise HTTPException(status_code=409, detail="Only a finished render can be showcased")
+        home_region = None
+        if toon.character_variant_id:
+            variant = session.query(CharacterVariant).filter_by(id=toon.character_variant_id).first()
+            if variant:
+                character = session.query(Character).filter_by(id=variant.character_id).first()
+                home_region = character.home_region if character else None
+        if not home_region:
+            raise HTTPException(
+                status_code=409,
+                detail="This Toon's character has no home_region set — nothing to link it to. "
+                      "Set the character's home_region first (PUT /characters/{id}).",
+            )
+        toon.public_showcase = True
+        session.commit()
+        return {"status": "showcased", "toon_id": toon_id, "home_region": home_region}
+    finally:
+        session.close()
+
+
+@app.post("/admin/toons/{toon_id}/unpublish-showcase", dependencies=[Depends(require_admin_secret)])
+def unpublish_toon_showcase(toon_id: str):
+    import uuid as _uuid
+    from app.db import SessionLocal
+    from app.models.toon import Toon
+
+    session = SessionLocal()
+    try:
+        try:
+            toon = session.query(Toon).filter_by(id=_uuid.UUID(toon_id)).first()
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Toon not found")
+        if not toon:
+            raise HTTPException(status_code=404, detail="Toon not found")
+        toon.public_showcase = False
+        session.commit()
+        return {"status": "unshowcased", "toon_id": toon_id}
     finally:
         session.close()
 

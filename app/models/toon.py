@@ -107,6 +107,17 @@ class Toon(Base):
     # Feature was produced from. Powers duplicate-draft protection and the
     # public source attribution; NULL for hand-made World Features.
     curated_item_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # Public visibility gate for an ordinary (non-World) Toon — every CultureToons clip is
+    # private, user/brand-owned content by default (unlike World Features, there is no
+    # existing "published to the public site" concept at all here), so this defaults to
+    # False for every row, no tri-state needed the way world_published's NULL means "was
+    # live before the gate existed." Set explicitly per Toon via an admin action
+    # (POST /admin/toons/{id}/publish-showcase) — never inferred, never bulk-set — since
+    # making previously-private content public is a real, deliberate choice, not a side
+    # effect of anything else. Powers the "More from this region" strip on a public World
+    # Feature page (see app/routers/world.py) when this Toon's character has a matching
+    # home_region — see app/models/character.py.
+    public_showcase = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

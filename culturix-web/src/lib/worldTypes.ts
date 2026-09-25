@@ -22,6 +22,11 @@ export interface WorldFeature {
   transcript?: string[];
   transcript_language?: string;
   translation_failed?: boolean;
+  // CultureToons clips a curator has explicitly marked public (Toon.public_showcase) whose
+  // character's home_region matches this Feature's subject_region — see
+  // app/routers/world.py's _related_showcase_toons. [] for a globally-scoped Feature or a
+  // region with no showcased cast yet. Detail response only.
+  related_toons?: { id: string; title: string | null; final_video_url: string; character_name: string | null }[];
 }
 
 // Mirrors app/routers/world.py's get_region_sentiment_history — real daily mood/sentiment

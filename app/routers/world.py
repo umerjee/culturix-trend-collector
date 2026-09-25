@@ -563,6 +563,37 @@ def get_world_trends_coverage(region: str):
         session.close()
 
 
+def _related_showcase_toons(session, region: Optional[str], limit: int = 6) -> list:
+    """CultureToons clips a curator has explicitly marked public_showcase=True whose
+    character's home_region matches this Feature's subject_region — see
+    Toon.public_showcase's own docstring for why both conditions (explicit showcase flag
+    AND a matching home_region) are required, not inferred. [] for a region-less
+    (globally-scoped) Feature or a region with no showcased cast yet — a normal state."""
+    if not region:
+        return []
+    from app.models.character import Character
+    from app.models.character_variant import CharacterVariant
+    from app.models.toon import Toon
+
+    rows = (
+        session.query(Toon.id, Toon.title, Toon.final_video_url, Character.name)
+        .join(CharacterVariant, Toon.character_variant_id == CharacterVariant.id)
+        .join(Character, CharacterVariant.character_id == Character.id)
+        .filter(
+            Toon.is_world_content.is_(False), Toon.public_showcase.is_(True),
+            Toon.status == "ready", Toon.final_video_url.isnot(None),
+            Character.home_region == region,
+        )
+        .order_by(Toon.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {"id": str(tid), "title": title, "final_video_url": video_url, "character_name": character_name}
+        for tid, title, video_url, character_name in rows
+    ]
+
+
 @router.get("/features/{feature_id}")
 def get_world_feature(feature_id: str, lang: str = "en"):
     """A World video's own detail, plus its real narration as a text transcript — always stored and
@@ -615,6 +646,7 @@ def get_world_feature(feature_id: str, lang: str = "en"):
             item = session.query(CuratedItem).filter_by(id=toon.curated_item_id).first()
             if item and item.source_url:
                 result["source"] = {"label": source_label(item), "url": item.source_url}
+        result["related_toons"] = _related_showcase_toons(session, toon.subject_region)
         return result
     finally:
         session.close()

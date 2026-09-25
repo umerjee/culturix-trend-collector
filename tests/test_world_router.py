@@ -17,6 +17,8 @@ from app.models.toon_script import ToonScript
 from app.models.trend import Trend
 from app.models.cluster import Cluster
 from app.models.curated_item import CuratedItem
+from app.models.character import Character
+from app.models.character_variant import CharacterVariant
 from app.routers import world
 
 
@@ -24,7 +26,8 @@ from app.routers import world
 def db(mocker):
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(bind=engine, tables=[Toon.__table__, ToonScript.__table__, Trend.__table__,
-                                                  Cluster.__table__, CuratedItem.__table__])
+                                                  Cluster.__table__, CuratedItem.__table__,
+                                                  Character.__table__, CharacterVariant.__table__])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)
     return TestSessionLocal
@@ -42,10 +45,26 @@ def _make_curated_item(db, *, thumbnail_url=None):
     return item_id
 
 
+def _make_character_variant(db, *, home_region=None, character_name="Kumar"):
+    session = db()
+    character = Character(brand_id=uuid.uuid4(), name=character_name, home_region=home_region)
+    session.add(character)
+    session.commit()
+    session.refresh(character)
+    variant = CharacterVariant(character_id=character.id, name=character_name)
+    session.add(variant)
+    session.commit()
+    session.refresh(variant)
+    variant_id = variant.id
+    session.close()
+    return variant_id
+
+
 def _make_toon(db, *, is_world_content=True, status="ready", final_video_url="https://cdn/x.mp4",
                subject_region="IR", subject_text="The Strait of Hormuz", subject_category="place",
                title="The Strait of Hormuz", hook_line="A vital chokepoint.",
-               era_label=None, era_year=None, world_published=True, shots=None, curated_item_id=None):
+               era_label=None, era_year=None, world_published=True, shots=None, curated_item_id=None,
+               character_variant_id=None, public_showcase=False):
     session = db()
     script = ToonScript(brand_id=uuid.uuid4(), hook_line=hook_line, generation_source="ai", status="approved", shots=shots)
     session.add(script)
@@ -56,7 +75,8 @@ def _make_toon(db, *, is_world_content=True, status="ready", final_video_url="ht
         final_video_url=final_video_url, is_world_content=is_world_content,
         subject_region=subject_region, subject_text=subject_text, subject_category=subject_category,
         era_label=era_label, era_year=era_year, world_published=world_published,
-        curated_item_id=curated_item_id,
+        curated_item_id=curated_item_id, character_variant_id=character_variant_id,
+        public_showcase=public_showcase,
     )
     session.add(toon)
     session.commit()
@@ -275,6 +295,56 @@ class TestGetWorldFeature:
         with pytest.raises(HTTPException) as exc_info:
             world.get_world_feature("not-a-uuid")
         assert exc_info.value.status_code == 404
+
+
+class TestRelatedShowcaseToons:
+    """"More from this region" — a CultureToons clip only shows up here when a curator has
+    explicitly marked it public_showcase=True AND its character has a matching home_region.
+    Neither condition alone is enough — see Toon.public_showcase's own docstring."""
+
+    def test_a_showcased_toon_with_a_matching_home_region_is_returned(self, db):
+        variant_id = _make_character_variant(db, home_region="US", character_name="Kumar")
+        _make_toon(db, is_world_content=False, subject_region=None, title="Kumar reacts to CRISPR",
+                  character_variant_id=variant_id, public_showcase=True)
+        feature_id = _make_toon(db, subject_region="US")
+
+        result = world.get_world_feature(feature_id)
+
+        assert len(result["related_toons"]) == 1
+        assert result["related_toons"][0]["title"] == "Kumar reacts to CRISPR"
+        assert result["related_toons"][0]["character_name"] == "Kumar"
+
+    def test_a_non_showcased_toon_is_excluded_even_with_a_matching_region(self, db):
+        variant_id = _make_character_variant(db, home_region="US")
+        _make_toon(db, is_world_content=False, subject_region=None,
+                  character_variant_id=variant_id, public_showcase=False)
+        feature_id = _make_toon(db, subject_region="US")
+
+        assert world.get_world_feature(feature_id)["related_toons"] == []
+
+    def test_a_showcased_toon_in_a_different_region_is_excluded(self, db):
+        variant_id = _make_character_variant(db, home_region="FR")
+        _make_toon(db, is_world_content=False, subject_region=None,
+                  character_variant_id=variant_id, public_showcase=True)
+        feature_id = _make_toon(db, subject_region="US")
+
+        assert world.get_world_feature(feature_id)["related_toons"] == []
+
+    def test_a_character_with_no_home_region_never_matches(self, db):
+        variant_id = _make_character_variant(db, home_region=None)
+        _make_toon(db, is_world_content=False, subject_region=None,
+                  character_variant_id=variant_id, public_showcase=True)
+        feature_id = _make_toon(db, subject_region="US")
+
+        assert world.get_world_feature(feature_id)["related_toons"] == []
+
+    def test_a_globally_scoped_feature_has_no_related_toons(self, db):
+        variant_id = _make_character_variant(db, home_region="US")
+        _make_toon(db, is_world_content=False, subject_region=None,
+                  character_variant_id=variant_id, public_showcase=True)
+        feature_id = _make_toon(db, subject_region=None)
+
+        assert world.get_world_feature(feature_id)["related_toons"] == []
 
 
 class TestFeatureTranscript:
