@@ -4,19 +4,19 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Zap, LayoutDashboard, TrendingUp, Layers, Users, Search, LogOut, History, ShieldCheck, Database, Film, Laugh, Clapperboard, X } from "lucide-react";
 
-const NAV: { href: string; icon: React.ReactNode; label: string }[] = [
-  { href: "/admin/overview", icon: <LayoutDashboard className="h-4 w-4" />, label: "Overview" },
-  { href: "/admin/trends", icon: <TrendingUp className="h-4 w-4" />, label: "Trends" },
-  { href: "/admin/clusters", icon: <Layers className="h-4 w-4" />, label: "Clusters" },
-  { href: "/admin/personas", icon: <Users className="h-4 w-4" />, label: "Personas" },
-  { href: "/admin/history", icon: <History className="h-4 w-4" />, label: "History" },
-  { href: "/admin/validation", icon: <ShieldCheck className="h-4 w-4" />, label: "Validation" },
-  { href: "/admin/curated-items", icon: <Database className="h-4 w-4" />, label: "Source library" },
-  { href: "/admin/world-production", icon: <Film className="h-4 w-4" />, label: "World production" },
-  { href: "/admin/comedy-videos", icon: <Clapperboard className="h-4 w-4" />, label: "Comedy studio" },
-  { href: "/admin/comedy-patterns", icon: <Laugh className="h-4 w-4" />, label: "Comedy patterns" },
-  { href: "/admin/users", icon: <Users className="h-4 w-4" />, label: "Users" },
-  { href: "/admin/search", icon: <Search className="h-4 w-4" />, label: "Search" },
+const NAV: { href: string; icon: React.ReactNode; label: string; group: string }[] = [
+  { href: "/admin/overview", icon: <LayoutDashboard className="h-4 w-4" />, label: "Overview", group: "Workspace" },
+  { href: "/admin/trends", icon: <TrendingUp className="h-4 w-4" />, label: "Trends", group: "Intelligence" },
+  { href: "/admin/clusters", icon: <Layers className="h-4 w-4" />, label: "Clusters", group: "Intelligence" },
+  { href: "/admin/personas", icon: <Users className="h-4 w-4" />, label: "Personas", group: "Intelligence" },
+  { href: "/admin/history", icon: <History className="h-4 w-4" />, label: "History", group: "Intelligence" },
+  { href: "/admin/validation", icon: <ShieldCheck className="h-4 w-4" />, label: "Validation", group: "Operations" },
+  { href: "/admin/curated-items", icon: <Database className="h-4 w-4" />, label: "Source library", group: "Production" },
+  { href: "/admin/world-production", icon: <Film className="h-4 w-4" />, label: "World production", group: "Production" },
+  { href: "/admin/comedy-videos", icon: <Clapperboard className="h-4 w-4" />, label: "Comedy studio", group: "Production" },
+  { href: "/admin/comedy-patterns", icon: <Laugh className="h-4 w-4" />, label: "Comedy patterns", group: "Production" },
+  { href: "/admin/users", icon: <Users className="h-4 w-4" />, label: "Users", group: "Administration" },
+  { href: "/admin/search", icon: <Search className="h-4 w-4" />, label: "Search", group: "Administration" },
 ];
 
 interface Props {
@@ -50,24 +50,28 @@ export default function AdminSidebar({ pendingCount, className = "", mobile, onN
       </div>
 
       <nav className="flex-1 py-4 space-y-0.5 px-2 overflow-y-auto" aria-label="Admin sections">
-        {NAV.map(({ href, icon, label }) => {
+        {NAV.map(({ href, icon, label, group }, index) => {
           const active = pathname === href || (href !== "/admin/overview" && pathname?.startsWith(href));
           return (
-            <Link
-              key={href}
-              href={href}
-              onClick={onNavigate}
-              aria-current={active ? "page" : undefined}
-              className={`w-full flex items-center gap-3 px-3 rounded-lg text-sm font-medium transition-colors text-left ${
-                mobile ? "py-3" : "py-2"
-              } ${active ? "bg-primary-50 text-primary-600" : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"}`}
-            >
-              {icon}
-              {label}
-              {href === "/admin/users" && pendingCount > 0 && (
-                <span className="ml-auto text-xs font-semibold text-amber-600">{pendingCount}</span>
+            <div key={href}>
+              {(index === 0 || NAV[index - 1].group !== group) && (
+                <p className="mb-1 mt-4 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-gray-400 first:mt-0">{group}</p>
               )}
-            </Link>
+              <Link
+                href={href}
+                onClick={onNavigate}
+                aria-current={active ? "page" : undefined}
+                className={`w-full flex items-center gap-3 px-3 rounded-lg text-sm font-medium transition-colors text-left ${
+                  mobile ? "py-3" : "py-2"
+                } ${active ? "bg-primary-50 text-primary-600" : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"}`}
+              >
+                {icon}
+                {label}
+                {href === "/admin/users" && pendingCount > 0 && (
+                  <span className="ml-auto text-xs font-semibold text-amber-600">{pendingCount}</span>
+                )}
+              </Link>
+            </div>
           );
         })}
       </nav>

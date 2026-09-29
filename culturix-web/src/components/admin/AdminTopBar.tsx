@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname } from "next/navigation";
 import { Menu, RefreshCw } from "lucide-react";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 
@@ -13,6 +14,22 @@ export default function AdminTopBar({ onMenu, menuOpen }: { onMenu: () => void; 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [collecting, setCollecting] = useState(false);
   const [collectMsg, setCollectMsg] = useState("");
+  const pathname = usePathname();
+
+  const sectionTitle = {
+    "/admin/overview": "Overview",
+    "/admin/trends": "Trends",
+    "/admin/clusters": "Clusters",
+    "/admin/personas": "Personas",
+    "/admin/history": "History",
+    "/admin/validation": "Validation",
+    "/admin/curated-items": "Source library",
+    "/admin/world-production": "World production",
+    "/admin/comedy-videos": "Comedy studio",
+    "/admin/comedy-patterns": "Comedy patterns",
+    "/admin/users": "Users",
+    "/admin/search": "Search",
+  }[pathname] ?? "Admin workspace";
 
   async function triggerCollect() {
     setCollecting(true);
@@ -37,10 +54,17 @@ export default function AdminTopBar({ onMenu, menuOpen }: { onMenu: () => void; 
         aria-expanded={menuOpen}
         className="lg:hidden -ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-gray-600 hover:bg-gray-50"
       >
-        <Menu className="h-5 w-5" />
+      <div className="min-w-0">
+        <span className="block font-bold text-base tracking-tight text-gray-900 truncate">{sectionTitle}</span>
+        <span className="hidden lg:block text-[11px] text-gray-400 truncate">Culturix admin workspace</span>
+      </div>
       </button>
       <span className="lg:hidden font-bold text-base tracking-tight text-gray-900">Admin</span>
-
+        {collectMsg && (
+          <span role="status" aria-live="polite" className="hidden max-w-[18rem] truncate text-xs text-gray-500 sm:block">
+            {collectMsg}
+          </span>
+        )}
       <div className="ml-auto flex min-w-0 items-center gap-3">
         {collectMsg && <span className="hidden sm:block truncate text-xs text-gray-400">{collectMsg}</span>}
         <button
