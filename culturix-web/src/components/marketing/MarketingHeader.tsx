@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Suspense } from "react";
 import { Zap } from "lucide-react";
 import { buttonVariants } from "@/components/ui/Button";
 import MobileMenu, { type NavLink } from "./MobileMenu";
@@ -39,7 +40,7 @@ export default function MarketingHeader({ transparent, rightSlot, showCta = true
             ))}
           </div>
           <div className="flex items-center gap-2 sm:gap-3">
-            <LanguageSwitcher />
+            <Suspense fallback={null}><LanguageSwitcher /></Suspense>
             <Link href="/world" className={`hidden sm:inline-flex ${buttonVariants({ variant: "primary", size: "sm" })}`}>
               Explore the atlas
             </Link>
@@ -65,7 +66,7 @@ export default function MarketingHeader({ transparent, rightSlot, showCta = true
           ))}
         </div>
         <div className="flex items-center gap-2 sm:gap-3">
-          <LanguageSwitcher />
+          <Suspense fallback={null}><LanguageSwitcher /></Suspense>
           {rightSlot ?? (showCta && (
             <Link href="/world" className={`hidden sm:inline-flex ${buttonVariants({ variant: "primary", size: "sm" })}`}>
               Explore the atlas
