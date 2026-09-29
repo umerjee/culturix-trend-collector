@@ -6,8 +6,6 @@ import type { ContentProfile, ConnectedAccount, NextAutoPublish } from "@/lib/ty
 import { WHY_NOT_DIRECT_PUBLISH, IOS_PUSH_NOTE, PUBLISH_MODE_DESCRIPTIONS, PUBLISH_MODE_LABELS } from "@/content/publishingCopy";
 import ConnectionTestPanel, { type ConnectionTestResult } from "@/components/publish/ConnectionTestPanel";
 
-const RAILWAY = process.env.NEXT_PUBLIC_API_URL || "https://culturix-trend-collector-production.up.railway.app";
-
 type Step = "connect" | "test" | "mode" | "next";
 
 // These three have never been exercised against a live account (see each
@@ -128,7 +126,7 @@ export default function PublishingWizard({
               Connect the dedicated {platformLabel} account you run for this niche.
             </p>
             <a
-              href={`${RAILWAY}/api/social/${platform}/connect?user_id=${userId}&content_profile_id=${profile.id}`}
+              href={`/api/social/${platform}/connect?content_profile_id=${profile.id}`}
               className="w-full flex items-center justify-center gap-2 rounded-xl bg-primary-600 text-white font-semibold py-3 hover:bg-primary-700 transition"
             >
               <Link2 className="h-4 w-4" /> Connect {platformLabel}

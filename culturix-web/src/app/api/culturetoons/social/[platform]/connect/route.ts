@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-
-const RAILWAY =
-  process.env.NEXT_PUBLIC_API_URL ||
-  "https://culturix-trend-collector-production.up.railway.app";
+import { RAILWAY_API_BASE } from "@/lib/config/api";
+import { internalApiHeaders } from "@/lib/internalApiHeaders";
 
 // Browser-navigable (an <a href>, not a fetch) — redirects on to Railway's
 // own OAuth-initiating redirect, which redirects again to the platform's
@@ -20,7 +18,11 @@ export async function GET(req: Request, { params }: { params: { platform: string
   const brandId = searchParams.get("brand_id");
   if (!brandId) return NextResponse.json({ detail: "brand_id is required" }, { status: 400 });
 
-  return NextResponse.redirect(
-    `${RAILWAY}/api/social/${params.platform}/connect?user_id=${user.id}&character_brand_id=${brandId}`,
-  );
+  const target = new URL(`${RAILWAY_API_BASE}/api/social/${params.platform}/connect`);
+  target.searchParams.set("user_id", user.id);
+  target.searchParams.set("character_brand_id", brandId);
+  const response = await fetch(target, { headers: internalApiHeaders(), redirect: "manual", cache: "no-store" });
+  const location = response.headers.get("location");
+  if (response.status >= 300 && response.status < 400 && location) return NextResponse.redirect(location);
+  return NextResponse.json({ detail: "Could not start OAuth connection" }, { status: response.status || 502 });
 }

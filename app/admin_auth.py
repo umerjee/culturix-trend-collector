@@ -40,28 +40,15 @@ def require_admin_secret(x_admin_secret: str = Header(default="")):
 # fetch() call (see culturix-web/src/lib/internalApiHeaders.ts), closes
 # this the same way ADMIN_API_SECRET closes it for /admin/*.
 #
-# Deliberately FAIL-OPEN when unset (unlike require_admin_secret above,
-# which fails closed) — this gate is being added retroactively to routes
-# the live app already depends on for every request, so failing closed
-# the moment this code ships would 403 the entire product until the env
-# var is set on both Railway and Vercel, which nobody can do from inside
-# this session. It logs a warning (once) instead. Set INTERNAL_API_SECRET
-# on both platforms as soon as possible to actually close the gap — until
-# then this is documentation of the fix, not the fix itself.
+# Fail closed when unset. The Railway API URL is public and every route
+# protected by this dependency accepts user_id/brand_id values, so an unset
+# secret would otherwise turn those parameters into an account-data access
+# primitive. Configure INTERNAL_API_SECRET on both Railway and Vercel before
+# deploying this change; an unavailable product is safer than cross-account
+# reads and writes.
 INTERNAL_API_SECRET = os.getenv("INTERNAL_API_SECRET", "")
-_warned_unset = False
 
 
 def require_internal_secret(x_internal_secret: str = Header(default="")):
-    global _warned_unset
-    if not INTERNAL_API_SECRET:
-        if not _warned_unset:
-            logger.warning(
-                "INTERNAL_API_SECRET is not set — every non-admin API route is currently reachable by anyone "
-                "who knows or guesses a user_id, with no authentication at all. Set INTERNAL_API_SECRET on "
-                "both Railway and Vercel (see app/admin_auth.py) to close this."
-            )
-            _warned_unset = True
-        return
-    if not hmac.compare_digest(x_internal_secret, INTERNAL_API_SECRET):
+    if not INTERNAL_API_SECRET or not hmac.compare_digest(x_internal_secret, INTERNAL_API_SECRET):
         raise HTTPException(status_code=403, detail="Forbidden")

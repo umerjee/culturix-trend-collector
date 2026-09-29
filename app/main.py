@@ -1548,7 +1548,7 @@ def _get_social_provider(platform: str):
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@app.get("/api/social/{platform}/connect")
+@app.get("/api/social/{platform}/connect", dependencies=[Depends(require_internal_secret)])
 def social_connect(platform: str, user_id: str, content_profile_id: Optional[str] = None,
                     character_brand_id: Optional[str] = None):
     """Redirects to the platform's OAuth consent screen. `state` carries the
@@ -1564,7 +1564,23 @@ def social_connect(platform: str, user_id: str, content_profile_id: Optional[str
     content_profile_id/character_brand_id."""
     from fastapi.responses import RedirectResponse
     from app.oauth_state import sign
+    from app.db import SessionLocal
+    from app.models.content_profile import ContentProfile
+    from app.models.character_brand import CharacterBrand
+    import uuid as _uuid
     provider = _get_social_provider(platform)
+    session = SessionLocal()
+    try:
+        if content_profile_id and not session.query(ContentProfile).filter_by(
+            id=_uuid.UUID(content_profile_id), user_id=_uuid.UUID(user_id)
+        ).first():
+            raise HTTPException(status_code=403, detail="Content profile does not belong to this user")
+        if character_brand_id and not session.query(CharacterBrand).filter_by(
+            id=_uuid.UUID(character_brand_id), user_id=_uuid.UUID(user_id)
+        ).first():
+            raise HTTPException(status_code=403, detail="Character brand does not belong to this user")
+    finally:
+        session.close()
     state = sign(f"{user_id}:{content_profile_id or ''}:{character_brand_id or ''}")
     return RedirectResponse(provider.get_authorize_url(state=state))
 

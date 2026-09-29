@@ -1,7 +1,4 @@
-"""Tests for app/admin_auth.py's shared-secret dependencies —
-require_admin_secret (existing, fail-closed) and require_internal_secret
-(new, deliberately fail-open when unconfigured — see that function's own
-docstring for why)."""
+"""Tests for app/admin_auth.py's shared-secret dependencies."""
 import pytest
 from fastapi import HTTPException
 
@@ -27,13 +24,11 @@ class TestRequireAdminSecret:
 
 
 class TestRequireInternalSecret:
-    def test_passes_through_when_unset_fail_open(self, monkeypatch):
-        # Deliberately fail-open — see require_internal_secret's docstring.
-        # This must NOT raise even with a garbage header, since the whole
-        # point is to not break the live app before the secret is
-        # configured on both Railway and Vercel.
+    def test_raises_403_when_secret_unset(self, monkeypatch):
         monkeypatch.setattr(admin_auth, "INTERNAL_API_SECRET", "")
-        admin_auth.require_internal_secret(x_internal_secret="anything-or-nothing")  # no raise
+        with pytest.raises(HTTPException) as exc_info:
+            admin_auth.require_internal_secret(x_internal_secret="anything-or-nothing")
+        assert exc_info.value.status_code == 403
 
     def test_raises_403_on_mismatch_once_configured(self, monkeypatch):
         monkeypatch.setattr(admin_auth, "INTERNAL_API_SECRET", "correct-secret")
