@@ -11,6 +11,8 @@ import { Plus, Minus, RotateCcw, Globe2, Map as MapIcon } from "lucide-react";
 import countries from "i18n-iso-countries";
 import enLocale from "i18n-iso-countries/langs/en.json";
 import worldTopoJson from "world-atlas/countries-110m.json";
+import { iconForCategory, colorForCategory, dominantCategory, CATEGORY_ICONS, CATEGORY_COLORS } from "@/lib/worldCategoryVisuals";
+import { CATEGORY_LABELS } from "@/lib/worldTypes";
 
 countries.registerLocale(enLocale as any);
 
@@ -51,6 +53,7 @@ interface RegionCount {
   feature_count: number;
   trend_count: number;
   trend_days: number;
+  categories: Record<string, number>;
 }
 
 // A handful of buckets is plenty here — World content is admin-curated one
@@ -70,7 +73,9 @@ function fillForCount(count: number): string {
   return "#e2e8f0"; // slate-200, no content
 }
 
-export default function WorldMap() {
+export default function WorldMap({
+  onSelectRegion, selectedRegion,
+}: { onSelectRegion?: (code: string | null) => void; selectedRegion?: string | null } = {}) {
   const router = useRouter();
   // The orthographic globe's SVG path is pure floating-point math (no randomness), yet Node's SSR
   // render and the browser's own re-render of that same math can differ in the last few decimal
@@ -209,9 +214,13 @@ export default function WorldMap() {
       const drag = dragRef.current;
       const moved = drag ? Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) : 0;
       if (moved > DRAG_VS_CLICK_PX) return; // a drag that happened to end over a country, not a click
-      router.push(`/world/region/${code}`);
+      // With onSelectRegion (the interactive /world explorer), clicking filters the list on the
+      // SAME page in place instead of navigating away to the separate region page — clicking the
+      // already-selected country clears the filter, a natural toggle.
+      if (onSelectRegion) onSelectRegion(selectedRegion === code ? null : code);
+      else router.push(`/world/region/${code}`);
     },
-    [router],
+    [router, onSelectRegion, selectedRegion],
   );
 
   if (!mounted) {
@@ -279,16 +288,16 @@ export default function WorldMap() {
                       style={{
                         default: {
                           fill: fillForCount(activity),
-                          stroke: "#ffffff",
-                          strokeWidth: 0.5,
+                          stroke: alpha2 === selectedRegion ? "#fbbf24" : "#ffffff",
+                          strokeWidth: alpha2 === selectedRegion ? 1.6 : 0.5,
                           outline: "none",
                           cursor: hasContent ? "pointer" : "grab",
                           transition: "fill 150ms ease",
                         },
                         hover: {
                           fill: hasContent ? "#4c1d95" : "#94a3b8",
-                          stroke: "#ffffff",
-                          strokeWidth: 0.5,
+                          stroke: alpha2 === selectedRegion ? "#fbbf24" : "#ffffff",
+                          strokeWidth: alpha2 === selectedRegion ? 1.6 : 0.5,
                           outline: "none",
                           cursor: hasContent ? "pointer" : "grab",
                         },
@@ -299,7 +308,7 @@ export default function WorldMap() {
                 })
               }
             </Geographies>
-            <GlobeMarkers regionCounts={regionCounts} rotation={rotation} globeScale={globeScale} />
+            <GlobeMarkers regionCounts={regionCounts} rotation={rotation} globeScale={globeScale} selectedRegion={selectedRegion} onSelectRegion={onSelectRegion} />
           </>
         ) : (
           <ZoomableGroup
@@ -324,20 +333,20 @@ export default function WorldMap() {
                       geography={geo}
                       onMouseEnter={(e) => hasContent && alpha2 && setHovered({ code: alpha2, x: e.clientX, y: e.clientY })}
                       onMouseLeave={() => setHovered(null)}
-                      onClick={() => hasContent && alpha2 && router.push(`/world/region/${alpha2}`)}
+                      onClick={() => hasContent && alpha2 && (onSelectRegion ? onSelectRegion(selectedRegion === alpha2 ? null : alpha2) : router.push(`/world/region/${alpha2}`))}
                       style={{
                         default: {
                           fill: fillForCount(activity),
-                          stroke: "#ffffff",
-                          strokeWidth: 0.5 / flatPosition.zoom,
+                          stroke: alpha2 === selectedRegion ? "#fbbf24" : "#ffffff",
+                          strokeWidth: (alpha2 === selectedRegion ? 2.4 : 0.5) / flatPosition.zoom,
                           outline: "none",
                           cursor: hasContent ? "pointer" : "default",
                           transition: "fill 150ms ease",
                         },
                         hover: {
                           fill: hasContent ? "#4c1d95" : "#cbd5e1",
-                          stroke: "#ffffff",
-                          strokeWidth: 0.5 / flatPosition.zoom,
+                          stroke: alpha2 === selectedRegion ? "#fbbf24" : "#ffffff",
+                          strokeWidth: (alpha2 === selectedRegion ? 2.4 : 0.5) / flatPosition.zoom,
                           outline: "none",
                           cursor: hasContent ? "pointer" : "default",
                         },
@@ -348,6 +357,7 @@ export default function WorldMap() {
                 })
               }
             </Geographies>
+            <FlatMarkers regionCounts={regionCounts} selectedRegion={selectedRegion} onSelectRegion={onSelectRegion} />
           </ZoomableGroup>
         )}
       </ComposableMap>
@@ -402,17 +412,22 @@ export default function WorldMap() {
         </button>
       </div>
 
-      {/* Legend */}
-      <div className="absolute bottom-3 left-3 rounded-xl border border-gray-200 bg-white/95 backdrop-blur-sm shadow-sm px-3 py-2 text-[11px] text-gray-600 flex items-center gap-3">
-        <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-sm" style={{ background: "#c4b5fd" }} />1+
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-sm" style={{ background: "#8b5cf6" }} />2+
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-sm" style={{ background: "#5b21b6" }} />5+
-        </span>
+      {/* Legend — marker color/icon says WHAT KIND of content a region has (dominant category);
+          country shading separately says HOW MUCH (still count-intensity purple, unrelated to
+          category color, which is why it stays a plain swatch rather than picking up the
+          category palette too — two different signals would blur into one if they shared color). */}
+      <div className="absolute bottom-3 left-3 rounded-xl border border-gray-200 bg-white/95 backdrop-blur-sm shadow-sm px-2.5 py-2 text-[11px] text-gray-600 flex items-center gap-2.5 flex-wrap max-w-[calc(100%-1.5rem)]">
+        {Object.entries(CATEGORY_LABELS).map(([key, label]) => {
+          const Icon = CATEGORY_ICONS[key];
+          return (
+            <span key={key} className="flex items-center gap-1" title={label}>
+              <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full" style={{ background: CATEGORY_COLORS[key] }}>
+                <Icon className="h-2 w-2 text-white" strokeWidth={3} />
+              </span>
+              <span className="hidden sm:inline">{label}</span>
+            </span>
+          );
+        })}
       </div>
 
       {hovered && (
@@ -422,6 +437,16 @@ export default function WorldMap() {
         >
           {countries.getName(hovered.code, "en") || hovered.code} — {regionCounts[hovered.code]?.feature_count || 0} feature{regionCounts[hovered.code]?.feature_count === 1 ? "" : "s"}
           {regionCounts[hovered.code]?.trend_count ? ` · ${regionCounts[hovered.code].trend_count} trend${regionCounts[hovered.code].trend_count === 1 ? "" : "s"}` : ""}
+          {(() => {
+            const cats = regionCounts[hovered.code]?.categories;
+            const entries = cats ? Object.entries(cats).sort((a, b) => b[1] - a[1]) : [];
+            if (entries.length === 0) return null;
+            return (
+              <div className="mt-0.5 text-gray-300 font-normal">
+                {entries.map(([cat, n]) => `${CATEGORY_LABELS[cat] || cat} (${n})`).join(" · ")}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -457,9 +482,9 @@ export default function WorldMap() {
 
 // A marker's own rendered footprint (the solid dot plus its animate-ping ring at its largest,
 // Tailwind's default ping scales to 2x) — used to keep the WHOLE marker inside the sphere's edge,
-// not just its mathematical center point. Padded a few px beyond the ring's exact calculated peak
-// (r=5 * 2x scale = 10) so the ring never grazes the sphere's boundary at its animation peak frame.
-const MARKER_VISUAL_RADIUS_PX = 18;
+// not just its mathematical center point. Padded well beyond the ring's calculated peak (r=8 * 2x
+// scale = 16, for a selected marker) so the ring never grazes the sphere's boundary.
+const MARKER_VISUAL_RADIUS_PX = 26;
 
 // How far from the view center (in radians) a point can be before it's hidden. This is NOT simply
 // "just under 90°": geoOrthographic projects a point at angle θ to a radius of `scale * sin(θ)` from
@@ -473,6 +498,70 @@ const MARKER_VISUAL_RADIUS_PX = 18;
 // zoomed in (scale large), where the same pixel radius is a smaller share of the sphere.
 function visibleHemisphereRadians(scale: number): number {
   return Math.asin(Math.max(0, Math.min(1, 1 - MARKER_VISUAL_RADIUS_PX / scale)));
+}
+
+// Country centroids, computed once from the static topology and shared by both the globe and
+// flat marker layers (only one of which is ever mounted at a time, since view is either "globe"
+// or "flat" — but sharing the hook still keeps the two from drifting into two implementations).
+function useCountryCentroids(): Record<string, [number, number]> | null {
+  const [centroids, setCentroids] = useState<Record<string, [number, number]> | null>(null);
+  useEffect(() => {
+    import("topojson-client").then(({ feature }) => {
+      const topo = worldTopoJson as any;
+      const collection = feature(topo, topo.objects.countries) as any;
+      const map: Record<string, [number, number]> = {};
+      for (const geo of collection.features) {
+        const alpha2 = countries.numericToAlpha2(geo.id as string);
+        if (alpha2) map[alpha2] = geoCentroid(geo) as [number, number];
+      }
+      setCentroids(map);
+    });
+  }, []);
+  return centroids;
+}
+
+// One region's marker: a pulsing ring in the DOMINANT category's color, and that category's own
+// icon (from worldCategoryVisuals — the same icons CategoryGrid and FeatureCard use) so the map
+// itself shows WHAT KIND of content is there, not just a uniform "something is here" dot. A
+// region mixing categories still shows one icon (whichever has the most Features) plus a small
+// count badge when there's more than one kind, rather than trying to cram several icons into a
+// few pixels.
+function CategoryMarker({
+  code, stats, coordinates, selected, onClick,
+}: {
+  code: string; stats: RegionCount; coordinates: [number, number]; selected: boolean; onClick: () => void;
+}) {
+  const category = dominantCategory(stats.categories);
+  const Icon = iconForCategory(category);
+  const color = colorForCategory(category);
+  const categoryCount = Object.keys(stats.categories || {}).length;
+  const r = selected ? 8 : 6.5;
+  return (
+    <Marker coordinates={coordinates} onClick={onClick}>
+      <g style={{ cursor: "pointer" }}>
+        {/* transform-box defaults to "view-box" for SVG children, so transform-origin: center
+            resolved to the whole SVG viewport's center, not this circle's own position — every
+            ping ring scaled toward/away from the map's center instead of around itself.
+            fill-box makes "center" resolve to the circle's own geometry (confirmed live
+            2026-09-22, see the marker-visibility fix this replaces). */}
+        <circle r={r} fill={color} fillOpacity={0.35} className="animate-ping" style={{ transformBox: "fill-box", transformOrigin: "center" }} />
+        <circle r={r} fill={color} stroke="#fff" strokeWidth={selected ? 1.4 : 0.9} />
+        <foreignObject x={-r * 0.62} y={-r * 0.62} width={r * 1.24} height={r * 1.24} style={{ pointerEvents: "none" }}>
+          <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Icon color="#fff" strokeWidth={3} style={{ width: "100%", height: "100%" }} />
+          </div>
+        </foreignObject>
+        {categoryCount > 1 && (
+          <>
+            <circle cx={r * 0.78} cy={-r * 0.78} r={3.2} fill="#111827" stroke="#fff" strokeWidth={0.6} />
+            <text x={r * 0.78} y={-r * 0.78} fontSize={4} fill="#fff" textAnchor="middle" dominantBaseline="central" fontWeight={700}>
+              {categoryCount}
+            </text>
+          </>
+        )}
+      </g>
+    </Marker>
+  );
 }
 
 // Pulsing hotspot markers for every region with real content, positioned at that country's true
@@ -489,25 +578,12 @@ function visibleHemisphereRadians(scale: number): number {
 // (geoDistance) and only rendering markers within it — recomputed on every rotation/scale change,
 // which is why this takes `rotation` and `globeScale` as props rather than reading them once.
 function GlobeMarkers({
-  regionCounts, rotation, globeScale,
-}: { regionCounts: Record<string, RegionCount>; rotation: Rotation; globeScale: number }) {
-  const [centroids, setCentroids] = useState<Record<string, [number, number]> | null>(null);
-
-  useEffect(() => {
-    // Computed once (not per render, not per rotation) from the static topology — genuinely
-    // expensive to redo every frame, cheap to do exactly once.
-    import("topojson-client").then(({ feature }) => {
-      const topo = worldTopoJson as any;
-      const collection = feature(topo, topo.objects.countries) as any;
-      const map: Record<string, [number, number]> = {};
-      for (const geo of collection.features) {
-        const alpha2 = countries.numericToAlpha2(geo.id as string);
-        if (alpha2) map[alpha2] = geoCentroid(geo) as [number, number];
-      }
-      setCentroids(map);
-    });
-  }, []);
-
+  regionCounts, rotation, globeScale, selectedRegion, onSelectRegion,
+}: {
+  regionCounts: Record<string, RegionCount>; rotation: Rotation; globeScale: number;
+  selectedRegion?: string | null; onSelectRegion?: (code: string | null) => void;
+}) {
+  const centroids = useCountryCentroids();
   if (!centroids) return null;
   // The geographic point currently facing the viewer, in [lon, lat] — the inverse of .rotate().
   const viewCenter: [number, number] = [-rotation[0], -rotation[1]];
@@ -516,20 +592,44 @@ function GlobeMarkers({
     <>
       {Object.entries(regionCounts)
         .filter(([, s]) => s.feature_count > 0 || s.trend_count > 0)
-        .map(([code]) => {
+        .map(([code, stats]) => {
           const coordinates = centroids[code];
           if (!coordinates || geoDistance(coordinates, viewCenter) > maxDistance) return null;
           return (
-            <Marker key={code} coordinates={coordinates}>
-              {/* transform-box defaults to "view-box" for SVG children, so transform-origin: center
-                  resolved to the whole SVG viewport's center (400,250), not this circle's own
-                  position — every ping ring scaled toward/away from the map's center instead of
-                  around itself. Confirmed live: this, not marker visibility, was the real cause of
-                  "dots flying around" on 2026-09-22 (the earlier visibility fix was real too, but
-                  incomplete). fill-box makes "center" resolve to the circle's own geometry. */}
-              <circle r={5} fill="#a855f7" fillOpacity={0.35} className="animate-ping" style={{ transformBox: "fill-box", transformOrigin: "center" }} />
-              <circle r={2.2} fill="#7c3aed" stroke="#fff" strokeWidth={0.6} />
-            </Marker>
+            <CategoryMarker
+              key={code} code={code} stats={stats} coordinates={coordinates}
+              selected={selectedRegion === code}
+              onClick={() => onSelectRegion?.(selectedRegion === code ? null : code)}
+            />
+          );
+        })}
+    </>
+  );
+}
+
+// Same marker, flat/equal-earth projection — no hemisphere clipping needed since every point on
+// a flat map is always "visible" (ZoomableGroup's own viewport clipping via the SVG's bounds
+// handles the rest, the same way it already does for country shapes).
+function FlatMarkers({
+  regionCounts, selectedRegion, onSelectRegion,
+}: {
+  regionCounts: Record<string, RegionCount>; selectedRegion?: string | null; onSelectRegion?: (code: string | null) => void;
+}) {
+  const centroids = useCountryCentroids();
+  if (!centroids) return null;
+  return (
+    <>
+      {Object.entries(regionCounts)
+        .filter(([, s]) => s.feature_count > 0 || s.trend_count > 0)
+        .map(([code, stats]) => {
+          const coordinates = centroids[code];
+          if (!coordinates) return null;
+          return (
+            <CategoryMarker
+              key={code} code={code} stats={stats} coordinates={coordinates}
+              selected={selectedRegion === code}
+              onClick={() => onSelectRegion?.(selectedRegion === code ? null : code)}
+            />
           );
         })}
     </>
