@@ -60,10 +60,17 @@ interface RegionCount {
 // Feature at a time (see scripts/generate_world_feature.py), so even a
 // "lot of content" region realistically means single digits for a long
 // while, not hundreds.
+//
+// Neutral zinc, not purple: confirmed live 2026-09-29 that a purple choropleth plus violet
+// "place"-category markers (13 of 17 published Features are "place" — by far the dominant
+// category with real data) made the whole map read as one undifferentiated purple wash, with
+// the category markers this whole feature exists for invisible against it. Country shading
+// (HOW MUCH) and marker color (WHAT KIND) need genuinely different hue families to both stay
+// legible regardless of which category happens to dominate.
 const BUCKETS: [number, string][] = [
-  [5, "#5b21b6"],  // purple-800
-  [2, "#8b5cf6"],  // purple-500
-  [1, "#c4b5fd"],  // purple-300
+  [5, "#52525b"],  // zinc-600
+  [2, "#a1a1aa"],  // zinc-400
+  [1, "#d4d4d8"],  // zinc-300
 ];
 
 function fillForCount(count: number): string {
@@ -295,13 +302,13 @@ export default function WorldMap({
                           transition: "fill 150ms ease",
                         },
                         hover: {
-                          fill: hasContent ? "#4c1d95" : "#94a3b8",
+                          fill: hasContent ? "#3f3f46" : "#94a3b8",
                           stroke: alpha2 === selectedRegion ? "#fbbf24" : "#ffffff",
                           strokeWidth: alpha2 === selectedRegion ? 1.6 : 0.5,
                           outline: "none",
                           cursor: hasContent ? "pointer" : "grab",
                         },
-                        pressed: { fill: "#3b0764", stroke: "#ffffff", strokeWidth: 0.5, outline: "none" },
+                        pressed: { fill: "#27272a", stroke: "#ffffff", strokeWidth: 0.5, outline: "none" },
                       }}
                     />
                   );
@@ -344,13 +351,13 @@ export default function WorldMap({
                           transition: "fill 150ms ease",
                         },
                         hover: {
-                          fill: hasContent ? "#4c1d95" : "#cbd5e1",
+                          fill: hasContent ? "#3f3f46" : "#cbd5e1",
                           stroke: alpha2 === selectedRegion ? "#fbbf24" : "#ffffff",
                           strokeWidth: (alpha2 === selectedRegion ? 2.4 : 0.5) / flatPosition.zoom,
                           outline: "none",
                           cursor: hasContent ? "pointer" : "default",
                         },
-                        pressed: { fill: "#3b0764", stroke: "#ffffff", strokeWidth: 0.5 / flatPosition.zoom, outline: "none" },
+                        pressed: { fill: "#27272a", stroke: "#ffffff", strokeWidth: 0.5 / flatPosition.zoom, outline: "none" },
                       }}
                     />
                   );
@@ -482,9 +489,9 @@ export default function WorldMap({
 
 // A marker's own rendered footprint (the solid dot plus its animate-ping ring at its largest,
 // Tailwind's default ping scales to 2x) — used to keep the WHOLE marker inside the sphere's edge,
-// not just its mathematical center point. Padded well beyond the ring's calculated peak (r=8 * 2x
-// scale = 16, for a selected marker) so the ring never grazes the sphere's boundary.
-const MARKER_VISUAL_RADIUS_PX = 26;
+// not just its mathematical center point. Padded well beyond the ring's calculated peak (r=11 *
+// 2x scale = 22, for a selected marker) so the ring never grazes the sphere's boundary.
+const MARKER_VISUAL_RADIUS_PX = 32;
 
 // How far from the view center (in radians) a point can be before it's hidden. This is NOT simply
 // "just under 90°": geoOrthographic projects a point at angle θ to a radius of `scale * sin(θ)` from
@@ -535,7 +542,10 @@ function CategoryMarker({
   const Icon = iconForCategory(category);
   const color = colorForCategory(category);
   const categoryCount = Object.keys(stats.categories || {}).length;
-  const r = selected ? 8 : 6.5;
+  // Confirmed live 2026-09-29: at the previous r=6.5, a marker rendered as only a ~3px circle
+  // on a phone screen (800-unit viewBox scaled to a ~350-400px-wide mobile viewport) -- too small
+  // to read its color at a glance even once the color itself was correct. Bumped up accordingly.
+  const r = selected ? 11 : 9;
   return (
     <Marker coordinates={coordinates} onClick={onClick}>
       <g style={{ cursor: "pointer" }}>
