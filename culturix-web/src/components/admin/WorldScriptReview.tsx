@@ -33,7 +33,13 @@ export function ScoreChip({ review }: { review: Review | null }) {
 export default function WorldScriptReview({ draftId, review, editable, onChanged, onMessage }: {
   draftId: string; review: Review | null; editable: boolean; onChanged: () => void; onMessage: (message: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  // Defaults open when the script failed the bar -- that's exactly when someone needs to see
+  // WHY, and the collapsed header only ever shows a bare score ("Script score 68/100") with no
+  // explanation. Confirmed live 2026-09-29: with most of a regeneration batch failing the
+  // quality bar, every one of those rows looked like a vague number until clicked, even though
+  // the judge's actual output (feedback, per-dimension notes, per-shot fix suggestions) was
+  // already rich and specific the whole time -- it just wasn't shown.
+  const [open, setOpen] = useState(review?.passes_bar === false);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<"improve" | "score" | null>(null);
 

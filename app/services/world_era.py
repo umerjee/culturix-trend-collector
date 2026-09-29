@@ -260,9 +260,18 @@ def _clean_phases(raw, start: int, end: int) -> list[dict]:
         look, label = str(item.get("look") or "").strip(), str(item.get("label") or "").strip()
         if not span or not look or not label:
             continue
+        # A per-phase LLM guess sometimes names something the band-level knowledge (ERA_BANDS,
+        # hand-curated) already knows is period-correct -- e.g. it called "gunpowder weapons" absent
+        # in a 1453-Constantinople phase, when early cannons are the defining, historically-accurate
+        # fact of that exact siege and the "medieval" band (until 1500) deliberately does not forbid
+        # firearms. The band is the more reliable source for this one category, so it wins.
+        band = band_for({"end_year": span[1]}) if span else None
+        firearms_ok = not (band and band["name"] == "ancient")
         avoid = []
         for term in item.get("avoid") or []:
             term = str(term).strip().lower()
+            if firearms_ok and re.search(rf"\b({_FIREARMS})\b", term, re.IGNORECASE):
+                continue
             if 2 <= len(term) <= 30 and term not in avoid:
                 avoid.append(term)
         phases.append({"from_year": span[0], "to_year": span[1], "label": label[:60], "look": look[:420], "avoid": avoid[:10]})

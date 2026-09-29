@@ -208,6 +208,48 @@ def improvement_notes(review: dict, human_note: Optional[str] = None) -> list[st
     return notes
 
 
+def build_qa_feedback_note(qa_results: dict) -> str:
+    """Turns a post-render visual QA result (app/services/culturetoon_qa.py::run_world_qa --
+    what the RENDERED VIDEO actually showed, checked against the script) into a note for
+    improve_world_draft's `note` param, so a render the automatic QA disapproved of feeds back
+    into script/prompt generation the same way a curator's own note does: passed through
+    improvement_notes() to the writer's revision prompt, with HUMAN_NOTE_SCORE_TOLERANCE
+    applied so the rewrite isn't discarded just because the script-judge score (which never
+    saw the actual video) doesn't independently rate it higher.
+
+    2026-09-29: post-render QA was advisory-only -- issues like this were stored in
+    toon.qa_results and then never looked at by anything. This is the other half of making
+    it a real gate: not just blocking publish, but making the rewrite that follows actually
+    target what went wrong on screen, not a generic re-roll."""
+    issues = qa_results.get("issues") or []
+    reasoning = (qa_results.get("reasoning") or "").strip()
+    lines = [
+        "The rendered video did not match this script closely enough to publish "
+        "(automatic post-render visual QA)."
+    ]
+    if reasoning:
+        lines.append(reasoning)
+    if qa_results.get("subject_matches") is False and qa_results.get("subject_observed"):
+        lines.append(
+            f"Most important: the render does not show the right subject at all. What's actually "
+            f"visible is: {qa_results['subject_observed']} That is wrong -- rewrite every shot's "
+            f"visual/subject_visual to name the real subject's specific, unmistakable, visually "
+            f"distinct features so it cannot be rendered as something else again."
+        )
+    if issues:
+        lines.append(
+            "Specific problems seen in the actual render: " + " ".join(f"({i + 1}) {issue}" for i, issue in enumerate(issues))
+        )
+    lines.append(
+        "Rewrite the affected shots' visual/subject_visual/action text so each names ONE "
+        "concrete, unambiguous, literally-filmable moment a video model cannot substitute or "
+        "omit -- be explicit about exact subject/species/structure identity, and describe the "
+        "specific physical change (shrinking, rotating, opening, etc.) rather than a vague "
+        "state. Do not just reword what already failed to render; change what the shot asks for."
+    )
+    return " ".join(lines)[:2000]
+
+
 def review_view(judgment: Optional[dict]) -> Optional[dict]:
     """The part of a stored comedy_judgment the admin page shows, or None for a draft that predates this
     review (it has a toons-style score but no dimensions)."""

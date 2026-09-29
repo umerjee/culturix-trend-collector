@@ -289,7 +289,8 @@ def _compose_script(db, item, *, duration_seconds: int, beat_count: int, host, s
     Returns {result, grounding, visual_warnings, review}."""
     from app.services.culturetoon_script import (
         check_world_action, check_world_autonomy, check_world_motion, check_world_plausibility,
-        check_world_visuals, generate_world_script, judge_world_grounding, normalize_world_people,
+        check_world_visuals, extract_subject_breakdown, generate_world_script, judge_world_grounding,
+        normalize_world_people,
     )
     from app.services.world_era import assign_shot_periods, check_world_anachronisms, widen_to_narration
     from app.services.world_review import review_world_script
@@ -304,13 +305,24 @@ def _compose_script(db, item, *, duration_seconds: int, beat_count: int, host, s
         return found
 
     scene_briefs = [sc["brief"].strip() for sc in scenes] if scenes else None
+    # Extracted ONCE, before any writing, and reused across every rewrite attempt below (visual
+    # fixes, claim fixes, improve-with-notes) -- the actual substance doesn't change between
+    # rewrites, only the prose/visual treatment should. None when scenes are given (that
+    # mechanism already fixes one shot per scene) or when the source gives too little for either
+    # shape (extract_subject_breakdown's own honest "nothing to extract" case).
+    event_beats = None if scenes else extract_subject_breakdown(item.title, facts, beat_count)
+    breakdown_shot_count = None
+    if event_beats:
+        breakdown_shot_count = len(event_beats.get("beats") or event_beats.get("key_facts") or [])
 
     def _write(avoid=None, fixes=None):
         return generate_world_script(
             region_code=item.region or "", region_label=region_name(item.region),
             subject_text=item.title, subject_category=category, trends=trends,
-            culture=None, host_variant=host, tone="informative", num_shots=beat_count,
+            culture=None, host_variant=host, tone="informative",
+            num_shots=breakdown_shot_count or beat_count,
             target_duration_seconds=duration_seconds, source_facts=facts, source_label=label,
+            event_beats=event_beats,
             avoid_claims=avoid, visual_fixes=fixes, scene_briefs=scene_briefs,
             previous_draft=previous, improvements=improvements, era=era,
         )

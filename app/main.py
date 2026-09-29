@@ -2899,6 +2899,29 @@ def admin_collect():
     return {"status": "collecting"}
 
 
+@app.get("/admin/comedy-patterns", dependencies=[Depends(require_admin_secret)])
+def comedy_patterns_overview():
+    """Dashboard for the comedy-ai Stage 1 pipeline (real stand-up ingestion +
+    segmentation + joke-level analysis, living in the comedy_ai schema on this same
+    Postgres instance) plus the aggregate technique/structure stats that
+    app/services/comedy_patterns.py already feeds live into CultureToons'
+    "funny"-tone script writer (see culturetoon_script.py's craft_block). This is
+    read-only visibility into data the writer prompt is already using, not a
+    separate feature to turn on."""
+    from app.services.comedy_patterns import (
+        get_pipeline_overview, get_comedy_technique_stats, get_top_structures,
+    )
+    try:
+        overview = get_pipeline_overview()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"comedy_ai schema query failed: {exc}")
+    return {
+        "overview": overview,
+        "technique_stats": get_comedy_technique_stats(limit=12),
+        "top_structures": get_top_structures(limit=10),
+    }
+
+
 @app.get("/admin/curated-items", dependencies=[Depends(require_admin_secret)])
 def list_curated_items(limit: int = 100, region: Optional[str] = None, decision: Optional[str] = None):
     from app.db import SessionLocal
@@ -3348,16 +3371,69 @@ def improve_world_production_script(toon_id: str, body: Optional[dict] = None):
         session.close()
 
 
+@app.post("/admin/world-production/{toon_id}/revise-from-qa", dependencies=[Depends(require_admin_secret)])
+def revise_world_production_from_qa(toon_id: str):
+    """Feed the automatic post-render visual QA's findings (what the rendered video actually
+    showed vs. what the script asked for) back into script/prompt generation as an improve
+    note, the same mechanism a curator's own typed note uses. Text-only -- does not re-render,
+    so this is cheap even though the render it's reacting to wasn't. Re-rendering to see if the
+    fix actually worked is a separate, deliberate action (Generate video / Retry render)."""
+    from app.db import SessionLocal
+    from app.services.world_production import WorldDraftError, improve_world_draft
+    from app.services.world_review import build_qa_feedback_note
+    session = SessionLocal()
+    try:
+        toon = _world_toon_or_404(session, toon_id)
+        if not toon.qa_results:
+            raise HTTPException(status_code=409, detail="This draft has no post-render QA result to learn from.")
+        note = build_qa_feedback_note(toon.qa_results)
+        # improve_world_draft refuses a rendered ('ready') toon outright -- "the script describes
+        # the video, editing it would make the page lie about what was rendered" (_editable_draft).
+        # Revising FROM a render's own QA result is the one case that's deliberately asking to stop
+        # describing that video: move back to an editable state first, same as any other re-take.
+        if toon.status == "ready":
+            toon.status = "idea"
+            toon.world_published = False
+            session.commit()
+        try:
+            return {"toon_id": toon_id, **improve_world_draft(session, toon, note=note)}
+        except WorldDraftError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+    finally:
+        session.close()
+
+
 @app.post("/admin/world-production/{toon_id}/publish", dependencies=[Depends(require_admin_secret)])
-def publish_world_production(toon_id: str):
+def publish_world_production(toon_id: str, body: Optional[dict] = None):
     """Make a finished render visible on the public /world pages. Rendered
-    videos are never public until a person does this."""
+    videos are never public until a person does this.
+
+    Real gate (2026-09-29): a render the automatic post-render visual QA did not
+    recommend (toon.publish_recommended is False) cannot be published without an
+    explicit force=true override — QA was previously advisory-only, which let
+    videos with known, specific problems (wrong subject shown, scripted action
+    missing, etc. — see toon.qa_results) go live anyway. force exists because the
+    QA judge itself can be wrong; it is a deliberate override, not a bypass a
+    client should set by default."""
     from app.db import SessionLocal
     session = SessionLocal()
     try:
         toon = _world_toon_or_404(session, toon_id)
         if toon.status != "ready" or not toon.final_video_url:
             raise HTTPException(status_code=409, detail="Only a finished render can be published")
+        force = bool((body or {}).get("force"))
+        if toon.publish_recommended is False and not force:
+            qa = toon.qa_results or {}
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Automatic QA did not recommend publishing this render. "
+                               "Pass force=true to publish anyway.",
+                    "overall_score": qa.get("overall_score"),
+                    "reasoning": qa.get("reasoning"),
+                    "issues": qa.get("issues") or [],
+                },
+            )
         toon.world_published = True
         session.commit()
         return {"status": "published", "toon_id": toon_id}

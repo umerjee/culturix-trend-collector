@@ -17,6 +17,8 @@ type Draft = {
   source_type: string | null; source_url: string | null; render_estimate: { gpu_seconds: number; cost_usd: number } | null;
   generation_error: string | null; publish_recommended: boolean | null; published: boolean; created_at: string | null;
   previous_video_urls: string[]; visual_style: string | null; raw_video_url: string | null; review: Review | null;
+  qa_results: { visual_score: number | null; overall_score: number | null; issues: string[]; reasoning: string | null;
+                unscripted_elements?: string[]; subject_matches?: boolean | null; subject_observed?: string | null } | null;
 };
 
 const STATUS_LABEL: Record<string, string> = { scripting: "Under production", idea: "Script ready", animating: "Rendering", ready: "Rendered", failed: "Render failed", posted: "Posted" };
@@ -158,11 +160,31 @@ Open "What will be generated" on the card first to see the exact prompts and nar
     load();
   }
 
-  async function publish(draft: Draft) {
-    if (!window.confirm(`Publish "${draft.title}" to the public World page? Anyone will be able to watch it.`)) return;
-    const res = await fetch(`/api/admin/world-production/${draft.id}/publish`, { method: "POST" });
+  async function publish(draft: Draft, force = false) {
+    if (!force && !window.confirm(`Publish "${draft.title}" to the public World page? Anyone will be able to watch it.`)) return;
+    const res = await fetch(`/api/admin/world-production/${draft.id}/publish`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ force }),
+    });
     const data = await res.json().catch(() => ({}));
-    setMessage(res.ok ? "Published. It is now live on the World page." : (data.detail || "Could not publish."));
+    if (res.ok) { setMessage("Published. It is now live on the World page."); load(); return; }
+    // 409 with a QA detail object (real gate, see main.py's publish_world_production): offer an
+    // explicit override rather than just failing, since the QA judge itself can be wrong.
+    if (res.status === 409 && data.detail && typeof data.detail === "object") {
+      const d = data.detail as { message?: string; overall_score?: number | null; reasoning?: string | null; issues?: string[] };
+      const detail = [d.reasoning, ...(d.issues || [])].filter(Boolean).join("\n- ");
+      if (window.confirm(`${d.message || "Automatic QA did not recommend publishing this render."}${d.overall_score != null ? ` (overall score ${d.overall_score}/100)` : ""}\n\n${detail ? "- " + detail : ""}\n\nPublish anyway?`)) {
+        publish(draft, true);
+      }
+      return;
+    }
+    setMessage(typeof data.detail === "string" ? data.detail : "Could not publish.");
+    load();
+  }
+
+  async function reviseFromQa(draft: Draft) {
+    const res = await fetch(`/api/admin/world-production/${draft.id}/revise-from-qa`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    setMessage(res.ok ? (data.improved ? `Script revised from QA feedback: ${data.score_before ?? "?"} to ${data.score_after ?? "?"} out of 100. Re-render to see if it fixed it.` : data.message) : (typeof data.detail === "string" ? data.detail : "Could not revise from QA feedback."));
     load();
   }
 
@@ -277,11 +299,28 @@ Open "What will be generated" on the card first to see the exact prompts and nar
         </>}
         {(draft.status === "ready" || draft.status === "posted") && draft.review && <WorldScriptReview draftId={draft.id} review={draft.review} editable={false} onChanged={load} onMessage={setMessage} />}
         {draft.generation_error && draft.status === "failed" && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{draft.generation_error}{noScript && " Archive this draft, then generate the subject again from the Subject Library."}</p>}
+        {draft.status === "ready" && draft.publish_recommended === false && draft.qa_results && <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <p className="font-semibold">
+            Automatic QA did not recommend publishing this render
+            {draft.qa_results.visual_score !== null && ` — visual score ${draft.qa_results.visual_score}/100`}
+            {draft.qa_results.overall_score !== null && ` (overall ${draft.qa_results.overall_score}/100)`}.
+          </p>
+          {draft.qa_results.subject_matches === false && <p className="mt-1 rounded-md bg-red-100 px-2 py-1.5 font-semibold text-red-800">
+            Wrong subject: {draft.qa_results.subject_observed || "the render does not show the named subject."}
+          </p>}
+          {draft.qa_results.reasoning && <p className="mt-1">{draft.qa_results.reasoning}</p>}
+          {draft.qa_results.issues.length > 0 && <ul className="mt-1 list-disc pl-5">
+            {draft.qa_results.issues.map((issue, index) => <li key={index}>{issue}</li>)}
+          </ul>}
+          <button onClick={() => reviseFromQa(draft)} className="mt-2 inline-flex min-h-9 items-center gap-1.5 rounded-md border border-amber-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100">
+            <RefreshCw className="h-3.5 w-3.5" /> Learn from QA &amp; rewrite script
+          </button>
+        </div>}
         <div className="mt-4 flex flex-wrap items-center gap-2">
           {(draft.final_video_url || (draft.previous_video_urls || []).length > 0) && <TakeLinks draft={draft} />}
           {draft.status === "ready" && !draft.published && <button onClick={() => publish(draft)} className="inline-flex min-h-10 items-center gap-1 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white"><Upload className="h-3.5 w-3.5" /> Publish</button>}
           {draft.status === "ready" && draft.published && <button onClick={() => unpublish(draft)} className="inline-flex min-h-10 items-center gap-1 rounded-md border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-700"><EyeOff className="h-3.5 w-3.5" /> Unpublish</button>}
-          {draft.status === "ready" && !draft.published && draft.publish_recommended === false && <span className="text-xs text-amber-700">Automatic QA did not recommend publishing this render.</span>}
+          {draft.status === "ready" && !draft.published && draft.publish_recommended === false && !draft.qa_results && <span className="text-xs text-amber-700">Automatic QA did not recommend publishing this render.</span>}
           {!draft.final_video_url && !noScript && <button disabled={draft.status === "animating"} onClick={() => generateVideo(draft)} className="inline-flex min-h-10 items-center gap-1 rounded-md bg-primary-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"><Play className="h-3.5 w-3.5" /> {draft.status === "failed" ? "Retry render" : "Generate video"}</button>}
           <span className="text-xs text-gray-400">{draft.status === "animating" ? "Rendering in progress" : ""}</span>
           <button disabled={draft.status === "animating"} onClick={() => archive(draft)} className="ml-auto inline-flex min-h-10 items-center gap-1 rounded-md bg-gray-100 px-2.5 py-1.5 text-xs font-semibold text-gray-600 disabled:opacity-50"><Archive className="h-3.5 w-3.5" /> Archive</button>

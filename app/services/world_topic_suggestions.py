@@ -26,6 +26,17 @@ TOPIC_SUGGESTIONS: dict[str, list[str]] = {
         "Ball lightning",
         "Mirage",
         "Meteor shower",
+        # Added 2026-09-27: picked for the same reason as the original ten, plus a bias toward
+        # subjects with real physical motion/change to film (a script-quality finding from the
+        # first country-sweep batch: abstract/static subjects score far lower on the reviewer's
+        # "dynamism"/"story" dimensions than a force visibly acting over time).
+        "Waterspout",
+        "Supercell",
+        "Red tide",
+        "Geyser",
+        "Avalanche",
+        "Sinkhole",
+        "Sun dog",
     ],
     "species": [
         "Axolotl",
@@ -38,6 +49,13 @@ TOPIC_SUGGESTIONS: dict[str, list[str]] = {
         "Naked mole-rat",
         "Venus flytrap",
         "Immortal jellyfish",
+        "Peregrine falcon",
+        "Rafflesia",
+        "Electric eel",
+        "Great white shark",
+        "Portuguese man o' war",
+        "Flying fish",
+        "Chameleon",
     ],
     "tech": [
         "CRISPR gene editing",
@@ -50,5 +68,31 @@ TOPIC_SUGGESTIONS: dict[str, list[str]] = {
         "Lab-grown meat",
         "Humanoid robot",
         "Solid-state battery",
+        "Electric vertical takeoff and landing aircraft",
+        "Hyperloop",
+        "Maglev",
+        "Vertical farming",
+        "Robotic surgery",
+        "Offshore wind turbine",
+    ],
+    # Added 2026-09-27: genz has no route from any ingestion-pipeline category either (same
+    # reason phenomenon/species needed this file to begin with). Picked for real Wikipedia
+    # documentation depth AND genuine physical/visual dynamism — a real event with real motion
+    # (people dumping ice water, a stadium of dancers, a phone held up walking down a street),
+    # not just an app's logo — since that's what this session's own evidence shows actually
+    # renders well versus a static "explain the app" subject.
+    "genz": [
+        "Ice Bucket Challenge",
+        "Harlem Shake (meme)",
+        "Pokémon Go",
+        "Fortnite Battle Royale",
+        "Among Us",
+        "K-pop",
+        "TikTok",
+        "Roblox",
+        "Twitch (service)",
+        "Minecraft",
+        "Fidget spinner",
+        "Vine (service)",
     ],
 }

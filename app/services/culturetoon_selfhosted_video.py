@@ -852,16 +852,42 @@ def _segment_scene_index(segment_shots: list) -> Optional[int]:
     return None
 
 
-def _segment_is_subject_only(segment_shots: list) -> bool:
+def _segment_is_subject_only(segment_shots: list, variants: Optional[list] = None) -> bool:
     """True when EVERY shot in this segment is shot_focus "subject" — no
     character on screen at all, e.g. a whole segment devoted to explaining
     a solar eclipse with the eclipse itself filling the frame. Such a
     segment must not be anchored on (or chained from) a character's face —
     see generate_toon_video_ltx25's docstring for the live-confirmed
-    failure this prevents."""
+    failure this prevents.
+
+    Also true whenever there is no real character at all (variants empty) — a hostless World
+    video must never take the character-anchor render path, regardless of what shot_focus a
+    shot claims. Without this, a writer emitting shot_focus "both" or "character" for a shot
+    describing named historical people (with no host/CharacterVariant actually assigned) reached
+    _build_shot_prompt's unsafe branch, which unconditionally emits `saying "{dialogue}"` for
+    whoever the text describes — a second, unanchored on-screen voice literally saying the same
+    line the real narrator track also says, with no identity anchor so a visually different
+    "character" effectively appears every segment. Confirmed live 2026-09-27 ("Discovery of
+    Rafflesia by Western Europeans"): the narrator plus two different-looking on-screen people
+    each independently voicing the narration."""
+    if not variants:
+        return True
     return bool(segment_shots) and all(
         (s.get("shot_focus") or "").strip().lower() == "subject" for s in segment_shots
     )
+
+
+def _force_subject_focus(segment_shots: list) -> list:
+    """A copy of segment_shots with shot_focus forced to "subject" wherever it wasn't already —
+    the shot-level counterpart to _segment_is_subject_only being forced True for a hostless
+    segment: routing the SEGMENT through build_ltx25_scene_prompt's subject_only=True branch
+    only helps if the shots it hands over also read as subject-focus, since _build_shot_prompt
+    decides its own safe-vs-unsafe branch from each shot's own shot_focus field, not from
+    whether the caller considers the segment hostless."""
+    return [
+        {**s, "shot_focus": "subject"} if (s.get("shot_focus") or "").strip().lower() != "subject" else s
+        for s in segment_shots
+    ]
 
 
 def _extract_last_frame_png(video_bytes: bytes) -> bytes:
@@ -1113,7 +1139,13 @@ def _segment_prompt(script, variants: list, background, segment_shots: list, *, 
     """The prompt for one segment. Shared by the render loop and plan_ltx25_segments so that what a
     curator previews is, by construction, what the renderer sends."""
     if subject_only:
-        return build_ltx25_scene_prompt(script, [], background=background, shots=segment_shots,
+        # segment_shots may still carry shot_focus "both"/"character" if this is a hostless
+        # segment forced subject_only by _segment_is_subject_only(variants=[]) rather than by
+        # the writer's own shot_focus choice — _build_shot_prompt decides its safe-vs-unsafe
+        # branch per shot from shot_focus alone, so the shots themselves must also be corrected,
+        # not just the segment-level routing. See _force_subject_focus's docstring.
+        return build_ltx25_scene_prompt(script, [], background=background,
+                                        shots=_force_subject_focus(segment_shots),
                                         continuation_anchor=False)
     if msr:
         # MSR conditions each cast member from their own reference image, so a second or third named
@@ -1144,7 +1176,7 @@ def plan_ltx25_segments(script, variants: list, background=None, scene_backgroun
         backdrop_url = getattr(scene_bg, "image_url", None) if scene_bg is not None else default_bg_url
         backdrop_name = getattr(scene_bg, "name", None) if scene_bg is not None else getattr(background, "name", None)
         seconds = sum(s.get("duration_seconds", 0) for s in segment_shots) or 5
-        subject_only = _segment_is_subject_only(segment_shots)
+        subject_only = _segment_is_subject_only(segment_shots, variants)
         image_strength = None
         if subject_only:
             prompt = _segment_prompt(script, variants, background, segment_shots, subject_only=True)
@@ -1271,7 +1303,7 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
         # or chained from, a character's face. See _segment_is_subject_only
         # and build_backdrop_only_anchor's own docstrings for the live-
         # confirmed failure this branch exists to prevent.
-        subject_only = _segment_is_subject_only(segment_shots)
+        subject_only = _segment_is_subject_only(segment_shots, variants)
         if subject_only:
             current_anchor = ltx25_workflow.build_backdrop_only_anchor(backdrop)
             # A subject-only segment always uses the classic single-image
@@ -1314,7 +1346,18 @@ def generate_toon_video_ltx25(script, variants: list, endpoint_id: str,
                         # than submitting an MSR workflow with 0-1 references.
                         current_msr_images = None
                 if current_msr_images is None:
-                    current_anchor = _fetch_portrait_anchor(primary_variant, backdrop)
+                    if primary_variant is not None:
+                        current_anchor = _fetch_portrait_anchor(primary_variant, backdrop)
+                    else:
+                        # Hostless (no cast at all) but not subject_only -- a "distant, faceless
+                        # crowd" segment (people="distant") on a World Feature with no host. There
+                        # is no character to anchor a portrait on, and the writer prompt already
+                        # forbids showing faces/closeups for this kind of shot, so a backdrop-only
+                        # anchor is the correct fallback, not a crash. Seen live: this previously
+                        # raised LTX25WorkflowError("No character images available...") and failed
+                        # the whole render for otherwise-passing scripts (e.g. Pamukkale, a
+                        # Bioluminescence-in-marine-environments draft).
+                        current_anchor = ltx25_workflow.build_backdrop_only_anchor(backdrop)
             # Deterministic backstop for a script that still named 2+ cast
             # members in one shot's blocking/action/visual despite the
             # writer prompt forbidding it — see _sanitize_segment_shots'
@@ -1471,6 +1514,29 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
         if not script:
             raise ValueError("Toon's script is missing")
 
+        # Pre-render risk check (2026-09-28) — free (text-only, no GPU) check against failure
+        # patterns already confirmed on this pipeline (a subject with no real-world physical
+        # form — every video-game/app World subject tried scored 5-15/100 visual fidelity — or
+        # a complex action described too vaguely to render). Runs BEFORE any paid GPU spend,
+        # for World content only (an ordinary CultureToon has a real cast/backdrop reference,
+        # not the reference-less text-only conditioning that makes this failure class specific
+        # to World's subject-only shots). Fails open (never blocks) on its own error.
+        if getattr(toon, "is_world_content", False):
+            try:
+                from app.services.culturetoon_qa import assess_prerender_risk
+                risk = assess_prerender_risk(toon.subject_text or toon.title or "", script.shots or [])
+                if risk["high_risk"]:
+                    error_text = ("Pre-render risk check: " + "; ".join(risk["risk_reasons"]))[:2000]
+                    toon.status = "failed"
+                    toon.generation_error = error_text
+                    session.commit()
+                    logger.warning("Skipped paid render for toon %s (pre-render risk): %s",
+                                   toon_id, risk["recommendation"])
+                    return
+            except Exception:
+                logger.warning("Pre-render risk check failed for toon %s, proceeding with render",
+                               toon_id, exc_info=True)
+
         variants, background, scene_backgrounds = load_render_context(session, toon, script)
 
         endpoint_id = os.getenv("RUNPOD_SERVERLESS_ENDPOINT_ID", "")
@@ -1524,6 +1590,30 @@ def generate_video_for_toon_selfhosted(user_id, toon_id) -> None:
 
         _resilient_commit(session, _apply_success)
         logger.info("Self-hosted video generation complete for toon %s", toon_id)
+
+        # World Feature visual QA (2026-09-27) — this path previously ran no QA of any kind
+        # (run_full_qa in culturetoon_qa.py is only ever called from the Kling path). Best-
+        # effort and never allowed to affect the render's own success: the video is already
+        # made and paid for by this point, and a QA outage must not undo that or block
+        # publishing (publish_recommended is advisory only, never a hard gate).
+        if getattr(toon, "is_world_content", False):
+            try:
+                from app.services.culturetoon_qa import run_world_qa
+                qa = run_world_qa(
+                    video_url, duration, toon.subject_text or toon.title or "",
+                    getattr(render_script, "shots", None) or [],
+                )
+
+                def _apply_qa():
+                    toon.qa_results = qa
+                    toon.publish_recommended = qa["publish_recommended"]
+
+                _resilient_commit(session, _apply_qa)
+                logger.info("World visual QA for toon %s: score=%s publish_recommended=%s",
+                           toon_id, qa["overall_score"], qa["publish_recommended"])
+            except Exception:
+                logger.warning("World visual QA failed for toon %s (render itself succeeded)",
+                               toon_id, exc_info=True)
 
     except (ValueError, SelfHostedVideoGenerationError, runpod_serverless_client.RunPodServerlessError, TimeoutError) as exc:
         session.rollback()

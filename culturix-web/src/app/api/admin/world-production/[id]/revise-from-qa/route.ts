@@ -4,12 +4,9 @@ import { adminApiHeaders } from "@/lib/admin/adminApiHeaders";
 
 const RAILWAY = process.env.NEXT_PUBLIC_API_URL || "https://culturix-trend-collector-production.up.railway.app";
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(_req: Request, { params }: { params: { id: string } }) {
   const gate = await requireSuperAdminApi();
   if (gate instanceof NextResponse) return gate;
-  const body = await req.json().catch(() => ({}));
-  const res = await fetch(`${RAILWAY}/admin/world-production/${params.id}/publish`, {
-    method: "POST", headers: adminApiHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ force: !!body.force }),
-  });
+  const res = await fetch(`${RAILWAY}/admin/world-production/${params.id}/revise-from-qa`, { method: "POST", headers: adminApiHeaders() });
   return NextResponse.json(await res.json().catch(() => ({})), { status: res.status });
 }

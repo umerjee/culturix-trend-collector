@@ -21,6 +21,7 @@ from typing import Optional
 
 from app.models.persona import Persona
 from app.models.cluster import Cluster
+from app.services.comedy_patterns import build_comedy_craft_addendum
 from app.models.toon_shot import SHOT_TYPES, CAMERA_MOVEMENTS
 
 logger = logging.getLogger("culturix.services.culturetoon_script")
@@ -725,7 +726,13 @@ given below."""
   shot (max ~15 words) — a concrete, exaggerated physical beat (e.g. "sweating, dancing
   manically" or "aggressively taps a stopwatch"), not a generic verb like "gestures" or
   "reacts." """
-        craft_block = """Comedy craft — the single biggest thing separating a flat skit from a genuinely funny one:
+        try:
+            comedy_pattern_block = build_comedy_craft_addendum()
+        except Exception:
+            comedy_pattern_block = ""
+        if comedy_pattern_block:
+            comedy_pattern_block = f"\n{comedy_pattern_block}\n"
+        craft_block = f"""Comedy craft — the single biggest thing separating a flat skit from a genuinely funny one:
 - SPECIFICITY over generality. Never write a generic statement a real person might mildly
   say ("we celebrate with a big feast") — write the hyper-specific, concrete version instead
   (named props, exact numbers, absurd particulars: "a 500-person feast, 4 days of Bollywood
@@ -740,7 +747,7 @@ given below."""
 - Use the cast's personality/culture/relationship context above aggressively, not just as
   flavor text — a character with an established trait should take that trait to a comedic
   extreme, not just gently reference it.
-
+{comedy_pattern_block}
 Concrete example of the gap between a WEAK first draft and what you should actually write —
 same premise (three friends comparing how their cultures react to a newborn), same length:
 
@@ -1582,7 +1589,8 @@ def _world_context(region_label: str, subject_text: str, subject_category: Optio
                     source_facts: Optional[str] = None, source_label: Optional[str] = None,
                     avoid_claims: Optional[list] = None, visual_fixes: Optional[list] = None,
                     scene_briefs: Optional[list] = None, previous_draft: Optional[dict] = None,
-                    improvements: Optional[list] = None, era: Optional[dict] = None) -> str:
+                    improvements: Optional[list] = None, era: Optional[dict] = None,
+                    event_beats: Optional[dict] = None) -> str:
     """Builds the "context" string for generate_world_script, in the same
     role _source_type_and_context plays for the Persona/Cluster path — the
     thing a subject-centric World Feature is grounded in isn't a trending
@@ -1628,6 +1636,55 @@ def _world_context(region_label: str, subject_text: str, subject_category: Optio
             "duration. (4) Every subject_visual is a concrete, filmable real-world scene (light, "
             "scale, motion, camera move) — no text overlays, maps-with-labels or infographics."
         )
+    if event_beats and (event_beats.get("beats") or event_beats.get("key_facts")):
+        # Pre-extracted by extract_subject_breakdown() as its own focused call, BEFORE this
+        # prompt was built — built after a direct complaint (the Storming of the Bastille
+        # rendered as panning establishing shots, no actual conflict ever shown) that the writer,
+        # juggling this whole prompt's other rules at once, was losing the actual substance. This
+        # is not a suggestion: shot count and content are LOCKED to what's below, so the subject
+        # itself cannot get lost the way it did before. Two shapes, matching what the subject
+        # actually is (a real event's sequence is not the same thing as a species' traits, and
+        # forcing one onto the other invents a fake structure):
+        actors = event_beats.get("actors") or []
+        if actors:
+            context += "\n\nACTORS actually involved (use these, do not invent others): " + "; ".join(
+                f"{a.get('name')} ({a.get('role')})" if a.get("role") else str(a.get("name"))
+                for a in actors if a.get("name")
+            )
+        if event_beats.get("kind") == "event" and event_beats.get("beats"):
+            beats = event_beats["beats"]
+            context += (
+                f"\n\nEVENT SEQUENCE — already extracted from the source, in order. Write EXACTLY "
+                f"{len(beats)} shots, one per beat below, IN THIS ORDER — do not merge, skip, reorder "
+                "or summarize them, and do not invent a different structure. Keeping this order matters: "
+                "these beats are often causally linked (one step enables the next), and reordering them "
+                "for a punchier opening breaks that cause-and-effect chain worse than it helps the hook.\n"
+                + "\n".join(f"{i + 1}. {b.get('beat')}" + ("  <- THE CLIMAX: this shot must be the most "
+                                                            "intense, consequential moment in the video"
+                                                            if b.get("is_climax") else "")
+                            for i, b in enumerate(beats))
+                + "\nEach shot's subject_visual must show THAT beat happening as a physical action — the "
+                "actual collision, strike, fall, opening or closing — never a wide establishing/panning "
+                "shot of the setting instead of the event itself.\n"
+                "SHOT 1's PHRASING (not its content — the order above is fixed) still follows the hook "
+                "rule above: whatever beat 1 is, even a construction start or a first discovery, NEVER "
+                "narrate it as a date-led label (\"In [year], X began...\", \"The first record of X dates "
+                "to...\"). Find the specific, physical, already-in-motion instant inside that same beat "
+                "and open there instead — hands mid-motion, a specific number, a specific strain or "
+                "sound — the same content, filmed and narrated as something happening, not something "
+                "being announced."
+            )
+        elif event_beats.get("key_facts"):
+            facts_list = event_beats["key_facts"]
+            context += (
+                f"\n\nKEY FACTS — already extracted from the source, the most specific and filmable "
+                f"things about this subject. Write EXACTLY {len(facts_list)} shots, one per fact below "
+                "— do not merge, skip, or replace them with a generic establishing view instead:\n"
+                + "\n".join(f"{i + 1}. {fact}" for i, fact in enumerate(facts_list))
+                + "\nEach shot's subject_visual must visually DEMONSTRATE that specific fact happening or "
+                "being visible — never a wide, generic shot of the setting/habitat instead of the "
+                "actual distinguishing detail the fact names."
+            )
     if era and era.get("label"):
         from app.services.world_era import band_for, year_text
         span = year_text(era["start_year"]) + (f" to {year_text(era['end_year'])}" if era["end_year"] != era["start_year"] else "")
@@ -2053,6 +2110,77 @@ Return ONLY valid JSON: {{"duration_seconds": int, "beat_count": int, "rationale
         return fallback
 
 
+def extract_subject_breakdown(subject_text: str, source_facts: str, beat_count: int) -> Optional[dict]:
+    """A focused, single-purpose call that breaks the subject down BEFORE any prose or visual
+    writing begins — built after a direct complaint (the Storming of the Bastille rendered as
+    panning establishing shots with no actual conflict ever shown) that diagnosed to the same
+    root cause as the country-sweep's early "list of facts" failures: one mega-call juggling
+    structure alongside 15+ other simultaneous rules (tone, speed, subject accuracy, period
+    accuracy...) loses the actual substance under everything else it is tracking. Splitting "what
+    this is actually about" from "how to film it" into two single-purpose calls is the same
+    principle already used everywhere else in this file (one narrow LLM call per job).
+
+    2026-09-28: generalized from an event-only version (extract_event_beats) after the same
+    request to make this "smart about subject type" — a battle needs a chronological sequence of
+    actions, but a species or phenomenon isn't a story with beats; forcing one onto it invents a
+    fake sequence. This version decides "event" vs "static" itself and returns the shape that
+    actually fits: beats (an ordered sequence of physical actions) for an event, or key_facts (the
+    most specific, camera-filmable, non-sequential facts) for something better explained through
+    its own distinguishing traits. Returns None when the source gives too little for either
+    shape — the caller falls back to writing directly from source_facts as before, not a
+    fabricated structure."""
+    prompt = f"""Read this source material about "{subject_text}" and break it down for a short-form
+video script, BEFORE any prose or visual writing begins.
+
+Source material:
+{(source_facts or '').strip()[:4000]}
+
+First decide what KIND of subject this is:
+- "event": something that happened as a sequence of discrete actions over time (a battle, a
+  discovery, a disaster, a construction project with real stages, a natural event with a beginning,
+  middle and end).
+- "static": something better explained through its own distinguishing facts and traits, not a story
+  sequence (a species' body and behavior, a place's geography, a phenomenon's mechanism, a
+  technology's how-it-works).
+
+Return ONLY valid JSON: {{"kind": "event" or "static",
+"actors": [{{"name": string, "role": string}}],
+"beats": [{{"beat": string, "is_climax": boolean}}],
+"key_facts": [string]}}
+- actors: the real, specifically-named people/groups/forces actually involved (empty list if the
+  source names none specifically — never invent a name).
+- beats: ONLY if kind is "event" — up to {beat_count} beats in strict chronological/causal order,
+  each ONE concrete physical action, not a theme or label: who or what moved, collided, broke,
+  struck, fell, opened, closed, was built, was found. Every beat must be something a camera could
+  literally point at and film. Exactly one beat should have is_climax=true: the single most
+  consequential, decisive moment. Leave this an empty list if kind is "static".
+- key_facts: ONLY if kind is "static" — up to {beat_count} of the single most specific, concrete,
+  camera-filmable facts about the subject: a distinguishing physical feature, an exact measurement
+  or number, one remarkable specific behavior or mechanism. Not themes, not generic statements —
+  each one should be something a single shot could visually demonstrate. Leave this an empty list
+  if kind is "event".
+- If the source gives too little to fill either meaningfully, return kind="static" with an empty
+  key_facts list — never invent a sequence or facts the source doesn't support."""
+    try:
+        parsed = _call_llm_json(prompt, temperature=0.2, max_tokens=800)
+    except ToonScriptGenerationError:
+        logger.warning("Subject breakdown failed for %r; writer falls back to source_facts alone", subject_text, exc_info=True)
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    kind = parsed.get("kind")
+    actors = parsed.get("actors") or []
+    if kind == "event":
+        beats = parsed.get("beats")
+        if isinstance(beats, list) and beats:
+            return {"kind": "event", "actors": actors, "beats": beats[:beat_count]}
+    elif kind == "static":
+        key_facts = parsed.get("key_facts")
+        if isinstance(key_facts, list) and key_facts:
+            return {"kind": "static", "actors": actors, "key_facts": key_facts[:beat_count]}
+    return None
+
+
 def generate_world_script(region_code: str, region_label: str, subject_text: str,
                            subject_category: Optional[str] = None,
                            trends: Optional[list] = None, culture: Optional[dict] = None,
@@ -2065,7 +2193,8 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
                            scene_briefs: Optional[list] = None,
                            previous_draft: Optional[dict] = None,
                            improvements: Optional[list] = None,
-                           era: Optional[dict] = None) -> dict:
+                           era: Optional[dict] = None,
+                           event_beats: Optional[dict] = None) -> dict:
     """Generates a World Feature script — a subject-centric video (a place,
     phenomenon, or species is the star) grounded in real region-filtered
     Trend rows and (optionally) the shared Culture library, for the public
@@ -2092,7 +2221,8 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
     context = _world_context(region_label, subject_text, subject_category, trends, culture,
                              source_facts=source_facts, source_label=source_label, avoid_claims=avoid_claims,
                              visual_fixes=visual_fixes, scene_briefs=scene_briefs,
-                             previous_draft=previous_draft, improvements=improvements, era=era)
+                             previous_draft=previous_draft, improvements=improvements, era=era,
+                             event_beats=event_beats)
     if not variants:
         # cast_line is empty with no variants (see _cast_line), which on its
         # own leaves the craft guidance's "use the cast to carry the
@@ -2111,7 +2241,13 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
             "that show them, and describe them only as small, distant, faceless groups in WIDE shots: "
             "never faces, never close-ups, no graphic violence, and no named units, insignia or "
             "specific equipment models unless the source mentions them. Never describe people while "
-            "\"people\" is \"none\".\n"
+            "\"people\" is \"none\". This overrides SUBJECT ACCURACY below for any incidental person in "
+            "frame (a farmer, a worker, an onlooker): however specifically the source describes THAT "
+            "person, they still render as a small, distant, faceless figure, never a close-up push-in on "
+            "their face or actions — a close, detailed shot of a person is exactly what makes a video "
+            "model generate speech-like sounds for them, which then overlap the real narration underneath. "
+            "SUBJECT ACCURACY's specificity is for the non-human subject (the object, place, animal, "
+            "structure), not for people who merely happen to be in the shot.\n"
             "MOTION: this is video, not a slideshow. A still scene renders as a still image with a slow "
             "zoom. Every subject_visual must describe ACTION IN TIME ORDER, using present-tense verbs: what "
 "moves and how, from the start of the shot to its end: who or what moves, where to, and what has "
@@ -2123,18 +2259,83 @@ def generate_world_script(region_code: str, region_label: str, subject_text: str
             "orbit) and shot_type should vary across the video. NARRATION LENGTH: each shot's dialogue is "
             "14 to 18 words (about 6 to 7 seconds spoken), so shots stay near 8 seconds: a long shot renders "
             "as a slow, static scene, and a very short line leaves the shot silent. People wear what the period and place required, never modern clothing.\n"
+            "SUBJECT ACCURACY: a video model has no reference photo of this subject, only your words — naming "
+            "it (\"a mantis shrimp\", \"the Plaza de Toros\", \"Seoul\") is not enough and reliably renders a "
+            "generic stand-in (a plain shrimp, a livestock pen, a random seaside town) instead of the real "
+            "thing. Whenever the source material states a specific, distinguishing physical fact about the "
+            "subject — its color, size, shape, material, number of a feature, or how it differs from something "
+            "similar — that exact descriptor MUST appear in the subject_visual of the shot showing it, not just "
+            "the subject's name. A peacock mantis shrimp is not \"a shrimp\": it is described as, e.g., a "
+            "\"stocky, vividly blue-and-orange-patterned crustacean with two thick, club-like front "
+            "appendages\" if the source gives you that. A named building is not just its name: describe its "
+            "actual scale, material and shape from the source (a stone amphitheater with tiered seating, not "
+            "a fenced pen) rather than letting the model default to something generic-but-wrong. If the "
+            "source gives no distinguishing detail for something, do not invent one — describe it only as "
+            "specifically as the source allows.\n"
             "NO AMBIENT LIFE: never write that people 'go about their daily lives', that a place is 'bustling', "
             "'thriving', 'vibrant' or 'peaceful', or that people 'interact'. That is scenery. Each subject_visual is "
             "ONE specific event with a clear before and after, naming who does what to what.\n"
             "ENGAGEMENT: the viewer decides in three seconds. Line 1 drops them into a moment of stakes or "
             "contrast using the most striking fact in the source (the scale of the force, the odds, the "
-            "surprise), never a label or a date-and-definition opener. Each later line ESCALATES or TURNS "
-            "(cause, then effect, then consequence); it never lists. The last line reframes what the viewer "
-            "just watched. In EVERY shot something must CHANGE between its first and last frame (a fleet "
+            "surprise), never a label or a date-and-definition opener. Never open with \"Imagine...\" or any "
+            "other scene-setting invitation — start inside the moment itself, already happening. BAD hook "
+            "(a date-and-definition label): \"In 1937, the Golden Gate Bridge opened, spanning the strait.\" "
+            "GOOD hook (a striking moment, no date): \"Two strong tides collide right where they wanted to "
+            "sink a bridge's foundations into open water.\" If your first line contains a year or starts by "
+            "naming what the subject IS, rewrite it before continuing. Each later "
+            "line ESCALATES or TURNS (cause, then effect, then consequence); it never lists. Before writing "
+            "the shots, pick ONE throughline (a force acting over time, a before/after, a chain of cause and "
+            "effect) and hang every shot on it. THE REORDER TEST: if any two shots could swap places without "
+            "changing what the video means, that is a list, not a story — rewrite so each shot only makes "
+            "sense because of the one before it. The last line reframes what the viewer just watched. In "
+            "EVERY shot something must CHANGE between its first and last frame (a fleet "
             "appears out of haze, a ramp drops and men pour out, a wall of smoke swallows the shore), told "
             "as an event, not a scene. Vary scale and angle shot to shot (wide establishing, low tracking "
             "along the action, a close detail of machinery or water, an aerial), and let each visual show "
             "what its narration line has just said.\n"
+            "TONE: write like a precise documentary narrator citing specific, sourced facts, not a movie-"
+            "trailer voice. Never use generic dramatic filler (\"a new era began\", \"changing history "
+            "forever\", \"a testament to human ingenuity\") unless the very next words name the SPECIFIC "
+            "mechanism: what physically changed, in what order, because of what. A vague grand claim with "
+            "no named mechanism reads as hype, not history.\n"
+            "AUDIENCE: the real audience is the general public, every age — this is a CLARITY "
+            "calibration, not a target demographic, and must never read as written specifically "
+            "for children or teenagers. Write so that someone hearing about this subject for the "
+            "very first time, with zero prior background, understands every sentence on first "
+            "listen — short, direct sentences, one idea each. If a word most adults wouldn't "
+            "recognize is necessary (a technical term, an old title, a unit), define it in the "
+            "same breath in plain words rather than assuming it or skipping it. This is about "
+            "VOCABULARY and SENTENCE SIMPLICITY ONLY, never about tone, never about diluting the "
+            "facts, the stakes or the specific mechanism, and never about sounding young, "
+            "playful or simplistic — a general adult audience can handle a real battle, a real "
+            "death, a real collapse, told plainly and with full seriousness; they just cannot "
+            "follow a sentence built from three clauses and a word they've never heard.\n"
+            "WORKED EXAMPLE (the PATTERN to follow, not this session's subject): hook — \"Twenty seconds of "
+            "fuel left, and the lunar module is still forty feet above ground no one has mapped.\" — a "
+            "specific number, a specific stake, no date, no label. Shot 2 — \"A computer alarm the crew has "
+            "never seen floods the console; mission control has seconds to decide whether to abort.\" — "
+            "escalates the SAME crisis with a new, named complication. Shot 3 — \"The commander takes manual "
+            "control, skimming past a boulder field toward a clearer stretch of dust.\" — the turn: a "
+            "specific action resolving the specific complication just named. Shot 4 (reframe) — \"The engine "
+            "cuts out with seconds of fuel spared — not because the plan worked, but because two men "
+            "improvised past it in real time.\" — ends on an insight about what actually happened, not a "
+            "summary of what the subject IS. Notice every line names a specific number, object or decision; "
+            "none of it could be reordered without breaking the cause-and-effect chain.\n"
+            "SPEED: if the subject's whole notability is an extreme speed, acceleration or impact (a strike, "
+            "a predator lunge, a natural force, a machine), the fastest instant must be UNMISTAKABLY fast on "
+            "screen, not a plain action verb — a video model defaults to ordinary-speed motion unless told "
+            "otherwise. Describe the moment itself as a blur too fast to resolve (a limb already a smear "
+            "before the eye can follow, a shockwave ring frozen mid-expansion, the target already struck "
+            "with no visible windup), or show the clear BEFORE and immediately the AFTER with the action "
+            "itself implied as having happened between them. Never describe only the calm result (bubbles "
+            "drifting, an object coming to rest) without the strike/motion itself reading as violently fast.\n"
+            "INTERIOR: if the subject is a vehicle, vessel or capsule built to carry an occupant (a pod, "
+            "car, cockpit, cabin) and the source describes what it is like inside or who has ridden in it, "
+            "at least one shot MUST be from inside that space — the occupant's own view, the seats, the "
+            "controls, a window looking out — not only the exterior. A video that only ever shows the "
+            "outside of something whose entire point is what happens inside it misses the actual subject; "
+            "describe the interior as specifically as the source allows (what it looks like, what the "
+            "occupant sees or feels), never invent detail the source does not give.\n"
             "PLAUSIBILITY: never describe a biological or physical transformation becoming VISIBLE within "
             "one ~8-second shot as the direct result of a single action (a plant 'shows signs of "
             "transformation' right after an injection, a wound visibly healing, a cell visibly dividing "
