@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import { fetchAdminData } from "@/lib/admin/fetchAdmin";
+import GenerateScriptPanel from "@/components/admin/GenerateScriptPanel";
 
 type PerComedian = {
   id: string; name: string; videos: number; videos_with_transcript: number;
@@ -83,6 +84,8 @@ export default function ComedyPatternsPage() {
       {error && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
       )}
+
+      <GenerateScriptPanel />
 
       {data && (
         <>
