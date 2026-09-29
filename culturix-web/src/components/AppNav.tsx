@@ -1,7 +1,10 @@
+"use client";
+
 import Link from "next/link";
 import { Zap, LayoutDashboard, TrendingUp, Settings, ShieldCheck, LogOut, HelpCircle, ShoppingBag, Drama, CalendarDays } from "lucide-react";
 import ProductSwitcher, { ProductKey } from "./ProductSwitcher";
 import LanguageSwitcher from "./marketing/LanguageSwitcher";
+import { useLocale } from "./i18n/LocaleProvider";
 
 type NavKey = "dashboard" | "performance" | "calendar" | "shopify" | "culturetoons" | "settings";
 
@@ -44,6 +47,15 @@ const SETTINGS_ITEM: NavItem = {
 };
 
 export default function AppNav({ active, isSuperAdmin, product }: Props) {
+  const { messages } = useLocale();
+  const localizedItems: Record<NavKey, string> = {
+    dashboard: messages.dashboard,
+    performance: messages.performance,
+    calendar: messages.calendar,
+    shopify: messages.shopify,
+    culturetoons: messages.culturetoons,
+    settings: messages.settings,
+  };
   const items = [...PRODUCT_ITEMS[product], SETTINGS_ITEM];
   return (
     <header className="bg-white border-b border-gray-100 sticky top-0 z-10">
@@ -73,18 +85,18 @@ export default function AppNav({ active, isSuperAdmin, product }: Props) {
               }`}
             >
               {icon}
-              <span className="hidden sm:inline">{label}</span>
+              <span className="hidden sm:inline">{localizedItems[key] || label}</span>
             </Link>
           ))}
           <Link
             href="/how-it-works"
             target="_blank"
             rel="noopener noreferrer"
-            title="How publishing works"
+            title={messages.help}
             className="inline-flex items-center gap-1.5 text-sm font-medium rounded-lg px-2 sm:px-3 py-2 shrink-0 text-gray-400 hover:bg-gray-50 hover:text-gray-600 transition-colors"
           >
             <HelpCircle className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">How it works</span>
+            <span className="hidden sm:inline">{messages.help}</span>
           </Link>
           {isSuperAdmin && (
             <Link
@@ -92,13 +104,13 @@ export default function AppNav({ active, isSuperAdmin, product }: Props) {
               className="inline-flex items-center gap-1.5 text-sm font-medium text-primary-600 border border-primary-200 rounded-lg px-2 sm:px-3 py-2 shrink-0 hover:bg-primary-50 transition-colors ml-1"
             >
               <ShieldCheck className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Admin</span>
+              <span className="hidden sm:inline">{messages.admin}</span>
             </Link>
           )}
           <form action="/api/auth/signout" method="POST" className="ml-1 shrink-0">
             <button
               type="submit"
-              title="Sign out"
+              title={messages.signOut}
               className="inline-flex items-center gap-1.5 text-sm font-medium text-gray-400 rounded-lg px-2 sm:px-3 py-2 hover:bg-gray-50 hover:text-gray-600 transition-colors"
             >
               <LogOut className="h-3.5 w-3.5" />

@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { ChevronDown, Lightbulb, ShoppingBag, Drama, Check } from "lucide-react";
+import { useLocale } from "./i18n/LocaleProvider";
 
 export type ProductKey = "posting-ideation" | "shopify" | "culturetoons";
 
@@ -43,6 +44,7 @@ interface Props {
 }
 
 export default function ProductSwitcher({ product }: Props) {
+  const { messages } = useLocale();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const current = PRODUCTS.find((p) => p.key === product) ?? PRODUCTS[0];
@@ -75,7 +77,7 @@ export default function ProductSwitcher({ product }: Props) {
           className="absolute left-0 top-full mt-1 w-72 bg-white border border-gray-100 rounded-xl shadow-lg py-1.5 z-20"
         >
           <div className="px-3 py-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wide">
-            Culturix products
+            {messages.products}
           </div>
           {PRODUCTS.map((p) => (
             <Link
@@ -89,9 +91,9 @@ export default function ProductSwitcher({ product }: Props) {
               <span className={`mt-0.5 ${p.key === product ? "text-primary-600" : "text-gray-400"}`}>{p.icon}</span>
               <span className="flex-1 min-w-0">
                 <span className={`block text-sm font-medium ${p.key === product ? "text-primary-600" : "text-gray-900"}`}>
-                  {p.label}
+                  {p.key === "posting-ideation" ? messages.posting : p.key === "shopify" ? messages.shopify : messages.culturetoons}
                 </span>
-                <span className="block text-xs text-gray-500">{p.description}</span>
+                <span className="block text-xs text-gray-500">{p.key === "posting-ideation" ? messages.postingDesc : p.key === "shopify" ? messages.shopifyDesc : messages.culturetoonsDesc}</span>
               </span>
               {p.key === product && <Check className="h-4 w-4 text-primary-600 mt-0.5" />}
             </Link>

@@ -26,6 +26,7 @@ export default function LanguageSwitcher() {
   function changeLanguage(next: string) {
     setLanguage(next);
     document.cookie = `culturix_language=${next}; path=/; max-age=31536000; samesite=lax`;
+    window.dispatchEvent(new Event("culturix-language-change"));
     const params = new URLSearchParams(searchParams.toString());
     if (next === "en") params.delete("lang");
     else params.set("lang", next);
