@@ -546,11 +546,15 @@ function CategoryMarker({
             2026-09-22, see the marker-visibility fix this replaces). */}
         <circle r={r} fill={color} fillOpacity={0.35} className="animate-ping" style={{ transformBox: "fill-box", transformOrigin: "center" }} />
         <circle r={r} fill={color} stroke="#fff" strokeWidth={selected ? 1.4 : 0.9} />
-        <foreignObject x={-r * 0.62} y={-r * 0.62} width={r * 1.24} height={r * 1.24} style={{ pointerEvents: "none" }}>
-          <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <Icon color="#fff" strokeWidth={3} style={{ width: "100%", height: "100%" }} />
-          </div>
-        </foreignObject>
+        {/* A lucide icon renders as its own <svg> — nesting it directly (valid per the SVG spec,
+            unlike wrapping it in <foreignObject> with an HTML <div>) is what actually renders
+            reliably on mobile browsers. Confirmed live 2026-09-29: foreignObject showed as a
+            broken/blank glyph on mobile Chrome, leaving only the plain colored circles visible
+            with no icon — nested <svg> has none of that HTML-in-SVG compatibility risk. */}
+        <Icon
+          x={-r * 0.55} y={-r * 0.55} width={r * 1.1} height={r * 1.1}
+          color="#fff" strokeWidth={3} style={{ pointerEvents: "none" }}
+        />
         {categoryCount > 1 && (
           <>
             <circle cx={r * 0.78} cy={-r * 0.78} r={3.2} fill="#111827" stroke="#fff" strokeWidth={0.6} />
