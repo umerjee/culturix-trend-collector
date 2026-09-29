@@ -11,17 +11,19 @@ import { MomentumBadge } from "@/components/admin/badges";
 export default function ClustersLayout({ children }: { children: React.ReactNode }) {
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const pathname = usePathname();
   // Phones/iPad portrait: show the list OR the detail, not both stacked.
   const hasSelection = pathname !== "/admin/clusters" && pathname !== "/admin/clusters/";
 
   useEffect(() => {
-    fetchAdminData<Cluster[]>("clusters").then(setClusters).catch(() => setClusters([])).finally(() => setLoading(false));
+    fetchAdminData<Cluster[]>("clusters").then(setClusters).catch((err) => setError(err instanceof Error ? err.message : "Could not load clusters.")).finally(() => setLoading(false));
   }, []);
 
   return (
     <div className="space-y-4">
       <h1 className="font-bold text-gray-900 text-xl">Clusters</h1>
+      {error && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">Could not load clusters. {error}</p>}
       <div className="grid lg:grid-cols-[1fr,1.1fr] gap-4 lg:gap-6 items-start lg:h-[calc(100vh-14rem)]">
         <div className={`space-y-3 lg:h-full lg:overflow-y-auto lg:pr-1 ${hasSelection ? "hidden lg:block" : ""}`}>
           {loading && <p className="text-gray-400 text-sm">Loading…</p>}

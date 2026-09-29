@@ -11,12 +11,13 @@ import OccurrenceTimeline from "@/components/admin/charts/OccurrenceTimeline";
 export default function HistoryPage() {
   const [trendHistory, setTrendHistory] = useState<TrendTheme[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [selectedThemeId, setSelectedThemeId] = useState<number | null>(null);
   const [occurrences, setOccurrences] = useState<TrendOccurrence[]>([]);
   const [occurrencesLoading, setOccurrencesLoading] = useState(false);
 
   useEffect(() => {
-    fetchAdminData<TrendTheme[]>("trend-history").then(setTrendHistory).catch(() => setTrendHistory([])).finally(() => setLoading(false));
+    fetchAdminData<TrendTheme[]>("trend-history").then(setTrendHistory).catch((err) => setError(err instanceof Error ? err.message : "Could not load trend history.")).finally(() => setLoading(false));
   }, []);
 
   async function selectTheme(id: number) {
@@ -39,6 +40,7 @@ export default function HistoryPage() {
   return (
     <div className="space-y-6">
       <h1 className="font-bold text-gray-900 text-xl">History</h1>
+      {error && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">Could not load trend history. {error}</p>}
 
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         {PATTERN_ORDER.map((p) => (

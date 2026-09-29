@@ -13,20 +13,24 @@ export default function ValidationPage() {
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [checkLog, setCheckLog] = useState<ContentCheckLogEntry[]>([]);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     fetchAdminData<ValidationLogEntry[]>("validation", { limit })
       .then(setLog)
-      .catch(() => setLog([]))
+      .catch((err) => setError(err instanceof Error ? err.message : "Could not load validation records."))
       .finally(() => { setLoading(false); setLoadingMore(false); });
   }, [limit]);
 
   useEffect(() => {
-    fetchAdminData<ContentCheckLogEntry[]>("content-check-log").then(setCheckLog).catch(() => setCheckLog([]));
+    fetchAdminData<ContentCheckLogEntry[]>("content-check-log")
+      .then(setCheckLog)
+      .catch((err) => setError(err instanceof Error ? err.message : "Could not load the content-check log."));
   }, []);
 
   const filtered = log.filter((v) => {
@@ -42,6 +46,7 @@ export default function ValidationPage() {
   return (
     <div className="space-y-6">
       <h1 className="font-bold text-gray-900 text-xl">Validation</h1>
+      {error && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">Could not load all validation data. {error}</p>}
 
       <div className="space-y-4">
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">

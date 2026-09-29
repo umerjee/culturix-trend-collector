@@ -228,7 +228,7 @@ export default function OverviewPage() {
 
         <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
           <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-gray-50">
-            <h2 className="font-semibold text-gray-900 text-sm">Top Clusters</h2>
+            <h2 className="font-semibold text-gray-900 text-sm">Recent Clusters</h2>
             <Link href="/admin/clusters" className="text-xs text-primary-600 hover:underline">View all →</Link>
           </div>
           {clusters.length === 0 && <p className="text-sm text-gray-400 px-4 sm:px-6 py-8">No clusters yet — run the pipeline.</p>}

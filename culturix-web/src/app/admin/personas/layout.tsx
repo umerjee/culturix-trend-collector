@@ -10,17 +10,19 @@ import { MomentumBadge } from "@/components/admin/badges";
 export default function PersonasLayout({ children }: { children: React.ReactNode }) {
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const pathname = usePathname();
   // Phones/iPad portrait: show the list OR the detail, not both stacked.
   const hasSelection = pathname !== "/admin/personas" && pathname !== "/admin/personas/";
 
   useEffect(() => {
-    fetchAdminData<Persona[]>("personas").then(setPersonas).catch(() => setPersonas([])).finally(() => setLoading(false));
+    fetchAdminData<Persona[]>("personas").then(setPersonas).catch((err) => setError(err instanceof Error ? err.message : "Could not load personas.")).finally(() => setLoading(false));
   }, []);
 
   return (
     <div className="space-y-4">
       <h1 className="font-bold text-gray-900 text-xl">Personas</h1>
+      {error && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">Could not load personas. {error}</p>}
       <div className="grid lg:grid-cols-[1fr,1.1fr] gap-4 lg:gap-6 items-start lg:h-[calc(100vh-14rem)]">
         <div className={`grid sm:grid-cols-2 gap-4 lg:h-full lg:content-start lg:overflow-y-auto lg:pr-1 ${hasSelection ? "hidden lg:grid" : ""}`}>
           {loading && <p className="text-gray-400 text-sm sm:col-span-2">Loading…</p>}

@@ -11,18 +11,21 @@ const PAGE_SIZE = 200;
 export default function TrendsPage() {
   const [trends, setTrends] = useState<Trend[]>([]);
   const [limit, setLimit] = useState(PAGE_SIZE);
+  const [reloadToken, setReloadToken] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [platformFilter, setPlatformFilter] = useState("all");
   const [search, setSearch] = useState("");
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     fetchAdminData<Trend[]>("trends", { limit })
       .then(setTrends)
-      .catch(() => setTrends([]))
+      .catch((err) => setError(err instanceof Error ? err.message : "Could not load trends."))
       .finally(() => { setLoading(false); setLoadingMore(false); });
-  }, [limit]);
+  }, [limit, reloadToken]);
 
   const byPlatform = trends.reduce<Record<string, number>>((acc, t) => {
     acc[t.platform] = (acc[t.platform] ?? 0) + 1;
@@ -43,6 +46,13 @@ export default function TrendsPage() {
   return (
     <div className="space-y-4">
       <h1 className="font-bold text-gray-900 text-xl">Trends</h1>
+
+      {error && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <span>Could not load the latest trends. {error}</span>
+          <button onClick={() => setReloadToken((current) => current + 1)} className="font-semibold underline underline-offset-2">Retry</button>
+        </div>
+      )}
 
       <div className="flex gap-3 flex-wrap items-center">
         <select
