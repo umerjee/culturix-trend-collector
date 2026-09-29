@@ -314,6 +314,18 @@ landmark, a similar-looking species is not the named one. If STEP 1's descriptio
 clearly match the subject's real anatomy/identity, subject_matches MUST be false regardless of
 how good the rest of the shot looks.
 
+STEP 3 -- anatomy check, done separately from everything above and just as strictly: look at
+EVERY person, animal or humanoid robot visible in EVERY frame (not just the main subject) and
+count limbs, fingers and other paired features. AI video generation routinely renders extra,
+missing, fused or duplicated limbs, extra fingers, or a second head/face blended into the frame
+-- confirmed live 2026-09-29: a humanoid-robots documentary passed this whole check (subject
+correct, actions matched the script) while a patient in Shot 1 had multiple limbs and the robot
+itself had extra limbs, and nothing in the JSON ever flagged it because nothing was explicitly
+asked to look. A scene can have the right subject doing the right action and still be broken
+this way -- check it independently, do not assume anatomy is fine just because the subject and
+action already passed. List every instance in "anatomical_issues" (which shot, who/what, what's
+wrong) -- empty array only if you actually checked and found none.
+
 Then check the rest, still against the actual frames, not the script:
 - Does what's on screen match what each shot's script called for?
 - Are there people, crowds or objects visible that the shots never described?
@@ -322,7 +334,8 @@ Then check the rest, still against the actual frames, not the script:
 
 Return ONLY valid JSON with exactly these keys:
 {{"subject_observed": "one or two sentences, plain description of what's literally visible, per STEP 1",
-"subject_matches": boolean, "shots_match_script": boolean, "unscripted_elements": [string],
+"subject_matches": boolean, "anatomical_issues": [string, empty array if none found after checking],
+"shots_match_script": boolean, "unscripted_elements": [string],
 "issues": [string, one per real problem found, specific and concrete — empty array if none],
 "visual_score": integer 0-100, "reasoning": "one or two sentences explaining the score"}}"""
 
@@ -340,8 +353,8 @@ def run_world_visual_qa(video_url: str, subject_text: str, shots: list) -> dict:
     except Exception as exc:
         logger.warning("World visual QA: could not extract frames for %r: %s", subject_text, exc)
         return {
-            "visual_score": 50, "subject_observed": None, "subject_matches": None, "shots_match_script": None,
-            "unscripted_elements": [], "issues": [f"Visual QA could not run: {exc}"],
+            "visual_score": 50, "subject_observed": None, "subject_matches": None, "anatomical_issues": [],
+            "shots_match_script": None, "unscripted_elements": [], "issues": [f"Visual QA could not run: {exc}"],
             "reasoning": None, "judge_failed": True,
         }
 
@@ -377,6 +390,7 @@ def run_world_visual_qa(video_url: str, subject_text: str, shots: list) -> dict:
             "visual_score": int(parsed.get("visual_score", 50)),
             "subject_observed": parsed.get("subject_observed"),
             "subject_matches": bool(parsed.get("subject_matches")),
+            "anatomical_issues": parsed.get("anatomical_issues") or [],
             "shots_match_script": bool(parsed.get("shots_match_script")),
             "unscripted_elements": parsed.get("unscripted_elements") or [],
             "issues": parsed.get("issues") or [],
@@ -387,8 +401,8 @@ def run_world_visual_qa(video_url: str, subject_text: str, shots: list) -> dict:
         logger.warning("World visual QA call failed for %r, using a neutral placeholder result",
                        subject_text, exc_info=True)
         return {
-            "visual_score": 50, "subject_observed": None, "subject_matches": None, "shots_match_script": None,
-            "unscripted_elements": [], "issues": [],
+            "visual_score": 50, "subject_observed": None, "subject_matches": None, "anatomical_issues": [],
+            "shots_match_script": None, "unscripted_elements": [], "issues": [],
             "reasoning": "Visual QA call failed — this is a neutral placeholder, not a real assessment.",
             "judge_failed": True,
         }
@@ -480,14 +494,22 @@ def run_world_qa(video_url: str, expected_duration_seconds: float, subject_text:
     technical_score = technical["technical_score"]
     visual_score = visual["visual_score"]
     overall_score = round((technical_score + visual_score) / 2)
+    anatomical_issues = visual.get("anatomical_issues") or []
     publish_recommended = (
         overall_score >= PUBLISH_OVERALL_THRESHOLD
         and visual_score >= WORLD_PUBLISH_VISUAL_THRESHOLD
         and technical_score >= PUBLISH_TECHNICAL_THRESHOLD
         and visual.get("subject_matches") is not False
         and visual.get("shots_match_script") is not False
+        # Confirmed live 2026-09-29: a render with the right subject doing the right actions
+        # still had a patient and a robot rendered with extra limbs -- an anatomical hallucination
+        # is just as disqualifying as a wrong subject, and just as capable of hiding behind an
+        # otherwise-passing score, so it gates the same hard way.
+        and not anatomical_issues
     )
     issues = list(technical["issues"]) + list(visual["issues"])
+    if anatomical_issues:
+        issues.append("Anatomical issues: " + "; ".join(anatomical_issues))
     if visual.get("unscripted_elements"):
         issues.append("Unscripted elements visible: " + ", ".join(visual["unscripted_elements"]))
     if visual["judge_failed"]:
@@ -498,5 +520,6 @@ def run_world_qa(video_url: str, expected_duration_seconds: float, subject_text:
         "publish_recommended": publish_recommended, "issues": issues,
         "reasoning": visual.get("reasoning"), "judge_failed": visual["judge_failed"],
         "subject_observed": visual.get("subject_observed"),
-        "subject_matches": visual.get("subject_matches"), "shots_match_script": visual.get("shots_match_script"),
+        "subject_matches": visual.get("subject_matches"), "anatomical_issues": anatomical_issues,
+        "shots_match_script": visual.get("shots_match_script"),
     }

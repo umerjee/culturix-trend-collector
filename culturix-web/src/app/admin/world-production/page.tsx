@@ -18,7 +18,8 @@ type Draft = {
   generation_error: string | null; publish_recommended: boolean | null; published: boolean; created_at: string | null;
   previous_video_urls: string[]; visual_style: string | null; raw_video_url: string | null; review: Review | null;
   qa_results: { visual_score: number | null; overall_score: number | null; issues: string[]; reasoning: string | null;
-                unscripted_elements?: string[]; subject_matches?: boolean | null; subject_observed?: string | null } | null;
+                unscripted_elements?: string[]; subject_matches?: boolean | null; subject_observed?: string | null;
+                anatomical_issues?: string[] } | null;
 };
 
 const STATUS_LABEL: Record<string, string> = { scripting: "Under production", idea: "Script ready", animating: "Rendering", ready: "Rendered", failed: "Render failed", posted: "Posted" };
@@ -316,6 +317,12 @@ Open "What will be generated" on the card first to see the exact prompts and nar
           {draft.qa_results.subject_matches === false && <p className="mt-1 rounded-md bg-red-100 px-2 py-1.5 font-semibold text-red-800">
             Wrong subject: {draft.qa_results.subject_observed || "the render does not show the named subject."}
           </p>}
+          {(draft.qa_results.anatomical_issues || []).length > 0 && <div className="mt-1 rounded-md bg-red-100 px-2 py-1.5 font-semibold text-red-800">
+            <p>Anatomical issues (extra/missing/fused limbs, etc.):</p>
+            <ul className="mt-0.5 list-disc pl-5 font-normal">
+              {(draft.qa_results.anatomical_issues || []).map((issue, index) => <li key={index}>{issue}</li>)}
+            </ul>
+          </div>}
           {draft.qa_results.reasoning && <p className="mt-1">{draft.qa_results.reasoning}</p>}
           {draft.qa_results.issues.length > 0 && <ul className="mt-1 list-disc pl-5">
             {draft.qa_results.issues.map((issue, index) => <li key={index}>{issue}</li>)}
