@@ -3,10 +3,10 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
-  ComposableMap, Geographies, Geography, ZoomableGroup, Sphere, Graticule, Marker,
+  ComposableMap, Geographies, Geography, ZoomableGroup, Sphere, Graticule,
 } from "react-simple-maps";
 import type { ProjectionFunction } from "react-simple-maps";
-import { geoOrthographic, geoCentroid, geoDistance } from "d3-geo";
+import { geoOrthographic, geoEqualEarth, geoCentroid, geoDistance } from "d3-geo";
 import { Plus, Minus, RotateCcw, Globe2, Map as MapIcon } from "lucide-react";
 import countries from "i18n-iso-countries";
 import enLocale from "i18n-iso-countries/langs/en.json";
@@ -44,6 +44,47 @@ const IDLE_MS_BEFORE_AUTOROTATE = 2600;
 // A pointer that moved less than this between down and up was a click, not a drag — otherwise
 // every attempt to spin the globe would also navigate to whatever country was under the cursor.
 const DRAG_VS_CLICK_PX = 4;
+
+// Marker sizing/clustering targets, in actual screen pixels rather than viewBox units — the
+// viewBox is a fixed 800-unit-wide coordinate space that gets scaled to fit whatever width the
+// map actually renders at, so a fixed-in-units marker radius shrinks on a narrow phone exactly
+// the way the whole map does. Confirmed live 2026-09-29: on a ~380px-wide phone that made a
+// marker render as only ~3-4px across, too small to read its color at a glance even once the
+// color itself was correct. Converting these pixel targets to viewBox units using the map's
+// ACTUAL rendered width (tracked below) keeps markers a legible, near-constant size everywhere.
+const TARGET_MARKER_PX = 11;
+const TARGET_MARKER_PX_SELECTED = 14;
+const MIN_MARKER_UNITS = 5;
+const MAX_MARKER_UNITS = 20;
+// Two markers whose centers would land within this many screen px of each other merge into one
+// cluster badge instead of overlapping illegibly — the standard fix for "many pins, little
+// screen" (small/adjacent countries in Europe, Central America, etc. at a typical phone width).
+const TARGET_CLUSTER_DISTANCE_PX = 24;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+// Tracks the map's own rendered CSS width (not the browser window's) via ResizeObserver, so
+// marker sizing/clustering react to the actual space available -- correct whether that's a
+// narrow phone, this component embedded in a smaller column, or a wide desktop. Starts at WIDTH
+// (assumes ~1:1 scale) rather than 0, so the very first render doesn't briefly show oversized
+// markers before the observer's first callback fires.
+function useContainerWidth(ref: React.RefObject<HTMLElement>): number {
+  const [width, setWidth] = useState(WIDTH);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(el.getBoundingClientRect().width || WIDTH);
+    const observer = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w) setWidth(w);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+  return width;
+}
 
 type ViewMode = "globe" | "flat";
 
@@ -98,6 +139,9 @@ export default function WorldMap({
   const [flatPosition, setFlatPosition] = useState(FLAT_DEFAULT_POSITION);
   const [rotation, setRotation] = useState<Rotation>(GLOBE_DEFAULT_ROTATION);
   const [globeScale, setGlobeScale] = useState(GLOBE_DEFAULT_SCALE);
+  // A cluster badge (2+ regions merged for legibility) opens a small popover listing its members
+  // instead of navigating/filtering directly, since a cluster itself doesn't map to one region.
+  const [openCluster, setOpenCluster] = useState<{ x: number; y: number; members: { code: string; stats: RegionCount }[] } | null>(null);
 
   // Refs, not state: these drive a per-frame animation loop and a drag gesture, neither of which
   // should ever cause React to re-render on their own (the rAF loop calls setRotation itself,
@@ -105,6 +149,14 @@ export default function WorldMap({
   const lastInteractionRef = useRef(Date.now());
   const dragRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
   const rafRef = useRef<number | undefined>(undefined);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const containerWidthPx = useContainerWidth(containerRef);
+  // px-per-viewBox-unit at the map's actual current rendered size (viewBox is always WIDTH=800
+  // units wide regardless of how many CSS pixels that's stretched/shrunk to fit).
+  const pxScale = containerWidthPx / WIDTH;
+  const markerRadiusUnits = clamp(TARGET_MARKER_PX / pxScale, MIN_MARKER_UNITS, MAX_MARKER_UNITS);
+  const markerRadiusSelectedUnits = clamp(TARGET_MARKER_PX_SELECTED / pxScale, MIN_MARKER_UNITS + 2, MAX_MARKER_UNITS + 4);
+  const clusterDistanceUnits = TARGET_CLUSTER_DISTANCE_PX / pxScale;
 
   useEffect(() => setMounted(true), []);
 
@@ -143,14 +195,25 @@ export default function WorldMap({
   // reading its source: a function value is used as-is, never invoked as a factory) — but its
   // published types model `projection` as a `(width, height, config) => GeoProjection` factory
   // instead, so TypeScript needs a cast to accept what the library actually expects at runtime.
+  // Kept as the real, callable d3 projection object (not the ProjectionFunction-typed cast
+  // ComposableMap wants) so GlobeMarkers can call it directly for its own clustering math —
+  // projection([lon, lat]) => [x, y] | null is real, tested d3-geo runtime behavior regardless
+  // of which prop type it's assigned to.
   const projection = useMemo(
     () =>
       geoOrthographic()
         .scale(globeScale)
         .translate([WIDTH / 2, HEIGHT / 2])
         .rotate(rotation)
-        .clipAngle(90) as unknown as ProjectionFunction,
+        .clipAngle(90),
     [globeScale, rotation],
+  );
+  // Matches ComposableMap's own "geoEqualEarth" + projectionConfig={{ scale: 148 }} below --
+  // needed as a real object (not a projection name string) so FlatMarkers can call it directly
+  // for clustering, the same way GlobeMarkers uses `projection` above.
+  const flatProjection = useMemo(
+    () => geoEqualEarth().scale(148).translate([WIDTH / 2, HEIGHT / 2]),
+    [],
   );
 
   const zoomBy = useCallback(
@@ -230,6 +293,14 @@ export default function WorldMap({
     [router, onSelectRegion, selectedRegion],
   );
 
+  // Positioned from the real pointer event (clientX/clientY), the same way the hover tooltip
+  // below already is — not from the cluster's internal SVG viewBox coordinates, which would need
+  // the SVG element's own on-screen bounding rect to convert correctly. The click event's own
+  // screen position is simpler and exactly as accurate.
+  const handleOpenCluster = useCallback((e: React.MouseEvent, members: { code: string; stats: RegionCount }[]) => {
+    setOpenCluster({ x: e.clientX, y: e.clientY, members });
+  }, []);
+
   if (!mounted) {
     return (
       <div
@@ -242,7 +313,7 @@ export default function WorldMap({
 
   return (
     <div>
-    <div className="relative rounded-2xl overflow-hidden border border-gray-100 bg-gradient-to-b from-sky-100 via-sky-50 to-white shadow-[inset_0_1px_0_rgba(255,255,255,0.6)]">
+    <div ref={containerRef} className="relative rounded-2xl overflow-hidden border border-gray-100 bg-gradient-to-b from-sky-100 via-sky-50 to-white shadow-[inset_0_1px_0_rgba(255,255,255,0.6)]">
       {/* Soft radial glow behind the globe so it reads as an object floating in space, not a flat tile. */}
       {view === "globe" && (
         <div
@@ -255,7 +326,7 @@ export default function WorldMap({
       <ComposableMap
         width={WIDTH}
         height={HEIGHT}
-        projection={view === "globe" ? projection : "geoEqualEarth"}
+        projection={view === "globe" ? (projection as unknown as ProjectionFunction) : "geoEqualEarth"}
         projectionConfig={view === "flat" ? { scale: 148 } : undefined}
         className="w-full h-auto touch-none select-none"
         style={{ maxHeight: 480, filter: view === "globe" ? "drop-shadow(0 18px 34px rgba(30,27,75,0.22))" : undefined }}
@@ -315,7 +386,12 @@ export default function WorldMap({
                 })
               }
             </Geographies>
-            <GlobeMarkers regionCounts={regionCounts} rotation={rotation} globeScale={globeScale} selectedRegion={selectedRegion} onSelectRegion={onSelectRegion} />
+            <GlobeMarkers
+              regionCounts={regionCounts} rotation={rotation} globeScale={globeScale}
+              selectedRegion={selectedRegion} onSelectRegion={onSelectRegion}
+              onOpenCluster={handleOpenCluster} projection={projection}
+              radius={markerRadiusUnits} radiusSelected={markerRadiusSelectedUnits} clusterDistanceUnits={clusterDistanceUnits}
+            />
           </>
         ) : (
           <ZoomableGroup
@@ -364,7 +440,12 @@ export default function WorldMap({
                 })
               }
             </Geographies>
-            <FlatMarkers regionCounts={regionCounts} selectedRegion={selectedRegion} onSelectRegion={onSelectRegion} />
+            <FlatMarkers
+              regionCounts={regionCounts} selectedRegion={selectedRegion} onSelectRegion={onSelectRegion}
+              onOpenCluster={handleOpenCluster} projection={(c) => flatProjection(c) as [number, number] | null}
+              radius={markerRadiusUnits} radiusSelected={markerRadiusSelectedUnits}
+              clusterDistanceUnits={clusterDistanceUnits} zoom={flatPosition.zoom}
+            />
           </ZoomableGroup>
         )}
       </ComposableMap>
@@ -457,6 +538,47 @@ export default function WorldMap({
         </div>
       )}
 
+      {openCluster && (
+        <>
+          {/* Full-screen invisible layer so a tap/click anywhere outside the popover closes it —
+              the standard "click outside to dismiss" pattern, needed since the popover floats
+              free of the marker that opened it rather than being anchored inline. */}
+          <div className="fixed inset-0 z-40" onClick={() => setOpenCluster(null)} />
+          <div
+            className="fixed z-50 w-56 rounded-xl border border-gray-200 bg-white shadow-lg text-sm overflow-hidden"
+            style={{ left: Math.min(openCluster.x, (typeof window !== "undefined" ? window.innerWidth : 400) - 232), top: openCluster.y + 14 }}
+          >
+            <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2">
+              <span className="text-xs font-semibold text-gray-500">{openCluster.members.length} regions here</span>
+              <button onClick={() => setOpenCluster(null)} aria-label="Close" className="text-gray-400 hover:text-gray-700">
+                ✕
+              </button>
+            </div>
+            <ul className="max-h-56 overflow-y-auto">
+              {openCluster.members.map(({ code, stats }) => {
+                const category = dominantCategory(stats.categories);
+                const Icon = iconForCategory(category);
+                const color = colorForCategory(category);
+                return (
+                  <li key={code}>
+                    <button
+                      onClick={() => { onSelectRegion?.(selectedRegion === code ? null : code); setOpenCluster(null); }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-gray-50"
+                    >
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full" style={{ background: color }}>
+                        <Icon className="h-3 w-3 text-white" strokeWidth={3} />
+                      </span>
+                      <span className="flex-1 truncate text-gray-700">{countries.getName(code, "en") || code}</span>
+                      <span className="text-xs text-gray-400">{stats.feature_count}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        </>
+      )}
+
       {view === "globe" && (
         <p className="absolute top-3 right-3 hidden sm:block rounded-lg bg-white/80 backdrop-blur-sm px-2 py-1 text-[10px] text-gray-400">
           Drag to spin · scroll to zoom
@@ -489,9 +611,12 @@ export default function WorldMap({
 
 // A marker's own rendered footprint (the solid dot plus its animate-ping ring at its largest,
 // Tailwind's default ping scales to 2x) — used to keep the WHOLE marker inside the sphere's edge,
-// not just its mathematical center point. Padded well beyond the ring's calculated peak (r=11 *
-// 2x scale = 22, for a selected marker) so the ring never grazes the sphere's boundary.
-const MARKER_VISUAL_RADIUS_PX = 32;
+// not just its mathematical center point. Despite the name (kept for continuity with globeScale,
+// which this is compared against directly and is itself in viewBox units, not real screen
+// pixels), this needs to cover the worst case now that marker radius is responsive: a very narrow
+// container can clamp radiusSelected up to MAX_MARKER_UNITS + 4 = 24 units, whose ping ring peaks
+// at 2x that (48) -- padded a bit further so the ring never grazes the sphere's boundary even then.
+const MARKER_VISUAL_RADIUS_PX = 52;
 
 // How far from the view center (in radians) a point can be before it's hidden. This is NOT simply
 // "just under 90°": geoOrthographic projects a point at angle θ to a radius of `scale * sin(θ)` from
@@ -527,125 +652,193 @@ function useCountryCentroids(): Record<string, [number, number]> | null {
   return centroids;
 }
 
-// One region's marker: a pulsing ring in the DOMINANT category's color, and that category's own
-// icon (from worldCategoryVisuals — the same icons CategoryGrid and FeatureCard use) so the map
-// itself shows WHAT KIND of content is there, not just a uniform "something is here" dot. A
-// region mixing categories still shows one icon (whichever has the most Features) plus a small
-// count badge when there's more than one kind, rather than trying to cram several icons into a
-// few pixels.
+type MarkerMember = { code: string; stats: RegionCount };
+type MarkerCluster = { xy: [number, number]; coordinates: [number, number]; members: MarkerMember[] };
+
+// Groups regions whose PROJECTED screen positions land within `distanceUnits` of each other into
+// one cluster — the standard fix for many map pins on a small screen (adjacent small countries in
+// Europe, Central America, etc. would otherwise overlap illegibly at any phone width). Greedy/
+// single-pass: each point joins the first existing cluster within range, or starts a new one;
+// cheap enough to rerun every render for the realistic region counts here (see BUCKETS' own note
+// on why "a lot of content" means single digits, not hundreds, for a long while).
+function clusterRegions(
+  regions: [string, RegionCount][],
+  centroids: Record<string, [number, number]>,
+  project: (coords: [number, number]) => [number, number] | null,
+  distanceUnits: number,
+): MarkerCluster[] {
+  const clusters: MarkerCluster[] = [];
+  for (const [code, stats] of regions) {
+    const coordinates = centroids[code];
+    if (!coordinates) continue;
+    const xy = project(coordinates);
+    if (!xy) continue;
+    const nearby = clusters.find((c) => Math.hypot(c.xy[0] - xy[0], c.xy[1] - xy[1]) <= distanceUnits);
+    if (nearby) {
+      nearby.members.push({ code, stats });
+      const n = nearby.members.length;
+      nearby.xy = [(nearby.xy[0] * (n - 1) + xy[0]) / n, (nearby.xy[1] * (n - 1) + xy[1]) / n];
+    } else {
+      clusters.push({ xy, coordinates, members: [{ code, stats }] });
+    }
+  }
+  return clusters;
+}
+
+// One region's marker (or one cluster of 2+ regions too close together to show separately): a
+// pulsing ring in the DOMINANT category's color, and that category's own icon (from
+// worldCategoryVisuals — the same icons CategoryGrid and FeatureCard use) so the map itself shows
+// WHAT KIND of content is there, not just a uniform "something is here" dot. Positioned via a
+// plain <g transform="translate(x,y)"> using an already-projected [x,y] rather than
+// react-simple-maps' <Marker> (which only accepts a single geo coordinate and projects it
+// internally) — needed because a cluster's position is the AVERAGE of its members' projected
+// points, not any one member's own geo coordinate.
 function CategoryMarker({
-  code, stats, coordinates, selected, onClick,
+  members, xy, radius, radiusSelected, selected, onClick,
 }: {
-  code: string; stats: RegionCount; coordinates: [number, number]; selected: boolean; onClick: () => void;
+  members: MarkerMember[]; xy: [number, number]; radius: number; radiusSelected: number;
+  selected: boolean; onClick: (e: React.MouseEvent) => void;
 }) {
-  const category = dominantCategory(stats.categories);
+  const isCluster = members.length > 1;
+  // A cluster's own "dominant category" is across ALL its members combined, not any single one's.
+  const combined: Record<string, number> = {};
+  for (const m of members) for (const [cat, n] of Object.entries(m.stats.categories || {})) combined[cat] = (combined[cat] || 0) + n;
+  const category = dominantCategory(combined);
   const Icon = iconForCategory(category);
   const color = colorForCategory(category);
-  const categoryCount = Object.keys(stats.categories || {}).length;
-  // Confirmed live 2026-09-29: at the previous r=6.5, a marker rendered as only a ~3px circle
-  // on a phone screen (800-unit viewBox scaled to a ~350-400px-wide mobile viewport) -- too small
-  // to read its color at a glance even once the color itself was correct. Bumped up accordingly.
-  const r = selected ? 11 : 9;
+  const categoryCount = Object.keys(combined).length;
+  const r = selected ? radiusSelected : radius;
   return (
-    <Marker coordinates={coordinates} onClick={onClick}>
-      <g style={{ cursor: "pointer" }}>
-        {/* transform-box defaults to "view-box" for SVG children, so transform-origin: center
-            resolved to the whole SVG viewport's center, not this circle's own position — every
-            ping ring scaled toward/away from the map's center instead of around itself.
-            fill-box makes "center" resolve to the circle's own geometry (confirmed live
-            2026-09-22, see the marker-visibility fix this replaces). */}
-        <circle r={r} fill={color} fillOpacity={0.35} className="animate-ping" style={{ transformBox: "fill-box", transformOrigin: "center" }} />
-        <circle r={r} fill={color} stroke="#fff" strokeWidth={selected ? 1.4 : 0.9} />
-        {/* A lucide icon renders as its own <svg> — nesting it directly (valid per the SVG spec,
-            unlike wrapping it in <foreignObject> with an HTML <div>) is what actually renders
-            reliably on mobile browsers. Confirmed live 2026-09-29: foreignObject showed as a
-            broken/blank glyph on mobile Chrome, leaving only the plain colored circles visible
-            with no icon — nested <svg> has none of that HTML-in-SVG compatibility risk. */}
+    <g transform={`translate(${xy[0]}, ${xy[1]})`} onClick={onClick} style={{ cursor: "pointer" }}>
+      {/* transform-box defaults to "view-box" for SVG children, so transform-origin: center
+          resolved to the whole SVG viewport's center, not this circle's own position — every
+          ping ring scaled toward/away from the map's center instead of around itself.
+          fill-box makes "center" resolve to the circle's own geometry (confirmed live
+          2026-09-22, see the marker-visibility fix this replaces). */}
+      <circle r={r} fill={color} fillOpacity={0.35} className="animate-ping" style={{ transformBox: "fill-box", transformOrigin: "center" }} />
+      <circle r={r} fill={color} stroke="#fff" strokeWidth={selected ? 1.4 : 0.9} />
+      {isCluster ? (
+        <text y={1} fontSize={r * 0.95} fill="#fff" textAnchor="middle" dominantBaseline="central" fontWeight={700}>
+          {members.length}
+        </text>
+      ) : (
+        // A lucide icon renders as its own <svg> — nesting it directly (valid per the SVG spec,
+        // unlike wrapping it in <foreignObject> with an HTML <div>) is what actually renders
+        // reliably on mobile browsers. Confirmed live 2026-09-29: foreignObject showed as a
+        // broken/blank glyph on mobile Chrome, leaving only the plain colored circles visible
+        // with no icon — nested <svg> has none of that HTML-in-SVG compatibility risk.
         <Icon
           x={-r * 0.55} y={-r * 0.55} width={r * 1.1} height={r * 1.1}
           color="#fff" strokeWidth={3} style={{ pointerEvents: "none" }}
         />
-        {categoryCount > 1 && (
-          <>
-            <circle cx={r * 0.78} cy={-r * 0.78} r={3.2} fill="#111827" stroke="#fff" strokeWidth={0.6} />
-            <text x={r * 0.78} y={-r * 0.78} fontSize={4} fill="#fff" textAnchor="middle" dominantBaseline="central" fontWeight={700}>
-              {categoryCount}
-            </text>
-          </>
-        )}
-      </g>
-    </Marker>
+      )}
+      {!isCluster && categoryCount > 1 && (
+        <>
+          <circle cx={r * 0.78} cy={-r * 0.78} r={3.2} fill="#111827" stroke="#fff" strokeWidth={0.6} />
+          <text x={r * 0.78} y={-r * 0.78} fontSize={4} fill="#fff" textAnchor="middle" dominantBaseline="central" fontWeight={700}>
+            {categoryCount}
+          </text>
+        </>
+      )}
+    </g>
   );
 }
 
 // Pulsing hotspot markers for every region with real content, positioned at that country's true
 // spherical centroid (computed from the same topology the map itself draws, so a marker is never
-// off by hand-maintained coordinates).
+// off by hand-maintained coordinates), clustered together where they'd otherwise overlap.
 //
-// react-simple-maps' <Marker> does NOT hide a coordinate that has rotated onto the far side of the
-// globe — clipAngle only clips the drawn PATH of a Geography (via geoPath), and a bare projected
-// point has no such clipping applied to it. Left unguarded, a marker for a country that has
-// rotated out of view still gets a valid (but meaningless) [x, y] from geoOrthographic and renders
-// as a stray dot sliding around the visible hemisphere as the globe turns — confirmed live
+// A bare projected point has no hemisphere clipping applied to it (unlike a Geography's drawn
+// path, which geoPath/clipAngle does clip) — left unguarded, a marker for a country that has
+// rotated onto the far side still gets a valid (but meaningless) [x, y] from geoOrthographic and
+// renders as a stray dot sliding around the visible hemisphere as the globe turns — confirmed live
 // (2026-09-22): "dots flying around" and small dots "persistent" during rotation. Fixed by
 // computing each point's angular distance from the centre of the currently visible hemisphere
-// (geoDistance) and only rendering markers within it — recomputed on every rotation/scale change,
-// which is why this takes `rotation` and `globeScale` as props rather than reading them once.
+// (geoDistance) and only clustering/rendering markers within it — recomputed on every rotation/
+// scale change, which is why this takes `rotation` and `globeScale` as props rather than reading
+// them once.
 function GlobeMarkers({
-  regionCounts, rotation, globeScale, selectedRegion, onSelectRegion,
+  regionCounts, rotation, globeScale, selectedRegion, onSelectRegion, onOpenCluster,
+  projection, radius, radiusSelected, clusterDistanceUnits,
 }: {
   regionCounts: Record<string, RegionCount>; rotation: Rotation; globeScale: number;
   selectedRegion?: string | null; onSelectRegion?: (code: string | null) => void;
+  onOpenCluster: (e: React.MouseEvent, members: MarkerMember[]) => void;
+  projection: (coords: [number, number]) => [number, number] | null;
+  radius: number; radiusSelected: number; clusterDistanceUnits: number;
 }) {
   const centroids = useCountryCentroids();
   if (!centroids) return null;
   // The geographic point currently facing the viewer, in [lon, lat] — the inverse of .rotate().
   const viewCenter: [number, number] = [-rotation[0], -rotation[1]];
   const maxDistance = visibleHemisphereRadians(globeScale);
+  const eligible = Object.entries(regionCounts).filter(([, s]) => s.feature_count > 0 || s.trend_count > 0);
+  const visible = eligible.filter(([code]) => {
+    const c = centroids[code];
+    return c && geoDistance(c, viewCenter) <= maxDistance;
+  });
+  const clusters = clusterRegions(visible, centroids, (coords) => {
+    const xy = projection(coords as [number, number]);
+    return xy ? [xy[0], xy[1]] : null;
+  }, clusterDistanceUnits);
   return (
     <>
-      {Object.entries(regionCounts)
-        .filter(([, s]) => s.feature_count > 0 || s.trend_count > 0)
-        .map(([code, stats]) => {
-          const coordinates = centroids[code];
-          if (!coordinates || geoDistance(coordinates, viewCenter) > maxDistance) return null;
-          return (
-            <CategoryMarker
-              key={code} code={code} stats={stats} coordinates={coordinates}
-              selected={selectedRegion === code}
-              onClick={() => onSelectRegion?.(selectedRegion === code ? null : code)}
-            />
-          );
-        })}
+      {clusters.map((cluster) => {
+        const single = cluster.members.length === 1;
+        return (
+          <CategoryMarker
+            key={cluster.members.map((m) => m.code).join("+")}
+            members={cluster.members} xy={cluster.xy} radius={radius} radiusSelected={radiusSelected}
+            selected={single && selectedRegion === cluster.members[0].code}
+            onClick={(e) =>
+              single
+                ? onSelectRegion?.(selectedRegion === cluster.members[0].code ? null : cluster.members[0].code)
+                : onOpenCluster(e, cluster.members)
+            }
+          />
+        );
+      })}
     </>
   );
 }
 
-// Same marker, flat/equal-earth projection — no hemisphere clipping needed since every point on
-// a flat map is always "visible" (ZoomableGroup's own viewport clipping via the SVG's bounds
-// handles the rest, the same way it already does for country shapes).
+// Same marker/clustering, flat/equal-earth projection — no hemisphere clipping needed since every
+// point on a flat map is always "visible" (ZoomableGroup's own viewport clipping via the SVG's
+// bounds handles the rest, the same way it already does for country shapes). The cluster distance
+// shrinks with the current zoom level (dividing by `zoom`) so points that were merged at the
+// default zoom naturally separate into their own markers as the user zooms in — matching how they
+// visually spread apart on screen, since ZoomableGroup scales this layer's own raw coordinates by
+// exactly that factor.
 function FlatMarkers({
-  regionCounts, selectedRegion, onSelectRegion,
+  regionCounts, selectedRegion, onSelectRegion, onOpenCluster,
+  projection, radius, radiusSelected, clusterDistanceUnits, zoom,
 }: {
   regionCounts: Record<string, RegionCount>; selectedRegion?: string | null; onSelectRegion?: (code: string | null) => void;
+  onOpenCluster: (e: React.MouseEvent, members: MarkerMember[]) => void;
+  projection: (coords: [number, number]) => [number, number] | null;
+  radius: number; radiusSelected: number; clusterDistanceUnits: number; zoom: number;
 }) {
   const centroids = useCountryCentroids();
   if (!centroids) return null;
+  const eligible = Object.entries(regionCounts).filter(([, s]) => s.feature_count > 0 || s.trend_count > 0);
+  const clusters = clusterRegions(eligible, centroids, projection, clusterDistanceUnits / zoom);
   return (
     <>
-      {Object.entries(regionCounts)
-        .filter(([, s]) => s.feature_count > 0 || s.trend_count > 0)
-        .map(([code, stats]) => {
-          const coordinates = centroids[code];
-          if (!coordinates) return null;
-          return (
-            <CategoryMarker
-              key={code} code={code} stats={stats} coordinates={coordinates}
-              selected={selectedRegion === code}
-              onClick={() => onSelectRegion?.(selectedRegion === code ? null : code)}
-            />
-          );
-        })}
+      {clusters.map((cluster) => {
+        const single = cluster.members.length === 1;
+        return (
+          <CategoryMarker
+            key={cluster.members.map((m) => m.code).join("+")}
+            members={cluster.members} xy={cluster.xy} radius={radius} radiusSelected={radiusSelected}
+            selected={single && selectedRegion === cluster.members[0].code}
+            onClick={(e) =>
+              single
+                ? onSelectRegion?.(selectedRegion === cluster.members[0].code ? null : cluster.members[0].code)
+                : onOpenCluster(e, cluster.members)
+            }
+          />
+        );
+      })}
     </>
   );
 }
