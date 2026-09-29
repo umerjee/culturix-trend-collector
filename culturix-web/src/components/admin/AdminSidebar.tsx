@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Zap, LayoutDashboard, TrendingUp, Layers, Users, Search, LogOut, History, ShieldCheck, Database, Film, Laugh, X } from "lucide-react";
+import { Zap, LayoutDashboard, TrendingUp, Layers, Users, Search, LogOut, History, ShieldCheck, Database, Film, Laugh, Clapperboard, X } from "lucide-react";
 
 const NAV: { href: string; icon: React.ReactNode; label: string }[] = [
   { href: "/admin/overview", icon: <LayoutDashboard className="h-4 w-4" />, label: "Overview" },
@@ -13,6 +13,7 @@ const NAV: { href: string; icon: React.ReactNode; label: string }[] = [
   { href: "/admin/validation", icon: <ShieldCheck className="h-4 w-4" />, label: "Validation" },
   { href: "/admin/curated-items", icon: <Database className="h-4 w-4" />, label: "Source library" },
   { href: "/admin/world-production", icon: <Film className="h-4 w-4" />, label: "World production" },
+  { href: "/admin/comedy-videos", icon: <Clapperboard className="h-4 w-4" />, label: "Comedy studio" },
   { href: "/admin/comedy-patterns", icon: <Laugh className="h-4 w-4" />, label: "Comedy patterns" },
   { href: "/admin/users", icon: <Users className="h-4 w-4" />, label: "Users" },
   { href: "/admin/search", icon: <Search className="h-4 w-4" />, label: "Search" },

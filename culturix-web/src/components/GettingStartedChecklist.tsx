@@ -100,7 +100,9 @@ export default function GettingStartedChecklist({ brandId, onNavigate }: Props) 
     },
     {
       label: "Generate a toon's video", action: "toons",
-      hint: "Needs an AI-suggested script (with shots) and a registered character.",
+      hint: legacySetup
+        ? "Needs an AI-suggested script (with shots) and a registered character."
+        : "Needs an AI-suggested script (with shots) and a character portrait.",
       done: toons.some((t) => !!t.raw_video_url || !!t.final_video_url),
     },
     {

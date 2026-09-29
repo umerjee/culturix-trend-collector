@@ -14,6 +14,7 @@ import GettingStartedChecklist from "@/components/GettingStartedChecklist";
 
 interface Props {
   brand: CharacterBrand;
+  initialTab?: Tab;
   initialCharacters: Character[];
   initialVariants: CharacterVariant[];
   initialBackgrounds: ToonBackground[];
@@ -44,10 +45,10 @@ const ADVANCED_TABS: TabDef[] = [
 ];
 
 export default function CultureToonWorkspace({
-  brand, initialCharacters, initialVariants, initialBackgrounds, initialScripts, initialToons, initialEpisodes,
+  brand, initialTab = "characters", initialCharacters, initialVariants, initialBackgrounds, initialScripts, initialToons, initialEpisodes,
   onBrandUpdated,
 }: Props) {
-  const [tab, setTab] = useState<Tab>("characters");
+  const [tab, setTab] = useState<Tab>(initialTab);
   // Lifted up from whichever tab used to "own" each list (Characters owned
   // variants, Locations owned backgrounds, Scripts owned scripts, Toons
   // owned toons) so every tab reads the same live data instead of the

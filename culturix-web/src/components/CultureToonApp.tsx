@@ -5,11 +5,12 @@ import Link from "next/link";
 import { Plus, Loader2, ArrowRight } from "lucide-react";
 import type { CharacterBrand, Character, CharacterVariant, ToonBackground, ToonScript, Toon, ToonEpisode } from "@/lib/types";
 import CultureToonBrandForm from "@/components/CultureToonBrandForm";
-import CultureToonWorkspace from "@/components/CultureToonWorkspace";
+import CultureToonWorkspace, { type Tab } from "@/components/CultureToonWorkspace";
 import ConnectedAccountsPanel from "@/components/ConnectedAccountsPanel";
 
 interface Props {
   initialBrands: CharacterBrand[];
+  initialTab?: Tab;
   showWorldLibrary?: boolean;
 }
 
@@ -32,7 +33,7 @@ async function _json<T>(url: string, fallback: T): Promise<T> {
   }
 }
 
-export default function CultureToonApp({ initialBrands, showWorldLibrary = false }: Props) {
+export default function CultureToonApp({ initialBrands, initialTab = "characters", showWorldLibrary = false }: Props) {
   // World is a system-owned persistence brand for subject-first Features, not
   // a user-owned character account. Keep it out of this character workflow.
   const toonBrands = initialBrands.filter((brand) => brand.name.toLowerCase() !== "world");
@@ -158,6 +159,7 @@ export default function CultureToonApp({ initialBrands, showWorldLibrary = false
         <CultureToonWorkspace
           key={selectedBrand.id}
           brand={selectedBrand}
+          initialTab={initialTab}
           initialCharacters={data.characters}
           initialVariants={data.variants}
           initialBackgrounds={data.backgrounds}
