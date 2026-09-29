@@ -80,6 +80,9 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
   const eraStep = eraBounds ? chooseYearStep(eraBounds.max - eraBounds.min) : 1;
   const [eraYear, setEraYear] = useState(0);
 
+  // The scrub loop intentionally keeps the current totalDays window and a stable fetch helper
+  // while the player is active; this is a time-driven effect rather than a value-driven render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!isPlaying || !hasScrubbableCoverage) return;
     const timer = window.setInterval(() => {

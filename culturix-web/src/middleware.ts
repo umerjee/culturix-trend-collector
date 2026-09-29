@@ -22,26 +22,26 @@ export async function middleware(request: NextRequest) {
         getAll() {
           return request.cookies.getAll();
         },
-        setAll(cookiesToSet: { name: string; value: string; options: CookieOptions }[]) {
+        setAll(cookiesToSet: { name: string; value: string; options?: CookieOptions }[]) {
           // Forward cookies to the request (no options — request cookies are plain name/value)
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value)
           );
           supabaseResponse = NextResponse.next({ request });
           // Set on the response with full options (httpOnly, sameSite, etc.)
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           cookiesToSet.forEach(({ name, value, options }) =>
-            supabaseResponse.cookies.set(name, value, options as any)
+            supabaseResponse.cookies.set(name, value, options)
           );
         },
       },
     }
   );
 
+  let authTimeout: ReturnType<typeof setTimeout> | undefined;
   const user = await Promise.race([
     supabase.auth.getUser().then(({ data }) => data.user),
     new Promise<null>((resolve) => {
-      setTimeout(() => {
+      authTimeout = setTimeout(() => {
         console.error(
           `[middleware] Supabase auth check timed out after ${AUTH_CHECK_TIMEOUT_MS}ms — treating as logged out`
         );
@@ -51,6 +51,8 @@ export async function middleware(request: NextRequest) {
   ]).catch((err) => {
     console.error("[middleware] Supabase auth check failed:", err);
     return null;
+  }).finally(() => {
+    if (authTimeout !== undefined) clearTimeout(authTimeout);
   });
 
   const path = request.nextUrl.pathname;

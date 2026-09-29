@@ -158,7 +158,7 @@ export default function PublishingSetupStatus(props: Props) {
             <span className="text-sm text-gray-700">Confirm your first real post</span>
             {!props.hasConfirmedPost && (
               <span className="text-xs text-gray-400 ml-auto flex items-center gap-1">
-                <Link2 className="h-3 w-3" /> Paste the link once you've posted
+                <Link2 className="h-3 w-3" /> Paste the link once you&apos;ve posted
               </span>
             )}
           </div>

@@ -59,7 +59,7 @@ export default function CultureToonsProductPage() {
           </h1>
           <p className="text-gray-500 max-w-xl mx-auto leading-relaxed">
             Original cartoon characters that riff on culture — built from your own description or photo,
-            animated by AI, and grounded in whatever's actually trending today.
+            animated by AI, and grounded in whatever&apos;s actually trending today.
           </p>
         </div>
 
@@ -99,7 +99,7 @@ export default function CultureToonsProductPage() {
           <Clapperboard className="h-5 w-5 text-purple-500 mt-0.5 shrink-0" />
           <p className="text-sm text-gray-600 leading-relaxed">
             Trends move fast, and not every brand wants to be the one on camera. Character-Based
-            Posting gives you a recurring cast that can react to whatever's culturally relevant today,
+            Posting gives you a recurring cast that can react to whatever&apos;s culturally relevant today,
             without needing a new shoot every time.
           </p>
         </section>

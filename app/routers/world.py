@@ -133,6 +133,18 @@ def list_world_regions():
             .group_by(Toon.subject_region)
             .all()
         )
+        # Per-region category breakdown in one grouped query rather than the N+1 that calling
+        # /regions/{code}/coverage for every region on the map would mean -- the map needs every
+        # region's mix up front to pick each marker's icon, not one region's on demand.
+        category_rows = (
+            session.query(Toon.subject_region, Toon.subject_category, func.count(Toon.id))
+            .filter(*base_filters, Toon.subject_region.isnot(None))
+            .group_by(Toon.subject_region, Toon.subject_category)
+            .all()
+        )
+        categories_by_region: dict = {}
+        for region, category, count in category_rows:
+            categories_by_region.setdefault(region, {})[category or "uncategorized"] = count
         # Genuinely global subjects (a species/phenomenon found worldwide, or a technology
         # with no single origin — see determine_world_region in world_production.py) are
         # deliberately never pinned to a country: a map marker implies "this happened here,"
@@ -151,7 +163,10 @@ def list_world_regions():
         )
         regions = {}
         for region, count in feature_rows:
-            regions[region] = {"region": region, "count": count, "feature_count": count, "trend_count": 0, "trend_days": 0}
+            regions[region] = {
+                "region": region, "count": count, "feature_count": count, "trend_count": 0, "trend_days": 0,
+                "categories": categories_by_region.get(region, {}),
+            }
         for region, count, days in trend_rows:
             regions.setdefault(region, {"region": region, "count": 0, "feature_count": 0, "trend_count": 0, "trend_days": 0})
             regions[region]["trend_count"] = count

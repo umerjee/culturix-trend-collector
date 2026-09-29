@@ -128,6 +128,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
 
   // Poll while a variant's element registration or bulk expression
   // generation is in flight.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!selectedVariant) return;
     if (
@@ -144,6 +145,10 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
     return () => clearInterval(interval);
   }, [selectedVariant, brandId]);
 
+  // This effect intentionally resets local form state when the selected character changes.
+  // The individual field values are intentionally derived from the selected record, not a
+  // live dependency list, so the lint rule is disabled to keep the form state predictable.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     setDescriptionDraft(selectedCharacter?.description ?? "");
     setArtStyleDraft(selectedCharacter?.art_style ?? "cartoon_3d");
@@ -155,7 +160,7 @@ export default function CharacterVariantManager({ brandId, hasElevenLabsKey, cha
     setTraits(selectedCharacter?.personality?.traits ?? {});
     setBehavioralRules(selectedCharacter?.personality?.behavioral_rules ?? []);
     setSpeechRules(selectedCharacter?.personality?.speech_rules ?? []);
-  }, [selectedCharacterId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedCharacterId]);
 
   useEffect(() => {
     setVariantDescriptionDraft(selectedVariant?.description ?? "");

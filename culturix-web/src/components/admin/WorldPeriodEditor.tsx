@@ -51,7 +51,7 @@ export default function WorldPeriodEditor({ draftId, phases, editable, onChanged
     {conflicts.length > 0 && <ul className="mt-3 list-disc space-y-1 rounded-md bg-amber-50 py-2 pl-6 pr-3 text-xs text-amber-800">{conflicts.map((c, i) => <li key={i} className="[overflow-wrap:anywhere]">{c}</li>)}</ul>}
     {editable && <div className="mt-3 flex flex-wrap items-center gap-2">
       <button disabled={busy || !changed} onClick={save} className="inline-flex min-h-10 items-center gap-1.5 rounded-md bg-primary-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">{busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />} {busy ? "Saving..." : "Save period"}</button>
-      <span className="text-xs text-gray-400">Check the result under "What will be generated".</span>
+      <span className="text-xs text-gray-400">Check the result under &quot;What will be generated&quot;.</span>
     </div>}
   </div>;
 }

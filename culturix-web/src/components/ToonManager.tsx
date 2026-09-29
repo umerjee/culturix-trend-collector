@@ -202,7 +202,9 @@ export default function ToonManager({ brandId, brandName, toons, setToons, scrip
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scriptId]);
 
-  // Poll toons that are mid-generation.
+  // Poll toons that are mid-generation. The setter is intentionally stable and the polling
+  // loop is scoped to the current brand and current status set rather than every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const animating = toons.filter((t) => t.status === "animating");
     if (animating.length === 0) return;
@@ -325,7 +327,7 @@ export default function ToonManager({ brandId, brandName, toons, setToons, scrip
     <div className="space-y-6">
       <div className="rounded-2xl bg-white border border-gray-100 p-4">
         <h3 className="text-sm font-semibold text-gray-900 mb-1">Step 1 · Connect accounts</h3>
-        <p className="text-xs text-gray-400 mb-3">Where this brand's finished toons actually get published.</p>
+        <p className="text-xs text-gray-400 mb-3">Where this brand&apos;s finished toons actually get published.</p>
         <ConnectedAccountsPanel
           brandId={brandId}
           brandName={brandName}

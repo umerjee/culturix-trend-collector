@@ -66,7 +66,7 @@ export default function CultureToonBrandForm({ onCreated }: Props) {
       <Drama className="h-10 w-10 text-gray-300 mx-auto mb-4" />
       <h3 className="font-semibold text-gray-700 mb-2">Create a CultureToons brand</h3>
       <p className="text-sm text-gray-400 max-w-sm mx-auto mb-5">
-        A brand is one "toon account" — e.g. Funny Clips, Baby Videos, Tech Updates. You can
+        A brand is one &quot;toon account&quot; — e.g. Funny Clips, Baby Videos, Tech Updates. You can
         create several and manage them all from here; each gets its own characters, backgrounds,
         scripts, and connected social accounts.
       </p>
@@ -91,7 +91,7 @@ export default function CultureToonBrandForm({ onCreated }: Props) {
         <textarea
           value={trendInterests}
           onChange={(e) => setTrendInterests(e.target.value)}
-          placeholder='e.g. "family comedy, workplace awkwardness, cultural misunderstandings"'
+          placeholder="e.g. &quot;family comedy, workplace awkwardness, cultural misunderstandings&quot;"
           rows={2}
           className="rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
         />

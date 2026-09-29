@@ -15,6 +15,9 @@ export default function MediaPreview({ contentId, ideaIndex, mediaType, onDone }
   const [media, setMedia] = useState<GeneratedMedia | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // The poller intentionally reuses the current mediaType and callback contract while the
+  // content item is stable; the derived completion callback is optional and already memoized.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     let stopped = false;
 

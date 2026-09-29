@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { TrendingUp, Layers, Users, LayoutDashboard, AlertTriangle, Activity, RefreshCw, CalendarDays, Skull } from "lucide-react";
+import { TrendingUp, Layers, Users, LayoutDashboard, AlertTriangle, Activity, RefreshCw, CalendarDays, Skull, Clapperboard, Database, Wand2, ArrowRight, Sparkles } from "lucide-react";
 import { fetchAdminData } from "@/lib/admin/fetchAdmin";
 import type { AdminStats, Trend, Cluster, Digest, IntegrationHealthEntry, HighVelocityAlert, CalendarEventEntry, RunpodOrphanKillEntry } from "@/lib/admin/types";
 import { fmt } from "@/lib/admin/types";
@@ -115,6 +115,61 @@ export default function OverviewPage() {
           ⚠ {error}
         </div>
       )}
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        {[
+          {
+            title: "Comedy studio",
+            description: "Build brands, scripts, and toons.",
+            href: "/admin/comedy-videos",
+            icon: Clapperboard,
+            tone: "bg-amber-50 text-amber-700 border-amber-200",
+          },
+          {
+            title: "Source library",
+            description: "Curate prompts and subject ideas.",
+            href: "/admin/curated-items",
+            icon: Database,
+            tone: "bg-violet-50 text-violet-700 border-violet-200",
+          },
+          {
+            title: "World production",
+            description: "Shape the world and render pipeline.",
+            href: "/admin/world-production",
+            icon: Wand2,
+            tone: "bg-emerald-50 text-emerald-700 border-emerald-200",
+          },
+          {
+            title: "User approvals",
+            description: "Review signups and access requests.",
+            href: "/admin/users",
+            icon: Users,
+            tone: "bg-sky-50 text-sky-700 border-sky-200",
+          },
+          {
+            title: "Trend intel",
+            description: "Jump into the live signal stream.",
+            href: "/admin/trends",
+            icon: Sparkles,
+            tone: "bg-pink-50 text-pink-700 border-pink-200",
+          },
+        ].map(({ title, description, href, icon: Icon, tone }) => (
+          <Link
+            key={title}
+            href={href}
+            className="group rounded-2xl border border-gray-200 bg-white p-4 transition-all hover:-translate-y-0.5 hover:border-primary-200 hover:shadow-sm"
+          >
+            <div className={`mb-3 inline-flex h-10 w-10 items-center justify-center rounded-xl border ${tone}`}>
+              <Icon className="h-4 w-4" />
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <p className="font-semibold text-gray-900">{title}</p>
+              <ArrowRight className="h-4 w-4 text-gray-400 transition group-hover:text-primary-600" />
+            </div>
+            <p className="mt-1 text-sm text-gray-500">{description}</p>
+          </Link>
+        ))}
+      </div>
 
       {/* Should normally be empty — a non-empty result means the RunPod
           orphan-pod reaper (app/scheduler.py, every 30 min) caught a pod

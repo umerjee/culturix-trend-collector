@@ -248,14 +248,14 @@ export default function CuratedItemsPage() {
           {plan.existing_draft && <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">A draft already exists for this subject. Archive it in World Production to regenerate.</p>}
           <div className="mt-4 grid grid-cols-3 min-[420px]:grid-cols-5 gap-2">{plan.allowed_durations.map((d) => <button key={d} onClick={() => setDuration(d)} className={`rounded-lg border px-2 py-2 text-center text-sm ${duration === d ? "border-primary-600 bg-primary-50 font-bold text-primary-700" : "border-gray-200 text-gray-600"}`}>{d}s<span className="block text-[10px] font-normal text-gray-400">~${plan.estimate[String(d)]?.cost_usd.toFixed(2)} render</span></button>)}</div>
           <label className="mt-4 block text-sm text-gray-600">Period shown
-            <input value={era} onChange={(e) => setEra(e.target.value)} maxLength={120} placeholder='For example: Roman Republic, 307 BC' className="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm placeholder:text-gray-300" />
+            <input value={era} onChange={(e) => setEra(e.target.value)} maxLength={120} placeholder="For example: Roman Republic, 307 BC" className="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm placeholder:text-gray-300" />
             <span className="mt-1 block text-xs text-gray-400">Decides what may appear: only things that existed then. Include a year. Change it if the suggestion is wrong; leave it empty to let the AI decide.</span>
           </label>
           <label className="mt-4 block text-sm text-gray-600">Browse category
             <select value={planCategory} onChange={(e) => setPlanCategory(e.target.value)} className="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm">
               {Object.entries(CATEGORY_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
             </select>
-            <span className="mt-1 block text-xs text-gray-400">Where this shows up on /world. Pre-filled from the ingest choice when there was one; change it if it's wrong.</span>
+            <span className="mt-1 block text-xs text-gray-400">Where this shows up on /world. Pre-filled from the ingest choice when there was one; change it if it&apos;s wrong.</span>
           </label>
           <label className="mt-4 block text-sm text-gray-600">Look
             <select value={visualStyle} onChange={(e) => setVisualStyle(e.target.value)} className="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm">

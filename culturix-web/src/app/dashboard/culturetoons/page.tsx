@@ -37,7 +37,7 @@ export default async function CultureToonsPage() {
           <h1 className="text-2xl font-bold text-gray-900">Character-Based Posting</h1>
           <p className="text-sm text-gray-500 mt-1">
             Cartoon characters riffing on cultural trends — build your character library, write skit
-            scripts, and track production through to posting. Run several independent "toon accounts"
+            scripts, and track production through to posting. Run several independent &quot;toon accounts&quot;
             (e.g. Funny Clips, Baby Videos) side by side, all managed here.
           </p>
         </div>

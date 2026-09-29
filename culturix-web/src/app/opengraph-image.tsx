@@ -52,7 +52,7 @@ export default function OpengraphImage() {
             lineHeight: 1.4,
           }}
         >
-          Explore the world's culture, one short fact-checked video at a time
+          Explore the world&apos;s culture, one short fact-checked video at a time
         </div>
       </div>
     ),
