@@ -103,6 +103,7 @@ export default function WorldProductionPage() {
   const [categoryFilter, setCategoryFilter] = useState("");
   const [regionFilter, setRegionFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [qaFilter, setQaFilter] = useState<"" | "passed" | "failed">("");
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<SortMode>("newest");
 
@@ -128,12 +129,14 @@ export default function WorldProductionPage() {
       if (categoryFilter && (d.subject_category || "custom") !== categoryFilter) return false;
       if (regionFilter && (d.subject_region || "global") !== regionFilter) return false;
       if (!matchesStatusFilter(d, statusFilter)) return false;
+      if (qaFilter === "passed" && d.publish_recommended !== true) return false;
+      if (qaFilter === "failed" && d.publish_recommended !== false) return false;
       if (q && !(d.title || "").toLowerCase().includes(q) && !(d.hook_line || "").toLowerCase().includes(q)) return false;
       return true;
     });
     return sortDrafts(filtered, sortBy);
-  }, [drafts, categoryFilter, regionFilter, statusFilter, search, sortBy]);
-  const hasActiveFilters = Boolean(categoryFilter || regionFilter || statusFilter || search);
+  }, [drafts, categoryFilter, regionFilter, statusFilter, qaFilter, search, sortBy]);
+  const hasActiveFilters = Boolean(categoryFilter || regionFilter || statusFilter || qaFilter || search);
   const statusCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const d of drafts) {
@@ -248,6 +251,11 @@ Open "What will be generated" on the card first to see the exact prompts and nar
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700" aria-label="Filter by status">
           {STATUS_FILTER_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
         </select>
+        <select value={qaFilter} onChange={(e) => setQaFilter(e.target.value as "" | "passed" | "failed")} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700" aria-label="Filter by QA result">
+          <option value="">Any QA result</option>
+          <option value="passed">QA passed</option>
+          <option value="failed">QA failed</option>
+        </select>
         <select value={sortBy} onChange={(e) => setSortBy(e.target.value as SortMode)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700" aria-label="Sort by">
           <option value="newest">Newest first</option>
           <option value="score">Highest script score</option>
@@ -255,7 +263,7 @@ Open "What will be generated" on the card first to see the exact prompts and nar
           <option value="cost_desc">Most expensive to render</option>
           <option value="title">Title A-Z</option>
         </select>
-        {hasActiveFilters && <button onClick={() => { setCategoryFilter(""); setRegionFilter(""); setStatusFilter(""); setSearch(""); }} className="px-2 py-2 text-xs font-medium text-primary-600 hover:text-primary-800">Clear filters</button>}
+        {hasActiveFilters && <button onClick={() => { setCategoryFilter(""); setRegionFilter(""); setStatusFilter(""); setQaFilter(""); setSearch(""); }} className="px-2 py-2 text-xs font-medium text-primary-600 hover:text-primary-800">Clear filters</button>}
         <span className="ml-auto text-xs text-gray-400">{visibleDrafts.length} of {drafts.length} drafts</span>
       </div>
     </>}
