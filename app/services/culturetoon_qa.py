@@ -361,7 +361,7 @@ def run_world_visual_qa(video_url: str, subject_text: str, shots: list) -> dict:
         # call per successful render (not per attempt), so the cost increase is small and
         # bounded relative to what a wrong-subject video getting published would cost.
         message = client.messages.create(
-            model="claude-sonnet-5", max_tokens=1200,
+            model="claude-sonnet-5", max_tokens=3000,
             messages=[{"role": "user", "content": content}],
         )
         # Confirmed live 2026-09-29: unlike the Haiku call this replaced, claude-sonnet-5
