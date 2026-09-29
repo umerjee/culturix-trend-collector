@@ -46,9 +46,10 @@ interface Props {
   coverage: WorldTrendsCoverage;
   initialTrends: WorldTrend[];
   initialBrief?: WorldRegionSummary | null;
+  initialLanguage?: WorldDigestLanguage;
 }
 
-export default function TimeCursor({ region, regionLabel, coverage, initialTrends, initialBrief = null }: Props) {
+export default function TimeCursor({ region, regionLabel, coverage, initialTrends, initialBrief = null, initialLanguage = "en" }: Props) {
   const [mode, setMode] = useState<"recent" | "historical">("recent");
   const hasScrubbableCoverage = coverage.days_with_data >= MIN_DAYS_FOR_SCRUBBER && coverage.earliest && coverage.latest;
 
@@ -60,7 +61,7 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
   const [dayOffset, setDayOffset] = useState(totalDays); // starts at "latest" (today)
   const [trends, setTrends] = useState<WorldTrend[]>(initialTrends);
   const [digest, setDigest] = useState<WorldTrendDigestGroup[]>([]);
-  const [digestLanguage, setDigestLanguage] = useState<WorldDigestLanguage>("en");
+  const [digestLanguage, setDigestLanguage] = useState<WorldDigestLanguage>(initialLanguage);
   // > 0 when the translation service was unavailable and some text is shown untranslated.
   const [translationFailed, setTranslationFailed] = useState(0);
   const [loadingTrends, setLoadingTrends] = useState(false);
@@ -101,11 +102,11 @@ export default function TimeCursor({ region, regionLabel, coverage, initialTrend
 
   useEffect(() => {
     const params = new URLSearchParams({ region, limit: "20" });
-    fetchDigest("en", params).finally(() => setLoadingInitialDigest(false));
+    fetchDigest(initialLanguage, params).finally(() => setLoadingInitialDigest(false));
     // Runs once on mount for this region — day-scrubbing and the language switcher already
     // trigger their own digest fetches via fetchTrendsAsOf/changeDigestLanguage.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [region]);
+  }, [region, initialLanguage]);
 
   const selectedDate = useMemo(() => {
     if (!coverage.earliest) return null;

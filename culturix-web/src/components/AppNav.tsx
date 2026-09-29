@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Zap, LayoutDashboard, TrendingUp, Settings, ShieldCheck, LogOut, HelpCircle, ShoppingBag, Drama, CalendarDays } from "lucide-react";
 import ProductSwitcher, { ProductKey } from "./ProductSwitcher";
+import LanguageSwitcher from "./marketing/LanguageSwitcher";
 
 type NavKey = "dashboard" | "performance" | "calendar" | "shopify" | "culturetoons" | "settings";
 
@@ -53,6 +54,7 @@ export default function AppNav({ active, isSuperAdmin, product }: Props) {
         </Link>
 
         <ProductSwitcher product={product} />
+        <LanguageSwitcher />
 
         {/* overflow-x-auto is a safety net, not the primary fix — the tighter
             mobile padding below (px-2 vs px-3) is what keeps everything,

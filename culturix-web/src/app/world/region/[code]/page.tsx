@@ -98,7 +98,7 @@ export async function generateMetadata({ params }: { params: { code: string } })
   return { title: `${label} — Culturix World` };
 }
 
-export default async function WorldRegionPage({ params }: { params: { code: string } }) {
+export default async function WorldRegionPage({ params, searchParams }: { params: { code: string }; searchParams: { lang?: string } }) {
   const code = params.code.toUpperCase();
   const label = countries.getName(code, "en") || code;
   const [features, trends, coverage, brief, sentimentHistory, featureCoverage] = await Promise.all([
@@ -121,7 +121,7 @@ export default async function WorldRegionPage({ params }: { params: { code: stri
         <RegionFactsStrip facts={brief?.facts ?? null} />
         <SentimentSparkline history={sentimentHistory} />
 
-        <TimeCursor region={code} regionLabel={label} coverage={coverage} initialTrends={trends} initialBrief={brief} />
+        <TimeCursor region={code} regionLabel={label} coverage={coverage} initialTrends={trends} initialBrief={brief} initialLanguage={searchParams.lang === "fr" || searchParams.lang === "de" || searchParams.lang === "es" ? searchParams.lang : "en"} />
 
         <section className="mt-14">
           <div className="mb-5 flex items-end justify-between gap-4">

@@ -223,35 +223,35 @@ const TRUST = [
 
 const PRODUCTS = [
   {
-    icon: Lightbulb,
-    name: "Posting Ideation",
-    status: "Live",
+    icon: MapPin,
+    name: "Explore by place",
+    status: "Live now",
     statusColor: "bg-emerald-50 text-emerald-600 border-emerald-200",
-    desc: "Trend-driven content ideas, personalized to your brand and delivered to your dashboard every morning.",
-    href: "/products/posting-ideation",
-    cta: "See how it works",
+    desc: "Start with a country, city, landmark, or region and see the stories connected to it.",
+    href: "/world",
+    cta: "Open the map",
     accent: "text-indigo-500",
     bg: "bg-indigo-50",
   },
   {
-    icon: ShoppingBag,
-    name: "Shopify Reel Building",
-    status: "Now piloting",
+    icon: Layers,
+    name: "Explore by theme",
+    status: "Growing daily",
     statusColor: "bg-amber-50 text-amber-600 border-amber-200",
-    desc: "Connect your Shopify store and get AI post ideas and short-form reels built from your real product photos.",
-    href: "/products/shopify",
-    cta: "Explore Shopify Reel Building",
+    desc: "Browse history, species, technology, phenomena, and the odd corners of culture.",
+    href: "/world#categories",
+    cta: "Browse themes",
     accent: "text-emerald-500",
     bg: "bg-emerald-50",
   },
   {
-    icon: Drama,
-    name: "Character-Based Posting",
-    status: "Beta",
+    icon: History,
+    name: "Explore through time",
+    status: "In the works",
     statusColor: "bg-purple-50 text-purple-600 border-purple-200",
-    desc: "Build original cartoon characters and let AI animate them into short videos that riff on what's trending.",
-    href: "/products/culturetoons",
-    cta: "Explore Character-Based Posting",
+    desc: "Move from what is happening now into the history and context behind it.",
+    href: "/world",
+    cta: "Follow the thread",
     accent: "text-purple-500",
     bg: "bg-purple-50",
   },
@@ -259,37 +259,41 @@ const PRODUCTS = [
 
 const PLANS = [
   {
-    name: "Free",
-    price: "$0",
-    period: "forever",
+    name: "The atlas",
+    price: "Free",
+    period: "to explore",
     features: [
-      "3 personalized ideas/day",
-      "All 7 platforms",
-      "Daily digest",
-      "Hook + caption + CTA",
-      "1 content profile",
+      "Short AI-generated videos",
+      "Real source links",
+      "Map, themes, and search",
+      "History and cultural context",
+      "New stories as the atlas grows",
     ],
-    cta: "Get started free",
-    href: "/signup",
+    cta: "Explore the atlas",
+    href: "/world",
     highlighted: false,
   },
   {
-    name: "Pro",
-    price: "$29",
-    period: "/month",
+    name: "The rabbit hole",
+    price: "Always",
+    period: "one more story",
     features: [
-      "3 daily ideas + generate ideas for any trend",
-      "All 7 platforms",
-      "Daily digest by 7 AM",
-      "Viral angle + posting time + hashtags",
-      "AI voiceover, music & video",
-      "Up to 10 content profiles",
-      "On-demand refresh",
+      "Pick a place",
+      "Pick a subject",
+      "Follow the source trail",
+      "Find something unexpectedly funny",
     ],
-    cta: "Start 7-day free trial",
-    href: "/signup?plan=pro",
+    cta: "Start wandering",
+    href: "/world",
     highlighted: true,
   },
+];
+
+const ATLAS_STORIES = [
+  { label: "History", place: "Carcassonne, France", title: "The city that kept rebuilding itself", source: "UNESCO World Heritage" },
+  { label: "Nature", place: "Northern lights", title: "Why the sky sometimes starts dancing", source: "Wikipedia + science sources" },
+  { label: "Culture", place: "Everywhere", title: "The surprisingly serious history of the humble meme", source: "Culturix World" },
+  { label: "Technology", place: "Global", title: "How a tiny idea becomes a worldwide habit", source: "Real-world trend signals" },
 ];
 
 function MockCard({ idea }: { idea: SampleIdea }) {
@@ -387,10 +391,7 @@ function WorldExampleCard() {
 }
 
 export default async function LandingPage() {
-  const [{ ideas: sampleIdeas, trendDate, live }, world] = await Promise.all([getSampleIdeas(), getWorldStats()]);
-  const sampleCaption = live
-    ? `Real ideas from Culturix's ${trendDate ?? "latest"} brief, regenerated daily`
-    : "Sample ideas generated for a fashion brand targeting Gen Z on TikTok + Instagram";
+  const world = await getWorldStats();
 
   const stats: { val: string; label: string }[] = [
     { val: world ? `${world.countries}` : "35", label: "countries tracked" },
@@ -418,13 +419,13 @@ export default async function LandingPage() {
                 Culturix World · a living atlas of culture
               </div>
               <h1 className="text-3xl min-[400px]:text-4xl sm:text-5xl font-extrabold text-white leading-tight mb-5 sm:mb-6">
-                Explore the world&rsquo;s culture,{" "}
+                The world, explained in short videos{" "}
                 <span className="bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
-                  one short video at a time
+                  with a sense of humour
                 </span>
               </h1>
               <p className="text-base sm:text-lg text-gray-400 mb-7 sm:mb-8 leading-relaxed">
-                Culturix World is an interactive map of history, heritage, technology and humor. Pick a country, slide through time, and watch short videos built from real sources like Wikipedia and UNESCO, and tied to what people there are talking about right now.
+                Culturix is an AI-generated video encyclopedia of the world. Pick a country, slide through time, and watch concise, source-linked stories about history, heritage, science, technology, and the wonderfully strange things people do.
               </p>
 
               <div className="flex flex-col sm:flex-row gap-3">
@@ -435,7 +436,7 @@ export default async function LandingPage() {
                   href="#how-it-works"
                   className="inline-flex items-center justify-center gap-2 bg-white/5 border border-white/10 text-gray-300 font-semibold px-6 sm:px-8 py-4 rounded-xl hover:bg-white/10 transition-colors text-base"
                 >
-                  How it works
+                  Why Culturix
                 </Link>
               </div>
             </div>
@@ -545,16 +546,16 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* For creators */}
-      <section id="creators" className="py-14 sm:py-20 px-4 sm:px-6 scroll-mt-16">
+      {/* About Culturix */}
+      <section id="about" className="py-14 sm:py-20 px-4 sm:px-6 scroll-mt-16">
         <div className="max-w-5xl mx-auto">
           <div className="text-center mb-10 sm:mb-14">
-            <p className="text-xs font-semibold text-indigo-500 uppercase tracking-wide mb-3">For creators &amp; brands</p>
+            <p className="text-xs font-semibold text-indigo-500 uppercase tracking-wide mb-3">A new kind of encyclopedia</p>
             <h2 className="text-2xl sm:text-4xl font-bold text-gray-900 mb-4">
-              The same trend engine, working for your brand
+              Learn something real. Enjoy the ride.
             </h2>
             <p className="text-gray-500 max-w-xl mx-auto">
-              The signals behind the map also power a set of tools that turn what is happening online into content you can post.
+              We turn reliable sources into short, watchable stories: curious enough for a five-minute rabbit hole, funny enough to make the facts stick.
             </p>
           </div>
           <div className="grid md:grid-cols-3 gap-4 sm:gap-6">
@@ -582,36 +583,42 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* Sample brief */}
-      <section id="sample" className="py-14 sm:py-20 px-4 sm:px-6 bg-gray-50 scroll-mt-16">
+      {/* Story preview */}
+      <section id="stories" className="py-14 sm:py-20 px-4 sm:px-6 bg-gray-50 scroll-mt-16">
         <div className="max-w-5xl mx-auto">
           <div className="text-center mb-10">
             <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-4">
-              What a daily brief looks like
+              A world of stories, one curious click away
             </h2>
             <p className="text-gray-500 max-w-xl mx-auto">
-              Every idea includes a hook, caption, CTA, viral angle, best posting time, hashtags, music mood, and an AI video brief.
+              Each story has a source, a point of view, and just enough personality to make you want to watch the next one.
             </p>
           </div>
-          <div className="grid md:grid-cols-2 gap-4 sm:gap-5">
-            {sampleIdeas.map((idea, i) => (
-              <MockCard key={i} idea={idea} />
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+            {ATLAS_STORIES.map((story) => (
+              <Link key={story.title} href="/world" className="group rounded-2xl border border-gray-100 bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:border-indigo-200 hover:shadow-md">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="font-semibold text-indigo-600">{story.label}</span>
+                  <ArrowRight className="h-3.5 w-3.5 text-gray-300 transition group-hover:text-indigo-500" />
+                </div>
+                <p className="mt-5 text-xs text-gray-400">{story.place}</p>
+                <h3 className="mt-2 text-base font-bold leading-snug text-gray-900">{story.title}</h3>
+                <p className="mt-5 border-t border-gray-100 pt-3 text-xs text-gray-400">Source: {story.source}</p>
+              </Link>
             ))}
           </div>
-          <p className="text-center text-xs text-gray-400 mt-6">
-            {sampleCaption}
-          </p>
+          <p className="text-center text-xs text-gray-400 mt-6">New stories are researched, checked, and added to the atlas as the world keeps moving.</p>
         </div>
       </section>
 
-      {/* Pricing */}
-      <section id="pricing" className="py-14 sm:py-20 px-4 sm:px-6 scroll-mt-16">
+      {/* Explore */}
+      <section id="explore" className="py-14 sm:py-20 px-4 sm:px-6 scroll-mt-16">
         <div className="max-w-3xl mx-auto">
           <h2 className="text-2xl sm:text-3xl font-bold text-center text-gray-900 mb-4">
-            Simple, transparent pricing
+            No account. No paywall. Just wander.
           </h2>
           <p className="text-center text-gray-500 mb-10 sm:mb-12">
-            The map is free to explore. Creator plans cover the daily brief and AI media tools.
+            Culturix World is built for curious people. Open the map, follow a question, and see where it takes you.
           </p>
           <div className="grid sm:grid-cols-2 gap-4 sm:gap-6">
             {PLANS.map((p) => (
@@ -658,19 +665,19 @@ export default async function LandingPage() {
       <section className="py-14 sm:py-20 px-4 sm:px-6 bg-slate-950">
         <div className="max-w-2xl mx-auto text-center">
           <Globe2 className="h-10 w-10 text-indigo-400 mx-auto mb-4" />
-          <h2 className="text-2xl sm:text-3xl font-bold text-white mb-4">Start with a country you love</h2>
+          <h2 className="text-2xl sm:text-3xl font-bold text-white mb-4">Start with a question</h2>
           <p className="text-gray-400 mb-8">
-            Open the map, pick a place, and watch. Want the daily brief for your brand instead? Your first one is free.
+            Pick a place, choose a theme, and let Culturix take you somewhere unexpected.
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
             <Link href="/world" className={buttonVariants({ variant: "primary", size: "lg" })}>
-              Explore the map <ArrowRight className="h-4 w-4" />
+              Explore the atlas <ArrowRight className="h-4 w-4" />
             </Link>
             <Link
               href="/signup"
               className="inline-flex items-center justify-center gap-2 bg-white/5 border border-white/10 text-gray-300 font-semibold px-8 py-4 rounded-xl hover:bg-white/10 transition-colors text-base"
             >
-              Get the daily brief free
+              Browse what&rsquo;s new
             </Link>
           </div>
         </div>

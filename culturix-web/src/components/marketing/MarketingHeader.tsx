@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Zap } from "lucide-react";
 import { buttonVariants } from "@/components/ui/Button";
 import MobileMenu, { type NavLink } from "./MobileMenu";
+import LanguageSwitcher from "./LanguageSwitcher";
 
 interface Props {
   // Home page only — dark, fixed-over-hero nav. Every other marketing/auth
@@ -18,8 +19,7 @@ interface Props {
 const LINKS: NavLink[] = [
   { href: "/world", label: "Explore the map" },
   { href: "/#how-it-works", label: "How it works" },
-  { href: "/#creators", label: "For creators" },
-  { href: "/#pricing", label: "Pricing" },
+  { href: "/#about", label: "About Culturix" },
 ];
 
 export default function MarketingHeader({ transparent, rightSlot, showCta = true }: Props) {
@@ -39,13 +39,11 @@ export default function MarketingHeader({ transparent, rightSlot, showCta = true
             ))}
           </div>
           <div className="flex items-center gap-2 sm:gap-3">
-            <Link href="/signup" className="hidden md:inline text-sm text-gray-400 hover:text-white px-3 py-1.5 transition-colors">
-              Sign in
+            <LanguageSwitcher />
+            <Link href="/world" className={`hidden sm:inline-flex ${buttonVariants({ variant: "primary", size: "sm" })}`}>
+              Explore the atlas
             </Link>
-            <Link href="/signup" className={`hidden sm:inline-flex ${buttonVariants({ variant: "primary", size: "sm" })}`}>
-              Get started free
-            </Link>
-            <MobileMenu dark links={[...LINKS, { href: "/signup", label: "Sign in" }]} ctaHref="/signup" ctaLabel="Get started free" />
+            <MobileMenu dark links={LINKS} ctaHref="/world" ctaLabel="Explore the atlas" />
           </div>
         </div>
       </nav>
@@ -67,12 +65,13 @@ export default function MarketingHeader({ transparent, rightSlot, showCta = true
           ))}
         </div>
         <div className="flex items-center gap-2 sm:gap-3">
+          <LanguageSwitcher />
           {rightSlot ?? (showCta && (
-            <Link href="/signup" className={`hidden sm:inline-flex ${buttonVariants({ variant: "primary", size: "sm" })}`}>
-              Get started free
+            <Link href="/world" className={`hidden sm:inline-flex ${buttonVariants({ variant: "primary", size: "sm" })}`}>
+              Explore the atlas
             </Link>
           ))}
-          <MobileMenu links={LINKS} ctaHref="/signup" ctaLabel="Get started free" hideCta={!showCta || !!rightSlot} />
+          <MobileMenu links={LINKS} ctaHref="/world" ctaLabel="Explore the atlas" hideCta={!showCta || !!rightSlot} />
         </div>
       </div>
     </header>
