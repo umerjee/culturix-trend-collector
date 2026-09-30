@@ -781,7 +781,14 @@ function GlobeMarkers({
   // The geographic point currently facing the viewer, in [lon, lat] — the inverse of .rotate().
   const viewCenter: [number, number] = [-rotation[0], -rotation[1]];
   const maxDistance = visibleHemisphereRadians(globeScale);
-  const eligible = Object.entries(regionCounts).filter(([, s]) => s.feature_count > 0 || s.trend_count > 0);
+  // feature_count only, not trend_count -- confirmed live 2026-09-30: a marker now carries real
+  // meaning (WHAT KIND of watchable content is here), unlike the plain intensity dot it replaced,
+  // and showing one for a region that has raw collected trend data but zero published World
+  // Features is actively misleading (a generic gray "no category" icon on dozens of countries
+  // with nothing to watch, drowning out the handful that actually have content). It also broke
+  // clustering: a real content region merged into a cluster with trend-only neighbors lost its
+  // own icon entirely (clusters show a count, not an icon), hiding it further.
+  const eligible = Object.entries(regionCounts).filter(([, s]) => s.feature_count > 0);
   const visible = eligible.filter(([code]) => {
     const c = centroids[code];
     return c && geoDistance(c, viewCenter) <= maxDistance;
@@ -829,7 +836,8 @@ function FlatMarkers({
 }) {
   const centroids = useCountryCentroids();
   if (!centroids) return null;
-  const eligible = Object.entries(regionCounts).filter(([, s]) => s.feature_count > 0 || s.trend_count > 0);
+  // feature_count only -- see GlobeMarkers' matching filter for why.
+  const eligible = Object.entries(regionCounts).filter(([, s]) => s.feature_count > 0);
   const clusters = clusterRegions(eligible, centroids, projection, clusterDistanceUnits / zoom);
   return (
     <>
