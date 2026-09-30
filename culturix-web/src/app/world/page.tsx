@@ -19,6 +19,13 @@ async function fetchFeatures(region?: string, category?: string, q?: string): Pr
     if (q) params.set("q", q);
     const res = await fetch(`${RAILWAY_API_BASE}/world/features?${params.toString()}`, {
       cache: "no-store",
+      // Confirmed live 2026-09-30: this fetch had no timeout, unlike every other route in this
+      // codebase that talks to Railway (see /api/world/regions's own AbortSignal.timeout). When
+      // the backend was slow (Railway's own ongoing connection issues), the request hung until
+      // Vercel's platform-level function timeout killed the whole page with a raw, unstyled
+      // "Application error" screen -- the try/catch below never got a chance to run its graceful
+      // empty-list fallback because the fetch itself never settled.
+      signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return [];
     const data = await res.json();

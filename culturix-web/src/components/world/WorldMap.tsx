@@ -70,11 +70,20 @@ function clamp(value: number, min: number, max: number): number {
 // narrow phone, this component embedded in a smaller column, or a wide desktop. Starts at WIDTH
 // (assumes ~1:1 scale) rather than 0, so the very first render doesn't briefly show oversized
 // markers before the observer's first callback fires.
-function useContainerWidth(ref: React.RefObject<HTMLElement>): number {
+// `ready` must flip from false to true AFTER the real element (carrying `ref`) has mounted --
+// confirmed live 2026-09-30: this effect originally depended on `[ref]` alone, a useRef object
+// whose IDENTITY never changes across renders, so it only ever ran once, on WorldMap's very
+// first render -- while `mounted` was still false and the component was showing its loading
+// placeholder (a different branch of JSX with no ref attached at all). `ref.current` was null,
+// the effect bailed out immediately, and the ResizeObserver was never created at all -- marker
+// sizing silently stayed fixed regardless of actual screen width the entire time, the exact bug
+// the responsive-sizing fix was meant to close. Re-running once `ready` becomes true is what
+// actually lets it find the real element.
+function useContainerWidth(ref: React.RefObject<HTMLElement>, ready: boolean): number {
   const [width, setWidth] = useState(WIDTH);
   useEffect(() => {
     const el = ref.current;
-    if (!el) return;
+    if (!ready || !el) return;
     setWidth(el.getBoundingClientRect().width || WIDTH);
     const observer = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect.width;
@@ -82,7 +91,7 @@ function useContainerWidth(ref: React.RefObject<HTMLElement>): number {
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [ref]);
+  }, [ref, ready]);
   return width;
 }
 
@@ -150,7 +159,7 @@ export default function WorldMap({
   const dragRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
   const rafRef = useRef<number | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
-  const containerWidthPx = useContainerWidth(containerRef);
+  const containerWidthPx = useContainerWidth(containerRef, mounted);
   // px-per-viewBox-unit at the map's actual current rendered size (viewBox is always WIDTH=800
   // units wide regardless of how many CSS pixels that's stretched/shrunk to fit).
   const pxScale = containerWidthPx / WIDTH;
