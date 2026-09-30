@@ -19,6 +19,7 @@ import logging
 import re
 from typing import Optional
 
+from app.db import resilient_commit
 from app.collectors.region_codes import region_name
 
 logger = logging.getLogger("culturix.services.world_production")
@@ -566,16 +567,11 @@ def _generate_world_draft(db, item, duration_seconds, beat_count, use_host, pers
     if toon.status != SCRIPTING:
         # Archived (or otherwise changed) while the script was being written: do not reopen it.
         return summary
-    script.character_variant_id = host.id if host else None
-    script.character_variant_ids = [str(host.id)] if host else None
-    script.hook_line = result.get("hook_line")
-    script.shots = result.get("shots")
-    script.total_duration_seconds = result.get("total_duration_seconds")
-    script.comedy_judgment = judgment
-    script.status = "approved"
-    script.scene_backgrounds = scene_backgrounds
-    toon.character_variant_id = host.id if host else None
-    toon.status = "idea"
+    # Computed BEFORE the mutate closure below, not inside it: determine_world_region and
+    # generate_world_thumbnail are themselves external calls (LLM / image generation), and a
+    # retry closure must only re-apply already-computed values, never repeat an external call --
+    # see app/db.py's resilient_commit docstring for why (and the incident that taught it).
+    region = None
     if not item.region:
         # Topic-driven ingestion (scripts/ingest_topic_subjects.py) always passes
         # region=None — a standalone subject like "Axolotl" isn't tied to a collector
@@ -583,9 +579,6 @@ def _generate_world_draft(db, item, duration_seconds, beat_count, use_host, pers
         # usually names a real place worth pinning to the globe instead of leaving
         # it stuck on "global". None (no single real home) is left alone, not guessed.
         region = determine_world_region(item.title, facts)
-        if region:
-            script.subject_region = region
-            toon.subject_region = region
     # A dedicated, style-consistent thumbnail — see world_thumbnail.py for why this is
     # separate from CuratedItem.thumbnail_url (the source article's own lead image, real
     # but wildly inconsistent in style from one subject to the next). Best-effort: this
@@ -594,9 +587,30 @@ def _generate_world_draft(db, item, duration_seconds, beat_count, use_host, pers
     # their script — failure just leaves thumbnail_url null, same as before this existed.
     from app.services.world_thumbnail import generate_world_thumbnail
     thumbnail_url = generate_world_thumbnail(str(toon.id), item.title)
-    if thumbnail_url:
-        toon.thumbnail_url = thumbnail_url
-    db.commit()
+
+    # This commit follows the script-generation LLM call (possibly two, if auto-improved above),
+    # determine_world_region and generate_world_thumbnail -- multiple, possibly multi-minute
+    # external calls with no DB traffic in between, exactly the condition that has already lost
+    # real generated work to a stale connection four separate times in this codebase's history
+    # (see app/db.py's resilient_commit). Retried with the intended state re-applied each attempt.
+    def _mutate():
+        script.character_variant_id = host.id if host else None
+        script.character_variant_ids = [str(host.id)] if host else None
+        script.hook_line = result.get("hook_line")
+        script.shots = result.get("shots")
+        script.total_duration_seconds = result.get("total_duration_seconds")
+        script.comedy_judgment = judgment
+        script.status = "approved"
+        script.scene_backgrounds = scene_backgrounds
+        toon.character_variant_id = host.id if host else None
+        toon.status = "idea"
+        if region:
+            script.subject_region = region
+            toon.subject_region = region
+        if thumbnail_url:
+            toon.thumbnail_url = thumbnail_url
+
+    resilient_commit(db, _mutate)
     summary.update({"toon_id": str(toon.id), "script_id": str(script.id)})
     return summary
 
@@ -888,11 +902,15 @@ def improve_world_draft(db, toon, note: Optional[str] = None) -> dict:
     _tag_scene_indexes(result["shots"], scenes)
     new_judgment = _build_judgment(better, duration_seconds, beat_count, scenes, previous_judgment=judgment)
     new_judgment["first_score"] = judgment.get("score")
-    script.hook_line = result.get("hook_line")
-    script.shots = result.get("shots")
-    script.total_duration_seconds = result.get("total_duration_seconds")
-    script.comedy_judgment = new_judgment
-    db.commit()
+    # This commit follows _compose_script's rewrite call a few lines up -- a multi-minute LLM
+    # chain with no DB traffic in between, the exact condition resilient_commit exists for (see
+    # app/db.py and generate_world_draft's matching fix above).
+    def _mutate():
+        script.hook_line = result.get("hook_line")
+        script.shots = result.get("shots")
+        script.total_duration_seconds = result.get("total_duration_seconds")
+        script.comedy_judgment = new_judgment
+    resilient_commit(db, _mutate)
     return {"improved": True, "score_before": judgment.get("score"), "score_after": better["review"]["score"],
             "message": "Script improved." + claim_note}
 

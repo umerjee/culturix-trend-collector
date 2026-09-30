@@ -1,7 +1,11 @@
 import os
+import time
+import logging
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
+
+logger = logging.getLogger("culturix.db")
 
 # 1. Load environment variables
 load_dotenv()
@@ -44,6 +48,45 @@ Base = declarative_base()
 
 # 5. Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+_COMMIT_RETRY_ATTEMPTS = 6
+_COMMIT_RETRY_BACKOFF_SECONDS = 15
+
+
+def resilient_commit(session, mutate) -> None:
+    """Commit with retry for the specific failure pool_pre_ping above does NOT cover: a session
+    held open across a long external call (an LLM generation chain, a GPU render, an SSH-driven
+    training job) with no DB traffic in between. pool_pre_ping only re-validates a connection at
+    CHECKOUT time; one that goes stale while actively held and never returned to the pool isn't
+    caught until the next query on it fails outright. Confirmed live as the same root cause four
+    separate times now: LoRA training (2026-08-20, prompted pool_pre_ping's addition above, which
+    only partially covers this), the self-hosted render pipeline (2026-08-26, twice, which is
+    where this function originated as a local helper before being promoted here), and the World
+    regeneration campaign (2026-09-29/30) -- world_production.py's generate_world_draft and
+    improve_world_draft held a session across multi-minute script-generation and thumbnail calls
+    with a bare db.commit() at the end and no retry, losing real work to "server closed the
+    connection unexpectedly" / "SSL connection has been closed unexpectedly" every time it hit.
+
+    Takes `mutate` (a callback that re-applies the intended field assignments) rather than just
+    retrying a bare commit() -- session.rollback() expires every object in the session by
+    default, so a naive "rollback, then commit() again" retry silently commits *nothing*, since
+    the in-memory attribute changes set before the first failed commit are gone the moment
+    rollback() runs. Re-running `mutate` each attempt (idempotent field assignments only -- never
+    call an external API again inside it, just reassign already-computed values) is what actually
+    makes the retry do something."""
+    last_exc = None
+    for attempt in range(_COMMIT_RETRY_ATTEMPTS):
+        try:
+            mutate()
+            session.commit()
+            return
+        except Exception as exc:
+            last_exc = exc
+            session.rollback()
+            logger.warning("resilient_commit attempt %d/%d failed: %s", attempt + 1, _COMMIT_RETRY_ATTEMPTS, exc)
+            if attempt < _COMMIT_RETRY_ATTEMPTS - 1:
+                time.sleep(_COMMIT_RETRY_BACKOFF_SECONDS)
+    raise last_exc
 
 # 6. Dependency for FastAPI routes
 def get_db():
