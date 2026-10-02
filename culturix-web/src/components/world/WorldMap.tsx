@@ -183,13 +183,27 @@ export default function WorldMap({
 
   // The globe drifts slowly on its own — a static map is what "too flat" meant — and stops the
   // moment someone touches it, resuming a couple of seconds after they let go.
+  //
+  // Each drift frame re-renders every country path. Confirmed 2026-10-02: with the globe on
+  // screen, clicking a video card took ~3s to navigate (vs ~0.3s with the map closed) because
+  // the per-frame updates starved the navigation render. So ANY pointer/key interaction on the
+  // page pauses the drift, as does the map being off-screen or the tab hidden; reduced-motion
+  // users get no drift at all.
   useEffect(() => {
-    if (view !== "globe") return;
+    if (view !== "globe" || !mounted) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const markInteraction = () => { lastInteractionRef.current = Date.now(); };
+    document.addEventListener("pointerdown", markInteraction, true);
+    document.addEventListener("keydown", markInteraction, true);
+    let onScreen = true;
+    const container = containerRef.current;
+    const observer = container ? new IntersectionObserver(([entry]) => { onScreen = entry.isIntersecting; }) : null;
+    if (container) observer?.observe(container);
     let last = performance.now();
     const tick = (now: number) => {
       const dt = (now - last) / 1000;
       last = now;
-      if (!dragRef.current && Date.now() - lastInteractionRef.current > IDLE_MS_BEFORE_AUTOROTATE) {
+      if (onScreen && !document.hidden && !dragRef.current && Date.now() - lastInteractionRef.current > IDLE_MS_BEFORE_AUTOROTATE) {
         setRotation(([lambda, phi, gamma]) => [lambda + AUTO_ROTATE_DEG_PER_SEC * dt, phi, gamma]);
       }
       rafRef.current = requestAnimationFrame(tick);
@@ -197,8 +211,11 @@ export default function WorldMap({
     rafRef.current = requestAnimationFrame(tick);
     return () => {
       if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current);
+      document.removeEventListener("pointerdown", markInteraction, true);
+      document.removeEventListener("keydown", markInteraction, true);
+      observer?.disconnect();
     };
-  }, [view]);
+  }, [view, mounted]);
 
   // react-simple-maps' own runtime accepts a ready-made d3 projection INSTANCE here (confirmed by
   // reading its source: a function value is used as-is, never invoked as a factory) — but its
@@ -465,7 +482,7 @@ export default function WorldMap({
           type="button"
           onClick={() => setView("globe")}
           aria-pressed={view === "globe"}
-          className={`flex items-center gap-1.5 px-2.5 py-1.5 ${view === "globe" ? "bg-purple-600 text-white" : "text-gray-500 hover:bg-purple-50"}`}
+          className={`flex min-h-[44px] items-center gap-1.5 px-3 ${view === "globe" ? "bg-purple-600 text-white" : "text-gray-500 hover:bg-purple-50"}`}
         >
           <Globe2 className="h-3.5 w-3.5" /> Globe
         </button>
@@ -473,7 +490,7 @@ export default function WorldMap({
           type="button"
           onClick={() => setView("flat")}
           aria-pressed={view === "flat"}
-          className={`flex items-center gap-1.5 px-2.5 py-1.5 border-l border-gray-200 ${view === "flat" ? "bg-purple-600 text-white" : "text-gray-500 hover:bg-purple-50"}`}
+          className={`flex min-h-[44px] items-center gap-1.5 px-3 border-l border-gray-200 ${view === "flat" ? "bg-purple-600 text-white" : "text-gray-500 hover:bg-purple-50"}`}
         >
           <MapIcon className="h-3.5 w-3.5" /> Flat
         </button>
@@ -486,7 +503,7 @@ export default function WorldMap({
           aria-label="Zoom in"
           onClick={() => zoomBy(1.4)}
           disabled={view === "globe" ? globeScale >= GLOBE_MAX_SCALE : flatPosition.zoom >= FLAT_MAX_ZOOM}
-          className="h-8 w-8 flex items-center justify-center text-gray-600 hover:bg-purple-50 hover:text-purple-600 disabled:opacity-30 disabled:hover:bg-transparent border-b border-gray-100"
+          className="h-11 w-11 flex items-center justify-center text-gray-600 hover:bg-purple-50 hover:text-purple-600 disabled:opacity-30 disabled:hover:bg-transparent border-b border-gray-100"
         >
           <Plus className="h-3.5 w-3.5" />
         </button>
@@ -495,7 +512,7 @@ export default function WorldMap({
           aria-label="Zoom out"
           onClick={() => zoomBy(1 / 1.4)}
           disabled={view === "globe" ? globeScale <= GLOBE_MIN_SCALE : flatPosition.zoom <= FLAT_MIN_ZOOM}
-          className="h-8 w-8 flex items-center justify-center text-gray-600 hover:bg-purple-50 hover:text-purple-600 disabled:opacity-30 disabled:hover:bg-transparent border-b border-gray-100"
+          className="h-11 w-11 flex items-center justify-center text-gray-600 hover:bg-purple-50 hover:text-purple-600 disabled:opacity-30 disabled:hover:bg-transparent border-b border-gray-100"
         >
           <Minus className="h-3.5 w-3.5" />
         </button>
@@ -503,7 +520,7 @@ export default function WorldMap({
           type="button"
           aria-label="Reset view"
           onClick={resetView}
-          className="h-8 w-8 flex items-center justify-center text-gray-600 hover:bg-purple-50 hover:text-purple-600"
+          className="h-11 w-11 flex items-center justify-center text-gray-600 hover:bg-purple-50 hover:text-purple-600"
         >
           <RotateCcw className="h-3 w-3" />
         </button>
@@ -609,7 +626,7 @@ export default function WorldMap({
       // unfiltered by region) instead of letting them go quietly missing from the map.
       <p className="mt-3 text-center text-xs text-gray-400">
         +{globalFeatureCount} more worldwide — not tied to one place.{" "}
-        <a href="#categories" className="font-medium text-purple-600 hover:underline">
+        <a href="#categories" className="inline-flex min-h-[44px] items-center font-medium text-purple-600 hover:underline">
           Browse by theme
         </a>
       </p>
