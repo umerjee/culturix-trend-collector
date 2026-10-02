@@ -39,6 +39,7 @@ from app.models.character_memory import CharacterMemory
 from app.models.culture import Culture
 from app.models.toon_scene import ToonScene
 from app.models.toon_shot import ToonShot
+from app.models.editorial_candidate import EditorialCandidate
 from app.routers import culturetoons
 
 
@@ -130,6 +131,7 @@ def db(mocker):
         Culture.__table__, ToonScene.__table__, CharacterRelationshipEvent.__table__,
         CharacterRelationshipDirection.__table__, CharacterRelationshipBehaviorRule.__table__,
         ToonShot.__table__,
+        EditorialCandidate.__table__,  # read by the editorial render/publish gate
     ])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)

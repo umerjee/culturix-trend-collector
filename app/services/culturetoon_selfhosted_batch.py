@@ -115,10 +115,16 @@ def find_approved_scripts_without_toon(session, brand_id) -> list:
     from app.models.toon_script import ToonScript
     from app.models.toon import Toon
 
+    from app.services.editorial import editorial_gate
+
     scripts = session.query(ToonScript).filter(
         ToonScript.brand_id == brand_id, ToonScript.status == "approved",
     ).all()
-    return [s for s in scripts if session.query(Toon.id).filter_by(script_id=s.id).first() is None]
+    # An editorial script approved from the plain Scripts tab must not slip past its safety and
+    # grounding gate here (see app/services/editorial.py::editorial_gate).
+    return [s for s in scripts
+            if session.query(Toon.id).filter_by(script_id=s.id).first() is None
+            and editorial_gate(session, s.id) is None]
 
 
 def _resolve_cast(session, script) -> list:

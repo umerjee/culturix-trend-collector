@@ -17,6 +17,7 @@ from app.models.character_variant import CharacterVariant
 from app.models.toon_script import ToonScript
 from app.models.toon import Toon
 from app.models.generation_usage import GenerationUsage
+from app.models.editorial_candidate import EditorialCandidate
 from app.routers import culturetoons
 from app.services.culturetoon_selfhosted_batch import (
     _pilot_brand_ids, find_approved_scripts_without_toon, run_selfhosted_video_batch,
@@ -29,6 +30,7 @@ def db(mocker):
     Base.metadata.create_all(bind=engine, tables=[
         CharacterBrand.__table__, Character.__table__, CharacterVariant.__table__,
         ToonScript.__table__, Toon.__table__, GenerationUsage.__table__,
+        EditorialCandidate.__table__,  # read by the editorial render/publish gate
     ])
     TestSessionLocal = sessionmaker(bind=engine)
     mocker.patch("app.db.SessionLocal", TestSessionLocal)

@@ -56,6 +56,7 @@ async def lifespan(_):
     from app.models.curated_item import CuratedItem                    # noqa: F401
     from app.models.region_daily_summary import RegionDailySummary      # noqa: F401
     from app.models.translation_cache import TranslationCache          # noqa: F401
+    from app.models.editorial_candidate import EditorialCandidate      # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # Add columns introduced after initial deploy (idempotent).
@@ -387,6 +388,7 @@ async def lifespan(_):
             "ALTER TABLE characters ADD COLUMN IF NOT EXISTS home_region VARCHAR(2)",
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS public_showcase BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE toons ADD COLUMN IF NOT EXISTS thumbnail_url TEXT",
+            "ALTER TABLE toon_posts ADD COLUMN IF NOT EXISTS extra_metrics JSON",
         ]:
             try:
                 _conn.execute(_text(_stmt))
@@ -558,6 +560,10 @@ app.include_router(culturetoons_router, dependencies=[Depends(require_internal_s
 # culturetoons_router above.
 from app.routers.world import router as world_router
 app.include_router(world_router)
+
+# Admin-only editorial workflow (superadmin console proxies send the admin secret).
+from app.routers.editorial import router as editorial_router
+app.include_router(editorial_router, dependencies=[Depends(require_admin_secret)])
 
 
 @app.get("/health")

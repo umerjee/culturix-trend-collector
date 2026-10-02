@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Integer, Text
+from sqlalchemy import Column, String, DateTime, Integer, Text, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime
 import uuid
@@ -31,6 +31,10 @@ class ToonPost(Base):
     latest_likes = Column(Integer, nullable=True)
     latest_comments = Column(Integer, nullable=True)
     latest_shares = Column(Integer, nullable=True)
+    # Metrics a platform exposes only in its own analytics, entered by an operator when available:
+    # {"saves", "follows", "avg_watch_seconds", "completion_rate"}. Absent keys mean "not collected",
+    # never zero.
+    extra_metrics = Column(JSON, nullable=True)
     last_fetched_at = Column(DateTime, nullable=True)
     tracking_until = Column(DateTime, nullable=True)
     error = Column(Text, nullable=True)

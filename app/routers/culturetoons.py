@@ -233,6 +233,16 @@ def _get_brand_owned(session, brand_id: str, user_id: str):
     return brand
 
 
+def _raise_if_editorial_gate_closed(session, script_id) -> None:
+    """A script from the trend-to-culture editorial workflow may only be rendered or published once
+    its safety review is cleared and its claims are grounded (app/services/editorial.py). Every
+    other script passes straight through."""
+    from app.services.editorial import editorial_gate
+    reason = editorial_gate(session, script_id)
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
+
+
 def _check_budget_or_raise(session, brand):
     """Call at the top of every route that's about to spend money on a
     generation (video, image, voice, Kling Element/voice registration) —
@@ -3593,6 +3603,7 @@ def generate_toon_video(toon_id: str, body: dict, background_tasks: BackgroundTa
             raise HTTPException(status_code=400, detail="Toon's script has no shot data — generate/select a shot-structured script first")
         if not variant:
             raise HTTPException(status_code=400, detail="Character variant not found")
+        _raise_if_editorial_gate_closed(session, script.id)
 
         # LTX-2.5 carries character identity with image conditioning (a
         # composite/backdrop anchor, or MSR for multi-character segments)
@@ -3668,6 +3679,7 @@ def publish_toon(toon_id: str, body: dict, background_tasks: BackgroundTasks):
         toon = _get_toon_owned(session, toon_id, brand_id, user_id)
         if not toon.final_video_url:
             raise HTTPException(status_code=400, detail="This toon has no final video selected yet")
+        _raise_if_editorial_gate_closed(session, toon.script_id)
 
         account = resolve_active_account(session, _uuid.UUID(user_id), platform, character_brand_id=_uuid.UUID(brand_id))
         if not account:
