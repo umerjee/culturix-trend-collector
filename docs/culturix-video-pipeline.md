@@ -784,3 +784,54 @@ are reported. Edited phases are marked `edited` and are never regenerated. Also:
 unless it adds claims/period errors or drops the AI score by more than `HUMAN_NOTE_SCORE_TOLERANCE` (the AI score cannot see
 what a note asked for).
 
+
+## 11. Trend-to-culture editorial workflow (2026-10-02)
+
+Internal/admin only (Admin -> Trend editorial, `/admin/editorial`). Nothing here is on the public site.
+Brief: `docs/culturetoons-trend-culture-report.html`.
+
+**Unit:** an `editorial_candidates` row = one current trend in a country + one curated source
+(Wikipedia/UNESCO `CuratedItem`) from the same country. The trend and source are SNAPSHOTS (title, URL,
+excerpt) because trends/clusters are rewritten by the collectors. Lifecycle:
+`candidate -> scripted -> approved -> published`, or `blocked`/`rejected` (terminal).
+
+**Where the code is:** `app/models/editorial_candidate.py`, `app/services/editorial.py` (screen, ranking,
+balance, grounding, gate, performance), `app/routers/editorial.py` (`/admin/editorial/*`, admin secret),
+`culturix-web/src/app/admin/editorial/page.tsx` + `components/admin/EditorialCandidateCard.tsx`,
+proxies under `src/app/api/admin/editorial/` (they add the reviewer email and, for scripting, the
+admin's own user id server-side), validators in `src/lib/editorial/validate.ts`.
+
+Rules — keep them:
+- **Safety is a gate, not a weight.** `screen_safety` hard-excludes tragedy, active conflict and religious
+  worship in the TREND, and atrocity/memorial subjects in the SOURCE; a blocked row never gets a score and
+  cannot be cleared. Old wars and religious buildings in a source are review flags only. Clearing needs all
+  four `SAFETY_CHECKLIST` answers (no tragedy/conflict/worship joke, no real named person targeted, no
+  culture as punchline, framing checked).
+- **Trend text never authorizes a fact.** The writer gets the source in a fenced `VERIFIED SOURCE MATERIAL`
+  block and the trend labelled "context only". The fact-checker (`judge_world_grounding`) is given the source
+  excerpt alone, so a claim taken from the trend comes back unsupported. One narrow `fix_unsupported_claims`
+  pass, then each spoken line is linked to its supporting source sentence (`link_claims_to_source`).
+- **One gate, every path.** `editorial_gate(session, script_id)` is called by `POST /toons/{id}/generate-video`,
+  `POST /toons/{id}/publish` AND the batch renderer's `find_approved_scripts_without_toon` (it renders any
+  approved script with no Toon, so approving an editorial script from the plain Scripts tab would otherwise
+  skip review). Approval stores a fingerprint of the script; editing it afterwards closes the gate until it is
+  re-checked and re-approved. Scripts not from this workflow are unaffected.
+- **Ranking is transparent, not learned** (`RANK_WEIGHTS`, `RANK_WEIGHTS_VERSION`): trend momentum (Cluster
+  momentum/quality; a single post scores 0.2), source quality (curation priority, thin-source penalty),
+  cultural relevance (shared non-generic words with the source's TITLE + SUMMARY, not its full text), novelty,
+  cast fit (cast home countries). Each factor carries a reason shown to the operator.
+- **Coverage:** `list` round-robins continents; the page shows gaps for Asia/Americas/Africa/Europe. At most
+  one pairing per trend and per source per country per refresh.
+- **Learning data:** a recorded post is a `toon_posts` row with `status="tracked"` (so the existing cast
+  analytics include it), plus `extra_metrics` (saves, follows, avg watch, completion; absent = not collected).
+  `GET /admin/editorial/performance` joins candidate + script + posts: platform, country/continent, language,
+  trend/source ids, format, hook, cast, tone, duration, URL, rates per 1,000 views, groups marked as not
+  enough data below 3 posts. These are directional, never proof.
+
+Measured on real data (2026-10-02, rolled-back dry run): 32 candidates across all four continents, 5 blocked.
+Two things found only on real data, now fixed and tested: a Quran-recitation post passed a practice-words-only
+religious list; matching against the full 5,000-character excerpt made generic words ("after",
+"experience") look like perfect connections. **Known limit:** per-country trend data is currently almost all
+single posts, not clusters, so most pairings are weak and the operator's judgement carries the choice. The
+religious list is deliberately broad for current posts and has false positives (it blocked a post whose body
+mentioned "jesus"); the terms are shown so an operator can see why.
