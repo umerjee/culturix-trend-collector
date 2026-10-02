@@ -32,7 +32,8 @@ from app.services.culturetoon_selfhosted_video import (
 
 @pytest.fixture(autouse=True)
 def _no_real_sleep(mocker):
-    mocker.patch("app.services.culturetoon_selfhosted_video._COMMIT_RETRY_BACKOFF_SECONDS", 0)
+    # The retry loop (and its backoff constant) moved to app.db.resilient_commit on 2026-09-30.
+    mocker.patch("app.db._COMMIT_RETRY_BACKOFF_SECONDS", 0)
 
 
 def _script(mocker, hook_line=None, shots=None, total_duration_seconds=None):
