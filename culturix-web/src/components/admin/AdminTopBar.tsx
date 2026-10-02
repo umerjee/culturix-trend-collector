@@ -25,6 +25,7 @@ export default function AdminTopBar({ onMenu, menuOpen }: { onMenu: () => void; 
     "/admin/validation": "Validation",
     "/admin/curated-items": "Source library",
     "/admin/world-production": "World production",
+    "/admin/editorial": "Trend editorial",
     "/admin/comedy-videos": "Comedy studio",
     "/admin/comedy-patterns": "Comedy patterns",
     "/admin/users": "Users",

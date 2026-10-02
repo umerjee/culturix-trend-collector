@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Zap, LayoutDashboard, TrendingUp, Layers, Users, Search, LogOut, History, ShieldCheck, Database, Film, Laugh, Clapperboard, X } from "lucide-react";
+import { Zap, LayoutDashboard, TrendingUp, Layers, Users, Search, LogOut, History, ShieldCheck, Database, Film, Laugh, Clapperboard, Newspaper, X } from "lucide-react";
 
 const NAV: { href: string; icon: React.ReactNode; label: string; group: string }[] = [
   { href: "/admin/overview", icon: <LayoutDashboard className="h-4 w-4" />, label: "Overview", group: "Workspace" },
@@ -13,6 +13,7 @@ const NAV: { href: string; icon: React.ReactNode; label: string; group: string }
   { href: "/admin/validation", icon: <ShieldCheck className="h-4 w-4" />, label: "Validation", group: "Operations" },
   { href: "/admin/curated-items", icon: <Database className="h-4 w-4" />, label: "Source library", group: "Production" },
   { href: "/admin/world-production", icon: <Film className="h-4 w-4" />, label: "World production", group: "Production" },
+  { href: "/admin/editorial", icon: <Newspaper className="h-4 w-4" />, label: "Trend editorial", group: "Production" },
   { href: "/admin/comedy-videos", icon: <Clapperboard className="h-4 w-4" />, label: "Comedy studio", group: "Production" },
   { href: "/admin/comedy-patterns", icon: <Laugh className="h-4 w-4" />, label: "Comedy patterns", group: "Production" },
   { href: "/admin/users", icon: <Users className="h-4 w-4" />, label: "Users", group: "Administration" },

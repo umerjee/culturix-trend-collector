@@ -25,6 +25,8 @@ const PATH_MAP: Record<string, { path: string; defaultLimit?: number }> = {
   "world-production":   { path: "/admin/world-production", defaultLimit: 100 },
   "world-production-archived": { path: "/admin/world-production/archived", defaultLimit: 100 },
   "comedy-patterns":     { path: "/admin/comedy-patterns" },
+  "editorial-candidates": { path: "/admin/editorial/candidates", defaultLimit: 100 },
+  "editorial-performance": { path: "/admin/editorial/performance" },
 };
 
 // Types that need an :id substituted into the backend path
