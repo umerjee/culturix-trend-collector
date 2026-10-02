@@ -1,460 +1,200 @@
 import Link from "next/link";
-import {
-  Zap, ArrowRight, CheckCircle, Film, Clock, Megaphone, Music, Target,
-  Lightbulb, ShoppingBag, Drama, Globe2, MapPin, Layers, History, Database,
-  ShieldCheck, Radio, Play,
-} from "lucide-react";
+import { cookies } from "next/headers";
+import { ArrowRight, CheckCircle, Database, ShieldCheck, UserCheck, Globe2, Play, ChevronDown, MapPin } from "lucide-react";
 import { buttonVariants } from "@/components/ui/Button";
 import MarketingHeader from "@/components/marketing/MarketingHeader";
 import MarketingFooter from "@/components/marketing/MarketingFooter";
+import FeatureCard from "@/components/world/FeatureCard";
+import { RAILWAY_API_BASE } from "@/lib/config/api";
+import { CATEGORY_LABELS } from "@/lib/worldTypes";
+import type { WorldFeature } from "@/lib/worldTypes";
+import { CATEGORY_ICONS, CATEGORY_COLORS, iconForCategory, colorForCategory } from "@/lib/worldCategoryVisuals";
+import { countryName, flagEmoji } from "@/lib/worldPlaces";
+import { homeCopy, homeLocale } from "@/content/homeCopy";
 
-type SampleIdea = {
-  platform: string;
-  platformColor: string;
-  format: string;
-  viral_angle: string;
-  viralColor: string;
-  hook: string;
-  caption: string;
-  cta: string;
-  posting_time: string;
-  hashtags: string[];
-  trend_connection: string;
-  music_mood: string;
-};
+export const metadata = { alternates: { canonical: "/" } };
 
-// Fallback only — used if the live /public/sample-ideas backend call fails
-// or hasn't produced any ideas yet (e.g. a fresh environment with no
-// pipeline history). See getSampleIdeas() below for the live path.
-const MOCK_IDEAS: SampleIdea[] = [
-  {
-    platform: "TikTok",
-    platformColor: "bg-pink-100 text-pink-700",
-    format: "talking head",
-    viral_angle: "hot take",
-    viralColor: "bg-orange-50 text-orange-600 border-orange-200",
-    hook: "Nobody's talking about why quiet luxury is actually dying",
-    caption: "The aesthetic economy shifted overnight and most creators missed it. Here's what's actually dominating feeds right now — and how to get ahead of it before everyone else catches on. This is your 30-second cultural brief.",
-    cta: "Save this and post by Thursday",
-    posting_time: "Thursday 6–8 PM EST",
-    hashtags: ["#quietluxury", "#aestheticlife", "#fashiontrends", "#ootd", "#styleinspo"],
-    trend_connection: "Viral 'de-influencing' thread on Reddit gained 40k upvotes overnight",
-    music_mood: "Dark minimalist piano",
-  },
-  {
-    platform: "Instagram",
-    platformColor: "bg-purple-100 text-purple-700",
-    format: "carousel",
-    viral_angle: "myth-bust",
-    viralColor: "bg-yellow-50 text-yellow-700 border-yellow-200",
-    hook: "3 posting strategies killing your reach (everyone's doing #2)",
-    caption: "The algorithm changed in March and most of the 'expert' advice is now actively hurting your growth. Swipe through to see what's actually working in 2025, backed by real creator data from the past 30 days.",
-    cta: "Share with a creator friend",
-    posting_time: "Tuesday 12–2 PM EST",
-    hashtags: ["#contentcreator", "#instagramgrowth", "#socialmediatips", "#creatoreconomy", "#growthhacks"],
-    trend_connection: "Creator economy thread went viral on X — 200k impressions in 6 hours",
-    music_mood: "Upbeat lo-fi hip hop",
-  },
-];
+const LATEST_COUNT = 8;
+const SOURCES = ["Wikipedia", "UNESCO World Heritage"];
+const STEP_ICONS = [Database, ShieldCheck, UserCheck];
 
-const PLATFORM_COLORS: Record<string, string> = {
-  TikTok: "bg-pink-100 text-pink-700",
-  YouTube: "bg-red-100 text-red-700",
-  Instagram: "bg-purple-100 text-purple-700",
-  Xiaohongshu: "bg-rose-100 text-rose-700",
-  "X/Twitter": "bg-sky-100 text-sky-700",
-  Reddit: "bg-orange-100 text-orange-700",
-  Pinterest: "bg-red-50 text-red-600",
-};
-
-const VIRAL_COLORS: [string, string][] = [
-  ["hot take", "bg-orange-50 text-orange-600 border-orange-200"],
-  ["myth", "bg-yellow-50 text-yellow-700 border-yellow-200"],
-  ["pov", "bg-indigo-50 text-indigo-600 border-indigo-200"],
-  ["transformation", "bg-emerald-50 text-emerald-600 border-emerald-200"],
-  ["duet", "bg-pink-50 text-pink-600 border-pink-200"],
-  ["challenge", "bg-blue-50 text-blue-600 border-blue-200"],
-  ["reaction", "bg-purple-50 text-purple-600 border-purple-200"],
-  ["tutorial", "bg-teal-50 text-teal-600 border-teal-200"],
-];
-
-function viralAngleClass(angle: string): string {
-  const lower = angle.toLowerCase();
-  const match = VIRAL_COLORS.find(([key]) => lower.includes(key));
-  return match ? match[1] : "bg-gray-50 text-gray-600 border-gray-200";
-}
-
-const RAILWAY =
-  process.env.NEXT_PUBLIC_API_URL ||
-  "https://culturix-trend-collector-production.up.railway.app";
-
-type RawSampleIdea = {
-  hook?: string;
-  caption?: string;
-  cta?: string;
-  music_mood?: string;
-  platform?: string;
-  trend_connection?: string;
-  format?: string;
-  viral_angle?: string;
-  posting_time?: string;
-  hashtag_strategy?: string;
-};
-
-// Fetches yesterday's real content ideas from the trend engine so the
-// creator section's "sample brief" shows genuine output, not frozen mock
-// copy. Revalidates hourly (new ideas land once/day); falls back to
-// MOCK_IDEAS on any failure, timeout, or empty result so the page never
-// breaks on a backend hiccup.
-async function getSampleIdeas(): Promise<{ ideas: SampleIdea[]; trendDate: string | null; live: boolean }> {
+// The newest published videos, from the same endpoint the feed uses. Cached for 10 minutes;
+// on any failure the page simply omits the video sections rather than showing placeholders.
+async function getLatest(): Promise<{ features: WorldFeature[]; total: number } | null> {
   try {
-    const res = await fetch(`${RAILWAY}/public/sample-ideas?limit=2`, {
-      next: { revalidate: 3600 },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) throw new Error(`sample-ideas ${res.status}`);
-    const data = await res.json();
-    const raw: RawSampleIdea[] = Array.isArray(data?.ideas) ? data.ideas : [];
-    const ideas: SampleIdea[] = raw
-      .filter((idea) => idea.hook && idea.caption)
-      .map((idea) => ({
-        platform: idea.platform ?? "TikTok",
-        platformColor: PLATFORM_COLORS[idea.platform ?? ""] ?? "bg-gray-100 text-gray-700",
-        format: idea.format ?? "video",
-        viral_angle: idea.viral_angle ?? "hot take",
-        viralColor: viralAngleClass(idea.viral_angle ?? ""),
-        hook: idea.hook!,
-        caption: idea.caption!,
-        cta: idea.cta ?? "",
-        posting_time: idea.posting_time ?? "",
-        hashtags: (idea.hashtag_strategy ?? "").split(/\s+/).filter((h) => h.startsWith("#")),
-        trend_connection: idea.trend_connection ?? "",
-        music_mood: idea.music_mood ?? "",
-      }));
-
-    if (ideas.length === 0) throw new Error("no live ideas yet");
-    return { ideas, trendDate: data?.trend_date ?? null, live: true };
-  } catch {
-    return { ideas: MOCK_IDEAS, trendDate: null, live: false };
-  }
-}
-
-type WorldStats = { countries: number; videos: number; deepCountries: number };
-
-// A region only counts as "tracked" with a meaningful volume of real rows: the
-// endpoint also lists a long tail of regions with 1-3 stray rows, which would
-// inflate the headline number. "Deep" = two or more months of daily history.
-const MIN_TRACKED_ROWS = 20;
-const DEEP_HISTORY_DAYS = 50;
-
-// Real numbers from the same endpoint the map uses. Any failure returns null
-// and the stat bar falls back to figures that don't depend on live data — the
-// page never shows a made-up count.
-async function getWorldStats(): Promise<WorldStats | null> {
-  try {
-    const res = await fetch(`${RAILWAY}/world/regions`, {
-      next: { revalidate: 3600 },
+    const res = await fetch(`${RAILWAY_API_BASE}/world/features?limit=${LATEST_COUNT + 1}&offset=0`, {
+      next: { revalidate: 600 },
       signal: AbortSignal.timeout(6000),
     });
     if (!res.ok) return null;
     const data = await res.json();
-    const regions: { trend_count?: number; feature_count?: number; trend_days?: number }[] = Array.isArray(data?.regions) ? data.regions : [];
-    if (regions.length === 0) return null;
-    return {
-      countries: regions.filter((r) => (r.trend_count ?? 0) >= MIN_TRACKED_ROWS).length,
-      videos: regions.reduce((sum, r) => sum + (r.feature_count ?? 0), 0),
-      deepCountries: regions.filter((r) => (r.trend_days ?? 0) >= DEEP_HISTORY_DAYS).length,
-    };
+    const features: WorldFeature[] = Array.isArray(data.features) ? data.features : [];
+    return { features, total: typeof data.total === "number" ? data.total : features.length };
   } catch {
     return null;
   }
 }
 
-const SOURCES = ["Wikipedia", "UNESCO World Heritage", "TikTok", "YouTube", "Google Trends", "Reddit", "X / Twitter"];
-
-const HOW_IT_WORKS = [
-  {
-    icon: Database,
-    title: "We start from something real",
-    desc: "Every subject comes from a real source: a Wikipedia article, a UNESCO World Heritage site, or what people in that country are actually watching and searching right now. Nothing is dreamed up from thin air.",
-    accent: "text-indigo-500",
-    bg: "bg-indigo-50",
-  },
-  {
-    icon: ShieldCheck,
-    title: "AI writes it, then checks itself",
-    desc: "The script is written only from the source text. A second AI pass then flags any claim the source doesn't back up, and it gets rewritten. A person chooses every subject before anything is made.",
-    accent: "text-emerald-500",
-    bg: "bg-emerald-50",
-  },
-  {
-    icon: Play,
-    title: "You explore it in seconds",
-    desc: "The result is a short narrated video pinned to a place on the map, with a link back to its source. Watch one, then follow your curiosity to the next country, theme, or century.",
-    accent: "text-purple-500",
-    bg: "bg-purple-50",
-  },
-];
-
-const WAYS_IN = [
-  {
-    icon: MapPin,
-    title: "By place",
-    desc: "Click any country to see its videos and what is trending there today.",
-  },
-  {
-    icon: Layers,
-    title: "By theme",
-    desc: "Places, phenomena, species, technology, Gen-Z culture. Filter the whole map to what you care about.",
-  },
-  {
-    icon: History,
-    title: "Through time",
-    desc: "Slide back through recent trend history, or jump to a historical era. Click France, drag to the French Revolution.",
-  },
-];
-
-const TRUST = [
-  "Every video links to its source",
-  "Scripts are fact-checked against that source",
-  "A person picks each subject",
-  "Trend data refreshes four times a day",
-];
-
-const PRODUCTS = [
-  {
-    icon: MapPin,
-    name: "Explore by place",
-    status: "Live now",
-    statusColor: "bg-emerald-50 text-emerald-600 border-emerald-200",
-    desc: "Start with a country, city, landmark, or region and see the stories connected to it.",
-    href: "/world",
-    cta: "Open the map",
-    accent: "text-indigo-500",
-    bg: "bg-indigo-50",
-  },
-  {
-    icon: Layers,
-    name: "Explore by theme",
-    status: "Growing daily",
-    statusColor: "bg-amber-50 text-amber-600 border-amber-200",
-    desc: "Browse history, species, technology, phenomena, and the odd corners of culture.",
-    href: "/world#categories",
-    cta: "Browse themes",
-    accent: "text-emerald-500",
-    bg: "bg-emerald-50",
-  },
-  {
-    icon: History,
-    name: "Explore through time",
-    status: "In the works",
-    statusColor: "bg-purple-50 text-purple-600 border-purple-200",
-    desc: "Move from what is happening now into the history and context behind it.",
-    href: "/world",
-    cta: "Follow the thread",
-    accent: "text-purple-500",
-    bg: "bg-purple-50",
-  },
-];
-
-const PLANS = [
-  {
-    name: "The atlas",
-    price: "Free",
-    period: "to explore",
-    features: [
-      "Short AI-generated videos",
-      "Real source links",
-      "Map, themes, and search",
-      "History and cultural context",
-      "New stories as the atlas grows",
-    ],
-    cta: "Explore the atlas",
-    href: "/world",
-    highlighted: false,
-  },
-  {
-    name: "The rabbit hole",
-    price: "Always",
-    period: "one more story",
-    features: [
-      "Pick a place",
-      "Pick a subject",
-      "Follow the source trail",
-      "Find something unexpectedly funny",
-    ],
-    cta: "Start wandering",
-    href: "/world",
-    highlighted: true,
-  },
-];
-
-const ATLAS_STORIES = [
-  { label: "History", place: "Carcassonne, France", title: "The city that kept rebuilding itself", source: "UNESCO World Heritage" },
-  { label: "Nature", place: "Northern lights", title: "Why the sky sometimes starts dancing", source: "Wikipedia + science sources" },
-  { label: "Culture", place: "Everywhere", title: "The surprisingly serious history of the humble meme", source: "Culturix World" },
-  { label: "Technology", place: "Global", title: "How a tiny idea becomes a worldwide habit", source: "Real-world trend signals" },
-];
-
-function MockCard({ idea }: { idea: SampleIdea }) {
-  return (
-    <div className="rounded-2xl border border-gray-100 bg-white p-5 flex flex-col gap-3 shadow-sm text-left">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <span className="text-xs font-bold text-gray-300">#01</span>
-        <div className="flex items-center gap-1.5 flex-wrap justify-end">
-          <span className={`inline-flex items-center gap-1 text-xs font-medium rounded-full border px-2.5 py-1 ${idea.viralColor}`}>
-            <Zap className="h-3 w-3" />
-            {idea.viral_angle}
-          </span>
-          <span className="inline-flex items-center gap-1 text-xs font-medium rounded-full bg-gray-100 text-gray-500 px-2.5 py-1">
-            <Film className="h-3 w-3" />
-            {idea.format}
-          </span>
-          <span className={`text-xs font-semibold rounded-full px-2.5 py-1 ${idea.platformColor}`}>
-            {idea.platform}
-          </span>
-        </div>
-      </div>
-
-      <p className="text-sm font-bold text-gray-900 leading-snug">{idea.hook}</p>
-      <p className="text-xs text-gray-500 leading-relaxed line-clamp-3">{idea.caption}</p>
-
-      <div className="flex flex-wrap gap-1">
-        {idea.hashtags.map(h => (
-          <span key={h} className="text-xs rounded-full bg-indigo-50 text-indigo-600 px-2 py-0.5">{h}</span>
-        ))}
-      </div>
-
-      <div className="space-y-1.5 border-t border-gray-50 pt-2">
-        <div className="flex items-center gap-2">
-          <Megaphone className="h-3 w-3 text-blue-400 shrink-0" />
-          <p className="text-xs text-gray-500">{idea.cta}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Clock className="h-3 w-3 text-amber-400 shrink-0" />
-          <p className="text-xs text-gray-500">{idea.posting_time}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Music className="h-3 w-3 text-purple-400 shrink-0" />
-          <p className="text-xs text-gray-500">{idea.music_mood}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Target className="h-3 w-3 text-green-400 shrink-0" />
-          <p className="text-xs text-gray-500 line-clamp-1">{idea.trend_connection}</p>
-        </div>
-      </div>
-    </div>
-  );
+async function getCountriesWithVideos(): Promise<number | null> {
+  try {
+    const res = await fetch(`${RAILWAY_API_BASE}/world/regions`, {
+      next: { revalidate: 600 },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const regions: { feature_count?: number }[] = Array.isArray(data?.regions) ? data.regions : [];
+    return regions.filter((r) => (r.feature_count ?? 0) > 0).length;
+  } catch {
+    return null;
+  }
 }
 
-// Illustrative card for the hero — labeled "Example" and built only from
-// facts verified against the real UNESCO record and Wikipedia article for
-// Carcassonne, so it explains the format without inventing a video or a trend.
-function WorldExampleCard() {
-  return (
-    <div className="relative mx-auto w-full max-w-md lg:max-w-none">
-      <div className="absolute -inset-4 bg-gradient-to-r from-indigo-600/20 to-purple-600/20 rounded-3xl blur-xl" />
-      <div className="relative rounded-2xl border border-white/10 bg-slate-900/80 p-5 sm:p-6 text-left shadow-2xl backdrop-blur">
-        <div className="flex items-center justify-between gap-3 mb-4">
-          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-300">
-            <MapPin className="h-3.5 w-3.5" /> France
-          </span>
-          <span className="text-[11px] font-medium uppercase tracking-wide text-gray-500">Example</span>
-        </div>
+export default async function LandingPage({ searchParams }: { searchParams: { lang?: string } }) {
+  const locale = homeLocale(searchParams.lang || cookies().get("culturix_language")?.value);
+  const t = homeCopy(locale);
+  const [latest, countries] = await Promise.all([getLatest(), getCountriesWithVideos()]);
 
-        <div className="relative aspect-video rounded-xl bg-gradient-to-br from-indigo-900/60 via-slate-800 to-purple-900/50 border border-white/5 flex items-center justify-center mb-4">
-          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 border border-white/20">
-            <Play className="h-5 w-5 text-white ml-0.5" />
-          </span>
-          <span className="absolute bottom-2 right-2 rounded bg-black/50 px-1.5 py-0.5 text-[11px] text-gray-300">0:30</span>
-        </div>
+  const featured = latest?.features.find((f) => f.thumbnail_url) ?? null;
+  const grid = (latest?.features ?? []).filter((f) => f.id !== featured?.id).slice(0, LATEST_COUNT);
 
-        <h3 className="text-base sm:text-lg font-bold text-white leading-snug">Historic Fortified City of Carcassonne</h3>
-        <p className="mt-1 text-sm text-gray-400 leading-relaxed">
-          A fortified settlement since the pre-Roman period, and a landmark of modern conservation.
-        </p>
-
-        <div className="mt-4 flex flex-wrap gap-2">
-          <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 text-xs font-medium text-amber-300">
-            <History className="h-3 w-3" /> History
-          </span>
-          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 text-xs font-medium text-emerald-300">
-            <ShieldCheck className="h-3 w-3" /> Fact-checked
-          </span>
-          <span className="inline-flex items-center gap-1 rounded-full bg-white/5 border border-white/10 px-2.5 py-1 text-xs font-medium text-gray-300">
-            <Database className="h-3 w-3" /> Source: UNESCO
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export default async function LandingPage() {
-  const world = await getWorldStats();
-
+  // Only real numbers: a failed fetch drops its stat instead of showing a guess.
   const stats: { val: string; label: string }[] = [
-    { val: world ? `${world.countries}` : "35", label: "countries tracked" },
-    ...(world && world.deepCountries > 0 ? [{ val: `${world.deepCountries}`, label: "countries with 2+ months of history" }] : []),
-    { val: "4×", label: "daily data refresh" },
-    ...(world && world.videos > 0 ? [{ val: `${world.videos}`, label: "videos on the map" }] : [{ val: "Free", label: "to explore the map" }]),
+    ...(latest && latest.total > 0 ? [{ val: String(latest.total), label: t.stats.videos }] : []),
+    ...(countries ? [{ val: String(countries), label: t.stats.countries }] : []),
+    { val: String(Object.keys(CATEGORY_LABELS).length), label: t.stats.themes },
+    { val: t.stats.free, label: t.stats.freeLabel },
   ];
 
+  const faqJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: t.faq.items.map((item) => ({
+      "@type": "Question",
+      name: item.q,
+      acceptedAnswer: { "@type": "Answer", text: item.a },
+    })),
+  };
+
   return (
-    <div className="min-h-screen bg-white overflow-x-hidden">
+    <div lang={locale} className="min-h-screen bg-white overflow-x-hidden">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }} />
       <MarketingHeader transparent />
 
       {/* Hero */}
       <section className="pt-24 pb-14 sm:pt-32 sm:pb-20 px-4 sm:px-6 bg-slate-950 relative overflow-hidden">
-        <div className="absolute inset-0 pointer-events-none">
+        <div className="absolute inset-0 pointer-events-none" aria-hidden="true">
           <div className="absolute top-1/4 left-1/3 w-72 h-72 sm:w-96 sm:h-96 bg-indigo-600/20 rounded-full blur-3xl" />
           <div className="absolute bottom-0 right-1/4 w-64 h-64 sm:w-80 sm:h-80 bg-purple-600/15 rounded-full blur-3xl" />
         </div>
 
-        <div className="max-w-6xl mx-auto relative">
-          <div className="grid lg:grid-cols-2 gap-10 lg:gap-12 items-center">
-            <div>
-              <div className="inline-flex items-center gap-2 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-semibold px-3 py-1.5 mb-5 sm:mb-6">
-                <Globe2 className="h-3.5 w-3.5" />
-                Culturix World · a living atlas of culture
-              </div>
-              <h1 className="text-3xl min-[400px]:text-4xl sm:text-5xl font-extrabold text-white leading-tight mb-5 sm:mb-6">
-                The world, explained in short videos{" "}
-                <span className="bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
-                  with a sense of humour
-                </span>
-              </h1>
-              <p className="text-base sm:text-lg text-gray-400 mb-7 sm:mb-8 leading-relaxed">
-                Culturix is an AI-generated video encyclopedia of the world. Pick a country, slide through time, and watch concise, source-linked stories about history, heritage, science, technology, and the wonderfully strange things people do.
-              </p>
-
-              <div className="flex flex-col sm:flex-row gap-3">
-                <Link href="/world" className={`${buttonVariants({ variant: "primary", size: "lg" })} px-6 sm:px-8`}>
-                  Explore the map <ArrowRight className="h-4 w-4" />
-                </Link>
-                <Link
-                  href="#how-it-works"
-                  className="inline-flex items-center justify-center gap-2 bg-white/5 border border-white/10 text-gray-300 font-semibold px-6 sm:px-8 py-4 rounded-xl hover:bg-white/10 transition-colors text-base"
-                >
-                  Why Culturix
-                </Link>
-              </div>
+        <div className={`max-w-6xl mx-auto relative grid gap-10 lg:gap-14 items-center ${featured ? "lg:grid-cols-[1.25fr_1fr]" : ""}`}>
+          <div className={featured ? "" : "max-w-2xl mx-auto text-center"}>
+            <div className="inline-flex items-center gap-2 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-semibold px-3 py-1.5 mb-5 sm:mb-6">
+              <Globe2 className="h-3.5 w-3.5" aria-hidden="true" />
+              {t.hero.badge}
             </div>
+            <h1 className="text-3xl min-[400px]:text-4xl sm:text-5xl font-extrabold text-white leading-tight mb-5 sm:mb-6">
+              {t.hero.title}{" "}
+              <span className="bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+                {t.hero.titleAccent}
+              </span>
+            </h1>
+            <p className="text-base sm:text-lg text-gray-300 mb-7 sm:mb-8 leading-relaxed">{t.hero.body}</p>
 
-            <WorldExampleCard />
+            <div className={`flex flex-col sm:flex-row gap-3 ${featured ? "" : "sm:justify-center"}`}>
+              <Link href="/world" className={`${buttonVariants({ variant: "primary", size: "lg" })} px-6 sm:px-8`}>
+                {t.hero.ctaPrimary} <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              </Link>
+              <Link
+                href="#how-it-works"
+                className="inline-flex min-h-[44px] items-center justify-center gap-2 bg-white/5 border border-white/10 text-gray-200 font-semibold px-6 sm:px-8 py-4 rounded-xl hover:bg-white/10 transition-colors text-base"
+              >
+                {t.hero.ctaSecondary}
+              </Link>
+            </div>
+            <p className="mt-4 text-sm text-gray-400">{t.hero.note}</p>
           </div>
+
+          {featured && <FeaturedVideo feature={featured} label={t.hero.latest} categoryName={featured.subject_category ? t.themes.items[featured.subject_category]?.name : null} locale={locale} />}
         </div>
       </section>
 
       {/* Stats */}
       <section className="py-8 sm:py-10 border-b border-gray-100 bg-white">
-        <div className={`max-w-4xl mx-auto px-4 sm:px-6 grid grid-cols-2 gap-x-4 gap-y-6 text-center ${stats.length >= 4 ? "md:grid-cols-4" : "md:grid-cols-3"}`}>
+        <dl className={`max-w-4xl mx-auto px-4 sm:px-6 grid grid-cols-2 gap-x-4 gap-y-6 text-center ${stats.length >= 4 ? "md:grid-cols-4" : "md:grid-cols-3"}`}>
           {stats.map((s) => (
-            <div key={s.label}>
-              <p className="text-2xl sm:text-3xl font-extrabold text-indigo-600">{s.val}</p>
-              <p className="text-xs sm:text-sm text-gray-500 mt-1">{s.label}</p>
+            <div key={s.label} className="flex flex-col-reverse">
+              <dt className="text-xs sm:text-sm text-gray-500 mt-1">{s.label}</dt>
+              <dd className="text-2xl sm:text-3xl font-extrabold text-indigo-600">{s.val}</dd>
             </div>
           ))}
+        </dl>
+      </section>
+
+      {/* Latest videos */}
+      {grid.length > 0 && (
+        <section id="latest" className="py-14 sm:py-20 px-4 sm:px-6 scroll-mt-16">
+          <div className="max-w-6xl mx-auto">
+            <div className="flex flex-wrap items-end justify-between gap-4 mb-8">
+              <div>
+                <h2 className="text-2xl sm:text-3xl font-bold text-gray-900">{t.latest.title}</h2>
+                <p className="mt-2 text-gray-500">{t.latest.body}</p>
+              </div>
+              <Link href="/world" className="hidden sm:inline-flex min-h-[44px] items-center gap-1.5 text-sm font-semibold text-indigo-600 hover:text-indigo-700">
+                {t.latest.seeAll} <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              </Link>
+            </div>
+            <ul className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-5">
+              {grid.map((f, i) => (
+                // Phones get a shorter strip (4); the full feed is one tap away.
+                <li key={f.id} className={i >= 4 ? "hidden sm:block" : ""}>
+                  <FeatureCard feature={f} />
+                </li>
+              ))}
+            </ul>
+            <div className="mt-8 text-center">
+              <Link href="/world" className={`${buttonVariants({ variant: "primary", size: "lg" })} w-full sm:w-auto`}>
+                {t.latest.seeAll} <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              </Link>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Themes */}
+      <section id="themes" className="py-14 sm:py-20 px-4 sm:px-6 bg-gray-50 scroll-mt-16">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-10">
+            <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-3">{t.themes.title}</h2>
+            <p className="text-gray-500 max-w-2xl mx-auto">{t.themes.body}</p>
+          </div>
+          <ul className="grid grid-cols-2 md:grid-cols-3 gap-3 sm:gap-4">
+            {Object.keys(CATEGORY_LABELS).map((key) => {
+              const Icon = CATEGORY_ICONS[key];
+              const color = CATEGORY_COLORS[key];
+              const item = t.themes.items[key];
+              return (
+                <li key={key}>
+                  <Link
+                    href={`/world?category=${key}`}
+                    className="group flex h-full flex-col rounded-2xl border border-gray-100 bg-white p-4 sm:p-5 transition hover:border-indigo-200 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                  >
+                    <span className="flex h-10 w-10 items-center justify-center rounded-xl" style={{ background: `${color}1a` }} aria-hidden="true">
+                      <Icon className="h-5 w-5" style={{ color }} />
+                    </span>
+                    <span className="mt-3 font-semibold text-gray-900 group-hover:text-indigo-700">{item.name}</span>
+                    <span className="mt-1 text-sm text-gray-500 leading-snug">{item.desc}</span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="mt-8 text-center">
+            <Link href="/world" className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-gray-200 bg-white px-5 text-sm font-semibold text-gray-800 hover:bg-gray-50">
+              <MapPin className="h-4 w-4 text-indigo-500" aria-hidden="true" /> {t.themes.byPlace}
+            </Link>
+          </div>
         </div>
       </section>
 
@@ -462,30 +202,29 @@ export default async function LandingPage() {
       <section id="how-it-works" className="py-14 sm:py-20 px-4 sm:px-6 scroll-mt-16">
         <div className="max-w-5xl mx-auto">
           <div className="text-center mb-10 sm:mb-14">
-            <p className="text-xs font-semibold text-indigo-500 uppercase tracking-wide mb-3">How it works</p>
-            <h2 className="text-2xl sm:text-4xl font-bold text-gray-900 mb-4">
-              Real sources in, short videos out
-            </h2>
-            <p className="text-gray-500 max-w-xl mx-auto">
-              Most AI video is made up. Ours starts from a real article or a real trend, and shows its work.
-            </p>
+            <p className="text-xs font-semibold text-indigo-600 uppercase tracking-wide mb-3">{t.how.eyebrow}</p>
+            <h2 className="text-2xl sm:text-4xl font-bold text-gray-900 mb-4">{t.how.title}</h2>
+            <p className="text-gray-500 max-w-xl mx-auto">{t.how.body}</p>
           </div>
-          <div className="grid md:grid-cols-3 gap-4 sm:gap-6">
-            {HOW_IT_WORKS.map((s, i) => (
-              <div key={s.title} className="rounded-2xl border border-gray-100 p-5 sm:p-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className={`h-10 w-10 rounded-xl ${s.bg} flex items-center justify-center`}>
-                    <s.icon className={`h-5 w-5 ${s.accent}`} />
+          <ol className="grid md:grid-cols-3 gap-4 sm:gap-6">
+            {t.how.steps.map((s, i) => {
+              const Icon = STEP_ICONS[i];
+              return (
+                <li key={s.title} className="rounded-2xl border border-gray-100 p-5 sm:p-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="h-10 w-10 rounded-xl bg-indigo-50 flex items-center justify-center" aria-hidden="true">
+                      <Icon className="h-5 w-5 text-indigo-500" />
+                    </div>
+                    <span className="text-xs font-bold text-gray-400">0{i + 1}</span>
                   </div>
-                  <span className="text-xs font-bold text-gray-300">0{i + 1}</span>
-                </div>
-                <h3 className="font-semibold text-gray-900 mb-2">{s.title}</h3>
-                <p className="text-sm text-gray-500 leading-relaxed">{s.desc}</p>
-              </div>
-            ))}
-          </div>
+                  <h3 className="font-semibold text-gray-900 mb-2">{s.title}</h3>
+                  <p className="text-sm text-gray-500 leading-relaxed">{s.desc}</p>
+                </li>
+              );
+            })}
+          </ol>
           <div className="mt-8 flex flex-wrap items-center justify-center gap-2">
-            <span className="text-xs text-gray-400 mr-1">Built from</span>
+            <span className="text-xs text-gray-500 mr-1">{t.how.sourcesLabel}</span>
             {SOURCES.map((name) => (
               <span key={name} className="text-xs font-medium rounded-full bg-gray-50 border border-gray-100 text-gray-600 px-3 py-1.5">{name}</span>
             ))}
@@ -493,197 +232,101 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* Ways in */}
-      <section className="py-14 sm:py-20 px-4 sm:px-6 bg-gray-50">
-        <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-10 sm:mb-14">
-            <h2 className="text-2xl sm:text-4xl font-bold text-gray-900 mb-4">One map, three ways in</h2>
-            <p className="text-gray-500 max-w-xl mx-auto">
-              Wander, or go looking for something specific. Either way you are one tap from a video.
-            </p>
-          </div>
-          <div className="grid sm:grid-cols-3 gap-4 sm:gap-6">
-            {WAYS_IN.map((w) => (
-              <div key={w.title} className="rounded-2xl border border-gray-100 bg-white p-5 sm:p-6">
-                <div className="h-10 w-10 rounded-xl bg-indigo-50 flex items-center justify-center mb-4">
-                  <w.icon className="h-5 w-5 text-indigo-500" />
-                </div>
-                <h3 className="font-semibold text-gray-900 mb-2">{w.title}</h3>
-                <p className="text-sm text-gray-500 leading-relaxed">{w.desc}</p>
-              </div>
-            ))}
-          </div>
-          <div className="mt-10 text-center">
-            <Link href="/world" className={`${buttonVariants({ variant: "primary", size: "lg" })} w-full sm:w-auto`}>
-              Open the map <ArrowRight className="h-4 w-4" />
-            </Link>
-          </div>
-        </div>
-      </section>
-
       {/* Trust */}
-      <section className="py-14 sm:py-20 px-4 sm:px-6 bg-slate-950">
+      <section id="about" className="py-14 sm:py-20 px-4 sm:px-6 bg-slate-950 scroll-mt-16">
         <div className="max-w-4xl mx-auto grid md:grid-cols-2 gap-8 md:gap-12 items-center">
           <div>
-            <div className="inline-flex items-center gap-2 text-emerald-300 text-xs font-semibold uppercase tracking-wide mb-4">
-              <Radio className="h-4 w-4" /> Real, not invented
-            </div>
-            <h2 className="text-2xl sm:text-3xl font-bold text-white mb-4">
-              Culture deserves better than AI guesswork
-            </h2>
-            <p className="text-gray-400 leading-relaxed">
-              Short-form video is where people learn about the world now, and too much of it is confidently wrong. Culturix keeps a paper trail for every video so you can check it yourself.
+            <p className="inline-flex items-center gap-2 text-emerald-300 text-xs font-semibold uppercase tracking-wide mb-4">
+              <ShieldCheck className="h-4 w-4" aria-hidden="true" /> {t.trust.eyebrow}
             </p>
+            <h2 className="text-2xl sm:text-3xl font-bold text-white mb-4">{t.trust.title}</h2>
+            <p className="text-gray-300 leading-relaxed">{t.trust.body}</p>
           </div>
           <ul className="space-y-3">
-            {TRUST.map((t) => (
-              <li key={t} className="flex items-start gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3.5 text-sm sm:text-base text-gray-200">
-                <CheckCircle className="h-5 w-5 shrink-0 text-emerald-400 mt-0.5" />
-                {t}
+            {t.trust.points.map((point) => (
+              <li key={point} className="flex items-start gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3.5 text-sm sm:text-base text-gray-200">
+                <CheckCircle className="h-5 w-5 shrink-0 text-emerald-400 mt-0.5" aria-hidden="true" />
+                {point}
               </li>
             ))}
           </ul>
         </div>
       </section>
 
-      {/* About Culturix */}
-      <section id="about" className="py-14 sm:py-20 px-4 sm:px-6 scroll-mt-16">
-        <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-10 sm:mb-14">
-            <p className="text-xs font-semibold text-indigo-500 uppercase tracking-wide mb-3">A new kind of encyclopedia</p>
-            <h2 className="text-2xl sm:text-4xl font-bold text-gray-900 mb-4">
-              Learn something real. Enjoy the ride.
-            </h2>
-            <p className="text-gray-500 max-w-xl mx-auto">
-              We turn reliable sources into short, watchable stories: curious enough for a five-minute rabbit hole, funny enough to make the facts stick.
-            </p>
-          </div>
-          <div className="grid md:grid-cols-3 gap-4 sm:gap-6">
-            {PRODUCTS.map((p) => (
-              <div key={p.name} className="rounded-2xl border border-gray-100 bg-white p-5 sm:p-6 flex flex-col">
-                <div className="flex items-center justify-between mb-4">
-                  <div className={`h-10 w-10 rounded-xl ${p.bg} flex items-center justify-center`}>
-                    <p.icon className={`h-5 w-5 ${p.accent}`} />
-                  </div>
-                  <span className={`text-xs font-medium rounded-full border px-2.5 py-1 ${p.statusColor}`}>
-                    {p.status}
-                  </span>
-                </div>
-                <h3 className="font-semibold text-gray-900 mb-2">{p.name}</h3>
-                <p className="text-sm text-gray-500 leading-relaxed mb-5 flex-1">{p.desc}</p>
-                <Link
-                  href={p.href}
-                  className="inline-flex min-h-11 items-center gap-1.5 text-sm font-semibold text-indigo-600 hover:text-indigo-700 transition-colors"
-                >
-                  {p.cta} <ArrowRight className="h-3.5 w-3.5" />
-                </Link>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Story preview */}
-      <section id="stories" className="py-14 sm:py-20 px-4 sm:px-6 bg-gray-50 scroll-mt-16">
-        <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-10">
-            <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-4">
-              A world of stories, one curious click away
-            </h2>
-            <p className="text-gray-500 max-w-xl mx-auto">
-              Each story has a source, a point of view, and just enough personality to make you want to watch the next one.
-            </p>
-          </div>
-          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
-            {ATLAS_STORIES.map((story) => (
-              <Link key={story.title} href="/world" className="group rounded-2xl border border-gray-100 bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:border-indigo-200 hover:shadow-md">
-                <div className="flex items-center justify-between gap-2 text-xs">
-                  <span className="font-semibold text-indigo-600">{story.label}</span>
-                  <ArrowRight className="h-3.5 w-3.5 text-gray-300 transition group-hover:text-indigo-500" />
-                </div>
-                <p className="mt-5 text-xs text-gray-400">{story.place}</p>
-                <h3 className="mt-2 text-base font-bold leading-snug text-gray-900">{story.title}</h3>
-                <p className="mt-5 border-t border-gray-100 pt-3 text-xs text-gray-400">Source: {story.source}</p>
-              </Link>
-            ))}
-          </div>
-          <p className="text-center text-xs text-gray-400 mt-6">New stories are researched, checked, and added to the atlas as the world keeps moving.</p>
-        </div>
-      </section>
-
-      {/* Explore */}
-      <section id="explore" className="py-14 sm:py-20 px-4 sm:px-6 scroll-mt-16">
+      {/* FAQ */}
+      <section id="faq" className="py-14 sm:py-20 px-4 sm:px-6 scroll-mt-16">
         <div className="max-w-3xl mx-auto">
-          <h2 className="text-2xl sm:text-3xl font-bold text-center text-gray-900 mb-4">
-            No account. No paywall. Just wander.
-          </h2>
-          <p className="text-center text-gray-500 mb-10 sm:mb-12">
-            Culturix World is built for curious people. Open the map, follow a question, and see where it takes you.
-          </p>
-          <div className="grid sm:grid-cols-2 gap-4 sm:gap-6">
-            {PLANS.map((p) => (
-              <div
-                key={p.name}
-                className={`rounded-2xl p-6 sm:p-8 ${
-                  p.highlighted
-                    ? "bg-slate-950 text-white shadow-2xl ring-1 ring-indigo-500/30"
-                    : "border border-gray-200 bg-white"
-                }`}
-              >
-                <p className={`text-sm font-semibold mb-2 ${p.highlighted ? "text-indigo-400" : "text-gray-500"}`}>
-                  {p.name}
-                </p>
-                <div className="flex items-baseline gap-1 mb-6">
-                  <span className="text-4xl font-extrabold">{p.price}</span>
-                  <span className="text-sm text-gray-400">{p.period}</span>
-                </div>
-                <ul className="space-y-3 mb-8">
-                  {p.features.map((f) => (
-                    <li key={f} className="flex items-start gap-2 text-sm">
-                      <CheckCircle className={`h-4 w-4 shrink-0 mt-0.5 ${p.highlighted ? "text-indigo-400" : "text-indigo-500"}`} />
-                      {f}
-                    </li>
-                  ))}
-                </ul>
-                <Link
-                  href={p.href}
-                  className={`flex min-h-12 items-center justify-center text-center font-semibold rounded-xl transition-colors ${
-                    p.highlighted
-                      ? "bg-indigo-600 text-white hover:bg-indigo-500"
-                      : "bg-gray-900 text-white hover:bg-gray-800"
-                  }`}
-                >
-                  {p.cta}
-                </Link>
-              </div>
+          <h2 className="text-2xl sm:text-3xl font-bold text-center text-gray-900 mb-8">{t.faq.title}</h2>
+          <div className="divide-y divide-gray-100 rounded-2xl border border-gray-100">
+            {t.faq.items.map((item, i) => (
+              <details key={item.q} className="group" open={i === 0}>
+                <summary className="flex min-h-[56px] cursor-pointer list-none items-center justify-between gap-4 px-5 py-3 font-semibold text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 [&::-webkit-details-marker]:hidden">
+                  {item.q}
+                  <ChevronDown className="h-4 w-4 shrink-0 text-gray-400 transition-transform group-open:rotate-180 motion-reduce:transition-none" aria-hidden="true" />
+                </summary>
+                <p className="px-5 pb-5 text-gray-600 leading-relaxed">{item.a}</p>
+              </details>
             ))}
           </div>
         </div>
       </section>
 
-      {/* Footer CTA */}
+      {/* Closing CTA */}
       <section className="py-14 sm:py-20 px-4 sm:px-6 bg-slate-950">
         <div className="max-w-2xl mx-auto text-center">
-          <Globe2 className="h-10 w-10 text-indigo-400 mx-auto mb-4" />
-          <h2 className="text-2xl sm:text-3xl font-bold text-white mb-4">Start with a question</h2>
-          <p className="text-gray-400 mb-8">
-            Pick a place, choose a theme, and let Culturix take you somewhere unexpected.
-          </p>
-          <div className="flex flex-col sm:flex-row gap-3 justify-center">
-            <Link href="/world" className={buttonVariants({ variant: "primary", size: "lg" })}>
-              Explore the atlas <ArrowRight className="h-4 w-4" />
-            </Link>
-            <Link
-              href="/signup"
-              className="inline-flex items-center justify-center gap-2 bg-white/5 border border-white/10 text-gray-300 font-semibold px-8 py-4 rounded-xl hover:bg-white/10 transition-colors text-base"
-            >
-              Browse what&rsquo;s new
-            </Link>
-          </div>
+          <Globe2 className="h-10 w-10 text-indigo-400 mx-auto mb-4" aria-hidden="true" />
+          <h2 className="text-2xl sm:text-3xl font-bold text-white mb-4">{t.cta.title}</h2>
+          <p className="text-gray-300 mb-8">{t.cta.body}</p>
+          <Link href="/world" className={buttonVariants({ variant: "primary", size: "lg" })}>
+            {t.cta.button} <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          </Link>
         </div>
       </section>
 
       <MarketingFooter />
     </div>
+  );
+}
+
+function FeaturedVideo({
+  feature, label, categoryName, locale,
+}: {
+  feature: WorldFeature; label: string; categoryName: string | null | undefined; locale: string;
+}) {
+  const title = feature.title || feature.subject_text || "";
+  const place = countryName(feature.subject_region, locale);
+  const Icon = iconForCategory(feature.subject_category);
+  const color = colorForCategory(feature.subject_category);
+  return (
+    <Link
+      href={`/world/feature/${feature.id}`}
+      className="group relative mx-auto block w-full max-w-[260px] sm:max-w-[300px] focus-visible:outline-none"
+    >
+      <div className="absolute -inset-4 bg-gradient-to-r from-indigo-600/25 to-purple-600/25 rounded-3xl blur-xl" aria-hidden="true" />
+      <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl group-focus-visible:ring-2 group-focus-visible:ring-indigo-400">
+        <div className="relative aspect-[9/16]">
+          {/* eslint-disable-next-line @next/next/no-img-element -- external storage URL */}
+          <img src={feature.thumbnail_url!} alt="" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03] motion-reduce:transition-none" />
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/95 via-slate-950/20 to-transparent" aria-hidden="true" />
+          <span className="absolute left-3 top-3 rounded-full bg-white/95 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-900">{label}</span>
+          <span className="absolute inset-0 flex items-center justify-center" aria-hidden="true">
+            <span className="flex h-14 w-14 items-center justify-center rounded-full bg-black/45 text-white ring-1 ring-white/40 backdrop-blur-sm transition-transform group-hover:scale-110 motion-reduce:transition-none">
+              <Play className="h-6 w-6 translate-x-0.5" fill="currentColor" />
+            </span>
+          </span>
+          <div className="absolute inset-x-0 bottom-0 p-4">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              {categoryName && (
+                <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold text-white" style={{ background: color }}>
+                  <Icon className="h-3 w-3" aria-hidden="true" /> {categoryName}
+                </span>
+              )}
+              {place && <span className="text-gray-200"><span aria-hidden="true">{flagEmoji(feature.subject_region)}</span> {place}</span>}
+            </div>
+            <p className="mt-2 text-base font-bold leading-snug text-white">{title}</p>
+          </div>
+        </div>
+      </div>
+    </Link>
   );
 }

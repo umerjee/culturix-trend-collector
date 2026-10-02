@@ -6,6 +6,7 @@ export type Locale = "en" | "fr" | "de" | "es";
 
 const EN = {
   dashboard: "Dashboard", performance: "Performance", calendar: "Calendar", settings: "Settings", help: "How it works", admin: "Admin", signOut: "Sign out", products: "Culturix products", posting: "Posting Ideation", postingDesc: "Trend-driven content ideas & publishing", shopify: "Shopify Reel Building", shopifyDesc: "AI reels grounded in your real product catalog", culturetoons: "Character-Based Posting", culturetoonsDesc: "Cartoon characters riffing on cultural trends",
+  nav: { watch: "Watch", howItWorks: "How it works", faq: "FAQ", startWatching: "Start watching", watchVideos: "Watch videos", privacy: "Privacy Policy", terms: "Terms of Service", rights: "All rights reserved.", openMenu: "Open menu", closeMenu: "Close menu", main: "Main" },
   world: {
     title: "Culturix World",
     tagline: "The AI video encyclopedia of the world, with a sense of humour.",
@@ -33,7 +34,7 @@ const EN = {
     retry: "Retry",
     loadingMore: "Loading more videos",
     endOfFeed: "You've seen everything here.",
-    worldwide: "Worldwide",
+    worldwide: "Worldwide", aboutPlace: "More about",
     watch: "Watch",
     back: "Back",
     nextUp: "Next up",
@@ -56,11 +57,13 @@ const EN = {
 };
 
 type Messages = typeof EN;
+export type NavKey = keyof Messages["nav"];
 
 const MESSAGES: Record<Locale, Messages> = {
   en: EN,
   fr: {
     dashboard: "Tableau de bord", performance: "Performance", calendar: "Calendrier", settings: "Réglages", help: "Comment ça marche", admin: "Admin", signOut: "Se déconnecter", products: "Produits Culturix", posting: "Idées de publication", postingDesc: "Idées fondées sur les tendances et publication", shopify: "Reels Shopify", shopifyDesc: "Reels IA basés sur votre catalogue", culturetoons: "Personnages animés", culturetoonsDesc: "Des personnages qui jouent avec les tendances",
+    nav: { watch: "Regarder", howItWorks: "Comment ça marche", faq: "FAQ", startWatching: "Commencer à regarder", watchVideos: "Voir les vidéos", privacy: "Politique de confidentialité", terms: "Conditions d'utilisation", rights: "Tous droits réservés.", openMenu: "Ouvrir le menu", closeMenu: "Fermer le menu", main: "Principal" },
     world: {
       title: "Culturix World",
       tagline: "L'encyclopédie vidéo du monde par l'IA, avec le sens de l'humour.",
@@ -88,7 +91,7 @@ const MESSAGES: Record<Locale, Messages> = {
       retry: "Réessayer",
       loadingMore: "Chargement de vidéos",
       endOfFeed: "Vous avez tout vu ici.",
-      worldwide: "Monde entier",
+      worldwide: "Monde entier", aboutPlace: "En savoir plus :",
       watch: "Regarder",
       back: "Retour",
       nextUp: "À suivre",
@@ -111,6 +114,7 @@ const MESSAGES: Record<Locale, Messages> = {
   },
   de: {
     dashboard: "Dashboard", performance: "Leistung", calendar: "Kalender", settings: "Einstellungen", help: "So funktioniert es", admin: "Admin", signOut: "Abmelden", products: "Culturix-Produkte", posting: "Posting-Ideen", postingDesc: "Trendbasierte Ideen und Veröffentlichung", shopify: "Shopify-Reels", shopifyDesc: "KI-Reels aus Ihrem Produktkatalog", culturetoons: "Figuren-Posting", culturetoonsDesc: "Cartoonfiguren greifen kulturelle Trends auf",
+    nav: { watch: "Ansehen", howItWorks: "So funktioniert es", faq: "FAQ", startWatching: "Jetzt ansehen", watchVideos: "Videos ansehen", privacy: "Datenschutz", terms: "Nutzungsbedingungen", rights: "Alle Rechte vorbehalten.", openMenu: "Menü öffnen", closeMenu: "Menü schließen", main: "Hauptmenü" },
     world: {
       title: "Culturix World",
       tagline: "Die KI-Videoenzyklopädie der Welt, mit Sinn für Humor.",
@@ -138,7 +142,7 @@ const MESSAGES: Record<Locale, Messages> = {
       retry: "Erneut versuchen",
       loadingMore: "Weitere Videos werden geladen",
       endOfFeed: "Du hast hier alles gesehen.",
-      worldwide: "Weltweit",
+      worldwide: "Weltweit", aboutPlace: "Mehr über",
       watch: "Ansehen",
       back: "Zurück",
       nextUp: "Als Nächstes",
@@ -161,6 +165,7 @@ const MESSAGES: Record<Locale, Messages> = {
   },
   es: {
     dashboard: "Panel", performance: "Rendimiento", calendar: "Calendario", settings: "Configuración", help: "Cómo funciona", admin: "Admin", signOut: "Cerrar sesión", products: "Productos Culturix", posting: "Ideas para publicar", postingDesc: "Ideas basadas en tendencias y publicación", shopify: "Reels para Shopify", shopifyDesc: "Reels de IA basados en tu catálogo", culturetoons: "Personajes animados", culturetoonsDesc: "Personajes que juegan con las tendencias culturales",
+    nav: { watch: "Ver", howItWorks: "Cómo funciona", faq: "Preguntas", startWatching: "Empezar a ver", watchVideos: "Ver vídeos", privacy: "Política de privacidad", terms: "Términos del servicio", rights: "Todos los derechos reservados.", openMenu: "Abrir menú", closeMenu: "Cerrar menú", main: "Principal" },
     world: {
       title: "Culturix World",
       tagline: "La enciclopedia en vídeo del mundo hecha con IA, con sentido del humor.",
@@ -188,7 +193,7 @@ const MESSAGES: Record<Locale, Messages> = {
       retry: "Reintentar",
       loadingMore: "Cargando más vídeos",
       endOfFeed: "Ya lo has visto todo aquí.",
-      worldwide: "Todo el mundo",
+      worldwide: "Todo el mundo", aboutPlace: "Más sobre",
       watch: "Ver",
       back: "Volver",
       nextUp: "A continuación",
