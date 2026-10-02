@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
-import { Search, X, ChevronDown, Map as MapIcon, RefreshCw, Compass } from "lucide-react";
+import Link from "next/link";
+import { Search, X, ChevronDown, Map as MapIcon, RefreshCw, Compass, ArrowRight } from "lucide-react";
 import FeatureCard from "@/components/world/FeatureCard";
 import FeatureCardSkeleton from "@/components/world/FeatureCardSkeleton";
 import { CATEGORY_LABELS, WORLD_FEED_PAGE_SIZE } from "@/lib/worldTypes";
@@ -294,6 +295,14 @@ export default function WorldExplorer({
       {hasActiveFilters && (
         <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
           <span className="text-gray-500">{t.showing}</span>
+          {regionName && selectedRegion && (
+            <Link
+              href={`/world/region/${selectedRegion}`}
+              className="inline-flex min-h-[44px] sm:min-h-0 items-center gap-1 rounded-full border border-gray-200 px-3 py-1 font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500"
+            >
+              {t.aboutPlace} {regionName} <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </Link>
+          )}
           {regionName && (
             <button
               type="button"

@@ -94,8 +94,13 @@ async function fetchBrief(region: string): Promise<WorldRegionSummary | null> {
 }
 
 export async function generateMetadata({ params }: { params: { code: string } }) {
-  const label = countries.getName(params.code.toUpperCase(), "en") || params.code.toUpperCase();
-  return { title: `${label} — Culturix World` };
+  const code = params.code.toUpperCase();
+  const label = countries.getName(code, "en") || code;
+  return {
+    title: { absolute: `${label} — Culturix World` },
+    description: `Short, source-linked videos about ${label}, with quick facts and what people there are talking about today.`,
+    alternates: { canonical: `/world/region/${code}` },
+  };
 }
 
 export default async function WorldRegionPage({ params, searchParams }: { params: { code: string }; searchParams: { lang?: string } }) {
@@ -111,33 +116,38 @@ export default async function WorldRegionPage({ params, searchParams }: { params
       <MarketingHeader />
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-14">
-        <Link href="/world" className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-purple-600 mb-8">
-          <ArrowLeft className="h-3.5 w-3.5" /> All regions
+        <Link href={`/world?region=${code}`} className="inline-flex min-h-[44px] items-center gap-1.5 text-sm text-gray-500 hover:text-purple-600 mb-4">
+          <ArrowLeft className="h-3.5 w-3.5" /> All videos
         </Link>
 
         <h1 className="text-3xl font-bold text-gray-900 mb-2">{label}</h1>
-        <p className="text-gray-500 mb-10">What&apos;s trending in {label} today, and the videos Culturix has published about it.</p>
+        <p className="text-gray-500 mb-8">Videos about {label}, quick facts, and what people there are talking about today.</p>
 
         <RegionFactsStrip facts={brief?.facts ?? null} />
-        <SentimentSparkline history={sentimentHistory} />
 
-        <TimeCursor region={code} regionLabel={label} coverage={coverage} initialTrends={trends} initialBrief={brief} initialLanguage={searchParams.lang === "fr" || searchParams.lang === "de" || searchParams.lang === "es" ? searchParams.lang : "en"} />
-
-        <section className="mt-14">
+        {/* The videos are what visitors come for, so they lead; trend context follows. */}
+        <section className="mt-8">
           <div className="mb-5 flex items-end justify-between gap-4">
-            <h2 className="text-lg font-semibold text-gray-900">Culturix World videos</h2>
-            <span className="text-xs text-gray-400">{features.length} published</span>
+            <h2 className="text-lg font-semibold text-gray-900">Videos</h2>
+            <span className="text-xs text-gray-500">{features.length} published</span>
           </div>
           <CoverageBadges coverage={featureCoverage} />
           {features.length === 0 ? (
-            <p className="text-sm text-gray-400 py-6">No videos published for {label} yet — check back soon.</p>
+            <p className="text-sm text-gray-500 py-6">
+              No videos about {label} yet. <Link href="/world" className="font-medium text-purple-700 hover:underline">Watch videos from elsewhere</Link>.
+            </p>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5">
+            <ul className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-5">
               {features.map((f) => (
-                <FeatureCard key={f.id} feature={f} />
+                <li key={f.id}><FeatureCard feature={f} /></li>
               ))}
-            </div>
+            </ul>
           )}
+        </section>
+
+        <section className="mt-14" aria-label={`What people in ${label} are talking about`}>
+          <SentimentSparkline history={sentimentHistory} />
+          <TimeCursor region={code} regionLabel={label} coverage={coverage} initialTrends={trends} initialBrief={brief} initialLanguage={searchParams.lang === "fr" || searchParams.lang === "de" || searchParams.lang === "es" ? searchParams.lang : "en"} />
         </section>
       </main>
 
