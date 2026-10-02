@@ -1,37 +1,37 @@
-import { Globe2 } from "lucide-react";
 import MarketingHeader from "@/components/marketing/MarketingHeader";
 import MarketingFooter from "@/components/marketing/MarketingFooter";
 import WorldExplorer from "@/components/world/WorldExplorer";
 import { RAILWAY_API_BASE } from "@/lib/config/api";
+import { WORLD_FEED_PAGE_SIZE } from "@/lib/worldTypes";
 import type { WorldFeature } from "@/lib/worldTypes";
 
 export const metadata = {
-  title: "World — Culturix",
+  title: "Culturix World — the AI video encyclopedia of the world",
   description:
-    "A visual atlas of the world's cultural, technological and funny traits — short AI-generated videos about real places, phenomena and species, organized by region.",
+    "The AI video encyclopedia of the world, with a sense of humour: short, source-linked videos about real places, phenomena, species and technology. Browse the feed or explore by place.",
 };
 
-async function fetchFeatures(region?: string, category?: string, q?: string): Promise<WorldFeature[]> {
+async function fetchFirstPage(
+  region?: string, category?: string, q?: string,
+): Promise<{ features: WorldFeature[]; total: number; error: boolean }> {
   try {
-    const params = new URLSearchParams({ limit: "24" });
+    const params = new URLSearchParams({ limit: String(WORLD_FEED_PAGE_SIZE), offset: "0" });
     if (region) params.set("region", region);
     if (category) params.set("category", category);
     if (q) params.set("q", q);
     const res = await fetch(`${RAILWAY_API_BASE}/world/features?${params.toString()}`, {
       cache: "no-store",
-      // Confirmed live 2026-09-30: this fetch had no timeout, unlike every other route in this
-      // codebase that talks to Railway (see /api/world/regions's own AbortSignal.timeout). When
-      // the backend was slow (Railway's own ongoing connection issues), the request hung until
-      // Vercel's platform-level function timeout killed the whole page with a raw, unstyled
-      // "Application error" screen -- the try/catch below never got a chance to run its graceful
-      // empty-list fallback because the fetch itself never settled.
+      // Confirmed live 2026-09-30: without a timeout a slow backend hung this fetch until
+      // Vercel's function timeout killed the whole page with a raw "Application error".
       signal: AbortSignal.timeout(10000),
     });
-    if (!res.ok) return [];
+    if (!res.ok) return { features: [], total: 0, error: true };
     const data = await res.json();
-    return Array.isArray(data.features) ? data.features : [];
+    const features: WorldFeature[] = Array.isArray(data.features) ? data.features : [];
+    return { features, total: typeof data.total === "number" ? data.total : features.length, error: false };
   } catch {
-    return [];
+    // Reported as an error (the feed shows Retry), never as an empty library.
+    return { features: [], total: 0, error: true };
   }
 }
 
@@ -40,29 +40,17 @@ export default async function WorldPage({
 }: {
   searchParams: { region?: string; category?: string; q?: string };
 }) {
-  const features = await fetchFeatures(searchParams.region, searchParams.category, searchParams.q);
+  const { features, total, error } = await fetchFirstPage(searchParams.region, searchParams.category, searchParams.q);
 
   return (
     <div className="min-h-screen bg-white">
-      <MarketingHeader />
+      <MarketingHeader showCta={false} />
 
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-14">
-        <div className="text-center mb-10">
-          <div className="inline-flex items-center gap-2 rounded-full bg-purple-50 border border-purple-200 text-purple-600 text-xs font-semibold px-3 py-1.5 mb-6">
-            <Globe2 className="h-3.5 w-3.5" />
-            Culturix World
-          </div>
-          <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-4">
-            A visual atlas of the world
-          </h1>
-          <p className="text-gray-500 max-w-xl mx-auto leading-relaxed">
-            Short AI-generated videos about real places, phenomena and species — grounded in real
-            trend data. Click a country or a theme on the map to explore, or search.
-          </p>
-        </div>
-
+      <main className="max-w-6xl mx-auto px-4 sm:px-6">
         <WorldExplorer
           initialFeatures={features}
+          initialTotal={total}
+          initialError={error}
           initialCategory={searchParams.category}
           initialRegion={searchParams.region}
           initialQuery={searchParams.q}

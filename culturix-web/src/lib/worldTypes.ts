@@ -130,6 +130,8 @@ export interface WorldRegionSummary {
 // on category — this is a curation/discovery tag an admin assigns at
 // creation time (see scripts/generate_world_feature.py --category), not a
 // script-tone directive.
+export const WORLD_FEED_PAGE_SIZE = 12;
+
 export const CATEGORY_LABELS: Record<string, string> = {
   place: "Places",
   phenomenon: "Phenomena",
