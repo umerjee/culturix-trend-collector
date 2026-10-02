@@ -11,10 +11,6 @@ export default function MarketingFooter() {
         </div>
         <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
           <Link href="/world" className="text-gray-500 hover:text-gray-300 transition-colors">Explore the map</Link>
-          <Link href="/products/posting-ideation" className="text-gray-500 hover:text-gray-300 transition-colors">Posting Ideation</Link>
-          <Link href="/products/shopify" className="text-gray-500 hover:text-gray-300 transition-colors">Shopify Reel Building</Link>
-          <Link href="/products/culturetoons" className="text-gray-500 hover:text-gray-300 transition-colors">Character-Based Posting</Link>
-          <Link href="/how-it-works" className="text-gray-500 hover:text-gray-300 transition-colors">How Publishing Works</Link>
           <Link href="/privacy" className="text-gray-500 hover:text-gray-300 transition-colors">Privacy Policy</Link>
           <Link href="/terms" className="text-gray-500 hover:text-gray-300 transition-colors">Terms of Service</Link>
         </div>
