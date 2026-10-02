@@ -18,7 +18,6 @@ export const metadata: Metadata = {
   authors: [{ name: "Culturix" }],
   category: "education",
   robots: { index: true, follow: true, googleBot: { index: true, follow: true, "max-image-preview": "large" } },
-  alternates: { canonical: "/" },
   openGraph: { title: SITE_TITLE, description: SITE_DESCRIPTION, url: SITE_URL, siteName: "Culturix", type: "website", locale: "en_US" },
   twitter: { card: "summary_large_image", title: SITE_TITLE, description: SITE_DESCRIPTION },
 };

@@ -23,9 +23,10 @@ const fetchFeature = cache(async (id: string): Promise<WorldFeature | null> => {
 
 export async function generateMetadata({ params }: { params: { id: string } }) {
   const feature = await fetchFeature(params.id);
-  if (!feature) return { title: "Culturix World" };
+  if (!feature) return { title: { absolute: "Culturix World" } };
   return {
-    title: `${feature.title || feature.subject_text} — Culturix World`,
+    alternates: { canonical: `/world/feature/${feature.id}` },
+    title: { absolute: `${feature.title || feature.subject_text} — Culturix World` },
     description: feature.hook_line || "A short, source-linked video from the AI video encyclopedia of the world, with a sense of humour.",
   };
 }

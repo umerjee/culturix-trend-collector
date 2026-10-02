@@ -6,7 +6,8 @@ import { WORLD_FEED_PAGE_SIZE } from "@/lib/worldTypes";
 import type { WorldFeature } from "@/lib/worldTypes";
 
 export const metadata = {
-  title: "Culturix World — the AI video encyclopedia of the world",
+  alternates: { canonical: "/world" },
+  title: { absolute: "Culturix World — the AI video encyclopedia of the world" },
   description:
     "The AI video encyclopedia of the world, with a sense of humour: short, source-linked videos about real places, phenomena, species and technology. Browse the feed or explore by place.",
 };

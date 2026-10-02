@@ -3,7 +3,7 @@ import MarketingHeader from "@/components/marketing/MarketingHeader";
 import MarketingFooter from "@/components/marketing/MarketingFooter";
 
 export const metadata = {
-  title: "Privacy Policy — Culturix",
+  title: "Privacy Policy",
 };
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

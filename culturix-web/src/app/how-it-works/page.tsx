@@ -8,8 +8,11 @@ import MarketingHeader from "@/components/marketing/MarketingHeader";
 import MarketingFooter from "@/components/marketing/MarketingFooter";
 import { buttonVariants } from "@/components/ui/Button";
 
+// In-app help for signed-in creators (linked from AppNav and PublishingWizard), not a public
+// marketing page: kept out of search and never sends anyone to sign-up.
 export const metadata = {
-  title: "How Publishing Works — Culturix",
+  robots: { index: false, follow: false },
+  title: "How Publishing Works",
   description: "Culturix preps your content and notifies you at the right moment — you publish it yourself, from your own account, so nothing about your reach changes.",
 };
 
@@ -18,7 +21,7 @@ const STEP_ICONS = [Sparkles, Bell, Send];
 export default function HowItWorksPage() {
   return (
     <div className="min-h-screen bg-white">
-      <MarketingHeader />
+      <MarketingHeader showCta={false} />
 
       <main className="max-w-3xl mx-auto px-4 sm:px-6 py-14">
         <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-4 text-center">
@@ -81,8 +84,8 @@ export default function HowItWorksPage() {
 
         {/* CTA */}
         <section className="text-center">
-          <Link href="/signup" className={buttonVariants({ variant: "primary", size: "lg" })}>
-            Get started free <ArrowRight className="h-4 w-4" />
+          <Link href="/dashboard" className={buttonVariants({ variant: "primary", size: "lg" })}>
+            Back to your dashboard <ArrowRight className="h-4 w-4" />
           </Link>
         </section>
       </main>

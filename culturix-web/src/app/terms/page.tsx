@@ -3,7 +3,7 @@ import MarketingHeader from "@/components/marketing/MarketingHeader";
 import MarketingFooter from "@/components/marketing/MarketingFooter";
 
 export const metadata = {
-  title: "Terms of Service — Culturix",
+  title: "Terms of Service",
 };
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
