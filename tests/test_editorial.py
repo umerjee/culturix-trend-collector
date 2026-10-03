@@ -169,6 +169,17 @@ class TestSafetyScreen:
         screen = ed.screen_safety("Quran talawat Ma sha Allah #islam post #foryou", SOURCE)
         assert screen["exclusions"][0]["category"] == "religious_worship"
 
+    @pytest.mark.parametrize("text", [
+        "Kaby ki ronak kaby ka manzar#makahhmukarma 🕋 #Madina",  # inside hashtags + emoji (real post)
+        "#createsightinsight أروع صوت أذان ألقارئ",  # Arabic call to prayer (real post)
+        "Ma sha Allah",
+    ])
+    def test_religious_posts_are_caught_in_hashtags_other_scripts_and_emoji(self, text):
+        assert ed.screen_safety(text, "")["exclusions"][0]["category"] == "religious_worship"
+
+    def test_place_names_containing_a_religious_word_are_not_blocked(self):
+        assert ed.screen_safety("Allahabad street food tour", "")["exclusions"] == []
+
     def test_whole_words_only(self):
         assert ed.screen_safety("Star Wars day memes and warm weather", SOURCE)["exclusions"] == []
 
@@ -308,6 +319,26 @@ class TestBuildCandidates:
             _item(session, title=title)
         created = ed.build_candidates(session)["created"]
         assert len(created) == 1  # one trend, so one pairing, not three
+
+    def test_a_sound_label_title_falls_back_to_the_posts_own_words(self, db):
+        session = db()
+        _item(session)
+        session.add(Trend(platform="tiktok", title="[Audio: original sound - someone]", region="NG",
+                          content="Grandma explains how bronze statues were really made", collected_at=datetime.utcnow()))
+        session.commit()
+        (c,) = ed.build_candidates(session)["created"]
+        assert c.trend_title.startswith("Grandma explains")
+
+    def test_refresh_blocks_open_candidates_the_improved_screen_now_catches(self, db):
+        session = db()
+        stale = _candidate(session, trend_title="Kaby ki ronak #makahhmukarma #Madina")
+        approved = _candidate(session, trend_id=2, trend_title="Ma sha Allah", status="approved", safety_status="cleared")
+        result = ed.build_candidates(session)
+        session.commit()
+        assert [str(c.id) for c in result["rescreened_blocked"]] == [str(stale.id)]
+        rows = {str(c.id): c for c in db().query(EditorialCandidate).all()}
+        assert rows[str(stale.id)].status == "blocked" and rows[str(stale.id)].rank_score is None
+        assert rows[str(approved.id)].status == "approved"  # a person already signed this one off
 
     def test_old_trends_are_ignored(self, db):
         session = db()

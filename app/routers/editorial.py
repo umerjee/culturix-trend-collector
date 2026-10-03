@@ -123,6 +123,7 @@ def refresh_candidates(body: Optional[dict] = None):
         session.commit()
         created = result["created"]
         return {"created": len(created), "blocked": sum(1 for c in created if c.status == "blocked"),
+                "rescreened_blocked": len(result["rescreened_blocked"]),
                 "skipped_regions": result["skipped_regions"],
                 "coverage": ed.coverage_summary([{"continent": c.continent} for c in created if c.status != "blocked"])}
     finally:

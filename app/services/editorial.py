@@ -120,10 +120,26 @@ def _hits(patterns: dict, text: str) -> list:
     return found
 
 
+# Unambiguous religious terms matched ANYWHERE in a trend: inside hashtags, in Arabic script, and
+# as emoji. Found on real data (2026-10-03): "Kaby ki ronak ... #makahhmukarma 🕋 #Madina" and an
+# Arabic call-to-prayer (أذان) post both passed the whole-English-word list above.
+_TREND_RELIGIOUS_ANYWHERE = re.compile(
+    r"qur'?an|kaaba|kabah|\bkaby\b|makkah|mecca|makah|madina|medina|umrah|hajj|adhan|azaan|\ballah\b|"
+    r"أذان|اذان|قرآن|قران|الله|صلاة|صلي|مكة|المدينة|النبي|🕋|🕌|📿|🛐",
+    re.IGNORECASE)
+
+
 def screen_safety(trend_text: str, source_text: str) -> dict:
     """{"exclusions": [...], "review": [...]}. Any exclusion is a hard block. Review flags tell the
     operator what to look at before signing the checklist; they never block on their own."""
     exclusions = [{**h, "where": "trend"} for h in _hits(_TREND_EXCLUSIONS, trend_text)]
+    anywhere = sorted({m.group(0).lower() for m in _TREND_RELIGIOUS_ANYWHERE.finditer(trend_text or "")})
+    if anywhere:
+        existing = next((e for e in exclusions if e["category"] == "religious_worship"), None)
+        if existing:
+            existing["terms"] = sorted(set(existing["terms"]) | set(anywhere))
+        else:
+            exclusions.append({"category": "religious_worship", "terms": anywhere, "where": "trend"})
     exclusions += [{**h, "where": "source"} for h in _hits(_SOURCE_EXCLUSIONS, source_text)]
     review = [{**h, "where": "source"} for h in _hits(_SOURCE_REVIEW, source_text)]
     return {"exclusions": exclusions, "review": review}
@@ -292,7 +308,7 @@ def _trend_groups(session, region: str, since: datetime) -> list:
                        "platforms": sorted({t.platform for t in trends if t.platform}), "weight": len(trends)})
     groups.sort(key=lambda g: (g["quality"] or 0, g["weight"]), reverse=True)
     for t in singles:
-        text = (t.title or t.translated_content or t.content or "").strip()
+        text = _caption(t)
         if _has_substance(text):
             groups.append({"trend_type": "trend", "trend_id": t.id, "title": text[:200],
                            "summary": (t.translated_content or t.content or "")[:600] or None, "momentum": None,
@@ -301,6 +317,15 @@ def _trend_groups(session, region: str, since: datetime) -> list:
 
 
 MIN_CAPTION_LETTERS = 15
+
+
+def _caption(trend) -> str:
+    """The post's own words. TikTok rows often carry the sound's label as their title ("[Audio:
+    original sound - someone]"), which says nothing about the post, so fall back to its text."""
+    title = (trend.title or "").strip()
+    if title.lower().startswith("[audio"):
+        title = ""
+    return (title or trend.translated_content or trend.content or "").strip()
 
 
 def _has_substance(text: str) -> bool:
@@ -372,6 +397,16 @@ def build_candidates(session, *, cast_regions: Optional[list] = None, days: int 
                 session.query(EditorialCandidate.trend_type, EditorialCandidate.trend_id,
                               EditorialCandidate.curated_item_id).all()}
 
+    # Re-screen every open candidate: when the screen improves, earlier candidates it would now block
+    # must not stay scriptable. Approved/published ones are left alone (a person already signed off;
+    # the gate still applies to them through the review that was done).
+    rescreened = []
+    for c in session.query(EditorialCandidate).filter(EditorialCandidate.status.in_(("candidate", "scripted"))).all():
+        screen = screen_safety(f"{c.trend_title}. {c.trend_summary or ''}", f"{c.source_title}. {c.source_excerpt}")
+        if screen["exclusions"]:
+            c.status, c.safety_status, c.rank_score, c.safety_flags = "blocked", "blocked", None, screen["exclusions"]
+            rescreened.append(c)
+
     created, skipped_regions = [], []
     for region in sorted(regions):
         groups = _trend_groups(session, region, since)
@@ -415,7 +450,7 @@ def build_candidates(session, *, cast_regions: Optional[list] = None, days: int 
             session.add(row)
             existing.add((g["trend_type"], g["trend_id"], str(item.id)))
             created.append(row)
-    return {"created": created, "skipped_regions": skipped_regions}
+    return {"created": created, "skipped_regions": skipped_regions, "rescreened_blocked": rescreened}
 
 
 # ── Script brief, grounding and claim provenance ──────────────────────────────
