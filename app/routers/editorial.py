@@ -124,6 +124,7 @@ def refresh_candidates(body: Optional[dict] = None):
         created = result["created"]
         return {"created": len(created), "blocked": sum(1 for c in created if c.status == "blocked"),
                 "rescreened_blocked": len(result["rescreened_blocked"]),
+                "superseded": len(result["superseded"]),
                 "skipped_regions": result["skipped_regions"],
                 "coverage": ed.coverage_summary([{"continent": c.continent} for c in created if c.status != "blocked"])}
     finally:
@@ -223,7 +224,13 @@ def generate_candidate_script(candidate_id: str, body: dict):
             cultures=cultures, performance_context=performance)
     except ToonScriptGenerationError as exc:
         raise HTTPException(status_code=502, detail=f"Script generation failed: {exc}")
-    result, grounding = ed.ground_script(result, excerpt)
+    def rewrite(note, draft):
+        return generate_toon_script_from_idea(
+            brief, variants, tone=tone, num_shots=num_shots, target_duration_seconds=target_duration_seconds,
+            character_personalities=personalities, relationships=relationships, memories=memories,
+            cultures=cultures, performance_context=performance, critique_feedback=note, previous_draft=draft)
+
+    result, grounding = ed.ground_script(result, excerpt, rewrite=rewrite)
     craft = judge_script_comedy(result)
 
     # Phase 3: persist with a fresh session.

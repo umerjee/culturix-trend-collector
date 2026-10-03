@@ -226,6 +226,11 @@ class TestRanking:
                                 source_text=SOURCE + " Visitors take selfies in the museum.")
         assert next(f for f in factors if f["factor"] == "cultural_relevance")["score"] == 0.5
 
+    def test_a_search_spike_counts_as_more_than_one_post(self):
+        post, _ = self._rank(trend_kind="trend", trend_momentum=None, trend_quality=None)
+        search, factors = self._rank(trend_kind="search", trend_momentum=None, trend_quality=None)
+        assert search > post and "search spike" in factors[0]["reason"].lower()
+
     def test_a_single_post_is_weaker_evidence_than_a_cluster(self):
         cluster_score, _ = self._rank()
         single_score, factors = self._rank(trend_kind="trend", trend_momentum=None, trend_quality=None)
@@ -340,6 +345,33 @@ class TestBuildCandidates:
         assert rows[str(stale.id)].status == "blocked" and rows[str(stale.id)].rank_score is None
         assert rows[str(approved.id)].status == "approved"  # a person already signed this one off
 
+    def test_google_trends_rows_are_ranked_as_search_spikes(self, db):
+        session = db()
+        _item(session)
+        session.add(Trend(platform="google_trends", title="nigeria vs ghana", content="Trending on Google Search (500000+ searches).",
+                          region="NG", collected_at=datetime.utcnow()))
+        session.commit()
+        (c,) = ed.build_candidates(session)["created"]
+        assert "search spike" in c.rank_factors[0]["reason"].lower()
+
+    def test_an_open_trend_is_not_paired_again_and_duplicates_are_retired(self, db):
+        session = db()
+        _cluster_trend(session)
+        _item(session, title="Benin Bronzes")
+        (kept,) = ed.build_candidates(session)["created"]
+        kept_key = (kept.trend_type, kept.trend_id)
+        session.commit()
+        _item(db(), title="Benin City Walls")
+        session = db()
+        assert ed.build_candidates(session)["created"] == []  # same trend already open
+        session.commit()
+        dup = _candidate(db(), trend_type=kept_key[0], trend_id=kept_key[1], rank_score=0.1)
+        session = db()
+        result = ed.build_candidates(session)
+        session.commit()
+        assert [str(c.id) for c in result["superseded"]] == [str(dup.id)]
+        assert db().query(EditorialCandidate).filter_by(id=dup.id).one().status == "rejected"
+
     def test_old_trends_are_ignored(self, db):
         session = db()
         _item(session)
@@ -407,14 +439,30 @@ class TestScript:
         facts_given_to_judge = writer.judge.call_args.args[1]
         assert facts_given_to_judge == SOURCE and "aliens" not in facts_given_to_judge
 
-    def test_unsupported_claims_are_fixed_once_and_otherwise_reported(self, db, writer):
+    def test_unsupported_claims_get_one_comedy_revision_not_the_narration_fixer(self, db, writer):
         session = db()
         cast = _cast(session)
         c = _candidate(session)
         writer.judge.return_value = {"grounded": False, "unsupported_claims": ["made in 1066"], "judge_failed": False}
         out = router.generate_candidate_script(str(c.id), _script_body(cast))
-        assert writer.fix.call_count == 1
+        assert writer.fix.call_count == 0  # the World fixer rewrites jokes into plain narration
+        assert writer.write.call_count == 2
+        revision = writer.write.call_args_list[1].kwargs
+        assert "made in 1066" in revision["critique_feedback"] and "comedy" in revision["critique_feedback"].lower()
+        assert revision["previous_draft"]["hook_line"] == _script_result()["hook_line"]
         assert out["grounding_status"] == "unsupported"
+
+    def test_a_revision_that_removes_the_claim_is_kept(self, db, writer):
+        session = db()
+        cast = _cast(session)
+        c = _candidate(session)
+        fixed = _script_result(dialogue="Cast from the 13th century, and still better posers than us!")
+        writer.write.side_effect = [_script_result(), fixed]
+        writer.judge.side_effect = [{"grounded": False, "unsupported_claims": ["x"], "judge_failed": False},
+                                    {"grounded": True, "unsupported_claims": [], "judge_failed": False}]
+        out = router.generate_candidate_script(str(c.id), _script_body(cast))
+        assert out["grounding_status"] == "grounded" and out["grounding"]["auto_fixed"] is True
+        assert out["script"]["shots"][0]["dialogue"] == fixed["shots"][0]["dialogue"]
 
     def test_rejects_unknown_format_language_or_missing_cast(self, db, writer):
         session = db()

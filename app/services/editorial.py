@@ -159,6 +159,8 @@ _MOMENTUM_SCORE = {"up": (1.0, "Growing since it was last seen"),
 
 
 def _trend_momentum(momentum: Optional[str], quality: Optional[float], kind: str = "cluster") -> tuple:
+    if kind == "search":
+        return 0.6, "A search spike (Google Trends): many people searching, not one post"
     if kind == "trend":
         return 0.2, "A single post, not a confirmed trend (no cluster of related posts)"
     base, reason = _MOMENTUM_SCORE.get(momentum or "", (0.4, "First sighting: no history to judge momentum yet"))
@@ -309,14 +311,20 @@ def _trend_groups(session, region: str, since: datetime) -> list:
     groups.sort(key=lambda g: (g["quality"] or 0, g["weight"]), reverse=True)
     for t in singles:
         text = _caption(t)
-        if _has_substance(text):
+        # A search query is short by nature ("india vs sri lanka" is 14 letters) and is not a caption:
+        # the letter threshold that filters hashtag-only posts would drop every search spike.
+        is_search = t.platform in SEARCH_PLATFORMS
+        if (is_search and sum(ch.isalpha() for ch in text) >= 3) or _has_substance(text):
             groups.append({"trend_type": "trend", "trend_id": t.id, "title": text[:200],
                            "summary": (t.translated_content or t.content or "")[:600] or None, "momentum": None,
-                           "quality": None, "platforms": [t.platform] if t.platform else [], "weight": 1})
+                           "quality": None, "platforms": [t.platform] if t.platform else [], "weight": 1,
+                           "kind": "search" if t.platform in SEARCH_PLATFORMS else "trend"})
     return groups[:TREND_GROUPS_PER_REGION]
 
 
 MIN_CAPTION_LETTERS = 15
+# Platforms whose rows are aggregated search interest, not a single person's post.
+SEARCH_PLATFORMS = {"google_trends"}
 
 
 def _caption(trend) -> str:
@@ -407,6 +415,22 @@ def build_candidates(session, *, cast_regions: Optional[list] = None, days: int 
             c.status, c.safety_status, c.rank_score, c.safety_flags = "blocked", "blocked", None, screen["exclusions"]
             rescreened.append(c)
 
+    # One open candidate per trend. The per-refresh diversity rule alone let every refresh pair the
+    # same trend with yet another source (76 open candidates after three refreshes, 2026-10-03). Keep
+    # the best-ranked unreviewed pairing per trend; retire the rest; never re-pair a trend that is open.
+    superseded = []
+    best = {}
+    for c in (session.query(EditorialCandidate).filter(EditorialCandidate.status == "candidate")
+              .order_by(EditorialCandidate.rank_score.desc().nullslast(), EditorialCandidate.created_at).all()):
+        key = (c.trend_type, c.trend_id)
+        if key in best:
+            c.status, c.safety_note = "rejected", "Superseded: a higher-ranked candidate pairs the same trend."
+            superseded.append(c)
+        else:
+            best[key] = c
+    open_trends = {(t, i) for t, i in session.query(EditorialCandidate.trend_type, EditorialCandidate.trend_id)
+                   .filter(EditorialCandidate.status.in_(("candidate", "scripted", "approved"))).all()}
+
     created, skipped_regions = [], []
     for region in sorted(regions):
         groups = _trend_groups(session, region, since)
@@ -417,6 +441,8 @@ def build_candidates(session, *, cast_regions: Optional[list] = None, days: int 
         usage = {item.id: _times_used(session, item.id) for item in sources}
         safe, blocked = [], []
         for g in groups:
+            if (g["trend_type"], g["trend_id"]) in open_trends:
+                continue
             trend_text = f"{g['title']}. {g['summary'] or ''}"
             for item in sources:
                 if (g["trend_type"], g["trend_id"], str(item.id)) in existing:
@@ -427,7 +453,7 @@ def build_candidates(session, *, cast_regions: Optional[list] = None, days: int 
                     trend_text=trend_text, trend_momentum=g["momentum"], trend_quality=g["quality"],
                     source_text=excerpt, source_priority=item.priority_score,
                     times_used=usage[item.id], region=region, cast_regions=cast_regions,
-                    trend_kind=g["trend_type"], source_focus=f"{item.title}. {item.summary or ''}")
+                    trend_kind=g.get("kind", g["trend_type"]), source_focus=f"{item.title}. {item.summary or ''}")
                 (blocked if screen["exclusions"] else safe).append((score, factors, g, item, excerpt, screen))
         safe.sort(key=lambda x: x[0], reverse=True)
         blocked.sort(key=lambda x: x[0], reverse=True)
@@ -450,7 +476,8 @@ def build_candidates(session, *, cast_regions: Optional[list] = None, days: int 
             session.add(row)
             existing.add((g["trend_type"], g["trend_id"], str(item.id)))
             created.append(row)
-    return {"created": created, "skipped_regions": skipped_regions, "rescreened_blocked": rescreened}
+    return {"created": created, "skipped_regions": skipped_regions, "rescreened_blocked": rescreened,
+            "superseded": superseded}
 
 
 # ── Script brief, grounding and claim provenance ──────────────────────────────
@@ -516,13 +543,36 @@ def link_claims_to_source(script_result: dict, source_excerpt: str, unsupported:
     return linked
 
 
-def ground_script(script_result: dict, source_excerpt: str) -> tuple:
-    """(possibly-fixed script, grounding). Runs the World fact-checker against the source excerpt
-    only, and one narrow claim fix if it flags anything (same tools as World production)."""
+def comedy_correction_note(unsupported: list) -> str:
+    """Feedback for ONE revision of a comedy script whose lines state facts the source does not."""
+    claims = "\n".join(f"- {c}" for c in unsupported[:8])
+    return ("A fact-checker found lines that state things the VERIFIED SOURCE MATERIAL does not support:\n"
+            f"{claims}\n"
+            "Revise only what is needed: every date, number, name, place or event must come from the source, and "
+            "do not invent events (nothing 'hits', 'visits' or 'happens at' a place unless the source says so). "
+            "Keep it a comedy scene: the jokes live in the characters' reactions, misunderstandings, contrast and "
+            "timing. Do NOT turn lines into plain narration or a list of facts.")
+
+
+def ground_script(script_result: dict, source_excerpt: str, rewrite=None) -> tuple:
+    """(possibly-revised script, grounding). Runs the World fact-checker against the source excerpt only.
+
+    If it flags claims, `rewrite(note, draft)` (the comedy writer in revision mode) gets ONE chance to fix
+    them and the revision is kept only if it has fewer unsupported claims. Without `rewrite` it falls back
+    to World production's line fixer, which rewrites flagged lines as plain narration: right for an
+    explainer, wrong for comedy (measured 2026-10-03: it turned Kumar's lines into encyclopedia text)."""
     from app.services.culturetoon_script import judge_world_grounding, fix_unsupported_claims
     grounding = judge_world_grounding(script_result, source_excerpt)
     if grounding.get("unsupported_claims") and not grounding.get("judge_failed"):
-        fixed = fix_unsupported_claims(script_result, grounding["unsupported_claims"], source_excerpt)
+        if rewrite is not None:
+            try:
+                fixed = rewrite(comedy_correction_note(grounding["unsupported_claims"]),
+                                {"hook_line": script_result.get("hook_line"), "shots": script_result.get("shots")})
+            except Exception:
+                logger.warning("Comedy revision for unsupported claims failed; keeping the draft", exc_info=True)
+                fixed = None
+        else:
+            fixed = fix_unsupported_claims(script_result, grounding["unsupported_claims"], source_excerpt)
         if fixed:
             regrounded = judge_world_grounding(fixed, source_excerpt)
             if not regrounded.get("judge_failed") and len(regrounded.get("unsupported_claims") or []) < len(grounding["unsupported_claims"]):
