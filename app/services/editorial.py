@@ -415,21 +415,26 @@ def build_candidates(session, *, cast_regions: Optional[list] = None, days: int 
             c.status, c.safety_status, c.rank_score, c.safety_flags = "blocked", "blocked", None, screen["exclusions"]
             rescreened.append(c)
 
-    # One open candidate per trend. The per-refresh diversity rule alone let every refresh pair the
-    # same trend with yet another source (76 open candidates after three refreshes, 2026-10-03). Keep
-    # the best-ranked unreviewed pairing per trend; retire the rest; never re-pair a trend that is open.
+    # One open candidate per trend per country. The per-refresh diversity rule alone let every refresh
+    # pair the same trend with yet another source (76 open candidates after three refreshes,
+    # 2026-10-03). A candidate already scripted/approved holds its trend; otherwise the best-ranked
+    # unreviewed pairing does; the rest are retired, and an open trend is never re-paired. Keyed by
+    # country too: one cluster can span countries and be paired with each country's own history.
     superseded = []
-    best = {}
+    best = {(t, i, r) for t, i, r in session.query(
+        EditorialCandidate.trend_type, EditorialCandidate.trend_id, EditorialCandidate.region)
+        .filter(EditorialCandidate.status.in_(("scripted", "approved"))).all()}
     for c in (session.query(EditorialCandidate).filter(EditorialCandidate.status == "candidate")
               .order_by(EditorialCandidate.rank_score.desc().nullslast(), EditorialCandidate.created_at).all()):
-        key = (c.trend_type, c.trend_id)
+        key = (c.trend_type, c.trend_id, c.region)
         if key in best:
-            c.status, c.safety_note = "rejected", "Superseded: a higher-ranked candidate pairs the same trend."
+            c.status, c.safety_note = "rejected", "Superseded: another candidate already pairs this trend for this country."
             superseded.append(c)
         else:
-            best[key] = c
-    open_trends = {(t, i) for t, i in session.query(EditorialCandidate.trend_type, EditorialCandidate.trend_id)
-                   .filter(EditorialCandidate.status.in_(("candidate", "scripted", "approved"))).all()}
+            best.add(key)
+    open_trends = {(t, i, r) for t, i, r in session.query(
+        EditorialCandidate.trend_type, EditorialCandidate.trend_id, EditorialCandidate.region)
+        .filter(EditorialCandidate.status.in_(("candidate", "scripted", "approved"))).all()}
 
     created, skipped_regions = [], []
     for region in sorted(regions):
@@ -441,7 +446,7 @@ def build_candidates(session, *, cast_regions: Optional[list] = None, days: int 
         usage = {item.id: _times_used(session, item.id) for item in sources}
         safe, blocked = [], []
         for g in groups:
-            if (g["trend_type"], g["trend_id"]) in open_trends:
+            if (g["trend_type"], g["trend_id"], region) in open_trends:
                 continue
             trend_text = f"{g['title']}. {g['summary'] or ''}"
             for item in sources:
@@ -488,6 +493,8 @@ def build_script_brief(candidate, fmt: str, language: str) -> str:
     as the only allowed facts; the trend is explicitly context."""
     from app.collectors.region_codes import region_name
     from app.services.world_production import source_label
+    religion_rule = ("\n- The source mentions religious buildings or practice. You may state those facts, but keep them out of "
+                     "every joke, gag and character action.") if _SOURCE_REVIEW["religion"].search(candidate.source_excerpt or "") else ""
     return f"""EDITORIAL BRIEF: trend-to-culture comedy for viewers in {region_name(candidate.region)}.
 
 CURRENT TREND (context for the hook only, NOT a source of facts): {candidate.trend_title}. {candidate.trend_summary or ""}
@@ -503,7 +510,8 @@ FORMAT: {EDITORIAL_FORMATS[fmt]}
 RULES:
 - Every date, number, name, place or historical claim must come from the VERIFIED SOURCE MATERIAL. Do not state facts from the trend or from general knowledge.
 - The joke is in the contrast, the timing or the characters' reactions. Never change or exaggerate a fact.
-- No culture, nationality or ethnicity is the punchline. Do not mock real, named people. Do not joke about tragedy, war or religious worship.
+- The characters' own situation, actions and opinions are fiction and need no source. But never present an invented event as real news ("the match hits the fort"): real-world events may only be the current trend itself.
+- No culture, nationality or ethnicity is the punchline. Do not mock real, named people. Do not joke about tragedy, war or religious worship.{religion_rule}
 - Write all dialogue in {LANGUAGES[language]}."""
 
 
@@ -554,7 +562,43 @@ def comedy_correction_note(unsupported: list) -> str:
             "timing. Do NOT turn lines into plain narration or a list of facts.")
 
 
-def ground_script(script_result: dict, source_excerpt: str, rewrite=None) -> tuple:
+def judge_editorial_grounding(script_result: dict, source_facts: str, trend_context: str) -> dict:
+    """Fact-check for a COMEDY scene (judge_world_grounding is for documentary narration and flags the
+    characters' fictional situation, e.g. "I'm watching the match at Agra Fort", as unsupported, so any
+    scene failed). Only statements about the real world are checked against the source. The trend may
+    support only the statement that the current event is happening, never a historical or factual claim.
+    Same return shape and fail-open posture as judge_world_grounding."""
+    from app.services.culturetoon_script import (
+        _call_llm_json, _narration_for_fact_check, claim_supported_by_source, ToonScriptGenerationError,
+    )
+    prompt = f"""You fact-check a short comedy scene with fictional cartoon characters.
+
+VERIFIED SOURCE MATERIAL (the only allowed source of real-world facts):
+{source_facts.strip()[:5000]}
+
+CURRENT TREND (may ONLY support saying that this current event is happening now; it supports no other fact):
+{(trend_context or "").strip()[:800]}
+
+THE SCENE'S HEADLINE AND DIALOGUE:
+{_narration_for_fact_check(script_result)}
+
+The characters, where they are, what they do, their opinions, jokes, plans and exaggerated reactions are FICTION:
+never flag those. Flag only statements presented as FACT about the real world (history, dates, numbers, real places'
+features, real people, real events) that the source material does not support. Also flag an invented real-world event
+presented as news (for example "the match hits the fort"). Quote each flagged statement exactly.
+
+Return ONLY valid JSON: {{"unsupported_claims": [string], "grounded": boolean (true only if the list is empty)}}"""
+    try:
+        parsed = _call_llm_json(prompt, temperature=0.1, max_tokens=500)
+    except ToonScriptGenerationError as exc:
+        logger.warning("Editorial grounding judge failed, leaving the script unchecked: %s", exc)
+        return {"grounded": None, "unsupported_claims": [], "judge_failed": True}
+    flagged = [str(c) for c in (parsed.get("unsupported_claims") or []) if c]
+    claims = [c for c in flagged if not claim_supported_by_source(c, source_facts)]
+    return {"grounded": not claims, "unsupported_claims": claims, "judge_failed": False, "checker": "comedy"}
+
+
+def ground_script(script_result: dict, source_excerpt: str, rewrite=None, trend_context: Optional[str] = None) -> tuple:
     """(possibly-revised script, grounding). Runs the World fact-checker against the source excerpt only.
 
     If it flags claims, `rewrite(note, draft)` (the comedy writer in revision mode) gets ONE chance to fix
@@ -562,7 +606,13 @@ def ground_script(script_result: dict, source_excerpt: str, rewrite=None) -> tup
     to World production's line fixer, which rewrites flagged lines as plain narration: right for an
     explainer, wrong for comedy (measured 2026-10-03: it turned Kumar's lines into encyclopedia text)."""
     from app.services.culturetoon_script import judge_world_grounding, fix_unsupported_claims
-    grounding = judge_world_grounding(script_result, source_excerpt)
+
+    def judge(script):
+        if trend_context is None:
+            return judge_world_grounding(script, source_excerpt)
+        return judge_editorial_grounding(script, source_excerpt, trend_context)
+
+    grounding = judge(script_result)
     if grounding.get("unsupported_claims") and not grounding.get("judge_failed"):
         if rewrite is not None:
             try:
@@ -574,7 +624,7 @@ def ground_script(script_result: dict, source_excerpt: str, rewrite=None) -> tup
         else:
             fixed = fix_unsupported_claims(script_result, grounding["unsupported_claims"], source_excerpt)
         if fixed:
-            regrounded = judge_world_grounding(fixed, source_excerpt)
+            regrounded = judge(fixed)
             if not regrounded.get("judge_failed") and len(regrounded.get("unsupported_claims") or []) < len(grounding["unsupported_claims"]):
                 script_result, grounding = fixed, {**regrounded, "auto_fixed": True}
     grounding["claims"] = link_claims_to_source(script_result, source_excerpt, grounding.get("unsupported_claims") or [])

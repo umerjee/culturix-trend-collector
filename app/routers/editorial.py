@@ -210,6 +210,7 @@ def generate_candidate_script(candidate_id: str, body: dict):
         personalities, relationships, memories, cultures, performance = _gather_script_generation_context(
             session, brand_id, variants, c.trend_title)
         excerpt, region, trend_id, trend_type = c.source_excerpt, c.region, c.trend_id, c.trend_type
+        trend_context = f"{c.trend_title}. {c.trend_summary or ''}"
         cast_ids = [str(v.id) for v in variants]
         primary_id = variants[0].id
         session.expunge_all()
@@ -230,7 +231,7 @@ def generate_candidate_script(candidate_id: str, body: dict):
             character_personalities=personalities, relationships=relationships, memories=memories,
             cultures=cultures, performance_context=performance, critique_feedback=note, previous_draft=draft)
 
-    result, grounding = ed.ground_script(result, excerpt, rewrite=rewrite)
+    result, grounding = ed.ground_script(result, excerpt, rewrite=rewrite, trend_context=trend_context)
     craft = judge_script_comedy(result)
 
     # Phase 3: persist with a fresh session.
@@ -263,8 +264,6 @@ def recheck_grounding(candidate_id: str):
     Does not rewrite anything; it only reports."""
     from app.db import SessionLocal
     from app.models.toon_script import ToonScript
-    from app.services.culturetoon_script import judge_world_grounding
-
     session = SessionLocal()
     try:
         c = _get_candidate(session, candidate_id)
@@ -273,10 +272,11 @@ def recheck_grounding(candidate_id: str):
             raise HTTPException(status_code=409, detail="Generate a script first")
         current = {"hook_line": script.hook_line, "shots": script.shots or []}
         excerpt = c.source_excerpt
+        trend_context = f"{c.trend_title}. {c.trend_summary or ''}"
     finally:
         session.close()
 
-    grounding = judge_world_grounding(current, excerpt)
+    grounding = ed.judge_editorial_grounding(current, excerpt, trend_context)
     grounding["claims"] = ed.link_claims_to_source(current, excerpt, grounding.get("unsupported_claims") or [])
 
     session = SessionLocal()

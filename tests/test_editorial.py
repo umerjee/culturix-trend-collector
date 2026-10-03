@@ -106,7 +106,7 @@ def _script_result(dialogue="Craftsmen cast them from the 13th century onwards u
 def writer(mocker):
     return SimpleNamespace(
         write=mocker.patch("app.services.culturetoon_script.generate_toon_script_from_idea", return_value=_script_result()),
-        judge=mocker.patch("app.services.culturetoon_script.judge_world_grounding",
+        judge=mocker.patch("app.services.editorial.judge_editorial_grounding",
                            return_value={"grounded": True, "unsupported_claims": [], "judge_failed": False}),
         fix=mocker.patch("app.services.culturetoon_script.fix_unsupported_claims", return_value=None),
         craft=mocker.patch("app.services.culturetoon_script.judge_script_comedy",
@@ -262,6 +262,32 @@ class TestGroundingHelpers:
         claims = ed.link_claims_to_source(result, SOURCE, unsupported=["made in 1066 by Vikings"])
         assert next(c for c in claims if c["shot_number"] == 1)["supported"] is False
 
+    def test_comedy_fact_check_treats_the_characters_as_fiction_and_the_trend_as_context_only(self, mocker):
+        llm = mocker.patch("app.services.culturetoon_script._call_llm_json",
+                           return_value={"unsupported_claims": ["Benin bronzes were made by aliens"], "grounded": False})
+        result = ed.judge_editorial_grounding(_script_result(), SOURCE, "Bronze statue selfies go viral")
+        prompt = llm.call_args.args[0]
+        assert "FICTION" in prompt and "never flag those" in prompt
+        assert "may ONLY support saying that this current event is happening" in prompt
+        assert result == {"grounded": False, "unsupported_claims": ["Benin bronzes were made by aliens"],
+                          "judge_failed": False, "checker": "comedy"}
+
+    def test_comedy_fact_check_dismisses_claims_the_source_states_and_fails_open(self, mocker):
+        stated = "Craftsmen of the royal guild cast them from the 13th century onwards using the lost-wax method."
+        mocker.patch("app.services.culturetoon_script._call_llm_json", return_value={"unsupported_claims": [stated]})
+        assert ed.judge_editorial_grounding(_script_result(), SOURCE, "")["grounded"] is True
+        from app.services.culturetoon_script import ToonScriptGenerationError
+        mocker.patch("app.services.culturetoon_script._call_llm_json", side_effect=ToonScriptGenerationError("down"))
+        failed = ed.judge_editorial_grounding(_script_result(), SOURCE, "")
+        assert failed["judge_failed"] is True and ed.grounding_status(failed) == "unchecked"
+
+    def test_brief_keeps_religious_buildings_out_of_the_jokes_only_when_the_source_has_them(self):
+        base = dict(region="IN", trend_title="india vs sri lanka", trend_summary=None, source_title="Agra Fort", source_type="unesco")
+        with_mosques = ed.build_script_brief(SimpleNamespace(**base, source_excerpt="It has two beautiful mosques."), "trend_to_history", "en")
+        plain = ed.build_script_brief(SimpleNamespace(**base, source_excerpt="Red sandstone walls 2.5 km long."), "trend_to_history", "en")
+        assert "keep them out of every joke" in with_mosques and "keep them out of every joke" not in plain
+        assert "never present an invented event as real news" in plain
+
     def test_grounding_status(self):
         assert ed.grounding_status({"grounded": True, "judge_failed": False}) == "grounded"
         assert ed.grounding_status({"grounded": False, "judge_failed": False}) == "unsupported"
@@ -372,6 +398,15 @@ class TestBuildCandidates:
         assert [str(c.id) for c in result["superseded"]] == [str(dup.id)]
         assert db().query(EditorialCandidate).filter_by(id=dup.id).one().status == "rejected"
 
+    def test_a_scripted_candidate_holds_its_trend_but_other_countries_keep_theirs(self, db):
+        session = db()
+        _candidate(session, status="scripted", rank_score=0.2)
+        dup = _candidate(session, rank_score=0.9)  # same trend, same country, not yet reviewed
+        other_country = _candidate(session, region="GH", continent="Africa", rank_score=0.9)
+        result = ed.build_candidates(db())
+        assert [str(c.id) for c in result["superseded"]] == [str(dup.id)]
+        assert str(other_country.id) not in {str(c.id) for c in result["superseded"]}
+
     def test_old_trends_are_ignored(self, db):
         session = db()
         _item(session)
@@ -431,13 +466,14 @@ class TestScript:
         assert script.comedy_judgment["grounding"]["grounded"] is True
         assert script.comedy_judgment["editorial_candidate_id"] == str(c.id)
 
-    def test_the_fact_checker_only_ever_sees_the_source_not_the_trend(self, db, writer):
+    def test_the_trend_never_reaches_the_fact_checker_as_a_source_of_facts(self, db, writer):
         session = db()
         cast = _cast(session)
         c = _candidate(session, trend_title="Viral claim: bronzes were made by aliens")
         router.generate_candidate_script(str(c.id), _script_body(cast))
-        facts_given_to_judge = writer.judge.call_args.args[1]
+        _, facts_given_to_judge, trend_context = writer.judge.call_args.args
         assert facts_given_to_judge == SOURCE and "aliens" not in facts_given_to_judge
+        assert "aliens" in trend_context  # passed separately, labelled as current-event context only
 
     def test_unsupported_claims_get_one_comedy_revision_not_the_narration_fixer(self, db, writer):
         session = db()
